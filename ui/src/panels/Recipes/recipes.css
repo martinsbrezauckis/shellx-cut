@@ -1,0 +1,224 @@
+/* panels/Recipes — styles for the Recipes drawer. Scoped
+   under [data-cut-panel="recipes"] so nothing leaks out of this drawer; tokens
+   only (theme.css), the cd-* shared language for the shell. Three surfaces:
+   the recipe LIST (cards), the recipe DETAIL (params + stages + actions), and
+   the two result panes — the dry-run PLAN and the run RECEIPT (op rows). */
+
+/* ── back button in the title ───────────────────────────────────────────── */
+[data-cut-panel='recipes'] .cd-title { display: flex; align-items: center; gap: var(--space-2); }
+[data-cut-panel='recipes'] .rc-back {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: var(--radius-chip);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+[data-cut-panel='recipes'] .rc-back:hover { background: var(--surface-3); color: var(--ink); }
+
+/* ── recipe LIST (cards) ────────────────────────────────────────────────── */
+[data-cut-panel='recipes'] .rc-list { display: flex; flex-direction: column; gap: var(--space-3); }
+[data-cut-panel='recipes'] .rc-card {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: block;
+  padding: var(--space-3);
+  border: 1px solid var(--hairline-2);
+  border-left: 3px solid var(--cut);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+[data-cut-panel='recipes'] .rc-card:hover { background: var(--surface-3); border-left-color: var(--cut-soft); }
+[data-cut-panel='recipes'] .rc-card:disabled { opacity: 0.5; cursor: default; }
+[data-cut-panel='recipes'] .rc-card--starter { border-left-color: var(--accent, #34d399); }
+[data-cut-panel='recipes'] .rc-card-head { display: flex; align-items: center; gap: var(--space-2); }
+[data-cut-panel='recipes'] .rc-card-title { font: 600 var(--fs-ui) var(--sans); color: var(--ink); }
+[data-cut-panel='recipes'] .rc-card-starter {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent, #34d399) 16%, transparent);
+  color: var(--accent, #34d399);
+  font: 600 var(--fs-ui-xs, 11px) var(--sans);
+  white-space: nowrap;
+}
+[data-cut-panel='recipes'] .rc-card-stages {
+  margin-left: auto;
+  font: var(--fs-mono-xs, 11px) var(--mono);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+[data-cut-panel='recipes'] .rc-card-desc {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-3);
+  line-height: 1.45;
+}
+
+/* ── recipe DETAIL ──────────────────────────────────────────────────────── */
+[data-cut-panel='recipes'] .rc-detail { display: flex; flex-direction: column; gap: var(--space-4); }
+[data-cut-panel='recipes'] .rc-params { display: flex; flex-direction: column; gap: var(--space-3); }
+[data-cut-panel='recipes'] .rc-req { color: var(--cut); font-weight: 700; }
+[data-cut-panel='recipes'] .cd-field-label .cd-val { margin-left: auto; }
+[data-cut-panel='recipes'] .rc-param-hint {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4);
+  line-height: 1.4;
+}
+[data-cut-panel='recipes'] .rc-no-project { display: flex; flex-direction: column; gap: var(--space-2); }
+[data-cut-panel='recipes'] .rc-no-project .cd-note { margin: 0; }
+[data-cut-panel='recipes'] .rc-sample { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }
+
+/* ── stage list (the manifest "what it will run") ───────────────────────── */
+[data-cut-panel='recipes'] .rc-stages {
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+[data-cut-panel='recipes'] .rc-stages-head {
+  font: 600 var(--fs-ui-xs) var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  margin-bottom: var(--space-1);
+}
+[data-cut-panel='recipes'] .rc-stage { display: flex; gap: var(--space-3); align-items: flex-start; }
+[data-cut-panel='recipes'] .rc-stage-n {
+  flex: 0 0 auto;
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  color: var(--ink-3);
+  font: 600 11px var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+[data-cut-panel='recipes'] .rc-stage-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+[data-cut-panel='recipes'] .rc-stage-title,
+[data-cut-panel='recipes'] .rc-op-title {
+  font: 600 var(--fs-ui-sm) var(--sans);
+  color: var(--ink);
+}
+[data-cut-panel='recipes'] .rc-stage-verb { font: var(--fs-mono) var(--mono); color: var(--cut-soft); }
+[data-cut-panel='recipes'] .rc-stage-why { font-size: var(--fs-ui-xs); color: var(--ink-3); line-height: 1.4; }
+[data-cut-panel='recipes'] .rc-stage-gate,
+[data-cut-panel='recipes'] .rc-op-gate {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: var(--fs-ui-xs) var(--mono);
+  color: var(--ink-4);
+}
+
+[data-cut-panel='recipes'] .rc-technical,
+[data-cut-panel='recipes'] .rc-op-technical {
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+}
+[data-cut-panel='recipes'] .rc-technical { padding: 0 var(--space-3) var(--space-3); }
+[data-cut-panel='recipes'] .rc-op-technical { margin-top: 2px; padding: 0 8px 8px; }
+[data-cut-panel='recipes'] .rc-technical > summary,
+[data-cut-panel='recipes'] .rc-op-technical > summary {
+  cursor: pointer;
+  color: var(--ink-3);
+  font: 600 var(--fs-ui-xs) var(--sans);
+  padding: 7px 0 0;
+}
+[data-cut-panel='recipes'] .rc-technical > summary:hover,
+[data-cut-panel='recipes'] .rc-op-technical > summary:hover { color: var(--ink-2); }
+[data-cut-panel='recipes'] .rc-technical-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+/* ── actions ────────────────────────────────────────────────────────────── */
+[data-cut-panel='recipes'] .rc-actions { display: flex; gap: var(--space-3); }
+[data-cut-panel='recipes'] .rc-actions .cd-btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+
+/* ── shared op-row look (plan ops + result rows) ────────────────────────── */
+[data-cut-panel='recipes'] .rc-op { display: flex; gap: var(--space-3); align-items: flex-start; padding: 2px 0; }
+[data-cut-panel='recipes'] .rc-op-n {
+  flex: 0 0 auto;
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 600 11px var(--mono); color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+[data-cut-panel='recipes'] .rc-op-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+[data-cut-panel='recipes'] .rc-op-verb { font: var(--fs-mono) var(--mono); color: var(--ink); }
+[data-cut-panel='recipes'] .rc-op-args {
+  font: var(--fs-ui-xs) var(--mono);
+  color: var(--ink-3);
+  word-break: break-word;
+}
+[data-cut-panel='recipes'] .rc-op-err { font: var(--fs-ui-xs) var(--mono); color: var(--err); }
+[data-cut-panel='recipes'] .rc-op--fail .rc-op-verb { color: var(--err); }
+[data-cut-panel='recipes'] .rc-op-gate--pass { color: var(--green-soft); }
+[data-cut-panel='recipes'] .rc-op-gate--fail { color: var(--amber, #d9a441); }
+[data-cut-panel='recipes'] .rc-op-stop {
+  margin-left: auto;
+  font: var(--fs-ui-xs) var(--mono);
+  color: var(--amber, #d9a441);
+  align-self: center;
+}
+
+/* ── DRY-RUN PLAN pane ──────────────────────────────────────────────────── */
+[data-cut-panel='recipes'] .rc-plan {
+  border: 1px solid var(--hairline-2);
+  border-left: 3px solid var(--cut);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+[data-cut-panel='recipes'] .rc-plan-head {
+  display: flex; align-items: center; gap: 6px;
+  font: 600 var(--fs-ui-sm) var(--sans);
+  color: var(--cut-soft);
+  margin-bottom: var(--space-2);
+}
+
+/* ── RUN RECEIPT pane ───────────────────────────────────────────────────── */
+[data-cut-panel='recipes'] .rc-report {
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+[data-cut-panel='recipes'] .rc-summary {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-card);
+  font: 600 var(--fs-ui-sm) var(--sans);
+}
+[data-cut-panel='recipes'] .rc-summary--pass { background: var(--receipt-pass-bg); color: var(--green-soft); border: 1px solid rgba(34, 197, 94, 0.25); }
+[data-cut-panel='recipes'] .rc-summary--warn { background: color-mix(in srgb, var(--amber, #d9a441) 10%, transparent); color: var(--ink-2); border: 1px solid color-mix(in srgb, var(--amber, #d9a441) 30%, transparent); }
+[data-cut-panel='recipes'] .rc-summary-badge { flex: 0 0 auto; display: inline-flex; }
+[data-cut-panel='recipes'] .rc-changed {
+  font: var(--fs-ui-xs) var(--mono);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+[data-cut-panel='recipes'] .rc-stage-results {
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+[data-cut-panel='recipes'] .rc-report-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+[data-cut-panel='recipes'] .rc-inspect { margin-left: auto; }
+[data-cut-panel='recipes'] .rc-restored {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-3);
+}

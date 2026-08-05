@@ -1,0 +1,27 @@
+# cut-perception — instrument orchestration + receipt checks (perception contract).
+# Shells out to the python sidecar (py/instruments.py) for whisperX /
+# silero-vad / scenedetect / librosa / ebur128; validates + caches by asset
+# hash. The verify.checks battery is implemented HERE in Rust over the
+# perception facts + the EDL — fast, deterministic, no model in the loop.
+[package]
+name = "cut-perception"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellX Cut perception: python-sidecar instruments + Rust receipt checks"
+
+[lib]
+name = "cut_perception"
+path = "src/lib.rs"
+
+[dependencies]
+cut-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

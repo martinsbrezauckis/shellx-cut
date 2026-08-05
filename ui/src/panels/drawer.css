@@ -1,0 +1,435 @@
+/* drawer.css — shared visual language for the 0.5.0 right-side control drawers
+   (Title, Kinetic, Grade). Lifted verbatim from musicbed.css (the shared
+   drawer) so every drawer matches: tokens only (theme.css), editor-blue accent,
+   hairlines not boxes, mono=fact / sans=prose, scrim starts BELOW the 54px top
+   bar. Class prefix `cd-` (cut-drawer). Every interactive element carries a
+   data-cut-* attr from the TSX (CDP/Playwright handles).
+
+   WHY shared: the three 0.5.0 drawers are the SAME shape as MusicBed (one-verb
+   convenience over an agent-callable verb, post-fire receipt, no preview — the
+   Preview/timeline render the confirmed truth). One stylesheet keeps them
+   consistent and avoids 3× duplication. */
+
+.cd-scrim {
+  position: fixed;
+  inset: 54px 0 0 0; /* top bar stays usable */
+  background: rgba(0, 0, 0, 0.55);
+  z-index: var(--z-scrim);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  /* reveal: backdrop fades in with the base ease-out */
+  animation: cd-scrim-in var(--motion-base) var(--ease-out) both;
+}
+
+.cd-drawer {
+  width: min(440px, 100%);
+  height: 100%;
+  background: var(--surface);
+  border-left: 1px solid var(--hairline-2);
+  box-shadow: var(--shadow-modal);
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  /* reveal: side-sheet slides and fades in with the panel curve */
+  animation: cd-drawer-in var(--motion-panel) var(--ease-ios) both;
+}
+
+@keyframes cd-scrim-in {
+  /* Never animate ancestor opacity: a throttled WebView can hold the first
+     frame and leave the fully interactive drawer invisible. The backdrop can
+     fade independently while its child remains paintable. */
+  from { background-color: rgba(0, 0, 0, 0); }
+  to { background-color: rgba(0, 0, 0, 0.55); }
+}
+@keyframes cd-drawer-in {
+  from { transform: translateX(12px); }
+  to { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cd-scrim, .cd-drawer { animation-duration: 1ms; }
+  .cd-drawer { transform: none; }
+}
+
+/* Embedded variant: a drawer's body docked as a right-sidebar tab instead
+   of a modal. No scrim, no slide-in, no fixed drawer width — it fills the tab
+   panel and scrolls internally. Grade + Mixer reuse their existing cd-body / mx-body
+   markup verbatim under this wrapper, so every data-cut hook + verb is unchanged. */
+.cd-embed {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  overflow: hidden;
+}
+.cd-embed.mx-drawer { width: 100%; } /* override mixer.css's fixed 360px drawer width */
+.cd-embed > .cd-body,
+.cd-embed > .mx-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+
+.cd-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+}
+.cd-head > :first-child { min-width: 0; }
+.cd-head > .cd-btn { flex: none; }
+.cd-title {
+  margin: 0;
+  font: 600 var(--fs-title-md) / 1.2 var(--sans);
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.cd-sub {
+  margin: var(--space-1) 0 0 0;
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-3);
+  line-height: 1.4;
+}
+
+.cd-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.cd-empty {
+  color: var(--ink-4);
+  font-size: var(--fs-ui-sm);
+  text-align: center;
+  padding: var(--space-6) var(--space-3);
+  line-height: 1.8;
+}
+.cd-empty code {
+  font: var(--fs-mono) var(--mono);
+  color: var(--cut-soft);
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.cd-field { display: flex; flex-direction: column; gap: var(--space-2); }
+.cd-field-label {
+  font: 600 var(--fs-ui-xs) var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cd-val {
+  font: var(--fs-mono) var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--cut-soft);
+}
+
+.cd-sel,
+.cd-input {
+  appearance: none;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  color: var(--ink);
+  font: var(--fs-ui-sm) var(--sans);
+  padding: 6px 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.cd-sel:focus,
+.cd-input:focus { outline: none; border-color: var(--cut); }
+.cd-input--mono { font: var(--fs-mono) var(--mono); }
+/* Multi-line prompt input in the Generate panel — a tall, wrappable cd-input. */
+.cd-textarea { min-height: 76px; resize: vertical; line-height: 1.4; }
+
+/* two inputs side by side (e.g. in/out time) */
+.cd-row { display: flex; gap: var(--space-3); }
+.cd-row > .cd-field { flex: 1; }
+
+.cd-range { width: 100%; accent-color: var(--cut); }
+
+.cd-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+.cd-toggle input { accent-color: var(--cut); }
+
+.cd-note {
+  margin: 0;
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4);
+  line-height: 1.5;
+  border-left: 2px solid var(--hairline-2);
+  padding-left: var(--space-3);
+}
+.cd-note--readable { color: var(--ink-3); }
+.cd-note--mono { font-family: var(--mono); color: var(--ink-2); border-left: none; padding-left: 0; }
+.cd-note--warn { color: var(--ink-2); border-left-color: var(--amber, #d9a441); background: color-mix(in srgb, var(--amber, #d9a441) 8%, transparent); padding: var(--space-2) var(--space-3); border-radius: 4px; }
+
+.cd-lut-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.cd-lut-chip {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font: var(--fs-ui-sm) var(--sans);
+  padding: 6px 8px;
+}
+.cd-advanced {
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  padding: 0 8px 8px;
+}
+.cd-advanced > summary {
+  cursor: pointer;
+  color: var(--ink-3);
+  font: 600 var(--fs-ui-xs) var(--sans);
+  list-style-position: inside;
+  padding: 7px 0 0;
+}
+.cd-advanced > summary:hover { color: var(--ink-2); }
+.cd-advanced > .cd-input { margin-top: 8px; }
+.cd-advanced > .cd-note { margin-top: 8px; }
+
+/* segmented control (e.g. Title placement: Preset | Free) */
+.cd-seg { display: flex; gap: 2px; padding: 2px; background: var(--surface-2); border: 1px solid var(--hairline-2); border-radius: var(--radius-button); }
+.cd-seg-btn {
+  flex: 1; padding: 5px 8px; border: none; background: transparent;
+  color: var(--ink-3); font-family: var(--sans); font-size: var(--fs-ui-sm);
+  border-radius: var(--radius-chip); cursor: pointer;
+}
+.cd-seg-btn:hover { color: var(--ink-2); }
+.cd-seg-btn--on { background: var(--cut-dim); color: var(--cut-soft); }
+
+.cd-field--inline { flex-direction: row; align-items: center; gap: var(--space-2); flex: none; }
+.cd-sel--sm { padding: 3px 6px; font-size: var(--fs-ui-xs); }
+
+/* Position pad — a 16:9 stand-in for the frame; drag the dot to place the
+   title, click a grid anchor to snap. Drives title.add {x,y,align}. */
+.cd-pospad {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background:
+    linear-gradient(var(--hairline) 1px, transparent 1px) 0 0 / 100% 33.33%,
+    linear-gradient(90deg, var(--hairline) 1px, transparent 1px) 0 0 / 33.33% 100%,
+    var(--bg-deep);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  cursor: crosshair;
+  touch-action: none;
+  overflow: hidden;
+  user-select: none;
+}
+.cd-pospad-anchor {
+  position: absolute;
+  width: 14px; height: 14px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--hairline-2);
+  background: var(--surface-3);
+  cursor: pointer;
+  padding: 0;
+}
+.cd-pospad-anchor:hover { border-color: var(--cut); background: var(--cut-dim); }
+.cd-pospad-dot {
+  position: absolute;
+  width: 12px; height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius-pill);
+  background: var(--cut);
+  box-shadow: 0 0 0 3px var(--cut-glow);
+  pointer-events: none;
+}
+.cd-pospad-text {
+  position: absolute;
+  top: 50%; left: 50%;
+  white-space: nowrap;
+  font-family: var(--sans);
+  font-size: var(--fs-ui-sm);
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+}
+.cd-pospad-readout { align-items: center; margin-top: var(--space-2); }
+
+.cd-btn {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  text-align: center;
+  font: 600 var(--fs-ui) var(--sans);
+  border-radius: var(--radius-button);
+  padding: 8px 14px;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.cd-btn--primary { background: var(--accent); color: var(--accent-ink); }
+.cd-btn--primary:hover { background: var(--accent-hover); }
+.cd-btn--primary:disabled { opacity: 0.4; cursor: not-allowed; background: var(--surface-3); color: var(--ink-3); }
+.cd-btn--ghost {
+  font-weight: 500;
+  color: var(--ink-2);
+  border: 1px solid var(--hairline-2);
+  padding: 5px 10px;
+}
+.cd-btn--ghost:hover { background: var(--surface-3); color: var(--ink); }
+/* Armed paid-action confirmation in the Generate panel — red so the user sees the
+   second click actually spends (runs their generation CLI). */
+.cd-btn--danger { background: var(--err); color: #0a0a0a; font-weight: 600; }
+.cd-btn--danger:hover { background: color-mix(in srgb, var(--err) 85%, #fff); }
+.cd-btn--danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.cd-err {
+  font: var(--fs-ui-sm) var(--mono);
+  color: var(--err);
+  background: var(--receipt-fail-bg);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-chip);
+  padding: var(--space-2) var(--space-3);
+}
+
+/* post-fire receipt — the recorded result (the same facts the timeline/preview
+   draw). NEVER a separate computation: the drawer fires the verb and points. */
+.cd-result {
+  border: 1px solid var(--hairline-2);
+  border-left: 3px solid var(--green);
+  border-radius: var(--radius-card);
+  background: var(--receipt-pass-bg);
+  padding: var(--space-3);
+}
+.cd-result-head {
+  font: 600 var(--fs-ui-sm) var(--mono);
+  color: var(--green-soft);
+  margin-bottom: var(--space-3);
+}
+.cd-result-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px var(--space-3);
+  margin: 0;
+}
+.cd-result-grid dt {
+  font: var(--fs-ui-xs) var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+.cd-result-grid dd {
+  margin: 0;
+  font: var(--fs-mono) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  text-align: right;
+}
+.cd-result-foot {
+  margin-top: var(--space-3);
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+.cd-result-foot strong { color: var(--cut-soft); font-weight: 600; }
+
+/* swatch row for grade preview chips (optional small visual aid, no live render) */
+.cd-reset {
+  font: 500 var(--fs-ui-sm) var(--sans);
+  color: var(--ink-3);
+  cursor: pointer;
+  background: none;
+  border: none;
+  text-decoration: underline;
+  padding: 0;
+}
+.cd-reset:hover { color: var(--cut-soft); }
+
+/* Matte: a checkbox + label row (premium subject-pick toggle). */
+.cd-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.cd-check input { cursor: pointer; }
+
+/* Stock / Find-media tab: provider search result list. */
+.cd-stock-list {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+.cd-stock-hit {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--cut-line, #2a2a2a); border-radius: 8px;
+  background: var(--cut-panel, #1b1b1b);
+}
+.cd-stock-hit-main { flex: 1; min-width: 0; }
+.cd-stock-hit-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cd-stock-hit-meta { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
+.cd-stock-hit-attr { font-size: 11px; opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cd-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--cut-chip, #2a2a2a); opacity: 0.85; }
+.cd-btn--sm { padding: 5px 10px; font-size: 12px; white-space: nowrap; }
+.cd-search-hit { align-items: flex-start; }
+.cd-search-hit-actions { display: flex; flex: none; gap: 5px; }
+.cd-search-hit-actions .cd-btn { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Find moment is already inside the scrolling .cd-body when embedded in the
+   left rail. Nested result-list scrollers leave bottom actions geometrically
+   outside that body and under the timeline toolbar, so the outer body owns the
+   only scroll axis here. Drawer mode keeps the bounded lists. */
+.cd-embed[data-cut-search] .cd-stock-list {
+  max-height: none;
+  overflow: visible;
+}
+
+@media (max-width: 560px) {
+  .cd-search-hit { flex-wrap: wrap; }
+  .cd-search-hit-main { flex-basis: 100%; }
+  .cd-search-hit-actions { width: 100%; }
+  .cd-search-hit-actions .cd-btn { flex: 1; justify-content: center; }
+}
+
+/* Shape drawer: 3×3 position-preset grid. */
+.cd-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; max-width: 160px; }
+.cd-grid3-cell {
+  aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--cut-line, #2a2a2a); border-radius: 6px; cursor: pointer;
+  background: var(--cut-panel, #1b1b1b); color: var(--cut-soft, #aaa); font-size: 14px;
+}
+.cd-grid3-cell--on { border-color: var(--cut-accent, #3366FF); color: #fff; background: var(--cut-accent-dim, #23304d); }
+.cd-field--inline { flex-direction: row; align-items: center; gap: 6px; }
+
+/* Nested sub-control group (e.g. MusicBed duck-depth under its toggle). */
+.cd-duck-depth {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

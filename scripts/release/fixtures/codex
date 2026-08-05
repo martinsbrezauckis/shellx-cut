@@ -1,0 +1,94 @@
+#!/usr/bin/env node
+// Deterministic codex fixture for scripts/release/full-coverage-gate.mjs.
+// It implements the two Codex seams used by the full gate: assets.generate
+// writes a deterministic image, while agent.chat applies a real edit through
+// cutd and emits the NDJSON final-message shape parsed by chat.rs.
+
+import { spawnSync } from 'node:child_process'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { applyAgentEdit } from './agent-edit-fixture.mjs'
+
+const args = process.argv.slice(2)
+if (args.includes('--version')) {
+  console.log('codex fixture 1.0.0')
+  process.exit(0)
+}
+if (args[0] === 'login' && args[1] === 'status') {
+  console.log('Logged in using deterministic release-gate fixture')
+  process.exit(0)
+}
+
+const chunks = []
+for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk))
+const prompt = Buffer.concat(chunks).toString('utf8')
+
+function requestedPath(text) {
+  const marker = 'Write the final binary file to EXACTLY this path and nowhere else:'
+  const idx = text.indexOf(marker)
+  if (idx < 0) return ''
+  const rest = text.slice(idx + marker.length).split(/\r?\n/).map((line) => line.trim())
+  return rest.find(Boolean) || ''
+}
+
+const out = requestedPath(prompt)
+if (!out) {
+  if (/You are the editing agent inside ShellX Cut/i.test(prompt)) {
+    try {
+      const edit = await applyAgentEdit(prompt, 'codex')
+      console.log(JSON.stringify({
+        type: 'item.completed',
+        item: {
+          type: 'agent_message',
+          text: edit.ok
+            ? `Applied ${edit.verb}.`
+            : `Could not apply ${edit.verb}: ${edit.detail}`,
+        },
+      }))
+      process.exit(edit.ok ? 0 : 1)
+    } catch (error) {
+      console.log(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: String(error?.message || error) },
+      }))
+      process.exit(1)
+    }
+  }
+  console.log(JSON.stringify({ ok: false, reason: 'fixture did not recognize the request' }))
+  process.exit(0)
+}
+
+mkdirSync(dirname(out), { recursive: true })
+if (process.env.CUTD_GENERATE_FIXTURE_COUNT) appendFileSync(process.env.CUTD_GENERATE_FIXTURE_COUNT, 'run\n')
+const configuredDelayMs = Number(process.env.CUTD_GENERATE_FIXTURE_DELAY_MS || 0)
+// The exhaustive UI matrix must observe and click the real Cancel generation
+// control. Windows WebView2 can spend most of the ordinary 1.2 s fixture delay
+// applying the pending-slot project refresh, so reserve a deterministic window
+// only for the explicit cancellation scenario. Normal fixture generations keep
+// the shorter configured delay.
+const delayMs = /deterministic cancelled generated slot/i.test(prompt)
+  ? Math.max(configuredDelayMs, 5_000)
+  : configuredDelayMs
+if (Number.isFinite(delayMs) && delayMs > 0) {
+  await new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+const ffmpeg = process.env.FFMPEG_BIN || process.env.SHELLX_CUT_FFMPEG || 'ffmpeg'
+const made = spawnSync(ffmpeg, [
+  '-nostats',
+  '-hide_banner',
+  '-loglevel',
+  'error',
+  '-y',
+  '-f',
+  'lavfi',
+  '-i',
+  'color=c=0x2563eb:s=320x240',
+  '-frames:v',
+  '1',
+  out,
+], { encoding: 'utf8' })
+if (made.status !== 0) {
+  console.log(JSON.stringify({ ok: false, reason: `fixture ffmpeg failed: ${(made.stderr || '').trim() || made.error?.message || `exit ${made.status}`}` }))
+  process.exit(0)
+}
+console.log(JSON.stringify({ ok: true, path: out, summary: 'deterministic release-gate fixture image' }))

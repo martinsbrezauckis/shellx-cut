@@ -1,0 +1,88 @@
+# ShellX Cut smoke-build workflow
+#
+# Triggers manually. Practices the FULL installer packaging pipeline on clean
+# rented runners so "a stranger's machine can package this app" stays a
+# proven, public claim. Outputs are UNSIGNED throwaway bundles published only
+# as workflow artifacts — this workflow can never create tags, releases, or
+# any other remote release state (contents: read).
+#
+# Official public releases are built, Authenticode-signed, and notarized from
+# maintainer machines, then uploaded after the release checklist and explicit
+# remote approvals (docs/public/BUILDING.md). Updater artifacts are skipped
+# here on purpose: producing them requires the updater signing key, which is
+# never stored in repository secrets.
+
+name: Smoke build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+          - platform: macos-latest
+          - platform: ubuntu-24.04
+
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          workspaces: ./app -> target
+          save-if: ${{ runner.os != 'Windows' }}
+
+      - name: Setup node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+
+      - name: Install Linux build deps
+        if: matrix.platform == 'ubuntu-24.04'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y \
+            build-essential pkg-config clang libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libdbus-1-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: UI install
+        run: npm ci --ignore-scripts
+        working-directory: ui
+
+      - name: Build unsigned bundles (tauri)
+        # CLI pinned to the exact version the official rig builds use (supply-chain:
+        # @latest would pull an unvetted release at run time). --config override:
+        # smoke builds skip updater artifacts so no signing
+        # key is required on GitHub. Official builds keep them and sign locally.
+        run: >
+          npx --yes @tauri-apps/cli@2.11.2 build
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        working-directory: app/desktop
+
+      - name: Collect bundles
+        uses: actions/upload-artifact@6027e3dd177782cd8ab9af838c04fd81a07f1d47
+        with:
+          name: smoke-bundles-${{ matrix.platform }}
+          path: |
+            app/desktop/src-tauri/target/release/bundle/**/*.exe
+            app/desktop/src-tauri/target/release/bundle/**/*.dmg
+            app/desktop/src-tauri/target/release/bundle/**/*.deb
+            app/desktop/src-tauri/target/release/bundle/**/*.rpm
+          if-no-files-found: error
+          retention-days: 14

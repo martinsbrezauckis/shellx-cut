@@ -1,0 +1,501 @@
+/* panels/Preview/preview.css — monitor + transport bar.
+   Tokens from theme.css only. Monitor well is the ONE place darker than --bg. */
+
+.pv-root { display: flex; flex-direction: column; height: 100%; }
+
+/* Monitor well */
+.pv-monitor {
+  position: relative; flex: 1; min-height: 0;
+  background: var(--bg-deep);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+/* Playing: subtle orange "live" inner top edge */
+.pv-monitor--playing::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: var(--orange); opacity: .35; z-index: 2;
+}
+.pv-setup {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: min(520px, calc(100% - 24px));
+  padding: 8px 10px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--surface-2) 94%, transparent);
+  box-shadow: var(--shadow-dropdown);
+}
+.pv-setup-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.pv-setup-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.pv-setup-copy strong {
+  color: var(--ink);
+  font: 700 var(--fs-ui-sm) / 1.15 var(--sans);
+}
+.pv-setup-copy span {
+  color: var(--ink-2);
+  font: 400 var(--fs-ui-xs) / 1.25 var(--sans);
+}
+.pv-setup-btn {
+  flex: none;
+  border: 1px solid var(--cut);
+  border-radius: var(--radius-button);
+  background: var(--cut);
+  color: #0a0a0a;
+  cursor: pointer;
+  padding: 5px 10px;
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.pv-setup-btn:hover { background: var(--cut-soft); border-color: var(--cut-soft); }
+.pv-setup-btn--ghost {
+  border-color: var(--hairline-2);
+  background: transparent;
+  color: var(--ink-2);
+}
+.pv-setup-btn--ghost:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+  border-color: var(--hairline-2);
+}
+.pv-monitor video, .pv-monitor img {
+  max-width: 100%; max-height: 100%; width: 100%; height: 100%;
+  object-fit: contain; display: block;
+}
+/* Stale poster while seeking: dim, spinner only past 150ms */
+.pv-monitor img.pv-stale { opacity: .6; }
+.pv-spinner {
+  position: absolute; width: 22px; height: 22px; z-index: 3;
+  border: 2px solid var(--hairline-2); border-top-color: var(--ink-2);
+  border-radius: 50%; animation: pv-spin .7s linear infinite;
+}
+@keyframes pv-spin { to { transform: rotate(360deg); } }
+
+/* PROXY RENDERING… chip, top-right (orange dot pulse) */
+.pv-chip {
+  position: absolute; top: 8px; right: 8px; z-index: 3;
+  display: flex; align-items: center; gap: 6px;
+  font: var(--fs-mono-xs) var(--mono); color: var(--ink-2);
+  background: var(--surface-2); border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip); padding: 3px 8px; user-select: none;
+}
+.pv-chip-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--orange);
+}
+/* The dot pulses only while there is actual work (proxy building / composing).
+   A FOREVER-pulsing dot is a continuous repaint that — on WebKit, with the transport
+   bar in the same compositing context — re-rasterizes the whole bar every animation
+   frame → the transport icons shimmer even when paused (1:1 with the pre-fix Windows
+   bug). Idle states (SOURCE ready / COMPOSED FRAME ready) get a STATIC dot. */
+.pv-chip-dot--live {
+  animation: pv-pulse 1.2s ease-in-out infinite;
+}
+@keyframes pv-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+/* Source-preview badge — the editor is using the original while
+   the proxy builds in the background. Brand-soft accent distinguishes it
+   from the orange "PROXY RENDERING…" (poster) chip; the dot still pulses to read
+   as "building". */
+.pv-chip--source { color: var(--cut-soft); }
+.pv-chip--source .pv-chip-dot { background: var(--cut-soft); }
+/* Decode-cap note: some overlay layers hidden past MAX_OVERLAYS. Top-LEFT so it
+   never collides with the SOURCE / COMPOSED chips at top-right. */
+.pv-chip--warn { left: 8px; right: auto; color: var(--warn, #e6b450); }
+.pv-chip--warn .pv-chip-dot { background: var(--warn, #e6b450); animation: none; }
+
+/* --- Live composite stage -------------------------------------------------
+   An explicit letterboxed box at the project aspect (sized in JS from the
+   measured monitor). EVERYTHING in the live preview positions inside it in
+   normalized stage coordinates: the base video fills it; overlay <video>s sit
+   at their PiP transform; captions size in cqh (container-query height).        */
+.pv-stage {
+  position: relative;
+  /* JS sets explicit width/height px; these are the pre-measure fallback. */
+  max-width: 100%; max-height: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  container-type: size;     /* enables cqh units for caption sizing */
+  background: #000;          /* letterbox/pad shows as black, mirrors the render */
+}
+.pv-stage .pv-base {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+}
+/* Isolate the playing video's per-frame repaints onto their own
+   compositor layer so they stop re-rasterizing the transport SVG icons below (Chromium).
+   GATED off WebKit (see .pv-transport / main.tsx). */
+:root:not(.engine-webkit) .pv-stage .pv-base {
+  transform: translateZ(0);
+  will-change: transform;
+}
+/* Overlay layer: absolutely placed by its inline transform box; content
+   contained within that box (mirrors the render's conform-then-place). */
+.pv-overlay {
+  position: absolute;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;     /* preview is non-interactive; drag-gizmo is a later step */
+}
+.pv-offline,
+.pv-frame-error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--err) 58%, var(--hairline-2));
+  background:
+    repeating-linear-gradient(
+      135deg,
+      var(--receipt-fail-bg) 0,
+      var(--receipt-fail-bg) 12px,
+      color-mix(in srgb, var(--surface-2) 92%, #000) 12px,
+      color-mix(in srgb, var(--surface-2) 92%, #000) 24px
+    );
+  color: var(--receipt-fail);
+  text-align: center;
+}
+.pv-offline--overlay {
+  inset: auto;
+  gap: 3px;
+  padding: 8px;
+  overflow: hidden;
+  pointer-events: auto;
+}
+.pv-offline__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  max-width: min(420px, 90%);
+}
+.pv-offline__copy strong {
+  color: var(--ink);
+  font: 700 var(--fs-ui-sm) / 1.2 var(--sans);
+}
+.pv-offline__copy span {
+  overflow: hidden;
+  color: var(--ink-2);
+  font: 500 var(--fs-ui-xs) / 1.3 var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pv-offline--overlay .pv-offline__copy strong { font-size: var(--fs-ui-xs); }
+.pv-offline__relink {
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  padding: 5px 10px;
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.pv-offline__relink:hover:not(:disabled) { border-color: var(--err); }
+.pv-offline__relink:disabled { opacity: .55; cursor: wait; }
+
+/* Live caption text — a horizontal band; the inner span carries the style. */
+.pv-caption {
+  position: absolute; left: 0; right: 0;
+  display: flex; justify-content: center;
+  padding: 0 4cqw;
+  pointer-events: none; text-align: center;
+}
+.pv-caption--bottom { bottom: 6cqh; }
+.pv-caption--top { top: 6cqh; }
+.pv-caption--center { top: 50%; transform: translateY(-50%); }
+.pv-caption-text {
+  display: inline-block;
+  padding: 0.15em 0.5em; border-radius: 4px;
+  line-height: 1.2; font-weight: 600;
+  max-width: 92%;
+  text-wrap: balance; word-break: break-word;
+}
+
+/* --- Exact rendered-section player ----------------------------------------
+   Covers the monitor with a single composited file (native scrub + full audio)
+   to verify the true final look, plus a bar to save it as a short / go back.   */
+.pv-exact {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; flex-direction: column;
+  background: var(--bg-deep);
+}
+.pv-exact-video { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+/* Own compositor layer (Chromium), gated off WebKit (see .pv-transport / main.tsx). */
+:root:not(.engine-webkit) .pv-exact-video { transform: translateZ(0); will-change: transform; }
+.pv-exact-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; background: var(--surface-2);
+  border-top: 1px solid var(--hairline-2);
+}
+.pv-exact-chip { position: static; color: var(--orange); border-color: var(--orange); }
+.pv-exact-bar .pv-toggle { margin-left: 0; }
+.pv-exact-save { color: var(--cut-soft); }
+
+.pv-empty {
+  color: var(--ink-4); font: var(--fs-ui-sm) var(--mono); text-align: center;
+}
+/* …a real CTA button when a project is open (opens the topbar Import dialog) */
+.pv-empty--cta {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--cut-soft); font: var(--fs-ui-sm) var(--mono); text-align: center;
+  padding: 8px 14px; border-radius: var(--radius-button);
+  transition: color 120ms ease, background 120ms ease;
+}
+.pv-empty--cta:hover { color: var(--cut); background: var(--cut-dim); }
+.pv-empty--cta:focus-visible { color: var(--cut); outline: 1px solid var(--cut); outline-offset: 2px; }
+
+/* Transport bar (40px, --surface-2, top hairline) */
+.pv-transport {
+  /* Original flex layout (timecode | buttons centred via margin:auto | chips). This is
+     STABLE now that the real wiggle cause is fixed — the audio-monitor pre-warm render loop that
+     pulsed the Audio button's width every 700ms (see Preview/index.tsx ensureMix). With that loop
+     gone the chips width is constant, so `margin:0 auto` no longer re-centres frame-to-frame. (A
+     grid centering was tried but deformed the row + shifted the controls; unnecessary once the
+     loop was the confirmed root.) */
+  flex: none; height: 40px; display: flex; align-items: center;
+  gap: var(--space-3); padding: 0 var(--space-3);
+  background: var(--surface-2); border-top: 1px solid var(--hairline);
+  user-select: none;
+}
+/* The transport-bar compositor promotion is removed entirely (no
+   translateZ, no contain) on ALL engines, because the `:not(.engine-webkit)` gate may
+   never apply (if main.tsx's engine detection fails on this WKWebView the gate is a no-op
+   and the promotion stays on → the whole bar jitters sub-pixel). With no promotion the bar
+   sits in normal document flow = no promoted-layer device-pixel dance. If this kills the
+   wiggle, the promotion is confirmed as the cause and it gets re-added Chromium-ONLY via a
+   reliable detector. (The original Windows shimmer this targeted was the playing <video>
+   re-rasterizing the bar — to be re-verified on Windows after.) */
+.pv-tc {
+  font: 500 var(--fs-tc) var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink); white-space: nowrap;
+}
+.pv-tc .pv-dur { color: var(--ink-3); font-weight: 400; }
+.pv-buttons { display: flex; gap: 2px; margin: 0 auto; align-items: center; }
+.pv-btn {
+  all: unset; width: 30px; height: 30px; display: inline-flex;
+  align-items: center; justify-content: center; cursor: pointer;
+  color: var(--ink-2); border-radius: var(--radius-button); position: relative;
+  transition: background 120ms ease, color 120ms ease;
+}
+.pv-btn:hover { background: var(--surface-3); color: var(--ink); }
+.pv-btn--active { color: var(--orange); } /* active shuttle direction */
+.pv-rate {
+  position: absolute; bottom: -1px; right: 0;
+  font: 700 var(--fs-mono-xs) var(--mono); color: var(--orange);
+}
+.pv-chips { display: flex; align-items: center; gap: 6px; }
+/* Snapshot button — icon and label, matching the chip style. */
+.pv-snap { display: inline-flex; align-items: center; gap: 4px; }
+.pv-snap:disabled { opacity: 0.5; cursor: default; }
+.pv-snap:hover:not(:disabled) { color: var(--cut-soft); border-color: var(--cut); }
+.pv-snap-note { font: var(--fs-mono-xs) var(--mono); color: var(--cut-soft); white-space: nowrap; }
+.pv-toggle {
+  all: unset; cursor: pointer; font: var(--fs-mono-xs) var(--mono);
+  color: var(--ink-3); background: var(--surface-3);
+  border: 1px solid var(--hairline-2); border-radius: var(--radius-chip);
+  padding: 2px 8px; transition: color 120ms ease, border-color 120ms ease;
+}
+.pv-toggle:hover { color: var(--ink); border-color: var(--border); }
+/* COMPOSED mode active — the editor-blue accent marks "showing composed truth". */
+.pv-toggle--on { color: #0a0a0a; background: var(--cut); border-color: var(--cut); }
+.pv-toggle--on:hover { color: #0a0a0a; border-color: var(--cut); }
+
+/* COMPOSED toggle: stable label + an ON/OFF pill so the control always reads
+   as "composed view, on or off" (never relabels to the raw playback kind). */
+.pv-composed { display: inline-flex; align-items: center; gap: 5px; }
+.pv-composed-icon { display: none; }
+.pv-composed-state {
+  font-size: 0.85em; font-weight: 700; letter-spacing: 0.02em;
+  padding: 0 4px; border-radius: var(--radius-chip);
+  background: rgba(0, 0, 0, 0.18);
+}
+/* OFF state: dim the pill on the neutral chip; ON state inherits the accent fg. */
+.pv-composed:not(.pv-toggle--on) .pv-composed-state { color: var(--ink-4); background: rgba(255, 255, 255, 0.06); }
+
+/* The preview can be narrowed independently of the window by dragging the
+   transcript divider. Preserve every transport command as a stable icon target
+   instead of letting chip labels overflow into the Tools strip. */
+@container preview-panel (max-width: 820px) {
+  .pv-transport { gap: 4px; padding: 0 4px; }
+  .pv-tc .pv-dur { display: none; }
+  .pv-buttons { gap: 0; }
+  .pv-chips { gap: 2px; }
+  .pv-control-label,
+  .pv-composed-label,
+  .pv-composed-state { display: none; }
+  .pv-icon-toggle {
+    box-sizing: border-box;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pv-composed-icon { display: block; }
+  .pv-meter { margin-left: 0; }
+}
+
+/* On-canvas transform handles (TransformHandles) — the bounding box + corner grips
+   for an overlay clip's edit.transform. Drawn in the editor-blue drag accent; the
+   box body drags to MOVE, the corner grips SCALE (uniform). pointer-events:auto so
+   they grab pointer input over the overlay; touch-action:none so a drag never
+   scrolls/zooms the page. Position/size come from the normalized transform as
+   % of the stage (the stage IS the normalized space). */
+.pv-xform {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--cut, #3b82f6);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  cursor: move;
+  pointer-events: auto;
+  touch-action: none;
+  z-index: 6;
+}
+.pv-xform-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px; /* centre the 12px grip on whichever corner it pins */
+  background: var(--cut, #3b82f6);
+  border: 1.5px solid #fff;
+  border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  touch-action: none;
+}
+.pv-xform-handle:hover { background: var(--cut-soft, #60a5fa); }
+
+/* Master output meter (Audio Monitoring v2a) — a slim vertical dBFS bar in the
+   transport bar. Fill height = instantaneous RMS (green→amber→red zones); a
+   peak-hold tick rides on top; a red glow when the mix clips (peak ≈ 0 dBFS). */
+.pv-meter {
+  position: relative;
+  width: 8px;
+  height: 22px;
+  margin-left: 6px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  overflow: hidden;
+  flex: 0 0 auto;
+  align-self: center;
+}
+.pv-meter-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 0%;
+  background: linear-gradient(to top, #3fb950 0%, #3fb950 62%, #e6b450 82%, #f85149 100%);
+  transition: height 60ms linear;
+}
+.pv-meter-peak {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: var(--ink-2, #c9d1d9);
+  transition: bottom 80ms linear;
+}
+.pv-meter[data-cut-meter-clip] {
+  border-color: #f85149;
+  box-shadow: 0 0 4px 1px #f85149;
+}
+
+/* #193b: draggable title ghost — position a title directly on the frame while the Title
+   drawer's "Place anywhere" mode is active. Normalized over the pv-stage (= the frame box). */
+.pv-title-ghost {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 2px 8px;
+  max-width: 84%;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  background: rgba(37, 99, 235, 0.18);
+  border: 1px dashed var(--cut-soft, #5b8def);
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+  user-select: none;
+  z-index: 6;
+}
+.pv-title-ghost:active { cursor: grabbing; }
+
+/* Privacy draw-region (Inspector "Draw region") — a full-stage capture layer,
+   active only while draw mode is armed. Crosshair cursor signals "drag a box";
+   pointer-events:auto so it grabs the drag over the video. The drawn box reads in
+   the editor action color (matching the transform handles), with a translucent
+   fill so the user sees exactly what will be blurred. Normalized %-positioned
+   over the stage (= the letterboxed frame box). */
+.pv-redact-capture {
+  position: absolute;
+  inset: 0;
+  z-index: 7;            /* above overlays/handles so the drag isn't intercepted */
+  cursor: crosshair;
+  pointer-events: auto;
+  touch-action: none;
+}
+.pv-redact-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid var(--cut, #3b82f6);
+  background: var(--cut-dim, rgba(37, 99, 235, 0.18));
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;  /* the capture layer owns the drag; the box is just a ghost */
+}
+
+/* Framing guides — non-interactive SVG over the letterboxed stage.
+   Thirds = thin composition lines; safe areas = classic SMPTE margins
+   (action 90%, title 80%). Tokens only; blend-friendly on any footage. */
+.pv-guides {
+  position: absolute; inset: 0; z-index: 2;
+  pointer-events: none;
+}
+.pv-guides line {
+  stroke: rgba(255, 255, 255, .45); stroke-width: 1;
+  mix-blend-mode: difference;
+}
+.pv-guides__safe rect {
+  fill: none; stroke-width: 1; mix-blend-mode: difference;
+}
+.pv-guides__safe--action rect { stroke: rgba(255, 255, 255, .55); }
+.pv-guides__safe--title rect { stroke: rgba(255, 255, 255, .35); stroke-dasharray: 4 4; }
+.pv-guides__safe text {
+  font-size: 9px; fill: rgba(255, 255, 255, .5);
+  mix-blend-mode: difference; user-select: none;
+}
+
+/* Full-screen — browser builds use the DOM Fullscreen API; installed Tauri
+   builds use native-window fullscreen because WKWebView may not expose the DOM
+   API. The data state also provides a reversible in-window fallback when a
+   browser permission policy rejects fullscreen. */
+.pv-root:fullscreen,
+.pv-root[data-cut-fullscreen='true'] {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg-deep);
+}
+.pv-root:fullscreen .pv-monitor,
+.pv-root[data-cut-fullscreen='true'] .pv-monitor { flex: 1; }

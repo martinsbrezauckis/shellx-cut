@@ -1,0 +1,228 @@
+.settings-section {
+  width: min(100%, 740px);
+  margin: 0 auto;
+}
+.settings-section-head { margin-bottom: var(--space-5); }
+.settings-eyebrow {
+  margin: 0 0 5px;
+  color: var(--cut-soft);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.settings-section-head h3 {
+  margin: 0;
+  color: var(--ink);
+  font: 650 var(--fs-title-lg) / 1.15 var(--sans);
+  letter-spacing: -0.02em;
+}
+.settings-section-head > p:last-child {
+  max-width: 62ch;
+  margin: 7px 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.45;
+}
+
+.settings-overview-list,
+.settings-control-list {
+  border-top: 1px solid var(--hairline);
+}
+.settings-overview-row,
+.settings-control-row {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.settings-status {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink-4) 16%, transparent);
+}
+.settings-status--ok {
+  background: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 16%, transparent);
+}
+.settings-status--degraded {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 16%, transparent);
+}
+.settings-status--missing {
+  background: var(--err);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 16%, transparent);
+}
+.settings-overview-copy,
+.settings-control-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.settings-overview-copy strong,
+.settings-control-copy strong {
+  color: var(--ink);
+  font-size: var(--fs-ui);
+}
+.settings-overview-copy span,
+.settings-control-copy span {
+  color: var(--ink-3);
+  font-size: var(--fs-ui-sm);
+  overflow-wrap: anywhere;
+}
+.settings-control-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.settings-authority-note {
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-left: 2px solid var(--cut);
+  background: color-mix(in srgb, var(--cut) 5%, var(--surface-2));
+}
+.settings-authority-note strong {
+  color: var(--ink);
+  font-size: var(--fs-ui-sm);
+}
+.settings-authority-note p {
+  margin: 4px 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.45;
+}
+.settings-authority-note code {
+  color: var(--ink-2);
+  font: var(--fs-mono-xs) / 1.35 var(--mono);
+}
+
+.settings-callout,
+.settings-privacy-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+}
+.settings-callout strong,
+.settings-privacy-note strong { color: var(--ink); font-size: var(--fs-ui); }
+.settings-callout p,
+.settings-privacy-note p {
+  margin: 4px 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.4;
+}
+.settings-privacy-note {
+  display: block;
+  margin-bottom: var(--space-4);
+}
+
+.settings-network {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+}
+.settings-network-head h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-ui);
+}
+.settings-network-head > p:last-child {
+  max-width: 64ch;
+  margin: 6px 0 var(--space-3);
+  color: var(--ink-3);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.45;
+}
+.settings-network-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--hairline);
+  cursor: pointer;
+}
+.settings-network-toggle--disabled { cursor: default; }
+.settings-network-toggle input { margin-top: 2px; accent-color: var(--cut); }
+.settings-network-toggle span { display: grid; gap: 3px; }
+.settings-network-toggle strong { color: var(--ink); font-size: var(--fs-ui-sm); }
+.settings-network-toggle small { color: var(--ink-3); font-size: var(--fs-ui-xs); }
+.settings-network-message {
+  min-height: 1.35em;
+  margin: 8px 0 0 29px;
+  color: var(--green);
+  font-size: var(--fs-ui-xs);
+}
+.settings-network-message--error { color: var(--err); }
+
+.settings-advanced {
+  margin-top: var(--space-4);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+.settings-advanced > summary {
+  color: var(--ink-2);
+  font-size: var(--fs-ui-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-advanced dl { margin: var(--space-3) 0 0; }
+.settings-advanced dl > div {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr);
+  gap: var(--space-3);
+  padding: 7px 0;
+  border-top: 1px solid var(--hairline);
+}
+.settings-advanced dt { color: var(--ink-3); font-size: var(--fs-ui-sm); }
+.settings-advanced dd { margin: 0; color: var(--ink-2); font-size: var(--fs-ui-sm); overflow-wrap: anywhere; }
+.settings-advanced code,
+.settings-advanced kbd { font-family: var(--mono); font-size: var(--fs-mono-xs); }
+.settings-agent-config {
+  max-height: 210px;
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--ink-2);
+  font: var(--fs-mono-xs) / 1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.settings-copy-note { margin: 9px 0 0; color: var(--green); font-size: var(--fs-ui-xs); }
+.settings-copy-note--error { color: var(--err); }
+
+.settings-section .env-export-destination { margin-bottom: var(--space-4); }
+.settings-section .env-keymap { margin-top: 0; }
+.settings-section .env-about { margin-top: 0; }
+
+@media (max-width: 620px) {
+  .settings-overview-row,
+  .settings-control-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .settings-overview-row .env-btn,
+  .settings-control-row .env-btn { grid-column: 2; justify-self: start; }
+  .settings-control-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .settings-callout { align-items: flex-start; flex-direction: column; }
+  .settings-advanced dl > div { grid-template-columns: 1fr; gap: 3px; }
+}

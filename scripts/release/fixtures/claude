@@ -1,0 +1,146 @@
+#!/usr/bin/env node
+// Deterministic claude fixture for scripts/release/full-coverage-gate.mjs.
+// It covers the release gate's non-deterministic CLI seams while still driving
+// the real product APIs: translation returns a parseable CLI result, and
+// agent.chat applies edits through POST /api/verb just as the MCP tools do.
+
+import { applyAgentEdit } from './agent-edit-fixture.mjs'
+
+const args = process.argv.slice(2)
+
+if (args.includes('--version')) {
+  console.log('claude fixture 1.0.0')
+  process.exit(0)
+}
+
+if (args[0] === 'auth' && args[1] === 'status') {
+  console.log(JSON.stringify({ loggedIn: true, subscriptionType: 'fixture' }))
+  process.exit(0)
+}
+
+const chunks = []
+for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk))
+const prompt = Buffer.concat(chunks).toString('utf8')
+
+function emitResult(result, isError = false) {
+  console.log(JSON.stringify({
+    type: 'result',
+    result,
+    is_error: isError,
+    total_cost_usd: 0,
+  }))
+}
+
+function targetLanguage(text) {
+  return (text.match(/Target language:\s*([^\n.]+)/i)?.[1] ||
+    text.match(/\binto\s+([^\n.]+)\./i)?.[1] ||
+    'target').trim().toLowerCase()
+}
+
+function cueLines(text) {
+  const lines = text.split(/\r?\n/)
+  const start = lines.findIndex((line) => /^Cues:\s*$/i.test(line.trim()))
+  return (start >= 0 ? lines.slice(start + 1) : lines)
+    .map((line) => line.match(/^\s*(\d+)\.\s+(.+?)\s*$/))
+    .filter(Boolean)
+    .map((m) => ({ i: Number(m[1]), text: m[2] }))
+}
+
+function translatedCue(source, i, target) {
+  const s = source.trim()
+  if (!s) return s
+  if (/^[\d\s.,:;!?'"()[\]{}-]+$/.test(s)) return s
+  if (target === 'lv' || target.includes('latvian')) return `Labdien tulkots teksts ${i}`
+  if (target === 'es' || target.includes('spanish')) return `Texto traducido ${i}: ${s}`
+  return `Translated ${i}: ${s}`
+}
+
+try {
+  if (/Translate the \d+ subtitle cues/i.test(prompt) && /Cues:/i.test(prompt)) {
+    const target = targetLanguage(prompt)
+    const translations = cueLines(prompt).map((cue) => ({
+      i: cue.i,
+      text: translatedCue(cue.text, cue.i, target),
+    }))
+    emitResult(JSON.stringify(translations))
+  } else if (/ShellX Cut Generate planner/i.test(prompt) && /template_id/i.test(prompt)) {
+    emitResult(JSON.stringify({
+      template_id: 'builtin.lower-third.clean',
+      params: { name: 'Marta' },
+      at_ms: null,
+    }))
+  } else if (/storyboard DIRECTOR-PLANNER/i.test(prompt)) {
+    if (/Request mode:\s*director_brief/i.test(prompt)) {
+      emitResult(JSON.stringify({
+        storyboard: {
+          schema: 'shellx-cut/generate-storyboard/1',
+          storyboard_id: 'fcv-director-question',
+          mode: 'director_brief',
+          status: 'needs_input',
+          scenes: [],
+          brief_meta: { stated: [], inferred: [], missing: ['audience'] },
+          missing_assets: [],
+          validation: { missing_inputs: ['audience'] },
+        },
+        questions: [{
+          field: 'audience',
+          question: 'Who is the primary audience?',
+          choices: ['new customers', 'existing customers'],
+        }],
+      }))
+    } else {
+      emitResult(JSON.stringify({
+        storyboard: {
+          schema: 'shellx-cut/generate-storyboard/1',
+          storyboard_id: 'fcv-launch-storyboard',
+          mode: 'quick_prompt',
+          status: 'valid',
+          scenes: [
+            {
+              scene_id: 'title-card',
+              index: 1,
+              role: 'hook',
+              source: 'generate_template',
+              range_ms: [0, 4000],
+              template_id: 'builtin.title-card.episode',
+              params: {},
+            },
+            {
+              scene_id: 'lower-third',
+              index: 2,
+              role: 'message',
+              source: 'generate_template',
+              range_ms: [4000, 8000],
+              template_id: 'builtin.lower-third.clean',
+              params: {},
+            },
+            {
+              scene_id: 'cta',
+              index: 3,
+              role: 'cta',
+              source: 'generate_template',
+              range_ms: [8000, 12000],
+              template_id: 'builtin.social.cta-endcard',
+              params: {},
+            },
+          ],
+          brief_meta: {
+            stated: ['purpose', 'duration', 'asset strategy'],
+            inferred: ['audience', 'platform', 'tone'],
+            missing: [],
+          },
+          missing_assets: [],
+          validation: { missing_inputs: [] },
+        },
+        questions: [],
+      }))
+    }
+  } else if (/You are the editing agent inside ShellX Cut/i.test(prompt)) {
+    const edit = await applyAgentEdit(prompt, 'claude')
+    emitResult(edit.ok ? `Applied ${edit.verb}.` : `Could not apply ${edit.verb}: ${edit.detail}`, !edit.ok)
+  } else {
+    emitResult('[]')
+  }
+} catch (e) {
+  emitResult(String(e?.message || e), true)
+}

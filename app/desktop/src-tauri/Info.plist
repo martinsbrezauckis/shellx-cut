@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tauri 2 merges this Info.plist into the generated macOS bundle Info.plist.
+     Both microphone and Core Audio process-tap capture need explicit usage text.
+     Screen Recording itself has a separate runtime TCC prompt. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>ShellX Cut records your microphone when you capture a screen recording with audio.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>ShellX Cut captures system audio you choose to include in a screen recording.</string>
+  <key>LSRequiresCarbon</key>
+  <false/>
+</dict>
+</plist>

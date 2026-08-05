@@ -1,0 +1,92 @@
+# server — cutd: axum REST + WS + static UI + MCP server + job system (server contract).
+# Package is named "server" (workspace-member convention: `cargo run -p server`);
+# the binary is `cutd`. MCP runs over stdio and proxies the live server:
+# a small newline-delimited JSON-RPC 2.0 loop over stdio, kept in this crate
+# instead of adding an MCP framework dependency.
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "cutd — ShellX Cut server: REST+WS+static UI, MCP over stdio, background jobs"
+
+[[bin]]
+name = "cutd"
+path = "src/main.rs"
+
+[dependencies]
+cut-core = { path = "../core" }
+cut-media = { path = "../media" }
+cut-perception = { path = "../perception" }
+# NLE interchange serializers (export.xml / export.srt verbs), structurally
+# checked against app/export/tests/fixtures/nle-xml and frame-quantized by
+# construction.
+cut-export = { path = "../export" }
+# Recorder crates are part of the Cut workspace. record-core/engine/render are
+# platform-agnostic; record-capture's live backend is enabled PER-TARGET below
+# so each OS links only its own capture deps. The default featureless
+# record-capture gives ReplayCapture + doctor() everywhere (headless-safe).
+record-core = { workspace = true }
+record-engine = { workspace = true }
+record-render = { workspace = true }
+record-capture = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Public verb input schemas are compiled once at startup and enforced before
+# every dispatch path. Remote/file resolution stays disabled: committed verb
+# schemas are deliberately self-contained, and validation must never perform I/O.
+jsonschema = { version = "0.49.2", default-features = false }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+# Binary verb payloads: render.frame/ui.screenshot inline base64 (the binary-output contract).
+base64 = "0.22"
+# system.fetch_tool: blocking HTTPS download of a registry-pinned BtbN
+# ffmpeg build. ureq = tiny, blocking, rustls+webpki-roots by default (no
+# OpenSSL, no async) — ideal for a one-shot download inside a job task. We
+# stream bytes to disk while hashing (sha256 via sha2), verify against the
+# release checksums file, then shell out to the platform archive tool to
+# extract. No zip/xz crate needed: extraction is of ALREADY-VERIFIED bytes (the
+# security boundary — pinned URL + checksum — stays native in Rust).
+ureq = "3"
+sha2 = { workspace = true }
+hex = "0.4"
+# PII pattern matching for edit.redact{ocr_auto} — see the workspace note.
+regex = { workspace = true }
+tempfile = { workspace = true }
+
+# Disk-free for the doctor card (statvfs). The struct layout was hand-rolled to
+# avoid this dep, but fsblkcnt_t is u32 on macOS vs u64 on Linux, so the hand-
+# rolled u64 fields mis-aligned the whole struct on macOS → garbage counts +
+# debug overflow panic. libc has the correct
+# per-platform definition. Unix-only; Windows uses GetDiskFreeSpaceExW.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Enable the recorder's LIVE-capture backend per target (features are additive
+# with the featureless record-capture in [dependencies], so each OS gets its own
+# backend + ReplayCapture/doctor everywhere). Linux = XDG ScreenCast portal +
+# GStreamer + rdevin/evdev (needs libpipewire/dbus/x11/alsa dev libs to BUILD, a
+# desktop session to RUN); Windows = windows-capture (WGC) + Media Foundation;
+# macOS = avfoundation + rdevin (built natively on the Mac, can't cross from WSL).
+[target.'cfg(target_os = "linux")'.dependencies]
+record-capture = { workspace = true, features = ["capture-linux"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+record-capture = { workspace = true, features = ["capture-windows"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+record-capture = { workspace = true, features = ["capture-macos"] }
+
+[dev-dependencies]
+# Integration test drives the REAL WS endpoint (handshake + frames).
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+
+[lints]
+workspace = true

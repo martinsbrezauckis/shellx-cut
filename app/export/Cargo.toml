@@ -1,0 +1,31 @@
+# cut-export — NLE timeline interchange serializers (public verb contract export verbs).
+# Pure functions: timeline/op-log contract timeline JSON -> FCPXML 1.11 (FCP + Resolve),
+# FCP7 xmeml v5 (Premiere dialect), MLT XML (Shotcut), and SRT (captions).
+# Implemented from the NLE interchange mapping design and
+# provenance, Unlicense). No XML crate at runtime — a tiny escaping writer in
+# src/xml.rs keeps byte-level control over the proven-to-import shapes.
+# Primary caller: app/server export.* verb handlers (integration wires the
+# real cut-core types through the serde_json::Value boundary in lib.rs).
+[package]
+name = "cut-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellX Cut export: FCPXML/xmeml/MLT/SRT serializers from the timeline JSON"
+
+[lib]
+name = "cut_export"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Test-side DOM parse: well-formedness + structural comparison vs the
+# known-good files in app/export/tests/fixtures/nle-xml/.
+roxmltree = "0.20"
+
+[lints]
+workspace = true

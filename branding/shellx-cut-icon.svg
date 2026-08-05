@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ShellX Cut app icon vector master: canonical ShellX X with a blue filmstrip card. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- dark tile -->
+  <rect width="512" height="512" rx="96" fill="#0e0e0d"/>
+
+  <!-- canonical ShellX X (ink #f5f5f4) -->
+  <path d="M74 90 L200 90 L256 168 L312 90 L438 90 L330 256 L438 422 L312 422 L256 344 L200 422 L74 422 L182 256 Z"
+        fill="#f5f5f4"/>
+
+  <!-- filmstrip card -->
+  <rect x="316" y="330" width="128" height="120" rx="20" fill="#0c0c0f"/>
+  <rect x="316" y="330" width="128" height="120" rx="20" fill="none"
+        stroke="#3b82f6" stroke-width="8"/>
+
+  <!-- filmstrip sprocket holes — top row -->
+  <rect x="337" y="348" width="15" height="15" rx="4" fill="#3b82f6"/>
+  <rect x="362" y="348" width="15" height="15" rx="4" fill="#3b82f6"/>
+  <rect x="387" y="348" width="15" height="15" rx="4" fill="#3b82f6"/>
+  <rect x="412" y="348" width="15" height="15" rx="4" fill="#3b82f6"/>
+
+  <!-- filmstrip sprocket holes — bottom row -->
+  <rect x="337" y="417" width="15" height="15" rx="4" fill="#3b82f6"/>
+  <rect x="362" y="417" width="15" height="15" rx="4" fill="#3b82f6"/>
+  <rect x="387" y="417" width="15" height="15" rx="4" fill="#3b82f6"/>
+  <rect x="412" y="417" width="15" height="15" rx="4" fill="#3b82f6"/>
+
+  <!-- frame divider (two film frames) -->
+  <rect x="377" y="372" width="6" height="36" rx="3" fill="#3b82f6"/>
+</svg>

@@ -1,0 +1,315 @@
+{
+  "schema": "shellx-cut/generate-templates/1",
+  "templates": [
+    {
+      "id": "builtin.lower-third.clean",
+      "source": "builtin",
+      "kind": "title",
+      "title": "Clean lower third",
+      "summary": "Name-focused lower third with a restrained reveal.",
+      "tags": ["lower-third", "interview", "title"],
+      "params": {
+        "name": { "type": "string", "required": true, "description": "Primary name or label" },
+        "accent": { "type": "color", "default": "#FFD24A", "description": "Accent color" },
+        "duration_ms": { "type": "integer", "default": 4000, "description": "Default duration when inserted from the Generate UI" }
+      },
+      "defaults": { "duration_ms": 4000, "position": "lower_left" },
+      "capabilities": ["preview", "insert"],
+      "lowering": {
+        "verb": "title.add",
+        "args": {
+          "template": "lower_third_reveal",
+          "text": "{{name}}",
+          "accent": "{{accent}}",
+          "range_ms": "{{range_ms}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.title-card.episode",
+      "source": "builtin",
+      "kind": "title",
+      "title": "Episode title card",
+      "summary": "Centered intro or section card for episodes and tutorials.",
+      "tags": ["title-card", "intro", "section"],
+      "params": {
+        "title": { "type": "string", "required": true, "description": "Main title" },
+        "accent": { "type": "color", "default": "#FFD24A", "description": "Accent color" },
+        "duration_ms": { "type": "integer", "default": 3500, "description": "Default duration when inserted" }
+      },
+      "defaults": { "duration_ms": 3500, "position": "center" },
+      "capabilities": ["preview", "insert"],
+      "lowering": {
+        "verb": "title.add",
+        "args": {
+          "preset": "title_card",
+          "template": "kinetic_emphasis",
+          "text": "{{title}}",
+          "accent": "{{accent}}",
+          "range_ms": "{{range_ms}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.motion.lower-third",
+      "source": "builtin",
+      "kind": "motion",
+      "title": "Motion lower third",
+      "summary": "Rendered ShellX Motion lower third with editable template controls before insertion.",
+      "tags": ["motion", "lower-third", "template", "rendered-media"],
+      "params": {
+        "title": { "type": "string", "required": true, "description": "Primary lower-third title" },
+        "subtitle": { "type": "string", "default": "Product Lead", "description": "Secondary lower-third label" },
+        "accentColor": { "type": "color", "default": "#13D3FF", "description": "Motion accent color" },
+        "duration_ms": { "type": "integer", "default": 3000, "description": "Timeline duration for the rendered Motion clip" }
+      },
+      "defaults": { "duration_ms": 3000, "position": "lower_left", "engine": "shellx-motion" },
+      "capabilities": ["preview", "insert", "rendered_media", "motion_template"],
+      "lowering": {
+        "verb": "motion.template_to_cut",
+        "args": {
+          "template": "editable-lower-third",
+          "params": {
+            "title": "{{title}}",
+            "subtitle": "{{subtitle}}",
+            "accentColor": "{{accentColor}}"
+          },
+          "duration_ms": "{{duration_ms}}",
+          "checkpoint": false
+        }
+      },
+      "verification": { "expects": ["motion_receipt", "rendered_media", "asset_imported", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.motion.scripted-video",
+      "source": "builtin",
+      "kind": "motion",
+      "title": "Motion scripted video",
+      "summary": "Polished multi-frame ShellX Motion clip from scripted description frames, without requiring Canvas.",
+      "tags": ["motion", "scripted-video", "description-frames", "rendered-media", "product-bumper"],
+      "params": {
+        "title": { "type": "string", "required": true, "description": "Primary frame title" },
+        "body": { "type": "string", "default": "Cut emits scripted-video JSON for Motion.", "description": "Supporting frame body" },
+        "caption": { "type": "string", "default": "Rendered by ShellX Motion", "description": "Accent caption line" },
+        "background": { "type": "color", "default": "#0F172A", "description": "Frame background color" },
+        "accentColor": { "type": "color", "default": "#38BDF8", "description": "Motion accent color" },
+        "width": { "type": "integer", "default": 1920, "description": "Output pixel width; 1920 gives FHD 16:9" },
+        "height": { "type": "integer", "default": 1080, "description": "Output pixel height; 1080 gives FHD 16:9" },
+        "duration_ms": { "type": "integer", "default": 3000, "description": "Timeline duration for the rendered scripted clip" }
+      },
+      "defaults": { "duration_ms": 3000, "width": 1920, "height": 1080, "engine": "shellx-motion", "source": "scripted-video" },
+      "capabilities": ["preview", "insert", "scripted_video", "rendered_media", "motion_script"],
+      "lowering": {
+        "verb": "motion.script_to_cut",
+        "args": {
+          "script": {
+            "schema": "shellx-motion/scripted-video@1",
+            "id": "cut-generate-scripted-video",
+            "name": "{{title}}",
+            "sourceApp": "shellx-cut",
+            "workflow": "generate",
+            "width": "{{width}}",
+            "height": "{{height}}",
+            "fps": 30,
+            "frames": [
+              {
+                "id": "hook",
+                "title": "{{title}}",
+                "body": "{{body}}",
+                "caption": "Generated in ShellX Cut",
+                "durationMs": "{{quarter_duration_ms}}",
+                "background": "{{background}}",
+                "accent": "{{accentColor}}"
+              },
+              {
+                "id": "timeline",
+                "title": "Prompt to timeline",
+                "body": "Scripted frames become a full-resolution MP4 with receipts.",
+                "caption": "Motion renders. Cut edits.",
+                "durationMs": "{{quarter_duration_ms}}",
+                "background": "#101820",
+                "accent": "#38F2B3"
+              },
+              {
+                "id": "canvas",
+                "title": "Canvas ships solo",
+                "body": "Design boards export MP4 before timeline work begins.",
+                "caption": "One renderer contract",
+                "durationMs": "{{quarter_duration_ms}}",
+                "background": "#17324D",
+                "accent": "{{accentColor}}"
+              },
+              {
+                "id": "proof",
+                "title": "{{caption}}",
+                "body": "Debug APIs, receipts, batch lanes, deterministic capture.",
+                "caption": "{{title}}",
+                "durationMs": "{{quarter_duration_ms}}",
+                "background": "#0C1222",
+                "accent": "{{accentColor}}"
+              }
+            ]
+          },
+          "duration_ms": "{{duration_ms}}",
+          "checkpoint": false
+        }
+      },
+      "verification": { "expects": ["scripted_video_json", "motion_receipt", "rendered_media", "asset_imported", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.caption.kinetic-yellow",
+      "source": "builtin",
+      "kind": "caption",
+      "title": "Yellow kinetic captions",
+      "summary": "Transcript-synced kinetic captions with warm yellow emphasis.",
+      "tags": ["captions", "kinetic", "shorts"],
+      "params": {
+        "position": { "type": "string", "default": "bottom", "enum": ["bottom", "center", "top"], "description": "Caption position" },
+        "font_px": { "type": "integer", "default": 64, "description": "Caption font size" },
+        "replace_static": { "type": "boolean", "default": true, "description": "Replace existing static captions" }
+      },
+      "defaults": { "duration_ms": 0, "position": "bottom" },
+      "capabilities": ["preview", "insert"],
+      "lowering": {
+        "verb": "captions.kinetic",
+        "args": {
+          "position": "{{position}}",
+          "font_px": "{{font_px}}",
+          "replace_static": "{{replace_static}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "caption_clips", "frame_changed"] }
+    },
+    {
+      "id": "builtin.callout.arrow-label",
+      "source": "builtin",
+      "kind": "shape",
+      "title": "Arrow label callout",
+      "summary": "Arrow overlay with a short label for demos and product shots.",
+      "tags": ["callout", "arrow", "screen-demo"],
+      "params": {
+        "label": { "type": "string", "required": true, "description": "Callout label text" },
+        "color": { "type": "color", "default": "#FFD24A", "description": "Arrow and label color" },
+        "duration_ms": { "type": "integer", "default": 3000, "description": "Default duration when inserted" }
+      },
+      "defaults": { "duration_ms": 3000, "position": "center_right" },
+      "capabilities": ["preview", "insert"],
+      "lowering": {
+        "verb": "edit.add_shape",
+        "args": {
+          "shape": "arrow",
+          "stroke": "{{color}}",
+          "text": "{{label}}",
+          "range_ms": "{{range_ms}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.social.cta-endcard",
+      "source": "builtin",
+      "kind": "social",
+      "title": "Social CTA endcard",
+      "summary": "End screen call to action for social exports.",
+      "tags": ["cta", "social", "endcard"],
+      "params": {
+        "headline": { "type": "string", "required": true, "description": "CTA headline" },
+        "accent": { "type": "color", "default": "#FFD24A", "description": "Accent color" },
+        "duration_ms": { "type": "integer", "default": 3500, "description": "Default duration when inserted" }
+      },
+      "defaults": { "duration_ms": 3500, "position": "center" },
+      "capabilities": ["preview", "insert"],
+      "lowering": {
+        "verb": "title.add",
+        "args": {
+          "preset": "headline",
+          "template": "word_pop",
+          "text": "{{headline}}",
+          "accent": "{{accent}}",
+          "range_ms": "{{range_ms}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.product.card",
+      "source": "builtin",
+      "kind": "social",
+      "title": "Product promo card",
+      "summary": "Simple product or offer card for social clips.",
+      "tags": ["product", "promo", "card"],
+      "params": {
+        "product_name": { "type": "string", "required": true, "description": "Product or offer name" },
+        "accent": { "type": "color", "default": "#FFD24A", "description": "Accent color" },
+        "duration_ms": { "type": "integer", "default": 3500, "description": "Default duration when inserted" }
+      },
+      "defaults": { "duration_ms": 3500, "position": "center" },
+      "capabilities": ["preview", "insert"],
+      "lowering": {
+        "verb": "title.add",
+        "args": {
+          "preset": "title_card",
+          "template": "slide_stack",
+          "text": "{{product_name}}",
+          "accent": "{{accent}}",
+          "range_ms": "{{range_ms}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.batch.quote-card",
+      "source": "builtin",
+      "kind": "batch",
+      "title": "Batch quote card",
+      "summary": "Data-driven quote/title card for CSV or JSON row variants.",
+      "tags": ["batch", "quote", "data"],
+      "params": {
+        "quote": { "type": "string", "required": true, "description": "Quote or statement text" },
+        "accent": { "type": "color", "default": "#FFD24A", "description": "Accent color" },
+        "duration_ms": { "type": "integer", "default": 3000, "description": "Default duration per row" }
+      },
+      "defaults": { "duration_ms": 3000, "position": "center" },
+      "capabilities": ["preview", "insert", "batch"],
+      "lowering": {
+        "verb": "title.add",
+        "args": {
+          "preset": "title_card",
+          "template": "typewriter",
+          "text": "{{quote}}",
+          "accent": "{{accent}}",
+          "range_ms": "{{range_ms}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "clip_created", "frame_changed"] }
+    },
+    {
+      "id": "builtin.screen-demo.step-label",
+      "source": "builtin",
+      "kind": "title",
+      "title": "Screen demo step label",
+      "summary": "Compact tutorial step label suited for Record outputs.",
+      "tags": ["screen-demo", "record", "tutorial"],
+      "params": {
+        "step": { "type": "string", "required": true, "description": "Step label" },
+        "accent": { "type": "color", "default": "#FFD24A", "description": "Accent color" },
+        "duration_ms": { "type": "integer", "default": 2500, "description": "Default duration when inserted" }
+      },
+      "defaults": { "duration_ms": 2500, "position": "top_left" },
+      "capabilities": ["preview", "insert"],
+      "lowering": {
+        "verb": "title.add",
+        "args": {
+          "preset": "top_bar",
+          "template": "lower_third_reveal",
+          "text": "{{step}}",
+          "accent": "{{accent}}",
+          "range_ms": "{{range_ms}}"
+        }
+      },
+      "verification": { "expects": ["op_landed", "clip_created", "frame_changed"] }
+    }
+  ]
+}

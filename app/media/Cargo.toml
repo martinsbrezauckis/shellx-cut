@@ -1,0 +1,37 @@
+# cut-media — ffmpeg/ffprobe subprocess orchestration (media-engine contract).
+# No linking against ffmpeg libs (license + simplicity): probe, proxy,
+# deterministic EDL render, caption burn-in, frame extraction, XML export.
+[package]
+name = "cut-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellX Cut media engine: probe/proxy/render via ffmpeg subprocess"
+
+[lib]
+name = "cut_media"
+path = "src/lib.rs"
+
+[dependencies]
+cut-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+# Native motion-graphics title rendering (title.rs): emit one static SVG per
+# frame, rasterize with resvg/tiny-skia. resvg re-exports usvg + tiny_skia, but
+# we pin them explicitly so the API surface we call is unambiguous. They version
+# in lockstep — keep this set mutually compatible (resvg 0.47 ⇒ usvg 0.47,
+# tiny-skia 0.12, fontdb 0.23). NO browser / Node runtime — pure Rust.
+resvg = "0.47"
+usvg = "0.47"
+tiny-skia = "0.12"
+fontdb = "0.23"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

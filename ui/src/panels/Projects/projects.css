@@ -1,0 +1,219 @@
+/* projects.css — the Projects LEFT-SIDEBAR TAB (panels/Projects/index.tsx). Recent-
+   projects list with a new-project row, search, and per-card reopen/forget. Lives in
+   the left panel (.panel/.panel__header/.panel__body), beside Transcript + Assets. */
+
+.projects-panel { height: 100%; min-height: 0; }
+.pj-header-spacer { flex: 1; }
+.pj-count {
+  font: 500 var(--fs-ui-sm) var(--sans);
+  color: var(--ink-3, #aab1bd);
+}
+/* Header hygiene action — appears only while greyed-out (missing) entries exist. */
+.pj-clear-missing {
+  margin-right: 8px;
+  padding: 2px 8px;
+  font: 500 var(--fs-ui-sm) var(--sans);
+  color: var(--ink-2, #ccd2dc);
+  background: transparent;
+  border: 1px solid var(--line, #333a45);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pj-clear-missing:hover:not(:disabled) { border-color: var(--ink-3, #aab1bd); }
+.pj-clear-missing:disabled { opacity: 0.5; cursor: default; }
+.pj-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 10px;
+}
+.pj-empty {
+  padding: 16px 8px;
+  text-align: center;
+  font: var(--fs-ui-sm)/1.5 var(--sans);
+  color: var(--ink-3, #aab1bd);
+}
+.pj-err {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 120, 120, 0.1);
+  color: #ff9a9a;
+  font: var(--fs-ui-sm) var(--sans);
+}
+.pj-create-btn {
+  flex: none;
+  background: var(--cut, #4aa3ff);
+  color: #06121f;
+  border: none;
+  border-radius: 8px;
+  padding: 0 12px;
+  font: 600 var(--fs-ui-sm) var(--sans);
+  cursor: pointer;
+}
+.pj-create-btn:disabled { opacity: 0.45; cursor: default; }
+
+.pj-new {
+  display: flex;
+  gap: 8px;
+}
+
+/* New projects derive timeline format from the first video. Keep that policy
+   visible without making beginners choose technical delivery settings. */
+.pj-auto-format {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 9px;
+  margin-bottom: 10px;
+  border: 1px solid color-mix(in srgb, var(--cut, #4aa3ff) 24%, var(--line, #2a2e36));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cut, #4aa3ff) 6%, transparent);
+  font: var(--fs-ui-xs, 11px)/1.45 var(--sans);
+  color: var(--ink-3, #aab1bd);
+}
+.pj-auto-format strong { color: var(--ink-2, #ccd2dc); font-weight: 650; }
+.pj-input,
+.pj-search {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2, #1b1e24);
+  border: 1px solid var(--line, #2a2e36);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--ink, #f2f3f5);
+  font: var(--fs-ui) var(--sans);
+}
+.pj-input:focus,
+.pj-search:focus {
+  outline: none;
+  border-color: var(--cut, #4aa3ff);
+}
+.pj-search {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.pj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Each project row keeps open/remove/delete as separate controls. */
+.pj-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: var(--surface, #16181d);
+  border: 1px solid var(--line, #2a2e36);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: default;
+  content-visibility: auto;
+  contain-intrinsic-size: 62px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.pj-card:hover:not([data-cut-project-disabled='true']) {
+  border-color: var(--cut, #4aa3ff);
+  background: var(--surface-2, #1b1e24);
+}
+.pj-card--missing {
+  opacity: 0.5;
+}
+.pj-card--current {
+  border-color: var(--cut, #4aa3ff);
+}
+
+.pj-open {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pj-open:disabled {
+  cursor: default;
+}
+.pj-open:focus-visible {
+  outline: 2px solid var(--cut, #4aa3ff);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.pj-card-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 var(--fs-ui)/1.3 var(--sans);
+  color: var(--ink, #f2f3f5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pj-card-meta {
+  margin-top: 2px;
+  font: var(--fs-ui-sm)/1.4 var(--sans);
+  color: var(--ink-3, #aab1bd);
+}
+
+.pj-badge {
+  font: 600 var(--fs-ui-xs, 11px)/1 var(--sans);
+  padding: 2px 6px;
+  border-radius: 5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.pj-badge--current {
+  background: rgba(74, 163, 255, 0.18);
+  color: var(--cut, #4aa3ff);
+}
+.pj-badge--missing {
+  background: rgba(255, 120, 120, 0.16);
+  color: #ff9a9a;
+}
+
+/* Remove-from-list action - quiet until hovered. */
+.pj-forget {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-4, #6b7280);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.pj-forget:hover {
+  color: #ff9a9a;
+  background: rgba(255, 120, 120, 0.12);
+}
+/* Permanent delete - same chip as forget, stronger red on hover to signal it
+   is the destructive one (forget = remove from list; delete = remove from disk). */
+.pj-delete {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-4, #6b7280);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.pj-delete:hover {
+  color: #ff5a5a;
+  background: rgba(255, 80, 80, 0.18);
+}

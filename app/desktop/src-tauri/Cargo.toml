@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# shellx-cut (desktop) — Tauri 2 shell crate.
+#
+# ROLE: thin native window around the cutd engine. This crate deliberately
+# lives OUTSIDE the app/ cargo workspace (see [workspace] opt-out below):
+# Tauri's dependency tree is large and Windows-targeted; keeping it separate
+# leaves the engine workspace (core/media/perception/server/export) fast to
+# build and untouched. The desktop wrap is an additional client of cutd, never
+# a restructure of the engine workspace.
+#
+# Do not bump Tauri dependencies without rebuilding and requalifying the native
+# Windows and macOS applications.
+# ─────────────────────────────────────────────────────────────────────────────
+[package]
+name = "shellx-cut"
+version = "0.6.105"
+default-run = "shellx-cut"
+edition = "2021"
+description = "ShellX Cut — agent-first video editor, wrapped as a native Tauri 2 desktop app. The shell spawns the bundled cutd engine on loopback and points the webview at it."
+authors = ["Martins Brezauckis"]
+# MSRV: plist 1.10 is required for the quick-xml 0.41 security fixes and
+# requires Rust >= 1.88 (release box has 1.94).
+rust-version = "1.88"
+
+# Opt out of the parent cargo workspace at ../../Cargo.toml (the engine
+# workspace). Without this table cargo refuses to build a nested crate.
+[workspace]
+
+# Tauri 2 recommended layout: lib + bin. lib::run() holds the builder so the
+# same entry could serve mobile targets later; src/main.rs is a thin shim.
+[lib]
+name = "shellx_cut_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.2", features = [] }
+
+[dependencies]
+# Core webview + IPC only. cutd is spawned as a plain std::process child (the
+# native child-process boundary). The ONE plugin we add is the native file dialog,
+# used solely by the `pick_media` command behind the topbar "Browse files…"
+# button — a desktop affordance a browser origin can't provide (media.import
+# needs a real filesystem path). Drag-drop import needs NO plugin: it rides
+# Tauri's built-in `tauri://drag-drop` webview event, handled in the UI.
+tauri = { version = "2.11.2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+minisign-verify = "0.2.5"
+
+# Auto-updater (desktop only). The CHECK + install run in the Rust shell (NOT the
+# engine-served remote-origin UI, which Tauri denies plugin IPC) → the native
+# minisign-signature verification against tauri.conf `plugins.updater.pubkey`
+# happens here; the remote UI never gets update/restart powers. Desktop-gated
+# (mobile has its own store update path).
+#
+# Global OS hotkey (desktop only). Registers a SINGLE OS-level key (F9) that
+# toggles screen-record start/stop even while ANOTHER app is focused — the whole
+# point of a recorder hotkey (the app is always backgrounded while it records
+# other apps). Registration + the key handler live entirely in lib.rs (Rust);
+# the handler just EMITS a `cut:record-hotkey` Tauri event that the engine-served
+# webview listens for via the already-exposed window.__TAURI__.event.listen — so
+# no global-shortcut JS/IPC surface is granted to the remote origin. Version "2"
+# matches the rest of the 2.x plugin set (resolves to 2.3.x against tauri 2.11).
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-wdio-webdriver = { version = "1.2.0", optional = true }
+tauri-plugin-wdio = { version = "1.2.0", optional = true }
+
+[features]
+# Production builds use the embedded asset protocol (no devUrl).
+custom-protocol = ["tauri/custom-protocol"]
+# Internal UI automation only. This embeds a WebDriver server in the app so
+# WebdriverIO can click the native WKWebView on macOS. Never enable it for
+# release artifacts; scripts/build-{macos,windows}.sh reject it.
+webdriver-test = ["dep:tauri-plugin-wdio-webdriver", "dep:tauri-plugin-wdio"]
+
+# Release profile tuned for a small native binary.
+[profile.release]
+panic = "abort"   # smaller binary; no unwinding tables
+codegen-units = 1 # better optimization at the cost of compile time
+lto = true        # link-time optimization
+opt-level = "s"   # optimize for size
+strip = true      # strip symbols from the binary

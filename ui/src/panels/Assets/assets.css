@@ -1,0 +1,546 @@
+/* assets.css — the imported-media tray (left sidebar "Assets" tab).
+   Tokens only (theme.css) — no hard-coded fonts/sizes (UI typography sweep). */
+
+.assets__header { gap: var(--space-2); }
+.assets__count {
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-3);
+}
+.assets__header-spacer { flex: 1; }
+.assets__import {
+  font-family: var(--sans);
+  font-size: var(--fs-ui-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.assets__import:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border); color: var(--ink); }
+.assets__import:disabled { opacity: 0.4; cursor: default; }
+
+/* Generated-media placement: "Generate (AI)" is the second add-media action, beside +Import. Mirrors the
+   Import button so the two read as a pair; the inline icon signals AI generation. */
+.assets__generate {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--sans);
+  font-size: var(--fs-ui-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.assets__generate:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border); color: var(--ink); }
+.assets__generate:disabled { opacity: 0.4; cursor: default; }
+
+.assets__body { padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+
+.assets__empty {
+  margin: var(--space-3);
+  padding: var(--space-4);
+  color: var(--ink-3);
+  font-size: var(--fs-ui-sm);
+  line-height: 1.5;
+  text-align: center;
+}
+.assets__empty--cta {
+  width: calc(100% - var(--space-3) * 2);
+  background: var(--surface);
+  border: 1px dashed var(--hairline-2);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+}
+.assets__empty--cta:hover { border-color: var(--cut); color: var(--ink-2); }
+
+.assets__note {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--cut-dim);
+  border-radius: var(--radius-chip);
+}
+
+.assets__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.assets__card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.assets__card:hover { background: var(--surface-3); border-color: var(--hairline-2); }
+.assets__card:active { cursor: grabbing; }
+
+.assets__icon {
+  flex: none;
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-3);
+  color: var(--ink-3);
+}
+.assets__icon--video { color: var(--cut-soft); }
+.assets__icon--audio { color: var(--green-soft); }
+.assets__icon--image { color: var(--amber); }
+
+.assets__meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.assets__name {
+  font-size: var(--fs-ui-sm);
+  color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.assets__scope {
+  margin-left: 4px;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-xs);
+  font-weight: 400;
+}
+.assets__library-badge {
+  color: var(--cut-soft);
+  border: 1px solid color-mix(in srgb, var(--cut) 40%, var(--hairline-2));
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+}
+
+.assets__timeline-import {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  margin: 6px 10px 0;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  font: 500 var(--fs-ui-xs) var(--sans);
+  cursor: pointer;
+}
+.assets__timeline-import:hover { background: var(--surface-2); color: var(--ink); }
+.assets__sub {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--ink-3);
+}
+.assets__kind { text-transform: uppercase; letter-spacing: 0.04em; }
+.assets__dot { opacity: 0.5; }
+.assets__used { color: var(--cut-soft); }
+
+.assets__readiness-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  padding: 1px 5px;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--hairline-2);
+  font: 600 var(--fs-ui-xs) / 1 var(--sans);
+  color: var(--ink-3);
+  background: var(--surface-3);
+}
+.assets__readiness-badge--good {
+  color: var(--green-soft);
+  border-color: color-mix(in srgb, var(--green-soft) 42%, transparent);
+  background: color-mix(in srgb, var(--green-soft) 10%, transparent);
+}
+.assets__readiness-badge--warn {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 52%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.assets__readiness-badge--bad {
+  color: #fff;
+  border-color: #ef4444;
+  background: #ef4444;
+}
+.assets__readiness-badge--neutral {
+  color: var(--ink-3);
+}
+
+.assets__insert {
+  flex: none;
+  font-family: var(--sans);
+  font-size: var(--fs-ui-xs);
+  font-weight: 500;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.assets__insert:hover:not(:disabled) { background: var(--cut-dim); border-color: var(--cut); color: var(--ink); }
+.assets__insert:disabled { opacity: 0.5; cursor: default; }
+
+.assets__source-monitor {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.assets__source-monitor:hover { color: var(--ink); background: var(--surface-3); border-color: var(--cut); }
+
+/* Remove-from-project (🗑) — quiet by default, turns red on hover so the
+   destructive action reads clearly. Sits right of Insert. */
+.assets__remove {
+  flex: none;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-button);
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.assets__remove:hover:not(:disabled) { color: #fff; background: #ef4444; border-color: #ef4444; }
+.assets__remove:disabled { opacity: 0.5; cursor: default; }
+
+/* SMART BINS + tray filter: filter row under the header — text input,
+   kind chips, unused toggle, save-as-bin, and the saved-bin chips with live
+   counts. Same criteria semantics as the engine's media.bin_* match. */
+.assets__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-1, rgba(255, 255, 255, 0.08));
+}
+.assets__filter-input {
+  flex: 1 1 110px;
+  min-width: 90px;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: var(--radius-button);
+  border: 1px solid var(--line-1, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: inherit;
+}
+
+.assets__health {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px var(--space-2);
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.assets__health-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.assets__health-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.assets__health--missing .assets__health-dot { background: var(--err); box-shadow: 0 0 6px color-mix(in srgb, var(--err) 65%, transparent); }
+.assets__health--source .assets__health-dot { background: var(--amber); }
+.assets__health-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+.assets__health-copy strong {
+  min-width: 0;
+  color: var(--ink);
+  font: 700 var(--fs-ui-sm) / 1.15 var(--sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.assets__health-copy span {
+  min-width: 0;
+  color: var(--ink-3);
+  font: 400 var(--fs-ui-xs) / 1.25 var(--sans);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.assets__health-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.assets__health-btn {
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+  padding: 4px 7px;
+  font: 600 var(--fs-ui-xs) / 1 var(--sans);
+}
+.assets__health-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); border-color: var(--border); }
+.assets__health-btn:disabled { opacity: 0.5; cursor: default; }
+.assets__health-btn--primary {
+  color: #fff;
+  background: #ef4444;
+  border-color: #ef4444;
+}
+.assets__health-btn--primary:hover:not(:disabled) { background: #dc2626; border-color: #dc2626; }
+.assets__health-btn--ghost {
+  width: 24px;
+  padding: 4px 0;
+}
+.assets__health-dimensions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(64px, 1fr));
+  gap: 4px;
+  overflow-x: auto;
+}
+.assets__health-dimension {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 4px 6px;
+  border: 1px solid var(--hairline-2);
+  border-radius: 4px;
+  background: var(--surface-2);
+  cursor: default;
+  user-select: text;
+}
+.assets__health-dimension span {
+  color: var(--ink-4);
+  font: 600 var(--fs-ui-xs) / 1.1 var(--sans);
+}
+.assets__health-dimension strong {
+  min-width: 0;
+  color: var(--ink-2);
+  font: 600 var(--fs-ui-xs) / 1.2 var(--sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assets__health-dimension--ready { border-color: color-mix(in srgb, var(--green) 42%, var(--hairline-2)); }
+.assets__health-dimension--partial,
+.assets__health-dimension--pending,
+.assets__health-dimension--source-fallback { border-color: color-mix(in srgb, var(--amber) 42%, var(--hairline-2)); }
+.assets__health-dimension--unavailable { border-color: color-mix(in srgb, var(--err) 42%, var(--hairline-2)); }
+.assets__health-dimension--unavailable[data-cut-media-health-dimension="services"] { border-color: var(--hairline-2); }
+@media (max-height: 760px) {
+  .assets__health { padding-block: 4px; }
+  .assets__health-copy span { display: none; }
+  .assets__health-actions .assets__health-btn:not(.assets__health-btn--primary) { display: none; }
+  .assets__health-dimension { padding-block: 2px; }
+  .assets__health-advanced { display: none; }
+}
+.assets__health-advanced {
+  grid-column: 1 / -1;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-xs);
+}
+.assets__health-advanced summary {
+  cursor: pointer;
+  display: inline-flex;
+  color: var(--ink-4);
+  font-weight: 600;
+  user-select: none;
+}
+.assets__health-advanced summary:hover { color: var(--ink-2); }
+.assets__health-advanced dl {
+  margin: 6px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+}
+.assets__health-advanced div {
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.assets__health-advanced dt { color: var(--ink-4); }
+.assets__health-advanced dd {
+  margin: 0;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+.assets__kind-chips { display: inline-flex; gap: 3px; }
+.assets__chip {
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-1, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.assets__chip--on { color: #fff; background: var(--brand, #6366f1); border-color: var(--brand, #6366f1); }
+.assets__chip--attention { background: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); color: #141414; }
+.assets__chip--save { color: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); }
+.assets__bins { display: inline-flex; flex-wrap: wrap; gap: 3px; width: 100%; }
+.assets__bin { display: inline-flex; align-items: center; }
+.assets__bin-btn {
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 999px 0 0 999px;
+  border: 1px solid var(--line-1, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.assets__bin:not(.assets__bin--on) .assets__bin-btn { border-radius: 999px; }
+.assets__bin--on .assets__bin-btn { color: #fff; background: var(--brand, #6366f1); border-color: var(--brand, #6366f1); }
+.assets__bin-count { opacity: 0.75; margin-left: 3px; }
+.assets__bin-del {
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 0 999px 999px 0;
+  border: 1px solid var(--brand, #6366f1);
+  border-left: none;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.assets__bin-del:hover { color: #fff; background: #ef4444; border-color: #ef4444; }
+
+/* OFFLINE media: source file missing on disk — red badge + Relink action. */
+.assets__card--attention:not(.assets__card--offline) { border-color: color-mix(in srgb, var(--amber) 65%, var(--hairline)); }
+.assets__card--offline { border-color: #ef4444aa; }
+.assets__offline {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: #ef4444;
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-right: 4px;
+}
+.assets__relink {
+  flex: none;
+  font-size: 12px;
+  line-height: 1;
+  color: #fff;
+  background: #ef4444;
+  border: 1px solid #ef4444;
+  border-radius: var(--radius-button);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.assets__relink:hover:not(:disabled) { background: #dc2626; border-color: #dc2626; }
+.assets__relink:disabled { opacity: 0.5; cursor: default; }
+
+/* Save-to-Library star — quiet, sits left of Insert. */
+.assets__save {
+  flex: none;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-button);
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.assets__save:hover:not(:disabled) { color: #f0c84a; border-color: var(--hairline-2); }
+.assets__save:disabled { opacity: 0.5; cursor: default; }
+
+.assets__hint {
+  margin: var(--space-1) var(--space-1) 0;
+  font-size: var(--fs-ui-xs);
+  line-height: 1.45;
+  color: var(--ink-4);
+}
+
+/* floating drag ghost — follows the cursor (left/top set inline), never eats
+   pointer events. Rendered via a body portal so panel overflow can't clip it. */
+.assets__ghost {
+  position: fixed;
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  max-width: 220px;
+  background: var(--surface-3);
+  border: 1px solid var(--cut);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-dropdown);
+  opacity: 0.92;
+  pointer-events: none;
+}
+.assets__ghost-name {
+  font-size: var(--fs-ui-sm);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "Generate proxies" toggle in the Assets header for heavy-file instant import. */
+.assets__proxytoggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  font-size: 11px;
+  opacity: 0.8;
+  cursor: pointer;
+  user-select: none;
+}
+.assets__proxytoggle input {
+  cursor: pointer;
+}
+
+/* Hover-scrub thumbnail: a real frame from the whole-asset filmstrip;
+   mouse-x scrubs the strip. Fixed geometry mirrored in AssetThumb's
+   THUMB_W/THUMB_H constants. */
+.assets__thumb {
+  flex: none;
+  width: 64px;
+  height: 36px;
+  border-radius: 4px;
+  background-color: #000;
+  background-repeat: no-repeat;
+  overflow: hidden;
+  cursor: ew-resize;
+  -webkit-user-drag: none;
+}

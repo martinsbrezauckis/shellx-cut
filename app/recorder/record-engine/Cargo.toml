@@ -1,0 +1,10 @@
+[package]
+name = "record-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellX Record — auto-edit heuristics: EventTrack -> EditPlan (auto-zoom, cursor polish, key-cast)."
+
+[dependencies]
+record-core = { workspace = true }
+serde.workspace = true

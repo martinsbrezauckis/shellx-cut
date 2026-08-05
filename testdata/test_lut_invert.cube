@@ -1,0 +1,16 @@
+# ShellX Cut test fixture — a 2x2x2 invert 3D LUT (output = 1 - input per channel).
+# Strong, unambiguous, valid .cube for the grade-lut effect-proof: saturated colours
+# flip hard (composed frame SSIM drops well below 0.99) while staying a legal LUT the
+# engine fences accept (ends .cube, exists). NOT shipped — testdata only.
+TITLE "ShellX Cut test invert"
+LUT_3D_SIZE 2
+DOMAIN_MIN 0.0 0.0 0.0
+DOMAIN_MAX 1.0 1.0 1.0
+1.0 1.0 1.0
+0.0 1.0 1.0
+1.0 0.0 1.0
+0.0 0.0 1.0
+1.0 1.0 0.0
+0.0 1.0 0.0
+1.0 0.0 0.0
+0.0 0.0 0.0

@@ -1,0 +1,102 @@
+/* highlight.css — the agent-driven ui.highlight overlay (HighlightOverlay.tsx).
+   Editor-blue accent (the agent/edit colour), pulsing ring, description chip.
+   Fixed-position over the viewport; only the dismiss chip accepts clicks. */
+
+.hl-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 1000);
+  pointer-events: none;
+}
+
+/* The glowing ring around the target. Animated double pulse to draw the eye. */
+.hl-ring {
+  position: fixed;
+  border: 2px solid var(--cut, #4aa3ff);
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 2px rgba(74, 163, 255, 0.35),
+    0 0 14px 2px rgba(74, 163, 255, 0.55);
+  animation: hl-pulse 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes hl-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px rgba(74, 163, 255, 0.35),
+      0 0 14px 2px rgba(74, 163, 255, 0.55);
+  }
+  50% {
+    box-shadow:
+      0 0 0 4px rgba(74, 163, 255, 0.5),
+      0 0 22px 5px rgba(74, 163, 255, 0.8);
+  }
+}
+
+/* The label/description chip beside the highlight. */
+.hl-chip {
+  position: fixed;
+  max-width: 300px;
+  background: var(--surface, #16181d);
+  border: 1px solid var(--cut, #4aa3ff);
+  border-left: 3px solid var(--cut, #4aa3ff);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  padding: 8px 10px 8px 12px;
+  pointer-events: auto;
+  animation: hl-chip-in 180ms ease-out;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.hl-chip--center {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+@keyframes hl-chip-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.hl-chip-copy {
+  min-width: 0;
+}
+
+.hl-chip-label {
+  font: 600 var(--fs-ui)/1.25 var(--sans);
+  color: var(--ink, #f2f3f5);
+  letter-spacing: -0.01em;
+  padding-right: 2px;
+}
+.hl-chip-desc {
+  margin-top: 3px;
+  font: var(--fs-ui-sm)/1.4 var(--sans);
+  color: var(--ink-3, #aab1bd);
+}
+
+.hl-close[data-cut-highlight-close] {
+  all: unset;
+  box-sizing: border-box;
+  order: 2;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: -3px -5px 0 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  color: var(--ink-3, #aab1bd);
+  cursor: pointer;
+}
+.hl-close[data-cut-highlight-close]:hover {
+  background: var(--surface-3, #242832);
+  color: var(--ink, #f2f3f5);
+}
+.hl-close[data-cut-highlight-close]:focus-visible {
+  outline: 1px solid var(--cut, #4aa3ff);
+  outline-offset: 2px;
+}

@@ -1,0 +1,29 @@
+# ShellX Cut — repo hygiene. Build outputs, deps, regenerable media, scratch.
+app/target/
+# Desktop shell (separate cargo workspace): build output + staged sidecar
+# binaries (scripts/build-windows.sh regenerates binaries/ from the engine
+# build). gen/ schemas are tauri-build codegen — regenerated every build.
+app/desktop/src-tauri/target/
+app/desktop/src-tauri/binaries/
+app/desktop/src-tauri/gen/
+ui/node_modules/
+ui/dist/
+dist/
+scripts/**/node_modules/
+testdata/
+.scratch/
+.shellx-scratch/
+**/.venv/
+**/__pycache__/
+*.cutproj/proxies/
+comparison/.screenshot-verify.png
+ui/*.tsbuildinfo
+binaries/
+.semgrep/
+.worktrees/
+.playwright-cli/
+output/playwright/
+
+# Documentation boundary: only docs/public is releasable. Project-internal
+# notes stay local here; release audits and evidence stay outside product source.
+/docs/private/

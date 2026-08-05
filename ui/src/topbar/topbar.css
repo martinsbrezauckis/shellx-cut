@@ -1,0 +1,958 @@
+/* topbar/topbar.css — 54px top bar.
+   Brand mark + title left · jobs chip + Render/Export right. Bar surface =
+   --surface with a bottom hairline (family bar pattern); buttons follow
+   (.btn vocabulary: primary = white bg/dark text hover --warm, secondary =
+   outline); dropdown uses the --z-dropdown/--shadow-dropdown tokens, with
+   shadows on floating overlays only. Tokens from theme.css. */
+
+.tb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 100%;
+  padding: 0 var(--space-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+  user-select: none;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* --- brand ----------------------------------------------------------------- */
+/* The brand is the ONE elastic-shrink slot in the bar: it may shrink (flex
+   0 1 auto) and clips its overflow, so the project name truncates instead of
+   painting over the mode tabs / nav. Every other group is flex:none (below),
+   making the brand absorb all width pressure first. */
+/* NOTE: deliberately NO `min-width: 0` here. Auto min-width makes the brand's
+   shrink floor = its min-content = brand mark + wordmark (the project name has
+   its own min-width:0 + overflow, so it contributes 0 and ellipsizes to nothing
+   FIRST). That way the project name yields all the way to empty before the
+   wordmark would ever clip. overflow:hidden is the safety clip. */
+.tb-brand { display: flex; align-items: center; gap: 10px; flex: 0 1 auto; overflow: hidden; }
+.tb-brand svg { display: block; flex: none; }
+/* .tb-title is a flex row: fixed wordmark + truncating project name. */
+.tb-title {
+  display: flex;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.tb-wordmark {
+  flex: none;               /* the product wordmark never shrinks */
+  font-size: var(--fs-ui-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.tb-proj {
+  /* yields space first, then ellipsizes — never overlaps its neighbours */
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 52ch;          /* cap so a long name can't sprawl on a wide screen */
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  margin-left: 8px;
+  font: 400 var(--fs-mono) var(--mono);
+  color: var(--ink-2);
+  letter-spacing: 0;
+}
+/* click-to-rename: the project name is a borderless button that reveals an
+   edit affordance on hover; editing swaps in an inline input (project.rename). */
+.tb-proj--btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  padding: 1px 5px;
+  cursor: text;
+}
+.tb-proj--btn:hover { background: var(--surface-2); border-color: var(--hairline-2); color: var(--ink); }
+.tb-proj--editing { display: inline-flex; align-items: center; }
+.tb-proj-input {
+  font: 400 var(--fs-mono) var(--mono);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--cut);
+  border-radius: var(--radius-chip);
+  padding: 1px 5px;
+  margin: 0 1px;
+  width: 12ch;
+  outline: none;
+}
+
+/* Sequence context sits beside project identity. The trigger stays compact;
+   management expands downward without consuming permanent topbar width. */
+.tb-sequences {
+  position: relative;
+  flex: none;
+}
+.tb-sequence-trigger {
+  height: 30px;
+  max-width: 150px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: 600 var(--fs-ui-xs) / 1 var(--sans);
+  cursor: pointer;
+}
+.tb-sequence-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tb-sequence-trigger:hover,
+.tb-sequence-trigger--open {
+  color: var(--ink);
+  border-color: var(--border);
+}
+.tb-sequence-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: var(--z-dropdown);
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  padding: 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-dropdown);
+  color: var(--ink);
+  white-space: normal;
+}
+.tb-sequence-head {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 6px 8px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink-2);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.tb-sequence-list {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+  max-height: min(340px, 52vh);
+  overflow-y: auto;
+}
+.tb-sequence-row {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-chip);
+}
+.tb-sequence-row:hover,
+.tb-sequence-row--active {
+  background: var(--surface-2);
+}
+.tb-sequence-main {
+  min-width: 0;
+  height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 1fr 1fr;
+  column-gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.tb-sequence-main:disabled { cursor: default; }
+.tb-sequence-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 var(--fs-ui-sm) / 1.15 var(--sans);
+}
+.tb-sequence-meta {
+  grid-column: 1;
+  color: var(--ink-3);
+  font: var(--fs-mono-xs) / 1 var(--mono);
+}
+.tb-sequence-main > svg {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+.tb-sequence-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.tb-sequence-icon:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+.tb-sequence-icon--danger:hover:not(:disabled) { color: var(--err); }
+.tb-sequence-icon:disabled { opacity: 0.35; cursor: not-allowed; }
+.tb-sequence-rename {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 4px;
+  padding: 4px;
+}
+.tb-sequence-rename input,
+.tb-sequence-create input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--cut);
+  border-radius: var(--radius-chip);
+  outline: none;
+  background: var(--surface);
+  color: var(--ink);
+  font: 500 var(--fs-ui-sm) / 1 var(--sans);
+}
+.tb-sequence-rename button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink);
+  cursor: pointer;
+}
+.tb-sequence-create {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--hairline);
+}
+.tb-sequence-source {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 2px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+}
+.tb-sequence-source button,
+.tb-sequence-create-actions button {
+  min-height: 28px;
+  border: 0;
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--ink-2);
+  font: 600 var(--fs-ui-xs) / 1 var(--sans);
+  cursor: pointer;
+}
+.tb-sequence-source button.is-selected {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--hairline-2);
+}
+.tb-sequence-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.tb-sequence-create-actions button { padding: 0 9px; }
+.tb-sequence-create-actions .is-primary {
+  background: var(--cut);
+  color: #fff;
+}
+.tb-sequence-create-actions button:disabled { opacity: 0.45; cursor: not-allowed; }
+.tb-sequence-status,
+.tb-sequence-error {
+  padding: 8px;
+  color: var(--ink-3);
+  font: var(--fs-mono-xs) / 1.35 var(--mono);
+}
+.tb-sequence-error { color: var(--err); }
+
+.tb-spacer { flex: 1 1 0; min-width: 0; }
+
+/* Every group except the brand holds its intrinsic size (flex:none) so it never
+   shrinks below its content and overlaps a neighbour. When the row is tight, the
+   spacer collapses to 0, then the brand alone yields (its project name
+   ellipsizes). The condense breakpoint below trims gaps/padding so the full
+   control set still fits a single row down to 1366×768. */
+.tb-modes,
+.tb-sequences,
+.tb-nav,
+.tb-jobs,
+.tb-tools,
+.tb-render,
+.tb-export { flex: none; }
+
+/* --- transient verb feedback (mono = fact) --------------------------- */
+.tb-note {
+  font: var(--fs-mono-xs) var(--mono);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 380px;
+}
+.tb-ffmpeg-setup {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--amber, #d9a441) 38%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--amber, #d9a441) 10%, transparent);
+  color: var(--ink-2);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.tb-ffmpeg-setup button {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.tb-ffmpeg-setup button:hover {
+  color: var(--ink);
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.tb-pregate {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: var(--z-dropdown);
+  width: min(460px, calc(100vw - 32px));
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-dropdown);
+  white-space: normal;
+}
+.tb-pregate--blocked {
+  border-color: color-mix(in srgb, var(--err, #ef4444) 46%, var(--hairline-2));
+}
+.tb-pregate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.tb-pregate-kicker {
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.tb-pregate-close {
+  all: unset;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.tb-pregate-close:hover {
+  color: var(--ink);
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+.tb-pregate h2 {
+  margin: 0;
+  font: 700 var(--fs-ui-lg) / 1.15 var(--sans);
+}
+.tb-pregate p {
+  margin: 0;
+  color: var(--ink-2);
+  font: 500 var(--fs-ui-sm) / 1.45 var(--sans);
+}
+.tb-pregate-risks {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+  list-style: none;
+}
+.tb-pregate-risks li {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--ink-2);
+  font: 500 var(--fs-ui-sm) / 1.35 var(--sans);
+}
+.tb-pregate-risks b {
+  color: var(--ink);
+  font-weight: 700;
+}
+.tb-pregate-risks small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-2);
+  line-height: 1.35;
+}
+.tb-pregate-sev {
+  justify-self: start;
+  padding: 3px 6px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.tb-pregate-risks [data-severity="high"] .tb-pregate-sev {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err, #ef4444) 45%, var(--hairline-2));
+  background: color-mix(in srgb, var(--err, #ef4444) 9%, transparent);
+}
+.tb-pregate-risks [data-severity="med"] .tb-pregate-sev {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber, #d9a441) 45%, var(--hairline-2));
+  background: color-mix(in srgb, var(--amber, #d9a441) 10%, transparent);
+}
+.tb-pregate-details {
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+  color: var(--ink-3);
+  font: var(--fs-mono-xs) var(--mono);
+}
+.tb-pregate-details summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.tb-pregate-details dl {
+  margin: 8px 0 0;
+  display: grid;
+  gap: 4px;
+}
+.tb-pregate-details div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.tb-pregate-details dt,
+.tb-pregate-details dd {
+  margin: 0;
+}
+.tb-pregate-detail-list {
+  margin: 0;
+  padding-left: 16px;
+}
+.tb-pregate-detail-list li + li {
+  margin-top: 4px;
+}
+.tb-pregate-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* --- jobs chip --------------------------------------------------------------- */
+.tb-jobs {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-pill);
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-4);
+}
+.tb-jobs--active { color: var(--ink-2); }
+.tb-jobs-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  flex: none;
+}
+.tb-jobs--active .tb-jobs-dot {
+  background: var(--orange); /* family semantics: orange = running */
+  animation: tb-pulse 1.2s ease-in-out infinite;
+}
+@keyframes tb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* --- buttons (.btn set) -------------------------------------------------- */
+.tb-btn {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: var(--radius-button);
+  font-size: var(--fs-ui-sm);
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.tb-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* primary = --accent fill / --accent-ink text, hover --accent-hover. In DARK the
+   accent is white (the strongest accent on near-black); in LIGHT it flips to
+   near-black with white ink — the same idiom, both legible. */
+.tb-btn--primary { background: var(--accent); color: var(--accent-ink); }
+.tb-btn--primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+/* GPU acceleration toggle — visible header chip (sits just left of Render). A
+   status dot + ON/OFF label make the state legible at a glance; ON glows green
+   (acceleration active), OFF is a muted outline (deterministic software). */
+.tb-gpu {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--hairline-2);
+  color: var(--ink-3);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  margin-right: 8px;
+}
+.tb-gpu .tb-gpu-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  flex: none;
+}
+.tb-gpu--on {
+  color: #052e16;
+  background: #34d399;
+  border-color: #10b981;
+}
+.tb-gpu--on .tb-gpu-dot {
+  background: #052e16;
+  box-shadow: 0 0 6px rgba(5, 46, 22, 0.5);
+}
+.tb-gpu:hover:not(:disabled) { border-color: var(--accent); }
+
+/* secondary = outline */
+.tb-btn--secondary {
+  border: 1px solid var(--hairline-2);
+  color: var(--ink-2);
+  background: transparent;
+}
+.tb-btn--secondary:hover:not(:disabled) { border-color: var(--border); color: var(--ink); }
+.tb-nav--active {
+  border-color: var(--cut);
+  color: var(--cut-soft);
+  background: var(--cut-dim);
+}
+
+/* icon-only square button (e.g. the theme toggle) — same height as .tb-btn, equal
+   padding so the glyph is centred. Pairs with .tb-btn--secondary for the outline. */
+.tb-icon-btn { padding: 0; width: 30px; justify-content: center; }
+.tb-icon-btn .cut-ic { color: var(--ink-2); }
+.tb-icon-btn:hover:not(:disabled) .cut-ic { color: var(--ink); }
+/* pressed/active toggle for the Review button when the rail is open */
+.tb-btn--on {
+  border-color: var(--cut);
+  color: var(--cut-soft);
+  background: var(--cut-dim);
+}
+/* count badge inside a topbar button (open review comments) */
+.tb-badge {
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  line-height: 1;
+  color: var(--cut-soft);
+  background: var(--cut-dim);
+  border-radius: var(--radius-pill);
+  padding: 2px 6px;
+}
+.tb-btn--on .tb-badge { background: rgba(0, 0, 0, 0.25); }
+/* Disclosure caret is now an <Icon name="chevronDown">; its colour comes from the
+   .cut-ic daylight floor (--ink-2), not the old washed-out --ink-3. Keep only the
+   slight negative offset so it tucks against its label. */
+.tb-caret { margin-left: -1px; opacity: 0.85; }
+
+/* New-project affordance + its inline dialog */
+.tb-new { position: relative; }
+.tb-new-dialog {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 10px; width: 220px;
+}
+.tb-new-label {
+  font: 600 var(--fs-ui-xs) var(--sans); text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--ink-3);
+}
+.tb-new-input {
+  all: unset; box-sizing: border-box; width: 100%;
+  font: var(--fs-ui-sm) var(--sans); color: var(--ink);
+  background: var(--surface-2); border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip); padding: 6px 8px;
+}
+.tb-new-input::placeholder { color: var(--ink-4); }
+.tb-new-input:focus { border-color: var(--cut); }
+.tb-new-create { justify-content: center; height: 28px; }
+.tb-import-browse { width: 100%; justify-content: center; height: 30px; }
+.tb-new-err { font-size: var(--fs-ui-xs); color: var(--receipt-fail); }
+.tb-new-hint { font-size: var(--fs-mono-xs); color: var(--ink-4); }
+
+/* in-button busy spinner (Storyboard generation) — editor blue = active cue */
+.tb-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--hairline-2);
+  border-top-color: var(--cut);
+  animation: tb-spin 0.8s linear infinite;
+  flex: none;
+}
+@keyframes tb-spin { to { transform: rotate(360deg); } }
+
+/* --- render group: preset/profile pickers + the primary button -------------- */
+.tb-render-group { display: flex; align-items: center; gap: 6px; }
+.tb-sel {
+  height: 30px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  font: 500 var(--fs-ui-xs) var(--sans);
+  padding: 0 4px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.tb-sel:hover:not(:disabled), .tb-sel:focus { border-color: var(--border); color: var(--ink); }
+.tb-sel:disabled { opacity: 0.45; cursor: default; }
+
+/* --- iconized tool launchers (grouped, tooltipped) -------------------------- */
+.tb-tools { display: flex; align-items: center; gap: 3px; }
+.tb-iconbtn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.tb-iconbtn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--hairline-2); color: var(--ink); }
+.tb-iconbtn:disabled { opacity: 0.4; cursor: default; }
+.tb-iconbtn--on { background: var(--cut-dim); border-color: var(--cut); color: var(--cut); }
+.tb-divider { width: 1px; height: 18px; margin: 0 4px; background: var(--hairline-2); }
+
+/* --- render zone: primary button + an attached ▾ options popover ------------- */
+.tb-render { position: relative; display: flex; align-items: center; }
+.tb-render-go { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.tb-render-opts {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.28);
+  padding: 0 7px;
+  min-width: 0;
+}
+.tb-render-menu {
+  width: min(360px, calc(100vw - 24px));
+  min-width: 212px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  white-space: normal;
+}
+.tb-render-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font: 500 var(--fs-ui-sm) var(--sans);
+  color: var(--ink-2);
+}
+.tb-render-field > span { flex: none; }
+.tb-render-field .tb-sel { flex: 1; min-width: 0; height: 28px; }
+/* GPU toggle row: label left, native checkbox right (encoder tier → hardware). */
+.tb-render-field--check { cursor: pointer; }
+.tb-render-field--check > span { flex: 1; }
+.tb-render-field--check input[type='checkbox'] { flex: none; width: 15px; height: 15px; margin: 0; cursor: pointer; accent-color: var(--cut); }
+.tb-render-note { margin: 2px 0 0; font: var(--fs-ui-xs) var(--sans); line-height: 1.4; color: var(--ink-3); }
+.tb-render-timeline {
+  margin-top: 2px;
+  padding-top: 7px;
+  border-top: 1px solid var(--hairline-2);
+}
+.tb-render-timeline > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 26px;
+  color: var(--ink-2);
+  font: var(--fs-ui-xs) var(--sans);
+  cursor: pointer;
+  list-style: none;
+}
+.tb-render-timeline > summary::-webkit-details-marker { display: none; }
+.tb-render-timeline > summary::before {
+  content: '›';
+  flex: none;
+  color: var(--ink-3);
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+.tb-render-timeline[open] > summary::before { transform: rotate(90deg); }
+.tb-render-timeline > summary > span { margin-right: auto; font-weight: 600; }
+.tb-render-timeline > summary > small {
+  color: var(--ink-3);
+  font: inherit;
+  white-space: nowrap;
+}
+.tb-render-timeline__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 7px;
+}
+/* "Direct…" — opens the director-model reframe surface. */
+.tb-direct-btn {
+  all: unset; cursor: pointer; margin-top: 8px; width: 100%; box-sizing: border-box;
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px;
+  font: var(--fs-ui-sm) var(--mono); color: var(--ink-1);
+  background: color-mix(in srgb, var(--cut) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cut) 45%, transparent);
+}
+.tb-direct-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--cut) 26%, transparent); border-color: var(--cut); }
+.tb-direct-btn:disabled { opacity: 0.5; cursor: default; }
+.tb-direct-tag { color: var(--ink-3); font: var(--fs-ui-xs) var(--sans); }
+
+/* --- export dropdown ---------------------------------------------------------- */
+.tb-export { position: relative; }
+.tb-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: var(--z-dropdown);
+  min-width: 190px;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  box-shadow: var(--shadow-dropdown);
+}
+.tb-export .tb-menu {
+  width: min(360px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+}
+.tb-menu button {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  cursor: pointer;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-2);
+  transition: background 120ms ease, color 120ms ease;
+}
+.tb-menu button:hover { background: var(--surface-3); color: var(--ink); }
+
+/* Export destination header. */
+.tb-menu-dest {
+  padding: 4px 4px 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--hairline-2);
+}
+.tb-menu-dest-label {
+  display: block;
+  padding: 2px 6px 6px;
+  font-size: var(--fs-ui-xs, 11px);
+  color: var(--ink-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tb-menu-dest-label b { color: var(--ink-2); font-weight: 600; }
+.tb-menu-dest button { font-size: var(--fs-ui-xs, 11px); padding: 5px 8px; }
+.tb-export-group + .tb-export-group { margin-top: 4px; }
+.tb-export-group-label {
+  display: block;
+  padding: 5px 10px 2px;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.tb-export-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: stretch;
+  gap: 2px;
+}
+.tb-export-option-row > button:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tb-menu .tb-export-saveas {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  min-height: 30px;
+  color: var(--ink-3);
+}
+.tb-menu .tb-export-saveas:hover {
+  color: var(--ink);
+}
+
+/* ----- responsive: <=1700px (condense, stay single-row) --------------------
+   The installed-app verification viewport is 1600px wide, and the current
+   topbar control set is wider than the old "full" band. Without a reserved
+   project slot, the title collapses to a clipped dot and the click-to-rename
+   affordance becomes unreachable. Hide the redundant wordmark and reserve a
+   bounded project-name hit area before shrinking the action controls. */
+@media (max-width: 1700px) {
+  .tb { gap: var(--space-2); padding: 0 var(--space-3); }
+  .tb-modes { margin: 0 6px; }
+  .tb-btn { padding: 0 10px; }
+  .tb-gpu { margin-right: 4px; }
+  .tb-tools { gap: 2px; }
+  .tb-icon-btn { width: 28px; }
+  .tb-note { display: none; }
+  .tb-wordmark { display: none; }
+  .tb-brand { flex: 0 0 150px; min-width: 150px; max-width: 150px; }
+  .tb-title { flex: 1 1 auto; }
+  .tb-proj { max-width: 16ch; }
+}
+
+/* ----- responsive: <=1536px (icon-compact secondary nav) -------------------
+   1536/1440/1366 laptop widths need one more reduction after the project title
+   is protected. Secondary nav switches to explicit icon-only controls while
+   preserving button names and tooltips. */
+@media (max-width: 1536px) {
+  .tb { gap: 6px; padding: 0 8px; }
+  .tb-modes { margin: 0 4px; }
+  .tb-btn { padding: 0 8px; }
+  .tb-nav { position: relative; width: 34px; max-width: 34px; padding: 0; justify-content: center; }
+  .tb-nav-label { display: none; }
+  .tb-nav-status { position: absolute; top: 6px; right: 3px; margin-left: 0 !important; }
+  .tb-gpu { width: 34px; padding: 0; justify-content: center; margin-right: 2px; }
+  .tb-gpu-label { display: none; }
+  .tb-tools { gap: 1px; }
+  .tb-ffmpeg-label { display: none; }
+  .tb-sequence-trigger { max-width: 112px; }
+}
+
+/* ----- responsive: <=1440px (project name wins the scarce space) -----------
+   On the tightest common laptops the condensed bar still leaves the project
+   name almost no room. Drop the "ShellX CUT" wordmark TEXT (the brand mark stays
+   as the app's identity) and hand that ~95px to the project name — the project
+   is what the user is working in, so it beats a redundant wordmark here. */
+@media (max-width: 1440px) {
+  .tb-wordmark { display: none; }
+}
+
+/* ----- responsive: <1280px ------------------------------------------------
+   The native 1100px minimum uses two rows: workspace/navigation on the first,
+   job/tool/render actions on the second. The zero-height spacer creates the
+   deliberate row break without spending a third row on the brand alone. */
+@media (max-width: 1279px) {
+  .tb {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 54px;
+    row-gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    column-gap: var(--space-2);
+  }
+  /* the spacer forces the action group onto a new wrapped line */
+  .tb-spacer { flex-basis: 100%; height: 0; }
+  .tb-brand { flex: 0 1 180px; min-width: 150px; max-width: 180px; }
+  .tb-wordmark { display: none; }
+  .tb-sequence-menu { top: calc(100% + 54px); }
+  /* drop the transient note under ~1280px — it's non-essential vs the actions */
+  .tb-note { display: none; }
+}
+
+/* Separator between the Timeline (project) format and the per-render options
+   in the render popover (project resolution/fps vs this-export reframe). */
+.tb-render-divider { height: 1px; margin: 5px 0 3px; background: var(--hairline-2); }
+
+/* Workspace mode switch: Edit, Record, Color, Audio, and Export. */
+.tb-modes {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0 12px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--surface-2, #1b1e24);
+}
+.tb-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3, #aab1bd);
+  font: 600 var(--fs-ui-sm)/1 var(--sans);
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.tb-mode:hover { color: var(--ink, #f2f3f5); }
+.tb-mode--on {
+  background: var(--cut, #2563eb);
+  color: #fff;
+}
+/* keep the ACTIVE tab's text white on its blue fill even while hovered — the
+   .tb-mode:hover rule (color:--ink) has higher specificity than .tb-mode--on, and
+   in the light theme --ink is dark, which would put dark text on the blue fill.
+   This more-specific rule restores white-on-blue for the hovered active tab. */
+.tb-mode--on:hover { color: #fff; }
+/* Record is the flagship — a red recording dot, tinted when active. */
+.tb-mode--record .tb-mode-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+.tb-mode--record.tb-mode--on {
+  background: #ef4444;
+}
+.tb-mode--record.tb-mode--on .tb-mode-dot { background: #fff; }

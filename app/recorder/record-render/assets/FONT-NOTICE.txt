@@ -1,0 +1,4 @@
+font.ttf = DejaVu Sans Bold (DejaVu Fonts).
+License: permissive (Bitstream Vera + DejaVu changes) — allows embedding and
+redistribution, including in MIT-licensed software. See:
+https://dejavu-fonts.github.io/License.html

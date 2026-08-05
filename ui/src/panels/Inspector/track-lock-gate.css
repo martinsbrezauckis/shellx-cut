@@ -1,0 +1,11 @@
+.insp__edit-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.insp__lock-note { color: var(--warn, #f59e0b); }

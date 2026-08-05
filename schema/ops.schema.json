@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "shellx-cut/ops.schema.json",
+  "title": "OpRecord",
+  "description": "One line of ops.jsonl — the append-only operation log (timeline/op-log contract). Ops are immutable; reject/undo appends a NEW op referencing the old (edit.restore). Mirrors cut_core::ops::OpRecord exactly.",
+  "type": "object",
+  "required": ["op_id", "ts", "actor", "verb", "args", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "op_id": {
+      "type": "string",
+      "pattern": "^op_[0-9]{6,}$",
+      "description": "Monotonic zero-padded id; ordering equals log order"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp with millisecond precision"
+    },
+    "actor": {
+      "type": "object",
+      "required": ["kind", "name", "via"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["agent", "human", "system"] },
+        "name": { "type": "string", "description": "e.g. 'claude', 'editor', 'cutd'" },
+        "via": { "type": "string", "description": "Surface used: mcp | rest | cli | ui | internal" }
+      }
+    },
+    "verb": {
+      "type": "string",
+      "description": "Fully-qualified verb name from schema/verbs.json, e.g. 'transcript.cut_words'"
+    },
+    "args": {
+      "description": "The verb args as received (shape per the verb's args schema)"
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Why the actor did it — shown verbatim in the review rail"
+    },
+    "effects": {
+      "type": "array",
+      "description": "What actually changed on the timeline",
+      "items": {
+        "type": "object",
+        "properties": {
+          "track": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "inverse": {
+      "type": "object",
+      "description": "How to undo this op (absent for non-undoable ops like project.create)",
+      "required": ["verb", "args"],
+      "additionalProperties": false,
+      "properties": {
+        "verb": { "type": "string" },
+        "args": {}
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["applied", "rejected"],
+      "description": "applied = normal; rejected = undone via review (the undoing itself is a new edit.restore op)"
+    }
+  }
+}

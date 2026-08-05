@@ -1,0 +1,84 @@
+# ShellX Cut — cargo workspace (workspace contract).
+# Members: core (cut-core shared types + op-log), media (ffmpeg orchestration),
+# perception (instrument orchestration + receipt checks), server (cutd binary).
+# Dependency versions are pinned at the workspace boundary. Do not bump major
+# versions without checking the whole workspace.
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "media",
+    "perception",
+    "server",
+    "export",
+    "recorder/record-core",
+    "recorder/record-engine",
+    "recorder/record-render",
+    "recorder/record-capture",
+]
+
+[workspace.dependencies]
+# Shared, version-pinned once here; member crates use { workspace = true }.
+serde = { version = "1", features = ["derive"] }
+# Recorder plans rely on exact f64 JSON round-trips for deterministic reloads
+# and golden-frame rendering.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "io-std", "time", "sync", "fs", "signal"] }
+axum = { version = "0.7", features = ["json", "ws"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+tiny-skia = "0.11"
+record-core = { path = "recorder/record-core" }
+record-engine = { path = "recorder/record-engine" }
+record-render = { path = "recorder/record-render" }
+record-capture = { path = "recorder/record-capture" }
+# PII pattern matching for redaction auto-detect (edit.redact{ocr_auto}). A
+# security feature — a hand-rolled email/key/card matcher bug = a leaked secret;
+# regex is the trusted, auditable tool for these canonical patterns.
+regex = "1"
+
+# Workspace clippy policy (Rust 1.74+ centralized lints; each member opts in with
+# `[lints] workspace = true`). `cargo clippy --workspace -- -D warnings` is a
+# release gate. We keep the bug-catching lints ON and allow ONLY
+# opinionated/style lints that do not apply to this codebase — each with a reason:
+[workspace.lints.clippy]
+# CutError is an INTENTIONALLY rich actionable error (code+message+cause+context+
+# action, public verb contract); the large-error-threshold in clippy.toml already accepts its
+# size — this keeps it explicit at the workspace level too.
+result_large_err = "allow"
+# Media render / encode entrypoints legitimately take many params (geometry, fps,
+# fades, gains, progress cb, …); bundling them into a struct buys nothing here.
+too_many_arguments = "allow"
+# Several `from_str` parse helpers predate / differ from std::str::FromStr (they
+# take extra context); renaming would churn callers for no behavior gain.
+should_implement_trait = "allow"
+# Some ffmpeg/graph builder signatures use rich tuple/closure types inline; a type
+# alias would hurt locality more than it helps.
+type_complexity = "allow"
+# rustdoc markdown CONTINUATION indentation only (not doc presence/quality, which
+# this codebase already has) — a rendering nicety, not correctness.
+doc_lazy_continuation = "allow"
+doc_overindented_list_items = "allow"
+# TEST-organization preferences (only ever fire under --all-targets, i.e. in test
+# code): a test module is allowed to build fixture data incrementally with push()
+# and to sit above later non-test items in a file. Pure layout opinion, no bug
+# signal. The shipped `clippy --workspace` gate (lib targets) is unaffected.
+vec_init_then_push = "allow"
+items_after_test_module = "allow"
+
+[workspace.package]
+# Engine/workspace version. env!("CARGO_PKG_VERSION") in app/server resolves to
+# this and is what system.doctor reports as `app_version` (the truthful version
+# the doctor card shows on the installed app). Bump in lockstep with the desktop
+# shell version (app/desktop/src-tauri/Cargo.toml + tauri.conf.json) so the
+# doctor card identifies the running build correctly on every platform.
+version = "0.6.105"
+edition = "2021"
+license = "MIT"

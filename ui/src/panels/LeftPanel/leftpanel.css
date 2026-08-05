@@ -1,0 +1,108 @@
+/* leftpanel.css — tabbed left sidebar shell (Transcript | Assets | Generate | Library).
+   The tab strip is a slim 34px row above the active pane; the pane itself is a
+   full .panel (its own header carries the pane's own controls). Tokens only. */
+
+.leftpanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.lp__tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 34px;
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.lp__tabs::-webkit-scrollbar { display: none; }
+
+.lp__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 0 var(--space-2);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-3);
+  font-family: var(--sans);
+  font-size: var(--fs-ui-sm);
+  font-weight: 500;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.lp__tab:hover { color: var(--ink-2); }
+.lp__tab--active { color: var(--ink); border-bottom-color: var(--cut); }
+
+.lp__tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--cut-dim);
+  color: var(--cut-soft);
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  font-weight: 600;
+}
+
+.lp__tabs-spacer { flex: 1; }
+
+.lp__collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  border-radius: var(--radius-chip);
+}
+.lp__collapse:hover { color: var(--ink); background: var(--surface-3); }
+
+.lp__body { flex: 1; display: flex; min-height: 0; min-width: 0; position: relative; }
+.lp__pane { flex: 1; min-height: 0; min-width: 0; }
+
+/* Find pane: a sub-toggle (Find media | Find moment) over the two embedded
+   search surfaces (panels/Stock + panels/Search rendered with embedded). */
+.lp__pane--find { display: flex; flex-direction: column; }
+.lp__subtabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.lp__subtab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font: 500 var(--fs-ui-sm) var(--sans);
+  cursor: pointer;
+}
+.lp__subtab:hover { color: var(--ink-2); }
+.lp__subtab--active { background: var(--cut-dim); color: var(--cut-soft); border-color: var(--cut); }
+.lp__find-body { flex: 1 1 auto; min-height: 0; display: flex; min-width: 0; }
+.lp__find-body > section { flex: 1 1 auto; min-width: 0; min-height: 0; }

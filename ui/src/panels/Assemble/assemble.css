@@ -1,0 +1,90 @@
+/* panels/Assemble — styles for the Assemble (AI) drawer's result rows + the few
+   input/button variants not in the shared drawer.css. Everything is scoped under
+   [data-cut-assemble] so it can override the shared .cd-result-head (a green
+   receipt header) without leaking out of this drawer. Uses the design tokens. */
+
+/* Compact numeric input (count / target / min-score / at / length). */
+[data-cut-assemble] .cd-input--num {
+  width: 72px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tiny ghost button for the per-row "Jump" action. */
+[data-cut-assemble] .cd-btn--xs {
+  padding: 1px 8px;
+  font-size: var(--fs-ui-xs);
+  min-height: 0;
+  line-height: 1.6;
+}
+
+/* Results list. */
+[data-cut-assemble] .cd-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+[data-cut-assemble] .cd-result-row {
+  border: 1px solid var(--hairline, #2a2a28);
+  border-left: 3px solid var(--cut, #f97316);
+  border-radius: var(--radius-card, 8px);
+  background: var(--surface-2, #1a1a18);
+  padding: 7px 9px;
+}
+[data-cut-assemble] .cd-result-row--unmatched {
+  border-left-color: var(--ink-4, #6f6f6c);
+  opacity: 0.7;
+}
+
+/* Override the shared green receipt header within this drawer: a plain flex row. */
+[data-cut-assemble] .cd-result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font: inherit;
+  color: var(--ink, #f5f5f4);
+}
+
+[data-cut-assemble] .cd-result-rank {
+  font-weight: 700;
+  color: var(--cut, #f97316);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+[data-cut-assemble] .cd-result-tc {
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs, 11px);
+  color: var(--ink-3, #9a9a96);
+  flex: 0 0 auto;
+}
+[data-cut-assemble] .cd-result-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-cut-assemble] .cd-result-score {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--ink-2, #c9c9c5);
+  flex: 0 0 auto;
+}
+[data-cut-assemble] .cd-result-text {
+  margin: 5px 0 0;
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-2, #c9c9c5);
+  line-height: 1.4;
+}
+[data-cut-assemble] .cd-result-reason {
+  margin: 3px 0 0;
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4, #6f6f6c);
+  font-style: italic;
+}

@@ -1,0 +1,81 @@
+/* keymap.css — the `?` keyboard-map overlay.
+   Family rules: shadows only on floating overlays; hairline dividers;
+   mono = fact (keys), sans = prose (actions). Tokens from theme.css. */
+
+.km__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.km {
+  z-index: var(--z-modal);
+  width: 520px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-modal);
+  box-shadow: var(--shadow-modal);
+  padding: var(--space-4) var(--space-5);
+}
+
+.km__title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: var(--space-3);
+}
+
+.km__hint {
+  font-size: var(--fs-ui-xs);
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.km__row {
+  display: grid;
+  grid-template-columns: 52px 150px 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--fs-ui-sm);
+}
+
+.km__row:last-child {
+  border-bottom: none;
+}
+
+.km__scope {
+  font: 600 var(--fs-mono-xs) var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-4);
+}
+
+/* rail scope tinted blue — it is the focused-scope color (focus model) */
+.km__scope--rail {
+  color: var(--cut-soft);
+}
+
+.km__scope--recording {
+  color: #ffb4a0;
+}
+
+.km__keys {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.km__action {
+  color: var(--ink-2);
+}

@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Minimal FCPXML 1.11 cut-list. Imports into Final Cut Pro 10.6.8+ and
+     DaVinci Resolve 17+ (File > Import > Timeline). Mirrors the exact shape
+     the FCPXML serializer emits.
+     Scenario: talk.mp4 (1920x1080, 30fps, stereo 48kHz, 60s source) cut to
+     keep source [0s,5s) + [10s,15s), butted together => 10s timeline.
+     All times are rational seconds "N/Ds" that MUST be integer multiples of
+     the format's frameDuration. -->
+<fcpxml version="1.11">
+  <resources>
+    <format id="r1" name="FFVideoFormatRateUndefined" frameDuration="1/30s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)" />
+    <asset id="r2" name="talk" start="0s" duration="1800/30s" hasVideo="1" hasAudio="1" format="r1" audioSources="1" audioChannels="2">
+      <media-rep kind="original-media" src="file:///home/user/media/talk.mp4" />
+    </asset>
+  </resources>
+  <library>
+    <event name="ShellX Cut Media Group">
+      <project name="talk">
+        <sequence format="r1" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+          <spine>
+            <asset-clip name="talk" ref="r2" offset="0s" duration="150/30s" start="0s" tcFormat="NDF" />
+            <asset-clip name="talk" ref="r2" offset="150/30s" duration="150/30s" start="300/30s" tcFormat="NDF" />
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>

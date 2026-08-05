@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<!--
+  ShellX Cut desktop — embedded FALLBACK page (tauri.conf.json frontendDist).
+
+  Role: the window's initial content while the Rust setup hook starts the cutd
+  engine, and the HONEST error surface when it can't. The real UI is served BY
+  cutd (the shell navigates there once the engine answers) — this page is never
+  the product, only the airlock. It polls the `engine_status` IPC command
+  (withGlobalTauri) and:
+    * wired + ui  → self-navigates to the engine origin (backup for the Rust
+                    `win.navigate`, e.g. if the user hits Back);
+    * wired, no ui → reports "engine up, UI bundle missing" + the API URL;
+    * unwired      → shows the structured reason verbatim (never a spinner
+                     forever — honesty over polish, the Canvas rule).
+  Style: ShellX family — near-black surface, Cut's blue accent (#3b82f6).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ShellX Cut</title>
+<style>
+  html, body {
+    margin: 0; height: 100%;
+    background: #0e0e0d; color: #f5f5f4;
+    font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card { max-width: 560px; padding: 32px; text-align: center; }
+  .mark { font-size: 40px; font-weight: 800; letter-spacing: 2px; }
+  .mark .x { color: #f5f5f4; } .mark .cut { color: #3b82f6; }
+  .status { margin-top: 18px; color: #a1a1aa; min-height: 3em; }
+  .reason {
+    margin-top: 12px; padding: 12px; border: 1px solid #3f3f46;
+    border-radius: 8px; background: #18181b; color: #fca5a5;
+    font-family: Consolas, monospace; font-size: 12px; text-align: left;
+    white-space: pre-wrap; word-break: break-word; display: none;
+  }
+  .pulse { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .45 } 50% { opacity: 1 } }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark"><span class="x">SHELLX</span> <span class="cut">CUT</span></div>
+    <div class="status pulse" id="status">starting engine&hellip;</div>
+    <div class="reason" id="reason"></div>
+  </div>
+  <script>
+    // Poll the shell for engine state. invoke() lives at window.__TAURI__
+    // because tauri.conf.json sets app.withGlobalTauri = true.
+    const statusEl = document.getElementById('status');
+    const reasonEl = document.getElementById('reason');
+    // when a heavy dependency (ffmpeg) is missing on a cold install, show
+    // the actionable bootstrap card and DO NOT auto-navigate — the user would
+    // otherwise land in an editor whose render/import verbs all fail silently.
+    // A "Continue anyway" link lets them proceed once they understand the gap.
+    let bootstrapShown = false;
+    function showBootstrap(url, hint) {
+      bootstrapShown = true;
+      statusEl.classList.remove('pulse');
+      statusEl.textContent = 'Almost ready — one setup step before editing:';
+      reasonEl.style.display = 'block';
+      reasonEl.style.color = '#fcd34d';
+      reasonEl.textContent = hint
+        + '\n\n— Once done, restart ShellX Cut. To open the editor anyway, click below.';
+      if (!document.getElementById('cont')) {
+        const a = document.createElement('a');
+        a.id = 'cont'; a.href = '#'; a.textContent = 'Continue to editor anyway →';
+        a.style.cssText = 'display:inline-block;margin-top:14px;color:#3b82f6;cursor:pointer';
+        a.onclick = (e) => { e.preventDefault(); location.replace(url); };
+        document.querySelector('.card').appendChild(a);
+      }
+    }
+    async function tick() {
+      try {
+        const s = await window.__TAURI__.core.invoke('engine_status');
+        // Missing-tool bootstrap takes priority over auto-navigation.
+        if (s.wired && s.tools_hint) {
+          if (!bootstrapShown) showBootstrap(s.url, s.tools_hint);
+          return; // stay on this airlock until the user acts
+        }
+        if (s.wired && s.ui) {
+          statusEl.textContent = 'engine ready — opening editor…';
+          location.replace(s.url);
+          return; // navigation takes over
+        }
+        if (s.wired && !s.ui) {
+          statusEl.classList.remove('pulse');
+          statusEl.textContent = 'engine is up (mode: ' + s.mode + ') but the UI bundle is missing from this package. The full API still works at:';
+          reasonEl.style.display = 'block';
+          reasonEl.style.color = '#93c5fd';
+          reasonEl.textContent = s.url + 'api/verb/{name}  (POST)\n' + s.url + 'api/events  (WS)';
+        } else if (s.reason && s.reason !== 'engine unavailable: starting up') {
+          statusEl.classList.remove('pulse');
+          statusEl.textContent = 'the engine could not be started:';
+          reasonEl.style.display = 'block';
+          reasonEl.textContent = s.reason;
+        }
+      } catch (e) {
+        // IPC not ready yet (page loaded before the shell finished setup) —
+        // keep pulsing; the next tick retries.
+      }
+      setTimeout(tick, 700);
+    }
+    tick();
+  </script>
+</body>
+</html>

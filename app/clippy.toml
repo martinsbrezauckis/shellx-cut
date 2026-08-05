@@ -1,0 +1,14 @@
+# Clippy configuration for the ShellX Cut workspace.
+#
+# large-error-threshold: CutError (cut_core::error) is an INTENTIONALLY rich
+# actionable error — code + message + cause + optional clip_id/at_ms +
+# suggested_action (public verb contract: "errors that tell the agent what to do next").
+# That makes it ~136 bytes, just over clippy's 128-byte default, which fired
+# `result_large_err` on ~190 `Result<_, CutError>` signatures across the
+# workspace. Boxing every Result (or boxing CutError fields) would churn
+# hundreds of signatures and the serde wire format for no real benefit on a
+# loopback, single-process tool where errors are never hot-path-allocated in
+# tight loops. We deliberately accept the size and raise the threshold instead:
+# keep the rich error and do not box it. 256 leaves headroom for a future field
+# without hiding a genuinely oversized error type.
+large-error-threshold = 256

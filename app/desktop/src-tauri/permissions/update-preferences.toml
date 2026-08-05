@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-update-preferences"
+description = "Allows the validated ShellX Cut UI to read or replace the launch update-check boolean."
+commands.allow = ["get_update_preferences", "set_update_preferences"]

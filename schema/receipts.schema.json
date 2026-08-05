@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "shellx-cut://receipts.schema.json",
+  "$comment": "Typed sub-schemas for the agent-facing result contracts. The Rust types in app/core/src/receipt.rs, cut-core::diff, and the comment draft are the source of truth; this file mirrors their serialized shape so an agent and the autopilot can reason over a typed contract instead of prose. A round-trip test in app/core/tests/receipt_schema.rs asserts the Rust types serialize with these required keys, and verbs.json result_schema entries point here.",
+  "$defs": {
+    "FixTarget": {
+      "type": "object",
+      "description": "Where a defect lives, lifted from a check's evidence. All optional — a check carries whichever coordinates it measured; never fabricated.",
+      "properties": {
+        "clip_id": { "type": "string", "description": "Clip to target the repair edit." },
+        "at_ms": { "type": "integer", "minimum": 0, "description": "Timeline/source position of the defect." },
+        "op_id": { "type": "string", "description": "Op that introduced the defect, when traceable." }
+      },
+      "additionalProperties": false
+    },
+    "FixAction": {
+      "type": "object",
+      "description": "A machine-actionable repair derived from one FAILING check — the contract that the Receipted-Autopilot self-fix loop maps a receipt onto.",
+      "required": ["check", "fix_verb", "fix_args", "targets", "measured", "rationale", "auto_fixable"],
+      "properties": {
+        "check": { "type": "string", "description": "The failing check name this addresses." },
+        "fix_verb": { "type": "string", "description": "Verb to call to repair it; '(manual)' when no mechanical fix exists." },
+        "fix_args": { "type": "object", "description": "Best-effort partial args for fix_verb; the autopilot merges in render/target context." },
+        "targets": { "type": "array", "items": { "$ref": "#/$defs/FixTarget" } },
+        "measured": { "description": "The measured numbers + target that justify the fix." },
+        "rationale": { "type": "string", "description": "One-line why, for the plan + user-facing 'what changed'." },
+        "auto_fixable": { "type": "boolean", "description": "true = mechanical + safe for the self-fix loop; false = needs a human or verify.judge." }
+      },
+      "additionalProperties": false
+    },
+    "CheckResult": {
+      "type": "object",
+      "description": "Result of one verify check. evidence always carries the numbers that justify the verdict (never a bare boolean).",
+      "required": ["name", "pass", "details", "evidence"],
+      "properties": {
+        "name": { "type": "string", "description": "cut_on_word | lufs | caption_presence | black_or_frozen_frames | silence_at_edges | duration_matches_edl | uniform_border | cut_on_beat | j_l_cut | footage_profile" },
+        "pass": { "type": "boolean" },
+        "details": { "description": "Human-readable structured detail (thresholds, counts, waivers)." },
+        "evidence": { "description": "The measured facts behind the verdict (timestamps, LUFS, spans, violations)." }
+      },
+      "additionalProperties": false
+    },
+    "RenderReceipt": {
+      "type": "object",
+      "description": "The receipt for a completed render. Persisted at receipts/<render_id>.json, pushed over WS as receipt_ready. 'done requires evidence'.",
+      "required": ["render_id", "ts", "output_path", "output_hash", "duration_ms", "preset", "at_op", "checks", "pass"],
+      "properties": {
+        "render_id": { "type": "string" },
+        "ts": { "type": "string", "description": "RFC3339 completion time." },
+        "output_path": { "type": "string" },
+        "output_hash": { "type": "string", "description": "Content hash — same input+EDL ⇒ same hash (determinism)." },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "preset": { "type": "string" },
+        "at_op": { "type": "string", "description": "Op id of the log head when the render started — ties the receipt to an exact timeline state." },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/CheckResult" } },
+        "pass": { "type": "boolean", "description": "Aggregate: true iff every check passed." },
+        "judge": { "description": "Optional perceptual judge (verify.judge) attachment; never a fake pass." },
+        "fix_actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FixAction" },
+          "description": "One entry per recognised FAILING check — the autopilot self-fix substrate. Empty when every check passed."
+        }
+      },
+      "additionalProperties": false
+    },
+    "DiffSummary": {
+      "type": "object",
+      "description": "Result of project.diff — the structural delta between two op-log pointers.",
+      "required": ["from_op", "to_op", "ops", "clips_added", "clips_removed", "clips_moved", "duration_delta_ms", "tracks_touched"],
+      "properties": {
+        "from_op": { "type": "string" },
+        "to_op": { "type": "string" },
+        "ops": { "type": "integer", "minimum": 0, "description": "Number of ops between the two pointers." },
+        "clips_added": { "type": "integer" },
+        "clips_removed": { "type": "integer" },
+        "clips_moved": { "type": "integer" },
+        "duration_delta_ms": { "type": "integer", "description": "Signed timeline duration change." },
+        "tracks_touched": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "CommentDraft": {
+      "type": "object",
+      "description": "Result of comment.draft — the agent's proposed verb changes for a timecoded review note (not yet applied).",
+      "required": ["comment_id", "status"],
+      "properties": {
+        "comment_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["completed", "not_run", "error"] },
+        "draft": {
+          "type": "object",
+          "properties": {
+            "verbs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": { "verb": { "type": "string" }, "args": { "type": "object" } },
+                "required": ["verb", "args"]
+              }
+            },
+            "rationale": { "type": "string" },
+            "confidence": { "type": "number" },
+            "validation": {},
+            "backend": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}
