@@ -318,9 +318,11 @@ mod tests {
 
     #[test]
     fn rejects_incompatible_mode_and_escaping_asset_symlink() {
-        let root = fixture();
+        // The fixture is only consulted by the unix-only symlink-escape case, so
+        // binding it unconditionally leaves it unused on Windows.
         #[cfg(unix)]
         {
+            let root = fixture();
             fs::remove_file(root.path().join("assets/plate.mp4")).expect("remove");
             std::os::unix::fs::symlink("/etc/hosts", root.path().join("assets/plate.mp4"))
                 .expect("symlink");

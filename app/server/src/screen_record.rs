@@ -979,6 +979,14 @@ pub fn capture_system_audio_until(
         // Endpoint-independent WASAPI process loopback. Excluding Cut's daemon tree
         // captures the rest of the system mix without opening a physical render driver.
         // No ffmpeg or virtual-audio device; bounded and open-ended captures share this path.
+        //
+        // The `return` reads as redundant to clippy on Windows, because the
+        // `cfg(not(windows))` arm below is compiled out and this block becomes the
+        // function tail. It is NOT redundant on any other target, where dropping it
+        // would make this block a value in statement position. Keep the explicit
+        // return and silence the lint only where the lint is right about the shape
+        // but wrong about the fix.
+        #[allow(clippy::needless_return)]
         return record_capture::capture_system_loopback(&out.to_string_lossy(), duration_ms, stop)
             .map(|_| ())
             .map_err(record_err);

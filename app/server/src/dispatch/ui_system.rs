@@ -52,9 +52,7 @@ fn screenshot_capture_error(reply: &Value) -> CutError {
         .and_then(|v| v.as_str())
         // Compat: an older UI client sent `error` as a plain string.
         .or_else(|| err.and_then(|e| e.as_str()));
-    let attempts = err
-        .and_then(|e| e.get("attempts"))
-        .and_then(|v| v.as_u64());
+    let attempts = err.and_then(|e| e.get("attempts")).and_then(|v| v.as_u64());
     let (headline, cause) = match message {
         Some(m) => (
             format!("UI screenshot capture failed at stage '{stage}'"),
@@ -689,8 +687,16 @@ mod screenshot_error_tests {
         });
         let e = screenshot_capture_error(&reply);
         assert_eq!(e.code, error_codes::JOB_FAILED);
-        assert!(e.message.contains("stage 'dom-rasterize'"), "message: {}", e.message);
-        assert!(e.cause.contains("error event on <link> (app.css)"), "cause: {}", e.cause);
+        assert!(
+            e.message.contains("stage 'dom-rasterize'"),
+            "message: {}",
+            e.message
+        );
+        assert!(
+            e.cause.contains("error event on <link> (app.css)"),
+            "cause: {}",
+            e.cause
+        );
         assert!(e.cause.contains("after 2 attempt(s)"), "cause: {}", e.cause);
         assert!(
             !format!("{e:?}").contains("[object Event]"),
@@ -704,7 +710,11 @@ mod screenshot_error_tests {
     fn legacy_string_error_still_surfaces_its_text() {
         let reply = json!({"type": "screenshot_result", "error": "capture blew up"});
         let e = screenshot_capture_error(&reply);
-        assert!(e.message.contains("stage 'unknown'"), "message: {}", e.message);
+        assert!(
+            e.message.contains("stage 'unknown'"),
+            "message: {}",
+            e.message
+        );
         assert!(e.cause.contains("capture blew up"), "cause: {}", e.cause);
     }
 

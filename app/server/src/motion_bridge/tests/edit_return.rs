@@ -1,3 +1,6 @@
+// Every test in this file is unix-only (they build symlink/permission cases), so
+// on Windows the glob has no consumer and would be an unused import.
+#[cfg(unix)]
 use super::*;
 
 #[cfg(unix)]

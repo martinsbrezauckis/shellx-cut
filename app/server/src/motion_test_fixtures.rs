@@ -1,11 +1,17 @@
 //! Shared Motion connector fixtures and assertions for server tests.
+//!
+//! Both helpers below are consumed only by tests that are themselves gated off
+//! on Windows, so a Windows build sees them as dead code. Silence that here
+//! rather than per item, and only for the target where it is actually true.
 
 use serde_json::{json, Value};
 
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn linked_effect_motion_document() -> &'static [u8] {
     br##"{"schema":"shellx-motion/motion@1","id":"motion-lower-third","durationMs":1500,"fps":30,"width":1280,"height":720,"layers":[{"id":"subject","name":"Hero subject","type":"video","keying":{"schema":"shellx-motion/chroma-key@1","keyColor":"#00ff00","spillSuppression":0.72,"matte":{"featherPx":3}},"mask":{"type":"roto","schema":"shellx-motion/roto-mask@1","frames":[{"atMs":0,"vertices":[]}],"tracking":{"model":"similarity","analysisId":"private-track-id"}}}]}"##
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn assert_linked_effect_summary(clip: &Value) {
     let effects = &clip["motion_link"]["effects"];
     assert_eq!(

@@ -550,8 +550,13 @@ mod tests {
             "the read fence never reaches the project's own files"
         );
         assert!(
-            fenced_existing_export_read(&proj, &proj.join("exports/missing.mp4"), "review render", "x")
-                .is_err(),
+            fenced_existing_export_read(
+                &proj,
+                &proj.join("exports/missing.mp4"),
+                "review render",
+                "x"
+            )
+            .is_err(),
             "a missing file is refused, never substituted"
         );
         set_session_output_dir(None);
@@ -577,7 +582,8 @@ mod tests {
 
         // The pre-fix helper: both aspects collapse into the chosen folder, and the
         // manifest's directory is never created. This is the defect, pinned.
-        let diverted_a = fence_output_path(&proj, None, "exports/bundle_0_1500/9x16/clip.mp4").unwrap();
+        let diverted_a =
+            fence_output_path(&proj, None, "exports/bundle_0_1500/9x16/clip.mp4").unwrap();
         assert_eq!(diverted_a.parent().unwrap(), chosen_canon);
 
         // The fix: every member resolves inside the package directory the manifest

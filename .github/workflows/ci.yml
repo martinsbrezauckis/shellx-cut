@@ -124,11 +124,35 @@ jobs:
       # crate shells out to it, and neither runner image ships it.
       - name: Install macOS test deps
         if: matrix.platform == 'macos-latest'
-        run: brew install ffmpeg espeak-ng
+        run: |
+          brew install ffmpeg espeak-ng
+          # The runner image ships its own ffmpeg, which can win PATH over the
+          # Homebrew build and does not carry every filter the render path needs.
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Install Windows test deps
         if: matrix.platform == 'windows-latest'
         run: choco install ffmpeg --no-progress -y
+
+      # Cut's render path uses ass (subtitles), vidstab (stabilisation) and zscale
+      # (colour). An ffmpeg built without them does not fail honestly: tests die
+      # with a bare "No such filter: 'ass'" that reads like a product defect, which
+      # is exactly how the first macOS CI run presented. Check the capability here
+      # and name what is missing, so the environment is blamed where it is at fault.
+      - name: Verify ffmpeg carries the filters the render path needs
+        shell: bash
+        run: |
+          echo "ffmpeg on PATH: $(command -v ffmpeg)"
+          ffmpeg -hide_banner -version | head -1
+          missing=""
+          for f in ass vidstabdetect zscale; do
+            ffmpeg -hide_banner -filters 2>/dev/null | grep -qw "$f" || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::ffmpeg is missing required filter(s):$missing" >&2
+            exit 1
+          fi
+          echo "all required filters present"
 
       # Formatting is byte-identical everywhere, so checking it three times
       # would only spend wall-clock. Clippy is NOT redundant across platforms:
