@@ -16,7 +16,13 @@
 //
 // TRUST STORY: no live preview in the drawer. Fires the verb; the Preview poster
 // (cache-busted by headOpId on op_applied) shows the ACTUALLY graded frame at
-// the playhead. Receipt = the verb result (old_grade → grade). Relay NOT claimed.
+// the playhead. Receipt = the verb result (old_grade → grade). The receipt
+// PERSISTS across project snapshot refreshes of the SAME clip (the apply itself
+// triggers one — clearing it there made the receipt vanish moments after apply,
+// the 2026-08-06 demo-shoot defect) and clears only when the selection moves to
+// a different clip, the drawer unmounts, or a new apply replaces it. Relay NOT
+// claimed. Sliders step 0.01 so grades applied by the agent API at fine
+// precision stay reproducible/tunable from the UI (0.05 locked them out).
 //
 // Callers: App.tsx (mounted when open, with the selected clip id). Deps:
 // lib/client, ../drawer.css.
@@ -68,7 +74,11 @@ function GradeSlider({ label, attr, value, set, min, max, step }: {
   return (
     <label className="cd-field">
       <span className="cd-field-label">
-        {label} <span className="cd-val" data-cut-grade-val={attr}>{value}</span>
+        {/* 2-decimal display matches the 0.01 step; an API-precision seed
+            beyond 2 decimals still holds its EXACT value on the input itself.
+            Rig lanes read this numerically (parseFloat), so fixed formatting
+            stays compatible. */}
+        {label} <span className="cd-val" data-cut-grade-val={attr}>{value.toFixed(2)}</span>
       </span>
       <input
         className="cd-range"
@@ -111,6 +121,12 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
 
   // The right rail keeps this component mounted while selection changes. Keep
   // local editor state aligned with the newly selected clip's stored grade.
+  // SLIDERS ONLY: the apply receipt is deliberately NOT cleared here. Applying
+  // a grade triggers a snapshot refresh whose snapshot carries the new grade,
+  // so gradeSeedKey changes and this effect re-runs for the SAME clip —
+  // clearing `result` here wiped the receipt moments after every apply
+  // (2026-08-06 demo shoot, finding 4). Receipt lifecycle lives in the
+  // [clipId]-keyed effect below.
   useEffect(() => {
     setContrast(grade?.contrast ?? NEUTRAL.contrast)
     setBrightness(grade?.brightness ?? NEUTRAL.brightness)
@@ -119,9 +135,18 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
     setTempOn(grade?.temperature_k != null)
     setTempK(grade?.temperature_k ?? 6500)
     setLut(grade?.lut ?? '')
+  }, [gradeSeedKey])
+
+  // Receipt lifecycle: the receipt (and any error) belongs to the clip it was
+  // earned on. Clear ONLY when the SELECTED CLIP changes — same-clip snapshot
+  // refreshes (including the one our own apply triggers) keep it visible.
+  // The other exit paths need no handling here: closing the drawer unmounts
+  // this component (state discarded) and fire() clears/replaces the receipt at
+  // the start of the next apply.
+  useEffect(() => {
     setResult(null)
     setErr(null)
-  }, [gradeSeedKey])
+  }, [clipId])
 
   /** The grade values fire() sends. Defaults to the live slider state; reset()
    *  passes an explicit identity set so the verb call doesn't race the async
@@ -205,10 +230,15 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
             <>
               <p className="cd-note" data-cut-grade-clip>Grading clip <code>{clipId}</code>.</p>
 
-              <GradeSlider label="Contrast" attr="contrast" value={contrast} set={setContrast} min={0} max={2} step={0.05} />
-              <GradeSlider label="Brightness" attr="brightness" value={brightness} set={setBrightness} min={-1} max={1} step={0.05} />
-              <GradeSlider label="Saturation" attr="saturation" value={saturation} set={setSaturation} min={0} max={2} step={0.05} />
-              <GradeSlider label="Gamma" attr="gamma" value={gamma} set={setGamma} min={0.1} max={3} step={0.05} />
+              {/* 0.01 step: grades the agent applies via the API at fine
+                  precision must stay reproducible/tunable from these sliders
+                  (0.05 quantization locked them out — 0.6.106 hotfix).
+                  Temperature below keeps its designed 100 K step: Kelvin
+                  scale, engine rounds to an integer. */}
+              <GradeSlider label="Contrast" attr="contrast" value={contrast} set={setContrast} min={0} max={2} step={0.01} />
+              <GradeSlider label="Brightness" attr="brightness" value={brightness} set={setBrightness} min={-1} max={1} step={0.01} />
+              <GradeSlider label="Saturation" attr="saturation" value={saturation} set={setSaturation} min={0} max={2} step={0.01} />
+              <GradeSlider label="Gamma" attr="gamma" value={gamma} set={setGamma} min={0.1} max={3} step={0.01} />
 
               {/* white balance — opt-in */}
               <label className="cd-toggle" data-cut-grade-temp-toggle>

@@ -8,6 +8,7 @@
 import { resolveCoverageAppUrl } from './fullCoverageAppUrl.mjs'
 import { createSettingsEnvironmentCoverage } from './fullCoverageSettingsEnvironment.mjs'
 import { createSettingsTaskCoverage } from './fullCoverageSettingsTasks.mjs'
+import { createSettingsUpdateCoverage } from './fullCoverageSettingsUpdate.mjs'
 
 const CATEGORIES = [
   'overview',
@@ -70,6 +71,13 @@ export function createFullCoverageSettings({
     }
     return page.locator('[data-cut-environment]').first()
   }
+
+  const runUpdateSurfaceCoverage = createSettingsUpdateCoverage({
+    probe,
+    sleep,
+    openSettings,
+    waitFor,
+  })
 
   async function secSettings(page) {
     const S = 'settings'
@@ -331,12 +339,17 @@ export function createFullCoverageSettings({
           if (restored) break
           await sleep(100)
         }
+        // The feedback line states the real scope either way: on = launch +
+        // 6-hourly cadence, off = manual About check still works.
+        const honest = /automatic update checks are (on|off)/i.test(changedMessage)
         return {
-          ok: changed && /next launch/i.test(changedMessage) && restored,
-          detail: `launch update preference changed=${changed}; persisted message=${/next launch/i.test(changedMessage)}; restored=${restored}`,
+          ok: changed && honest && restored,
+          detail: `automatic update preference changed=${changed}; honest scope message=${honest}; restored=${restored}`,
         }
       },
     })
+
+    await runUpdateSurfaceCoverage(page, panel, S)
 
     await runEnvironmentCoverage(page, panel, S)
     await runTaskCoverage(page, S)

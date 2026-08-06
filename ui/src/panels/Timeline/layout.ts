@@ -73,14 +73,35 @@ export function minZoomFor(durationMs: number, viewportW: number): number {
 // Clip layout — schema clips → absolutely-positioned lane items
 // ---------------------------------------------------------------------------
 
-/** One laid-out item on a lane (clip OR rendered gap), in timeline ms. */
+/** One laid-out item on a lane (clip OR rendered gap), in timeline ms.
+ *
+ * TWO TIME BASES (the coordinate contract — getting this wrong dispatches
+ * verbs at positions the engine rejects):
+ *  - LAID / render time (`startMs`): where content draws and plays. A
+ *    crossfade pulls the right clip back into the left clip's tail, so laid
+ *    positions REWIND by each upstream overlap. The playhead, pointer math,
+ *    px transforms, and `edit.split_edit` (EDL-keyed) live here.
+ *  - EDITORIAL time (`editorialStartMs`): the engine's cumulative-track
+ *    cursor — the plain sum of clip durations, crossfade-INDEPENDENT. Every
+ *    cumulative-track verb keys on it: edit.split / edit.crossfade /
+ *    edit.roll / edit.ripple_delete range_ms / edit.move / edit.insert /
+ *    edit.fit_to_fill (verified in app/core/src/edit.rs + trim_edit.rs).
+ * The two are equal until the first crossfade upstream on the track; after
+ * that, dispatching a laid coordinate targets a nonexistent boundary
+ * (engine not_found — the dual-surface harness caught exactly this). */
 export interface LaidItem {
   /** Clip id; gaps get a synthetic stable id `gap:<track>:<index>`. */
   id: string
   kind: 'video' | 'audio' | 'caption' | 'gap'
   trackId: string
+  /** LAID/render start — drawing + pointer space (see time-base note above). */
   startMs: number
   durMs: number
+  /** EDITORIAL start — the engine's clip-duration-sum cursor (see note above).
+   * Equals startMs plus the total crossfade overlap upstream on this track.
+   * Captions carry an absolute range, so theirs equals startMs. Dispatch
+   * cumulative-track verb positions/ranges from THIS, never from startMs. */
+  editorialStartMs: number
   /** Display label: asset id for AV, text for captions. */
   label: string
   /** AV clips only — source range (for trim math). */
@@ -155,7 +176,10 @@ export function imageAssetIds(project: Project | null): Set<string> {
  */
 export function layoutTrack(track: Track, imageAssets?: Set<string>): LaidItem[] {
   const items: LaidItem[] = []
+  // LAID cursor (rewinds by crossfade overlaps) + EDITORIAL cursor (plain
+  // clip-duration sum, the engine's cumulative-track clock) — see LaidItem.
   let cursor = 0
+  let edCursor = 0
   track.clips.forEach((c, i) => {
     const gap = gapClipFrom(c)
     const caption = captionClipFrom(c)
@@ -166,16 +190,21 @@ export function layoutTrack(track: Track, imageAssets?: Set<string>): LaidItem[]
         kind: 'gap',
         trackId: track.id,
         startMs: cursor,
+        editorialStartMs: edCursor,
         durMs: gap.duration_ms,
         label: '',
       })
       cursor += gap.duration_ms
+      edCursor += gap.duration_ms
     } else if (caption) {
       items.push({
         id: caption.id,
         kind: 'caption',
         trackId: track.id,
         startMs: caption.range_ms[0],
+        // Captions are ABSOLUTE-range clips (no cumulative cursor): their
+        // editorial position IS their laid position.
+        editorialStartMs: caption.range_ms[0],
         durMs: caption.range_ms[1] - caption.range_ms[0],
         label: caption.text,
       })
@@ -202,6 +231,9 @@ export function layoutTrack(track: Track, imageAssets?: Set<string>): LaidItem[]
         kind: track.kind === 'audio' ? 'audio' : 'video',
         trackId: track.id,
         startMs,
+        // The editorial cursor never rewinds — a crossfade shortens the LAID
+        // timeline only; the engine's clip-duration-sum clock is untouched.
+        editorialStartMs: edCursor,
         durMs: dur,
         label: clip.asset,
         srcInMs: clip.src_in_ms,
@@ -224,6 +256,7 @@ export function layoutTrack(track: Track, imageAssets?: Set<string>): LaidItem[]
         motionLink: clip.motion_link,
       })
       cursor = startMs + dur
+      edCursor += dur
     }
   })
   return items
@@ -449,8 +482,15 @@ export function markerClass(m: Marker): MarkerClass {
 // ---------------------------------------------------------------------------
 
 export interface Seam {
-  /** Timeline time of the cut (left clip ends, right clip starts here). */
+  /** EDITORIAL boundary time of the cut (clip-duration sum) — what the
+   * engine's cumulative-track verbs (edit.crossfade, edit.roll) key on.
+   * DISPATCH this; never a laid coordinate. After any upstream crossfade the
+   * two diverge, and the laid value targets a nonexistent boundary (proven
+   * live: UI sent laid 3242, the engine's cut was editorial 3642). */
   atMs: number
+  /** LAID/render-time coordinate of the visible boundary (left clip's drawn
+   * end) — for DRAWING the handle and playhead-distance math only. */
+  laidMs: number
   leftId: string
   rightId: string
   trackId: string
@@ -467,16 +507,128 @@ export function trackSeams(items: LaidItem[]): Seam[] {
     const aMedia = a.kind === 'video' || a.kind === 'audio'
     const bMedia = b.kind === 'video' || b.kind === 'audio'
     if (!aMedia || !bMedia) continue
-    // The cut at_ms the engine keys on is the LEFT clip's CUMULATIVE END
-    // (a.startMs + a.durMs) — NOT where the right clip visually begins. With a
-    // crossfade the right clip's start rewinds into a's tail (b.startMs =
-    // a.end − xfade), but edit.crossfade still re-targets the seam at a.end
+    // The cut the engine keys on is the LEFT clip's EDITORIAL end
+    // (editorialStartMs + durMs — crossfade-independent), NOT its laid end:
+    // laid positions rewind by every upstream overlap, so after one crossfade
+    // the laid end of any later clip understates the editorial boundary and
+    // edit.crossfade there is not_found (the dual-surface harness's live
+    // catch). A crossfade ON this seam itself keeps the same editorial at_ms
     // (verified against the live engine: a crossfaded seam re-targets at the
-    // ORIGINAL cut, not the shortened boundary). The handle is DRAWN at a.end
-    // so it sits on the visible boundary between the two clip bodies.
-    seams.push({ atMs: a.startMs + a.durMs, leftId: a.id, rightId: b.id, trackId: b.trackId, xfadeMs: b.xfadeInMs ?? 0 })
+    // ORIGINAL cut). The handle is DRAWN at the laid end (`laidMs`) so it
+    // sits on the visible boundary between the two clip bodies.
+    seams.push({
+      atMs: a.editorialStartMs + a.durMs,
+      laidMs: a.startMs + a.durMs,
+      leftId: a.id,
+      rightId: b.id,
+      trackId: b.trackId,
+      xfadeMs: b.xfadeInMs ?? 0,
+    })
   }
   return seams
+}
+
+/**
+ * Convert a LAID/render-time position on ONE track's laid items to the
+ * EDITORIAL position the engine's cumulative-track verbs key on.
+ * - Inside an item: editorial start + the same within-item offset (within-item
+ *   deltas are identical in both bases).
+ * - Inside a crossfade overlap (two items cover the position): resolves into
+ *   the LEFT clip's tail (first covering item in track order).
+ * - Past the last item: editorial end + the overshoot.
+ * - Empty track / before the first item: identity (the clocks start aligned).
+ */
+export function laidToEditorialMs(items: LaidItem[], laidMs: number): number {
+  for (const it of items) {
+    if (laidMs >= it.startMs && laidMs < it.startMs + it.durMs) {
+      return it.editorialStartMs + (laidMs - it.startMs)
+    }
+  }
+  const last = items[items.length - 1]
+  if (last && laidMs >= last.startMs + last.durMs) {
+    return last.editorialStartMs + last.durMs + (laidMs - (last.startMs + last.durMs))
+  }
+  return laidMs
+}
+
+// ---------------------------------------------------------------------------
+// Linked A/V resolution + linked split planning
+//
+// The engine has no stored clip-linkage identity: `edit.insert`/import place a
+// video clip and its audio counterpart as two clips, and the server's linked
+// ops (edit.trim/edit.move {linked:true} → resolve_linked_media) re-infer the
+// pair from the auto-placement shape. edit.split and edit.ripple_delete carry
+// NO linked arg, so the UI must dispatch for both halves itself — these
+// helpers mirror the engine's linkage criteria exactly so UI-side propagation
+// and engine-side linked ops agree on what "linked" means.
+// ---------------------------------------------------------------------------
+
+/**
+ * Exact linked A/V counterparts of a media item, mirroring the engine's
+ * resolve_linked_media (app/server/src/dispatch/edit_tools/linked_move.rs):
+ * opposite AV kind, same asset, same source window, same LAID timeline span
+ * (the engine matches spans via the EDL, which is laid/render time).
+ * Returns ALL matches — callers apply the engine's ambiguity policy
+ * (exactly one = linked; several = refuse rather than guess).
+ */
+export function linkedSiblings(item: LaidItem, allItems: LaidItem[]): LaidItem[] {
+  if (item.kind !== 'video' && item.kind !== 'audio') return []
+  const opposite = item.kind === 'video' ? 'audio' : 'video'
+  return allItems.filter((c) =>
+    c.kind === opposite
+    && c.asset === item.asset
+    && c.srcInMs === item.srcInMs
+    && c.srcOutMs === item.srcOutMs
+    && c.startMs === item.startMs
+    && c.durMs === item.durMs,
+  )
+}
+
+/** One edit.split dispatch target planned by planLinkedSplit. */
+export interface LinkedSplitTarget {
+  track: string
+  /** EDITORIAL split position on that track (the engine's split cursor). */
+  atMs: number
+  /** The clip being split there (for rationale/error text). */
+  clipId: string
+}
+
+export type LinkedSplitPlan =
+  | { kind: 'ok'; targets: LinkedSplitTarget[] }
+  /** >1 exact counterpart — splitting one guessed half would desync; refuse
+   * (the engine's own linked-op ambiguity policy). */
+  | { kind: 'ambiguous'; candidates: number }
+  /** The counterpart sits on a locked track — splitting only one half would
+   * desync the pair; refuse until unlocked (engine guardrail parity). */
+  | { kind: 'locked'; trackId: string }
+
+/**
+ * Plan a razor/split at LAID position `laidCutMs` inside `anchor` so the cut
+ * lands on the anchor AND its exact linked A/V counterpart (NLE convention:
+ * linked clips cut together). Positions are converted to EDITORIAL time
+ * per-track — the linked pair shares the within-clip offset (equal laid
+ * spans), but each track carries its own editorial cursor.
+ * The caller guards that laidCutMs is strictly inside the anchor's laid body
+ * and dispatches one edit.split per target (shared group_id when 2).
+ */
+export function planLinkedSplit(
+  anchor: LaidItem,
+  allItems: LaidItem[],
+  laidCutMs: number,
+  isTrackLocked: (trackId: string) => boolean,
+): LinkedSplitPlan {
+  const offset = laidCutMs - anchor.startMs
+  const targets: LinkedSplitTarget[] = [
+    { track: anchor.trackId, atMs: Math.round(anchor.editorialStartMs + offset), clipId: anchor.id },
+  ]
+  const sibs = linkedSiblings(anchor, allItems)
+  if (sibs.length > 1) return { kind: 'ambiguous', candidates: sibs.length }
+  const sib = sibs[0]
+  if (sib) {
+    if (isTrackLocked(sib.trackId)) return { kind: 'locked', trackId: sib.trackId }
+    targets.push({ track: sib.trackId, atMs: Math.round(sib.editorialStartMs + offset), clipId: sib.id })
+  }
+  return { kind: 'ok', targets }
 }
 
 // ---------------------------------------------------------------------------

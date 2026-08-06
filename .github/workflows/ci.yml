@@ -7,6 +7,15 @@
 # or rigs. Installer packaging is exercised separately by release.yml;
 # official signed installers are always built and verified locally by the
 # maintainer (see docs/public/BUILDING.md).
+#
+# The Rust suite runs on all three shipped platforms. ShellX Cut ships Windows,
+# macOS and Linux installers, and a single-platform run cannot stand in for the
+# other two: `#[cfg(windows)]` and `#[cfg(target_os = "macos")]` bodies are not
+# compiled at all on a Linux runner, and behaviour that depends on OS path,
+# environment or locale semantics is invisible there by construction.
+#
+# `fail-fast: false` keeps every platform reporting when one breaks — whether a
+# failure is universal or platform-specific is the first thing worth knowing.
 
 name: CI
 
@@ -68,8 +77,17 @@ jobs:
         run: bash scripts/verbargs-sync.sh
 
   rust:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    name: Rust (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    strategy:
+      # One platform failing must not cancel the others — see the header.
+      fail-fast: false
+      matrix:
+        platform:
+          - ubuntu-24.04
+          - windows-latest
+          - macos-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
@@ -82,8 +100,11 @@ jobs:
         uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           workspaces: ./app -> target
+          # Keyed per platform so three targets never share one cache entry.
+          key: ${{ matrix.platform }}
 
       - name: Install Linux build deps
+        if: matrix.platform == 'ubuntu-24.04'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -95,7 +116,25 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             ffmpeg espeak-ng
 
+      # macOS and Windows need no system libraries for the capture backends —
+      # `capture-macos` (avfoundation/ScreenCaptureKit) and `capture-windows`
+      # (WGC/Media Foundation) bind OS frameworks that are already present, and
+      # Cargo selects them automatically from the `[target.'cfg(target_os …)']`
+      # blocks in app/server/Cargo.toml. Only ffmpeg is missing: the media
+      # crate shells out to it, and neither runner image ships it.
+      - name: Install macOS test deps
+        if: matrix.platform == 'macos-latest'
+        run: brew install ffmpeg espeak-ng
+
+      - name: Install Windows test deps
+        if: matrix.platform == 'windows-latest'
+        run: choco install ffmpeg --no-progress -y
+
+      # Formatting is byte-identical everywhere, so checking it three times
+      # would only spend wall-clock. Clippy is NOT redundant across platforms:
+      # it type-checks the cfg-gated bodies that this runner alone compiles.
       - name: cargo fmt --check
+        if: matrix.platform == 'ubuntu-24.04'
         run: cargo fmt --check
         working-directory: app
 

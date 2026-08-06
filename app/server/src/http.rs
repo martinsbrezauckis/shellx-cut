@@ -54,6 +54,11 @@ pub fn build_router(state: AppState, ui_dist: Option<std::path::PathBuf>) -> Rou
         // CURRENT project's exports/ subtree. Wildcard (nested bundle paths),
         // fenced to the exports subtree (see serve_export_path).
         .route("/api/export/*path", get(serve_export_path))
+        // Serve ONE exact export by absolute path — the only shape that can name
+        // an export written into the user's chosen output folder (which lives
+        // outside the project). Fenced to the authorized export roots and never
+        // falls back to a same-named file elsewhere (see serve_export_file).
+        .route("/api/export-file", get(serve_export_file))
         // Stream a registered asset's ORIGINAL source for the preview
         // <video> when no proxy exists yet (edit instantly while the proxy builds,
         // or when proxy generation is toggled off). Fenced to the open project's
@@ -651,6 +656,232 @@ mod tests {
             "an unregistered asset id must not serve any file"
         );
     }
+
+    // ---------------------------------------------------------------------
+    // Export serving (the 0.6.105 "exports outside the project" defect).
+    //
+    // The session output dir is process-global (one open project per cutd), so
+    // the two tests that set it take this lock and clear it on the way out.
+    // Serializing them also keeps them from reading each other's root while the
+    // shared axum test servers are up.
+    // ---------------------------------------------------------------------
+    static OUTPUT_DIR_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Open a project at `dir` on a fresh AppState (the export routes resolve
+    /// against the CURRENT project, so every export test needs one open).
+    async fn open_project(dir: &std::path::Path) -> AppState {
+        let state = AppState::new();
+        let _ = dispatch(
+            &state,
+            "project.create",
+            serde_json::json!({"name": "p", "dir": dir}),
+            Actor {
+                kind: ActorKind::Agent,
+                name: "t".into(),
+                via: "test".into(),
+            },
+        )
+        .await;
+        state
+    }
+
+    /// GET returning (status, body bytes). 4xx/5xx surface through ureq as a
+    /// StatusCode error with no readable body, so those come back empty.
+    fn get_bytes(url: &str) -> (u16, Vec<u8>) {
+        match ureq::get(url).call() {
+            Ok(mut r) => {
+                let st = r.status().as_u16();
+                (st, r.body_mut().read_to_vec().unwrap_or_default())
+            }
+            Err(ureq::Error::StatusCode(c)) => (c, Vec::new()),
+            Err(e) => unreachable!("transport: {e}"),
+        }
+    }
+
+    async fn get_off_thread(url: String) -> (u16, Vec<u8>) {
+        tokio::task::spawn_blocking(move || get_bytes(&url))
+            .await
+            .unwrap()
+    }
+
+    /// P1 (0.6.105): an export written into the folder the user chose with
+    /// `project.set_output_dir` lives OUTSIDE `<project>/exports`, so the
+    /// relative route can never name it and in-app playback 404'd. The absolute
+    /// form serves it — fenced to the roots the engine is also allowed to WRITE
+    /// into, and refusing everything else: another project's dir, the project's
+    /// own non-export files, a `..` climb, a symlink escape, a relative path.
+    ///
+    /// The last case is the important one: an absolute path that does not exist
+    /// must 404 EVEN THOUGH a same-named file sits in `<project>/exports` — the
+    /// route must never answer with a different file than the one requested.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn export_file_route_serves_authorized_output_dir_only() {
+        let _guard = OUTPUT_DIR_TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("p.cutproj");
+        let state = open_project(&proj).await;
+
+        // Inside the project's exports subtree.
+        std::fs::create_dir_all(proj.join("exports")).unwrap();
+        let inside = proj.join("exports/audio.mp3");
+        std::fs::write(&inside, b"INSIDE-EXPORT-BYTES").unwrap();
+        // A project file that is NOT an export (must stay unreachable).
+        std::fs::write(proj.join("project.json"), b"{}").unwrap();
+
+        // The user's chosen delivery folder + a folder nobody authorized.
+        let outside = tmp.path().join("Deliveries");
+        std::fs::create_dir_all(&outside).unwrap();
+        let fresh = outside.join("audio.mp3");
+        std::fs::write(&fresh, b"OUTSIDE-EXPORT-BYTES-THAT-DIFFER").unwrap();
+        let unauth = tmp.path().join("Private");
+        std::fs::create_dir_all(&unauth).unwrap();
+        let secret = unauth.join("secret.mp4");
+        std::fs::write(&secret, b"NOT-AN-EXPORT").unwrap();
+        // A symlink INSIDE the authorized folder pointing at the unauthorized
+        // one: canonicalization must resolve it before the membership test.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, outside.join("link.mp4")).unwrap();
+
+        crate::output_paths::set_session_output_dir(Some(outside.clone()));
+        let server = spawn_test_server(build_router(state, None)).await;
+        let base = server.base_url.clone();
+        let url = |p: &std::path::Path| {
+            format!(
+                "{base}/api/export-file?path={}",
+                urlencoding_path(&p.display().to_string())
+            )
+        };
+
+        let (st, body) = get_off_thread(url(&fresh)).await;
+        assert_eq!(st, 200, "an export in the chosen output folder must serve");
+        assert_eq!(
+            body, b"OUTSIDE-EXPORT-BYTES-THAT-DIFFER",
+            "and it must be the OUTSIDE file's bytes, not the same-named inside one"
+        );
+
+        let (st, body) = get_off_thread(url(&inside)).await;
+        assert_eq!(st, 200, "the project's own exports stay reachable");
+        assert_eq!(body, b"INSIDE-EXPORT-BYTES");
+
+        let (st, _) = get_off_thread(url(&secret)).await;
+        assert_eq!(st, 403, "an unauthorized absolute path must be refused");
+
+        let (st, _) = get_off_thread(url(&proj.join("project.json"))).await;
+        assert_eq!(
+            st, 403,
+            "the read fence is the exports SUBTREE — project files are not exports"
+        );
+
+        let climb = outside.join("../Private/secret.mp4");
+        let (st, _) = get_off_thread(url(&climb)).await;
+        assert_eq!(st, 403, "a `..` climb out of an authorized root is refused");
+
+        #[cfg(unix)]
+        {
+            let (st, _) = get_off_thread(url(&outside.join("link.mp4"))).await;
+            assert_eq!(st, 403, "a symlink escaping the authorized root is refused");
+        }
+
+        // Sibling-prefix: /…/Deliveries-evil must not pass as /…/Deliveries.
+        let sibling = tmp.path().join("Deliveries-evil");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let sibling_file = sibling.join("audio.mp3");
+        std::fs::write(&sibling_file, b"SIBLING").unwrap();
+        let (st, _) = get_off_thread(url(&sibling_file)).await;
+        assert_eq!(
+            st, 403,
+            "root membership is per path COMPONENT, not a string prefix"
+        );
+
+        // NO FALLBACK: the requested file is gone, a same-named one exists in
+        // <project>/exports — the answer is 404, never those other bytes.
+        std::fs::remove_file(&fresh).unwrap();
+        let (st, body) = get_off_thread(url(&fresh)).await;
+        assert_eq!(st, 404, "a missing export must 404");
+        assert!(
+            body.is_empty(),
+            "and must NOT be substituted by the same-named file inside the project"
+        );
+
+        let (st, _) =
+            get_off_thread(format!("{base}/api/export-file?path=exports/audio.mp3")).await;
+        assert_eq!(st, 400, "a relative path has no unambiguous meaning here");
+        let (st, _) = get_off_thread(format!("{base}/api/export-file")).await;
+        assert_eq!(st, 400, "a missing ?path= is a bad request");
+
+        crate::output_paths::set_session_output_dir(None);
+    }
+
+    /// P1, the silent half: with an output folder configured, a BASENAME request
+    /// used to answer 200 with the stale same-named file from
+    /// `<project>/exports` (proven on Linux: 53,849 B served for a 3,848 B fresh
+    /// export). Two different files, one name → refuse (409) and say so; never
+    /// pick one. Unambiguous cases keep their exact previous behavior.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn export_route_refuses_ambiguous_relative_request() {
+        let _guard = OUTPUT_DIR_TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("p.cutproj");
+        let state = open_project(&proj).await;
+        std::fs::create_dir_all(proj.join("exports")).unwrap();
+        std::fs::write(proj.join("exports/audio.mp3"), b"STALE-INSIDE").unwrap();
+        std::fs::write(proj.join("exports/only-inside.mp3"), b"UNIQUE-INSIDE").unwrap();
+        let outside = tmp.path().join("Deliveries");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("audio.mp3"), b"FRESH-OUTSIDE-DIFFERENT").unwrap();
+
+        let server = spawn_test_server(build_router(state, None)).await;
+        let base = server.base_url.clone();
+
+        // No output folder configured → nothing is ambiguous, behavior unchanged.
+        crate::output_paths::set_session_output_dir(None);
+        let (st, body) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
+        assert_eq!(st, 200, "the plain project-relative case must keep working");
+        assert_eq!(body, b"STALE-INSIDE");
+
+        // Output folder holds a DIFFERENT file of the same name → ambiguous.
+        crate::output_paths::set_session_output_dir(Some(outside.clone()));
+        let (st, _) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
+        assert_eq!(
+            st, 409,
+            "two different files named audio.mp3 → refuse, never serve the stale one"
+        );
+
+        // A name that exists in only one place is still unambiguous.
+        let (st, body) = get_off_thread(format!("{base}/api/export/only-inside.mp3")).await;
+        assert_eq!(st, 200, "no rival candidate → serve as before");
+        assert_eq!(body, b"UNIQUE-INSIDE");
+
+        // Output folder POINTING AT the exports dir: same file through two
+        // roots is not a conflict.
+        crate::output_paths::set_session_output_dir(Some(proj.join("exports")));
+        let (st, body) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
+        assert_eq!(
+            st, 200,
+            "one file reachable through two roots is not ambiguous"
+        );
+        assert_eq!(body, b"STALE-INSIDE");
+
+        // Traversal out of exports/ is still refused with the output dir set.
+        crate::output_paths::set_session_output_dir(Some(outside.clone()));
+        let (st, _) = get_off_thread(format!("{base}/api/export/..%2fproject.json")).await;
+        assert_eq!(st, 400, "traversal stays refused");
+
+        crate::output_paths::set_session_output_dir(None);
+    }
+
+    /// Percent-encode a filesystem path for the `?path=` query (test-local: the
+    /// UI does this with encodeURIComponent).
+    fn urlencoding_path(p: &str) -> String {
+        p.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
 }
 
 /// Resolve the caller's Actor from the optional `x-cut-actor` header
@@ -760,9 +991,25 @@ async fn serve_filmstrip(
 
 /// GET /api/export/*path — serve a file from the CURRENT project's `exports/`
 /// subtree (render.bundle packs + export.* artifacts) for download/preview.
+/// The path is PROJECT-RELATIVE by contract: it is resolved against
+/// `<project>/exports` and nothing else, which keeps the URL portable when a
+/// project folder is moved or copied (an old receipt still resolves).
 /// FENCED: rejects `..`/backslashes, canonicalizes, verifies the target stays
 /// inside `exports/`, and suffix-allowlists media/caption/interchange types.
-/// Full-body 200 (no range — download links don't need it); headers ignored.
+///
+/// AMBIGUITY REFUSAL (the silent-wrong-file half of the 0.6.105 export defect):
+/// a relative request carries no information about WHICH root the caller meant.
+/// When the same relative path also names a DIFFERENT existing file under
+/// another authorized export root — the state a user reaches by pointing
+/// "Choose default export folder…" at a folder that already holds a same-named
+/// export — this route used to answer 200 with the `<project>/exports/` copy.
+/// Proven byte-for-byte: a fresh outside `audio.mp3` (782,324 B) while the
+/// request returned the stale inside `audio.mp3` (760,052 B), no error at all.
+/// Showing the user a different file than the one they exported is worse than
+/// any failure, so an ambiguous request is refused (409) and names both
+/// candidates plus the unambiguous URL to use. Only the genuinely ambiguous
+/// case refuses: with no second candidate, or when both candidates resolve to
+/// the SAME file, behavior is exactly as before.
 async fn serve_export_path(
     State(state): State<AppState>,
     Path(path): Path<String>,
@@ -772,13 +1019,14 @@ async fn serve_export_path(
     if path.is_empty() || path.contains("..") || path.contains('\\') {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
-    let dir = {
+    let project_dir = {
         let guard = state.project.read().await;
         match guard.as_ref() {
-            Some(store) => store.dir.join("exports"),
+            Some(store) => store.dir.clone(),
             None => return (StatusCode::NOT_FOUND, "no project open").into_response(),
         }
     };
+    let dir = project_dir.join("exports");
     let (canon_dir, canon_path) = match (dir.canonicalize(), dir.join(&path).canonicalize()) {
         (Ok(d), Ok(p)) => (d, p),
         _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
@@ -788,6 +1036,112 @@ async fn serve_export_path(
     if !canon_path.starts_with(&canon_dir) {
         return (StatusCode::BAD_REQUEST, "path escapes exports dir").into_response();
     }
+    // Ambiguity refusal: does the SAME relative path name a different existing
+    // file under another authorized export root? `starts_with` on the candidate
+    // keeps a symlink that escapes its root from counting as a rival (it is not
+    // authorized, so it must not turn a good request into a refusal either).
+    for root in crate::output_paths::authorized_export_read_roots(&project_dir) {
+        if root == canon_dir {
+            continue;
+        }
+        if let Ok(rival) = root.join(&path).canonicalize() {
+            if rival != canon_path && rival.starts_with(&root) && rival.is_file() {
+                return (
+                    StatusCode::CONFLICT,
+                    format!(
+                        "ambiguous export request: '{path}' names two different files — {} and {}. \
+                         Request the exact file with GET /api/export-file?path=<absolute path>.",
+                        canon_path.display(),
+                        rival.display()
+                    ),
+                )
+                    .into_response();
+            }
+        }
+    }
+    serve_authorized_export(canon_path, &headers).await
+}
+
+/// GET /api/export-file?path=<ABSOLUTE path> — serve one exact export file.
+///
+/// Why this exists next to `/api/export/*path`: the relative form cannot name a
+/// file outside `<project>/exports`, yet the engine legitimately writes exports
+/// into the folder the user chose with `project.set_output_dir` ("Choose default
+/// export folder…"). The UI used to fold such an absolute path into the relative
+/// route, which either 404'd (path outside the fence) or — worse — resolved to a
+/// same-named file inside the project and played the WRONG export. This route
+/// takes the absolute path verbatim, so the request states exactly one file.
+///
+/// FENCED to explicitly authorized roots only
+/// (`output_paths::authorized_export_read_roots`: the project's exports subtree,
+/// `CUTD_OUTPUTS_DIR`, the session output dir). Canonicalization happens FIRST,
+/// so `..` segments and symlinks are resolved before the membership test —
+/// `starts_with` then compares whole path components, never a string prefix
+/// (`/out-evil` is not inside `/out`). NO FALLBACK: a path that does not exist,
+/// is not a file, or is not inside an authorized root is refused. It is never
+/// retried as a name inside `<project>/exports`, because answering with a
+/// different file than the one asked for is the defect this route fixes.
+async fn serve_export_file(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    use axum::http::StatusCode;
+    let Some(raw) = params
+        .get("path")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "missing ?path= (absolute path of the export to serve)",
+        )
+            .into_response();
+    };
+    let requested = std::path::PathBuf::from(raw);
+    if !requested.is_absolute() {
+        // A relative path has no meaning here — it would have to be guessed
+        // against a root, which is exactly the guessing this route removes.
+        return (
+            StatusCode::BAD_REQUEST,
+            "path must be absolute — use GET /api/export/<relative path> for a project-relative export",
+        )
+            .into_response();
+    }
+    let project_dir = {
+        let guard = state.project.read().await;
+        match guard.as_ref() {
+            Some(store) => store.dir.clone(),
+            None => return (StatusCode::NOT_FOUND, "no project open").into_response(),
+        }
+    };
+    let Ok(canon_path) = requested.canonicalize() else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    if !canon_path.is_file() {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let roots = crate::output_paths::authorized_export_read_roots(&project_dir);
+    if !roots.iter().any(|root| canon_path.starts_with(root)) {
+        return (
+            StatusCode::FORBIDDEN,
+            "path is outside the authorized export folders (the project's exports/ subtree and the chosen output folder)",
+        )
+            .into_response();
+    }
+    serve_authorized_export(canon_path, &headers).await
+}
+
+/// Serve an export file whose path a caller-facing route has ALREADY fenced to
+/// an authorized root. Owns the suffix allowlist, the range read and the
+/// response construction for both export routes so the two can never drift —
+/// the fencing lives in the callers, the byte-serving lives here, and nothing
+/// in this function is reachable with a path the callers did not authorize.
+async fn serve_authorized_export(
+    canon_path: std::path::PathBuf,
+    headers: &axum::http::HeaderMap,
+) -> Response {
+    use axum::http::StatusCode;
     let ext = canon_path
         .extension()
         .and_then(|e| e.to_str())

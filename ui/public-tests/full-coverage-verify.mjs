@@ -2693,6 +2693,28 @@ async function secExport(page) {
     await page.keyboard.press('Escape').catch(() => {}); await sleep(150)
   }
 
+  // Footage QC profile select (shared state with the render menu's Footage
+  // picker) — publish exports forward it as export.publish{profile}. Drive the
+  // select and read the value back (the wire contract itself is pinned by the
+  // lib.test.ts fetch-capture checks), then RESET to auto so every export probe
+  // below keeps today's deterministic arg shape.
+  {
+    if ((await page.locator('[data-cut-export-menu]').count()) === 0) { await page.locator('[data-cut-export-btn]').click(); await sleep(300) }
+    const exportProfile = page.locator('[data-cut-export-profile]').first()
+    await probe(page, {
+      surface: S, name: 'export-profile', sel: exportProfile,
+      group: page.locator('[data-cut-export-menu]').first(), groupName: 'export-menu',
+      doClick: async () => { await exportProfile.selectOption('silent_screen_demo') },
+      assertResult: async () => {
+        const chosen = await exportProfile.inputValue()
+        await exportProfile.selectOption('auto')
+        const reset = await exportProfile.inputValue()
+        return { ok: chosen === 'silent_screen_demo' && reset === 'auto', detail: `profile=${chosen}; reset=${reset}` }
+      },
+    })
+    await page.keyboard.press('Escape').catch(() => {}); await sleep(150)
+  }
+
   if (!NATIVE_OS_ACTIONS.enabled) {
     if ((await page.locator('[data-cut-export-menu]').count()) === 0) { await page.locator('[data-cut-export-btn]').click(); await sleep(300) }
     await probe(page, {
@@ -4949,11 +4971,20 @@ async function secRecord(page) {
         assertResult: async () => {
           const exported = liveResponses['screen_record.export']
           const path = resolveDriverPath(exported?.result?.path || '')
+          // The UI's own note is part of the evidence, not a nicety. When the
+          // export fails BEFORE the verb (a refused Save As folder), there is no
+          // response to report and `ok=undefined` alone says nothing about why —
+          // exactly the dead end the 0.6.106 macOS receipt hit. The note carries
+          // the product's stated reason, so capture it whatever the outcome.
+          const ui = await page.evaluate(() => ({
+            note: document.querySelector('[data-cut-rec-export-note]')?.textContent?.trim() || '',
+            error: document.querySelector('[data-cut-rec-error]')?.textContent?.trim() || '',
+          })).catch(() => ({ note: '', error: '' }))
           return {
             ok: !!exported?.ok
               && basenameHostPath(exported?.result?.path || '') === basenameHostPath(liveRecordOutput)
               && fileBytes(path) > 0,
-            detail: `screen_record.export ok=${exported?.ok}; selectedPath=${basenameHostPath(exported?.result?.path || '') === basenameHostPath(liveRecordOutput)}; bytes=${fileBytes(path)}`,
+            detail: `screen_record.export ok=${exported?.ok}${exported?.error ? ` error=${exported.error.code || '?'}: ${exported.error.message || ''}` : ''}; selectedPath=${basenameHostPath(exported?.result?.path || '') === basenameHostPath(liveRecordOutput)}; bytes=${fileBytes(path)}; note=${ui.note || 'none'}; panelError=${ui.error || 'none'}`,
           }
         },
       })
@@ -5657,6 +5688,11 @@ async function captureVerbResp(page, name, act, timeoutMs = 90000) {
             result: document.querySelector('[data-cut-studio-result]')?.getAttribute('data-cut-studio-result') || '',
             error: text('[data-cut-rec-error]'),
             note: text('[data-cut-rec-finalizing], [data-cut-rec-done]'),
+            // The EXPORT note is its own element; the finalize/done note above
+            // never carries an export failure, so a timed-out screen_record.export
+            // used to produce a diagnostic that said nothing about the export.
+            exportNote: text('[data-cut-rec-export-note]'),
+            outputPath: document.querySelector('[data-cut-rec-output-path]')?.getAttribute('data-cut-rec-output-path') || '',
           },
         }
       }).catch((error) => ({ diagnosticError: String(error?.message || error) }))
@@ -7835,13 +7871,46 @@ async function secComments(page) {
     },
     assertResult: async () => {
       const link = page.locator('[data-cut-review-package]').first()
+      // Report the FAILING verb's own error. This row prints the render job's
+      // error because a broken render is the common upstream cause — but when the
+      // render is done and comment.export itself returns ok:false, the old detail
+      // said only "export=false" and the actual message was recoverable from
+      // nowhere (the JSON diagnostic above is gated on the RENDER failing). Both
+      // errors now appear, each labelled with the verb it came from.
+      const exportError = handoffExport === undefined || handoffExport === null
+        ? ' (no comment.export response arrived)'
+        : handoffExport.ok
+          ? ''
+          : ` (${handoffExport.error?.code || 'no-code'}: ${String(handoffExport.error?.message || 'no message')}${handoffExport.error?.suggested_action ? ` · ${handoffExport.error.suggested_action}` : ''})`
       return {
         ok: handoffRenderJob?.state === 'done' && !!handoffExport?.ok &&
           !!handoffExport.result?.render_hash && await link.count() === 1,
-        detail: `render=${handoffRenderJob?.state || handoffRender.error?.code || 'missing'}${handoffRenderJob?.error ? ` (${JSON.stringify(handoffRenderJob.error).slice(0, 1_000)})` : ''}; export=${handoffExport?.ok}; review link=${await link.count()}`,
+        detail: `render=${handoffRenderJob?.state || handoffRender.error?.code || 'missing'}${handoffRenderJob?.error ? ` (${JSON.stringify(handoffRenderJob.error).slice(0, 1_000)})` : ''}; export=${handoffExport?.ok}${exportError}; render_hash=${handoffExport?.result?.render_hash ? 'present' : 'missing'}; review link=${await link.count()}`,
       }
     },
   })
+  // Durable diagnostic for a FAILED comment.export, the sibling of the render
+  // diagnostic above. Same reason it exists: the action-row summary is
+  // human-sized, and --clean-after reclaims the staged project tree, so the full
+  // envelope has to be written out while it still exists. Gated on the EXPORT
+  // failing (the render gate above cannot fire for this case — render=done is
+  // exactly when this one is needed).
+  if (!handoffExport?.ok && process.env.FCV_RESULT_RECEIPT) {
+    const exportDiagnosticPath = join(
+      dirname(process.env.FCV_RESULT_RECEIPT),
+      'comments-export-failure.json',
+    )
+    writeFileSync(exportDiagnosticPath, `${JSON.stringify({
+      schema: 'shellx-cut/fcv-comments-export-failure/1',
+      export_response: handoffExport ?? null,
+      render_response: handoffRender,
+      render_job: handoffRenderJob,
+      review_link_count: await page.locator('[data-cut-review-package]').count(),
+      source_media: SCENE,
+      project: await state(),
+    }, null, 2)}\n`)
+    console.error(`[fcv] comment.export failed — envelope written to ${exportDiagnosticPath}`)
+  }
   const feedbackName = `fcv-review-feedback-${seq++}.json`
   const feedbackDriverPath = join(synthDriverDir, feedbackName)
   const feedbackEnginePath = joinHostPath(synthEngineDir, feedbackName)
@@ -7881,7 +7950,13 @@ async function secComments(page) {
     sel: page.locator('[data-cut-action="comment-import-feedback"]'),
     group: panel,
     groupName: 'comments-rail',
-    clickNa: handoffExport?.ok ? NATIVE_PICKER_CLICK_NA : 'review package export did not produce a feedback binding',
+    // A cascade row must name what it cascaded FROM. Reading only "did not produce
+    // a feedback binding" cost a whole diagnosis round at 0.6.106: the row is
+    // strict_unverified purely because comment.export failed, and the reason it
+    // failed belongs right here.
+    clickNa: handoffExport?.ok
+      ? NATIVE_PICKER_CLICK_NA
+      : `review package export did not produce a feedback binding — comment.export ${handoffExport ? `ok=false (${handoffExport.error?.code || 'no-code'}: ${String(handoffExport.error?.message || 'no message')})` : 'returned no response'}`,
     nativeAction: {
       mode: 'select',
       path: feedbackEnginePath,
@@ -8586,17 +8661,30 @@ async function secResidualVerbs(page) {
     const rb = await verb('render.bundle', { range_ms: [0, 1500], platforms: ['9:16'], preset: 'draft', rationale: 'fcv: render.bundle (Clips-panel social Bundle button)' })
     let done = rb.ok
     let packageResult = null
+    // A bundle job has THREE distinguishable outcomes and the row used to print
+    // the same `terminal=false status=?` for two of them: awaitJob returns null on
+    // TIMEOUT and returns the job itself when it FAILED (a failed job carries an
+    // `error` and no `result`, so `status` reads '?'). At 0.6.106 that ambiguity
+    // cost a whole diagnosis round — the job had failed in 4 seconds with a
+    // precise io error the row simply threw away. Name the state, and carry the
+    // job's own error.
+    let jobState = rb.ok ? 'not-a-job' : 'verb-rejected'
+    let jobError = rb.ok ? '' : ` verbError=${rb.error?.code || 'no-code'}: ${String(rb.error?.message || 'no message')}`
     if (rb.result?.job_id) {
       const j = await awaitJob(rb.result.job_id)
       done = j?.state === 'done'
       packageResult = j?.result || null
+      jobState = j ? j.state : 'never-terminal (awaitJob deadline expired)'
+      jobError = j?.error
+        ? ` jobError=${j.error.code || 'no-code'}: ${String(j.error.message || 'no message')}${j.error.cause ? ` (${String(j.error.cause)})` : ''}`
+        : ''
     }
     const bid = rb.result?.bundle_id || rb.result?.id || rb.result?.bundle?.id
     const packageBound = ['ready', 'needs_review', 'blocked'].includes(packageResult?.status) &&
       typeof packageResult?.pass === 'boolean' && Array.isArray(packageResult?.issues) &&
       String(packageResult?.manifest_hash || '').startsWith('sha256:') && fileBytes(resolveDriverPath(packageResult?.manifest_path)) > 100
     rec(S, 'render.bundle(verb-level · Clips-panel Bundle)', { present: 'na', render: 'na', click: 'na', result: (rb.ok && done !== false && packageBound) ? 'pass' : 'fail' },
-      `render.bundle{platforms:[9:16],preset:draft,range:[0,1500]} ok=${rb.ok} terminal=${done} bundle=${bid ?? '?'} status=${packageResult?.status ?? '?'} manifestBound=${packageBound} — the Clips-panel "Bundle" button drives this; verb-level RESULT, flagged not faked`)
+      `render.bundle{platforms:[9:16],preset:draft,range:[0,1500]} ok=${rb.ok} job=${jobState} terminal=${done} bundle=${bid ?? '?'} status=${packageResult?.status ?? '?'} manifest=${packageResult?.manifest_path ?? 'none'} manifestBound=${packageBound}${jobError} — the Clips-panel "Bundle" button drives this; verb-level RESULT, flagged not faked`)
   }
 
   // project.forget — drop a project from the recent index (forget ≠ delete: the .cutproj

@@ -244,7 +244,7 @@ async function checkGradeContrast(page) {
   await selectClip(page, vid);
   const f0 = await frame(1500);
   await openColorTab(page);
-  await setGradeSlider(page, "contrast", 1.8); // range 0..2, step .05 — well off neutral 1.0
+  await setGradeSlider(page, "contrast", 1.8); // range 0..2, step .01 — well off neutral 1.0
   await applyGrade(page);
   await sleep(900);
   const f1 = await frame(1500);
@@ -263,7 +263,7 @@ async function checkGradeGamma(page) {
   await selectClip(page, vid);
   const f0 = await frame(1500);
   await openColorTab(page);
-  await setGradeSlider(page, "gamma", 2.2); // range .1..3, step .05 — off neutral 1.0
+  await setGradeSlider(page, "gamma", 2.2); // range .1..3, step .01 — off neutral 1.0
   await applyGrade(page);
   await sleep(900);
   const f1 = await frame(1500);

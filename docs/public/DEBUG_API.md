@@ -59,7 +59,8 @@ All verbs go through one route; the rest are read-side support surfaces.
 | `/api/frame?at_ms=` | GET | composited frame at a timeline position — the agent's eyes |
 | `/api/agent` | GET | `shellx-cut/agent-docs/2`: machine-readable API/docs discovery, exact running executable, MCP proxy/standalone metadata, copyable client config, and self-test contract |
 | `/api/agent-doc/*path` | GET | serves the agent docs (e.g. `skill/shellx-cut/SKILL.md`) over HTTP for installed-app onboarding |
-| `/api/export/*path` | GET | download rendered artifacts, fenced to the open project's `exports/` subtree |
+| `/api/export/*path` | GET | download rendered artifacts by PROJECT-RELATIVE path, resolved against the open project's `exports/` subtree. Refuses (409) when the same relative name also matches a different file in the chosen output folder — an ambiguous request is never answered with a guess |
+| `/api/export-file?path=` | GET | download ONE exact export by absolute path — the shape that can name a file in the folder chosen with `project.set_output_dir`. Fenced to the authorized export roots (project `exports/` subtree, `CUTD_OUTPUTS_DIR`, the chosen output folder); a path that is missing or outside them is refused, never substituted |
 | `/api/source/{asset}` | GET | stream a registered asset's original source (seekable, chunked; fenced to the asset registry) |
 | `/api/library-blob/{file}` | GET | fenced blob serving for library-stored media |
 | `/api/library-poster?id=` | GET | library item poster/thumbnail (id-fenced via the library manifest) |

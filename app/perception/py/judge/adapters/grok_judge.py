@@ -126,7 +126,7 @@ def detect() -> dict:
     if path:
         try:
             cp = subprocess.run([path, "--version"], capture_output=True,
-                                text=True, timeout=15)
+                                text=True, encoding="utf-8", timeout=15)
             entry["version"] = cp.stdout.strip() or cp.stderr.strip()
         except (subprocess.TimeoutExpired, OSError) as e:
             entry["version_error"] = str(e)
@@ -301,7 +301,7 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
         cmd += ["--model", model]            # model id, e.g. "grok-build"
 
     try:
-        cp = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd_abs,
+        cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", cwd=cwd_abs,
                             timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return None, {"available": True, "timed_out": True}, (

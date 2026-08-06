@@ -1,7 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react'
 import type { Project } from '../../lib/client'
 import { Icon } from '../../icons'
-import type { LaidItem } from './layout'
+import { linkedSiblings, type LaidItem } from './layout'
+import { assetHasAudio } from '../../lib/placement'
 import { adjacentGapSlot, assetBasename, assetMediaKind, isContiguousRun } from './ClipContextMenuModel'
 
 export type ClipMenuState = { x: number; y: number; itemId: string; atMs: number }
@@ -99,9 +100,17 @@ export default function ClipContextMenu({
   const cutMs = menu.atMs
   const insideSpan = !!it && cutMs > it.startMs && cutMs < it.startMs + it.durMs
   const canMedia = isVideo || isAudio
+  // Add-transition enable-gate in EDITORIAL time — the SAME neighbour scan
+  // crossfadeAdjacent (useTimelineClipActions) resolves before dispatching
+  // edit.crossfade (c68b449c moved the dispatch to editorial time; this gate
+  // must agree with it). Laid adjacency disagrees twice over: an upstream
+  // crossfade rewinds every later laid start, and a crossfade ON this very
+  // seam pulls the neighbour's laid start into this clip's tail — so the menu
+  // rendered the entry disabled on seams the action would in fact crossfade.
   const hasAdjacentSeam = !!it && allItems.some((a) =>
     a.trackId === it.trackId && a.kind !== 'gap' && a.id !== it.id &&
-    (a.startMs === it.startMs + it.durMs || a.startMs + a.durMs === it.startMs),
+    (a.editorialStartMs === it.editorialStartMs + it.durMs ||
+      a.editorialStartMs + a.durMs === it.editorialStartMs),
   )
   const hasVideoSeam = isVideo && !!it && allItems.some((a) =>
     a.trackId === it.trackId && a.kind === 'video' && a.id !== it.id &&
@@ -112,12 +121,37 @@ export default function ClipContextMenu({
   const firstAudio = project?.tracks.find((t) => t.kind === 'audio')?.id
   const isOverlayTrack = !!tid && tid !== firstVideo && tid !== firstAudio
   const isStill = isVideo && !!it?.isImage
-  const showSpeed = canMedia && !isStill
-  const showFreeze = isVideo && !isStill
+  // Title/shape overlay clips are rendered .mov media on a `title*`-named
+  // track — the same track-id convention the Inspector's title/shape editor
+  // routing keys on (panels/Inspector/index.tsx). layout.ts kinds every
+  // non-audio clip plain 'video' (LaidItem carries no title marker yet — the
+  // 0.6.107 menu regroup owns that plumbing), so without this flag a title
+  // card gets the full media menu (Stabilize / Blur faces / Speed on rendered
+  // text). Class filter, per the 2026-08-06 context-menu audit: entries whose
+  // verbs only make sense for real footage gate on isMediaVideo below.
+  const isTitleClip = isVideo && !!tid && tid.startsWith('title')
+  const isMediaVideo = isVideo && !isTitleClip
+  const showSpeed = canMedia && !isStill && !isTitleClip
+  const showFreeze = isMediaVideo && !isStill
   const showPicture = isVideo
-  const showStabilize = isVideo && !isStill
+  const showStabilize = isMediaVideo && !isStill
   const showAudioGrp = hasAudio
-  const showPrivacy = isVideo
+  const showPrivacy = isMediaVideo
+  // Detach audio = EXTRACT the asset's audio stream onto its own audio track
+  // (edit.detach_audio → cut_core::plan_detach_audio). Gate on the SAME fact
+  // the engine accepts on — probe.has_audio — NOT on a linked timeline
+  // sibling: the verb's primary case is a video clip whose asset HAS audio
+  // but whose audio is not on the timeline yet (plain edit.insert → silent
+  // render); a sibling-exists gate would hide the entry exactly there. When a
+  // sibling already exists the verb is a clean informational no-op, so the
+  // entry stays. Stills, silent clips, and title/shape renders (title_shape.rs
+  // probes has_audio:false) can only be rejected (NoAudio) → never shown.
+  const canDetachAudio = isVideo && !!it?.asset && assetHasAudio(project, it.asset)
+  // Remove propagates to the EXACT linked audio counterpart (removeItemById →
+  // linkedSiblings, the c68b449c linked-A/V rule; ambiguous matches refuse).
+  // Compute the same fact here so the Remove tooltips DISCLOSE the propagation
+  // truthfully — exactly when it will actually happen.
+  const removesLinkedAudio = !!it && isVideo && linkedSiblings(it, allItems).length === 1
   const sourceAssets = Object.entries(project?.assets ?? {}).filter(([id, asset]) => {
     if (id === it?.asset) return false
     const mediaKind = assetMediaKind(asset)
@@ -162,7 +196,9 @@ export default function ClipContextMenu({
   return (
     <>
       <div className="tl-ctx-backdrop" data-cut-ctx-backdrop onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
-      <div className="tl-ctx" role="menu" data-cut-clip-menu style={{ left: menu.x, top: menu.y }}
+      {/* Class tag mirrors the caption branch's data-cut-clip-kind so rig
+          lanes / the debug API can assert which menu class rendered. */}
+      <div className="tl-ctx" role="menu" data-cut-clip-menu data-cut-clip-kind={isTitleClip ? 'title' : isAudio ? 'audio' : 'video'} style={{ left: menu.x, top: menu.y }}
         ref={(el) => { if (el) clampMenu(el, menu.x, menu.y) }}
       >
         <span className="tl-ctx__label" aria-hidden="true">Clipboard</span>
@@ -204,7 +240,10 @@ export default function ClipContextMenu({
           onClick={() => { splitItemAt(menu.itemId, menu.atMs); onClose() }}>
           <Icon name="split" size={14} /> Split here <kbd className="tl-ctx__kbd">S</kbd>
         </button>
-        {hasVideoSeam && (
+        {/* J/L cuts stagger PICTURE vs SOUND at a seam — meaningless for
+            title/shape renders (no audio stream), so they are class-filtered
+            on top of the (deliberately laid, split_edit EDL-keyed) seam test. */}
+        {isMediaVideo && hasVideoSeam && (
           <>
             <button className="tl-ctx__item" data-cut-ctx="split-edit-j" role="menuitem"
               title="J-cut — start the next scene's audio before its picture. The audio must be detached at the cut."
@@ -242,16 +281,31 @@ export default function ClipContextMenu({
 
         <span className="tl-ctx__sep" aria-hidden="true" />
         <span className="tl-ctx__label" aria-hidden="true">Delete</span>
+        {/* Both Remove paths propagate to the exact linked audio counterpart
+            (removeItemById) — the tooltip discloses that whenever it will
+            happen, the same trust-story pattern the rest of the app uses. */}
         <button className="tl-ctx__item tl-ctx__item--danger" data-cut-ctx="remove" role="menuitem"
+          title={removesLinkedAudio
+            ? 'Remove this clip AND its linked audio, closing the gap (Del)'
+            : 'Remove this clip and close the gap (Del)'}
           onClick={() => { void removeItemById(menu.itemId, true); onClose() }}>
           <Icon name="rippleDelete" size={14} /> Remove clip <kbd className="tl-ctx__kbd">Del</kbd>
         </button>
         <button className="tl-ctx__item" data-cut-ctx="remove-gap" role="menuitem"
-          title="Remove this clip but keep the gap (⌥Del)"
+          title={removesLinkedAudio
+            ? 'Remove this clip AND its linked audio, keeping the gap (⌥Del)'
+            : 'Remove this clip but keep the gap (⌥Del)'}
           onClick={() => { void removeItemById(menu.itemId, false); onClose() }}>
           <Icon name="liftDelete" size={14} /> Remove, keep gap <kbd className="tl-ctx__kbd">⌥Del</kbd>
         </button>
 
+        {/* Replace / Fit-to-fill / Nest swap or collapse the clip's SOURCE
+            media — on a title/shape they would sever the title.update /
+            shape.update editing identity (the render is regenerated from the
+            title text, not swappable footage), so the section is
+            class-filtered for title clips. */}
+        {!isTitleClip && (
+          <>
         <span className="tl-ctx__sep" aria-hidden="true" />
         <span className="tl-ctx__label" aria-hidden="true">Replace</span>
         <button className="tl-ctx__item" data-cut-ctx="replace" role="menuitem"
@@ -305,6 +359,8 @@ export default function ClipContextMenu({
           onClick={() => { void nestSelection(); onClose() }}>
           <Icon name="layers" size={14} /> Nest selection{canNest ? ` (${nestSel.length})` : ''}
         </button>
+          </>
+        )}
 
         {showSpeed && (
           <>
@@ -354,21 +410,29 @@ export default function ClipContextMenu({
           <>
             <span className="tl-ctx__sep" aria-hidden="true" />
             <span className="tl-ctx__label" aria-hidden="true">Picture</span>
-            <button className="tl-ctx__item" data-cut-ctx="color-grade" role="menuitem"
-              title="Open the Color tab to grade this clip"
-              onClick={() => { onSelect([menu.itemId]); document.dispatchEvent(new CustomEvent('cut:open-grade')); onClose() }}>
-              <Icon name="grade" size={14} /> Color grade…
-            </button>
+            {/* Color grade + Crop are footage-class; a title keeps ONLY
+                Transform (position/scale/opacity of the overlay). Crop even
+                dispatches the identical cut:open-layer event as Transform, so
+                the title menu loses nothing by filtering it. */}
+            {isMediaVideo && (
+              <button className="tl-ctx__item" data-cut-ctx="color-grade" role="menuitem"
+                title="Open the Color tab to grade this clip"
+                onClick={() => { onSelect([menu.itemId]); document.dispatchEvent(new CustomEvent('cut:open-grade')); onClose() }}>
+                <Icon name="grade" size={14} /> Color grade…
+              </button>
+            )}
             <button className="tl-ctx__item" data-cut-ctx="transform" role="menuitem"
               title="Open Transform / Layer for position, scale, and opacity"
               onClick={() => { onSelect([menu.itemId]); document.dispatchEvent(new CustomEvent('cut:open-layer')); onClose() }}>
               <Icon name="transform" size={14} /> Transform…
             </button>
-            <button className="tl-ctx__item" data-cut-ctx="crop" role="menuitem"
-              title="Open Transform / Layer to crop this clip"
-              onClick={() => { onSelect([menu.itemId]); document.dispatchEvent(new CustomEvent('cut:open-layer')); onClose() }}>
-              <Icon name="crop" size={14} /> Crop…
-            </button>
+            {isMediaVideo && (
+              <button className="tl-ctx__item" data-cut-ctx="crop" role="menuitem"
+                title="Open Transform / Layer to crop this clip"
+                onClick={() => { onSelect([menu.itemId]); document.dispatchEvent(new CustomEvent('cut:open-layer')); onClose() }}>
+                <Icon name="crop" size={14} /> Crop…
+              </button>
+            )}
             {showStabilize && (
               <button className="tl-ctx__item" data-cut-ctx="stabilize" role="menuitem"
                 title="Smooth out camera shake"
@@ -387,7 +451,7 @@ export default function ClipContextMenu({
           <Icon name="crossfade" size={14} /> Add transition
         </button>
 
-        {isVideo && (
+        {canDetachAudio && (
           <>
             <span className="tl-ctx__sep" aria-hidden="true" />
             <button className="tl-ctx__item" data-cut-ctx="detach-audio" role="menuitem"

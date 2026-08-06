@@ -157,12 +157,78 @@ export function rigExecutionEnv(repoRoot, rig, env = process.env, platform = pro
   return { env: executionEnv, defaults }
 }
 
-function commandExists(command, env) {
-  const pathParts = String(env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean)
-  const extensions = process.platform === 'win32'
-    ? String(env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')
+/**
+ * Read an environment variable without assuming the caller's capitalisation.
+ *
+ * Windows treats environment names case-insensitively and `process.env` is a
+ * proxy that honours that, so `process.env.PATH` works even when the shell
+ * spells the variable `Path`. Spreading it into a plain object — which
+ * `rigExecutionEnv` does (`{ ...env }`) — DROPS that proxy behaviour, so a
+ * later `env.PATH` reads `undefined` on a standard PowerShell/cmd session.
+ *
+ * That single lookup used to fail every `requiredCommands` check on Windows:
+ * `pathParts` came out empty, so preflight reported `command:cargo,
+ * command:ffprobe` missing with both plainly on PATH, and since all nine rigs
+ * declare `windows` in `platforms`, NO Windows rig receipt was producible from
+ * a normal shell. It only works from a shell that happens to export uppercase
+ * `PATH` (Git Bash), which is why the lookup can appear to work.
+ *
+ * @param {Record<string, string|undefined>} env environment object (possibly a plain spread copy)
+ * @param {string} name variable name in its conventional casing
+ * @returns {string|undefined} the value, or undefined when no spelling matches
+ */
+export function envValue(env, name) {
+  if (env[name] !== undefined) return env[name]
+  const wanted = name.toLowerCase()
+  const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === wanted)
+  return key === undefined ? undefined : env[key]
+}
+
+/**
+ * True when `path` is a real, runnable file rather than a placeholder.
+ *
+ * `existsSync` alone is not sufficient on Windows. A stock profile puts
+ * Microsoft-Store **app execution aliases** on PATH, ahead of any real
+ * interpreter — zero-byte reparse points that exist but cannot execute. One
+ * satisfied `command:python3`, so preflight passed and `perception-base-fallback`
+ * then died with "Python was not found; run without arguments to install from
+ * the Microsoft Store". Catching that is precisely preflight's job: it exists
+ * so a rig fails BEFORE spending build and test time.
+ *
+ * A zero-byte check is enough to separate the two — no real executable is empty.
+ *
+ * @param {string} path candidate executable path
+ * @returns {boolean} true when the file exists and has content
+ */
+function isRealExecutable(path) {
+  try {
+    const stat = statSync(path)
+    return stat.isFile() && stat.size > 0
+  } catch {
+    // Missing, unreadable, or a broken link — all "not usable" for preflight.
+    return false
+  }
+}
+
+/**
+ * Whether `command` resolves to a usable executable on the given environment's PATH.
+ *
+ * Exported for testing: both failure modes above are environment-shaped and
+ * cannot be reproduced from the repo's own shell, so they are covered by
+ * injecting a synthetic `env` rather than by trusting the host.
+ *
+ * @param {string} command bare command name, e.g. "cargo"
+ * @param {Record<string, string|undefined>} env environment to resolve against
+ * @param {string} platform node platform string; injectable so Windows semantics are testable off-Windows
+ * @returns {boolean} true when a real executable is found
+ */
+export function commandExists(command, env, platform = process.platform) {
+  const isWindows = platform === 'win32'
+  const pathParts = String(envValue(env, 'PATH') ?? '').split(isWindows ? ';' : ':').filter(Boolean)
+  const extensions = isWindows
+    ? String(envValue(env, 'PATHEXT') ?? '.EXE;.CMD;.BAT;.COM').split(';')
     : ['']
-  return pathParts.some((dir) => extensions.some((ext) => existsSync(join(dir, `${command}${ext}`))))
+  return pathParts.some((dir) => extensions.some((ext) => isRealExecutable(join(dir, `${command}${ext}`))))
 }
 
 function artifactPath(repoRoot, spec, env) {

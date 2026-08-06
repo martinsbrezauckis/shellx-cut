@@ -12,6 +12,8 @@
 // native events target that Webview rather than the generic app event bus.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { validShellUpdateState, type ShellUpdateState } from './updateState'
+
 type TauriGlobal = {
   core: { invoke: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T> }
   event: { listen: (event: string, cb: (e: { payload: unknown }) => void) => Promise<() => void> }
@@ -63,6 +65,98 @@ export async function setLaunchUpdatePreference(
     return validLaunchUpdatePreference(value) ? value : null
   } catch {
     return null
+  }
+}
+
+/**
+ * Read the shell's live update snapshot (update_state.rs). Null in a browser
+ * build or when the bridge/validation fails — callers render nothing then.
+ */
+export async function getShellUpdateState(): Promise<ShellUpdateState | null> {
+  const t = tauri()
+  if (!t) return null
+  try {
+    const value = await t.core.invoke<unknown>('get_update_state')
+    return validShellUpdateState(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Manual "Check for updates" (Settings > About). Deliberately independent of
+ * the automatic-check preference — the shell command performs one check on
+ * this explicit request and returns the post-check snapshot. Null = bridge
+ * unavailable (browser build) or an invalid reply.
+ */
+export async function checkForUpdatesNow(): Promise<ShellUpdateState | null> {
+  const t = tauri()
+  if (!t) return null
+  try {
+    const value = await t.core.invoke<unknown>('update_check_now')
+    return validShellUpdateState(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+/** Reply shape of `update_install_now` (the flow either restarts the app or
+ *  reports exactly why it did not). */
+export interface UpdateInstallReply {
+  ok: boolean
+  /** True when the user chose "Later" in the native confirm. */
+  cancelled?: boolean
+  /** Honest failure text when the install could not complete. */
+  error?: string
+}
+
+/**
+ * Ask the shell to install the offered update. The SHELL still runs the
+ * native confirm dialog and the signature-verified download+install — the
+ * webview can only request. On success the app restarts, so this promise may
+ * never resolve; on decline/failure it resolves with the honest reply. Null =
+ * bridge unavailable (browser build).
+ */
+export async function installUpdateNow(): Promise<UpdateInstallReply | null> {
+  const t = tauri()
+  if (!t) return null
+  try {
+    const value = await t.core.invoke<unknown>('update_install_now')
+    if (value && typeof value === 'object' && typeof (value as UpdateInstallReply).ok === 'boolean') {
+      return value as UpdateInstallReply
+    }
+    return { ok: false, error: 'the desktop shell returned an unexpected reply' }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Subscribe to shell update-state broadcasts (`cut:update-state`, emitted by
+ * update_state.rs on every transition). Same `window.__TAURI__.event.listen`
+ * path as onRecordHotkey (the engine-served remote origin holds
+ * core:event:allow-listen). Invalid payloads are dropped, not surfaced.
+ * Returns an unsubscribe fn; a no-op outside Tauri.
+ */
+export function onShellUpdateState(cb: (state: ShellUpdateState) => void): () => void {
+  const t = tauri()
+  if (!t) return () => {}
+  let off: (() => void) | null = null
+  let cancelled = false
+  t.event
+    .listen('cut:update-state', (event) => {
+      if (validShellUpdateState(event.payload)) cb(event.payload)
+    })
+    .then((unlisten) => {
+      // Unsubscribed before the listener registered ⇒ drop it immediately
+      // (mirrors onRecordHotkey — avoids a leaked listener across re-subscribes).
+      if (cancelled) unlisten()
+      else off = unlisten
+    })
+    .catch(() => {})
+  return () => {
+    cancelled = true
+    off?.()
   }
 }
 

@@ -2,7 +2,7 @@ import { useCallback, useState, type Dispatch, type SetStateAction } from 'react
 import { callVerb, type Marker, type Project } from '../../lib/client'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import { adjacentGapSlot, isContiguousRun } from './ClipContextMenuModel'
-import { shortDur, timecode, type LaidItem, type Seam, type TrackRow } from './layout'
+import { laidToEditorialMs, linkedSiblings, planLinkedSplit, shortDur, timecode, type LaidItem, type Seam, type TrackRow } from './layout'
 import { planRippleTrimAtPlayhead, sourceTrimAtTimelinePosition, type RippleTrimSide } from './rippleTrim'
 import { timelineEditFailureMessage } from './editFeedback'
 
@@ -87,15 +87,9 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     const anchor = c.allItems.find((item) => item.id === plan.clipId)
     if (!anchor || (anchor.kind !== 'video' && anchor.kind !== 'audio')) return
 
-    const linked = c.allItems.filter((item) =>
-      item.id !== anchor.id
-      && ((anchor.kind === 'video' && item.kind === 'audio') || (anchor.kind === 'audio' && item.kind === 'video'))
-      && item.asset === anchor.asset
-      && item.srcInMs === anchor.srcInMs
-      && item.srcOutMs === anchor.srcOutMs
-      && item.startMs === anchor.startMs
-      && item.durMs === anchor.durMs,
-    )
+    // Exact linked A/V counterpart — the shared engine-mirroring resolver
+    // (same criteria the server's resolve_linked_media applies).
+    const linked = linkedSiblings(anchor, c.allItems)
     if (linked.length > 1) {
       showNote('This clip has multiple linked-media candidates; detach the duplicate before trimming.')
       return
@@ -112,7 +106,10 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
       const groupId = targets.length > 1 ? `grp-ripple-trim-${crypto.randomUUID()}` : undefined
       const results = await Promise.all(targets.map((item) => callVerb('edit.ripple_delete', {
         track: item.trackId,
-        range_ms: [item.startMs, item.startMs + item.durMs],
+        // range_ms is EDITORIAL time (the engine's cumulative-track cursor,
+        // app/core/src/edit.rs ripple_delete): laid coords rewind after an
+        // upstream crossfade and would remove the wrong span.
+        range_ms: [item.editorialStartMs, item.editorialStartMs + item.durMs],
         ripple: true,
         rationale: `user ripple-trim ${side}: remove ${item.id} at playhead boundary`,
         ...(groupId ? { group_id: groupId } : {}),
@@ -137,34 +134,74 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     showNote(`Ripple trimmed clip ${side} to the playhead.`, 4000)
   }, [cfg, showNote])
 
+  /**
+   * Delete the selected clips — ripple (close the gap) or lift (leave it).
+   * THE delete implementation for every UI path (toolbar button, Del /
+   * Alt+Del keyboard): one place owns the linked-A/V and coordinate rules so
+   * the paths can't drift apart again.
+   * - Linked A/V: deleting a VIDEO clip also removes its exact linked audio
+   *   counterpart (linkedSiblings — the engine's resolve_linked_media
+   *   criteria). Import/insert place muxed files as v1 video + a1t audio;
+   *   without this the audio is orphaned and keeps the timeline long
+   *   (black-tail export). Several exact counterparts = refuse rather than
+   *   guess (engine ambiguity policy).
+   * - range_ms is EDITORIAL time (engine cumulative-track cursor), not laid.
+   * - All ops share one group_id so a single Ctrl+Z restores the whole set.
+   */
   const deleteSelection = useCallback(async (ripple: boolean) => {
     const c = cfg.current
-    const sel = c.allItems.filter((i) => c.selectedClipIds.includes(i.id) && i.kind !== 'gap')
+    const locked = (trackId: string) => c.rows.some((row) => row.id === trackId && row.locked)
+    const sel = c.allItems.filter((i) => c.selectedClipIds.includes(i.id) && i.kind !== 'gap' && !locked(i.trackId))
     if (!sel.length) return
-    const results = await Promise.all(sel.map((i) => runUserVerb('edit.ripple_delete', {
-      track: i.trackId,
-      range_ms: [i.startMs, i.startMs + i.durMs],
+    // Dedup by track + editorial start so a clip and its linked audio (or a
+    // multi-select that already includes both halves) aren't queued twice.
+    const ranges = new Map<string, { track: string; start: number; dur: number; id: string }>()
+    for (const i of sel) {
+      ranges.set(`${i.trackId}:${i.editorialStartMs}`, { track: i.trackId, start: i.editorialStartMs, dur: i.durMs, id: i.id })
+      if (i.kind !== 'video') continue
+      const sibs = linkedSiblings(i, c.allItems)
+      if (sibs.length > 1) {
+        showNote(`Clip ${i.id} has multiple linked-media candidates; detach the duplicate before deleting.`)
+        return
+      }
+      const sib = sibs[0]
+      if (sib && !locked(sib.trackId)) {
+        ranges.set(`${sib.trackId}:${sib.editorialStartMs}`, { track: sib.trackId, start: sib.editorialStartMs, dur: sib.durMs, id: sib.id })
+      }
+    }
+    const delGroup = ranges.size > 1 ? `grp-del-${crypto.randomUUID()}` : undefined
+    const results = await Promise.all([...ranges.values()].map((r) => runUserVerb('edit.ripple_delete', {
+      track: r.track,
+      range_ms: [r.start, r.start + r.dur],
       ripple,
       rationale: ripple
-        ? `user ripple-delete: ${i.id} on ${i.trackId} (gap closes) @ ${timecode(i.startMs)}`
-        : `user lift-delete: ${i.id} on ${i.trackId} (gap stays open) @ ${timecode(i.startMs)}`,
-    }, `Could not ${ripple ? 'ripple-delete' : 'lift'} clip ${i.id}.`)))
+        ? `user ripple-delete: ${r.id} on ${r.track} (gap closes) @ ${timecode(r.start)}`
+        : `user lift-delete: ${r.id} on ${r.track} (gap stays open) @ ${timecode(r.start)}`,
+      ...(delGroup ? { group_id: delGroup } : {}),
+    }, `Could not ${ripple ? 'ripple-delete' : 'lift'} clip ${r.id}.`)))
     if (results.some((result) => !result?.ok)) return
     c.onSelect([])
-    await cleanupEmptyTracks(new Set(sel.map((item) => item.trackId)))
-  }, [cfg, cleanupEmptyTracks])
+    await cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track)))
+  }, [cfg, cleanupEmptyTracks, showNote])
 
+  /** Context-menu remove/lift of one clip + its exact linked audio
+   * counterpart. Same linkage + coordinate rules as deleteSelection:
+   * linkedSiblings for the pair, EDITORIAL range_ms, one group_id. */
   const removeItemById = useCallback(async (itemId: string, ripple: boolean) => {
     const c = cfg.current
     const it = c.allItems.find((i) => i.id === itemId)
     if (!it || it.kind === 'gap') return
     const ranges = new Map<string, { track: string; start: number; dur: number; id: string }>()
-    ranges.set(`${it.trackId}:${it.startMs}`, { track: it.trackId, start: it.startMs, dur: it.durMs, id: it.id })
-    if (it.kind === 'video' && it.asset) {
-      for (const a of c.allItems) {
-        if (a.kind === 'audio' && a.asset === it.asset && a.startMs === it.startMs) {
-          ranges.set(`${a.trackId}:${a.startMs}`, { track: a.trackId, start: a.startMs, dur: a.durMs, id: a.id })
-        }
+    ranges.set(`${it.trackId}:${it.editorialStartMs}`, { track: it.trackId, start: it.editorialStartMs, dur: it.durMs, id: it.id })
+    if (it.kind === 'video') {
+      const sibs = linkedSiblings(it, c.allItems)
+      if (sibs.length > 1) {
+        showNote(`Clip ${it.id} has multiple linked-media candidates; detach the duplicate before deleting.`)
+        return
+      }
+      const sib = sibs[0]
+      if (sib) {
+        ranges.set(`${sib.trackId}:${sib.editorialStartMs}`, { track: sib.trackId, start: sib.editorialStartMs, dur: sib.durMs, id: sib.id })
       }
     }
     const delGroup = ranges.size > 1 ? `grp-del-${crypto.randomUUID()}` : undefined
@@ -178,7 +215,7 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     if (results.some((result) => !result?.ok)) return
     c.onSelect([])
     await cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track)))
-  }, [cfg, cleanupEmptyTracks])
+  }, [cfg, cleanupEmptyTracks, showNote])
 
   const removeTrackById = useCallback(async (trackId: string) => {
     const result = await runUserVerb(
@@ -190,19 +227,92 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     cfg.current.onSelect([])
   }, [cfg])
 
-  const splitItemAt = useCallback((itemId: string, atMs: number) => {
+  /**
+   * Dispatch a planned linked split: one edit.split per target (anchor +
+   * exact linked A/V counterpart), sharing a group_id so one Ctrl+Z undoes
+   * the whole cut. Refusals (ambiguous counterpart / locked counterpart
+   * track) surface as notes — splitting only one half would silently desync
+   * the pair, the exact razor bug the demo-v2 pass caught.
+   */
+  const dispatchLinkedSplit = useCallback(async (
+    anchor: LaidItem,
+    laidCutMs: number,
+    why: string,
+  ): Promise<boolean> => {
+    const c = cfg.current
+    const plan = planLinkedSplit(anchor, c.allItems, laidCutMs, (trackId) => c.rows.some((row) => row.id === trackId && row.locked))
+    if (plan.kind === 'ambiguous') {
+      showNote(`Clip ${anchor.id} has multiple linked-media candidates; detach the duplicate before splitting.`)
+      return false
+    }
+    if (plan.kind === 'locked') {
+      showNote(`Unlock track ${plan.trackId} before splitting linked media.`)
+      return false
+    }
+    const groupId = plan.targets.length > 1 ? `grp-split-${crypto.randomUUID()}` : undefined
+    const results = await Promise.all(plan.targets.map((t) => runUserVerb('edit.split', {
+      track: t.track,
+      // at_ms is EDITORIAL time (the engine's split cursor, app/core/src/
+      // edit.rs split_pinned) — planLinkedSplit converted the laid cut.
+      at_ms: t.atMs,
+      rationale: `${why}: split ${t.clipId} on ${t.track} @ ${timecode(t.atMs)}`,
+      ...(groupId ? { group_id: groupId } : {}),
+    }, `Could not split clip ${t.clipId}.`)))
+    return results.every((result) => result?.ok)
+  }, [cfg, showNote])
+
+  const splitItemAt = useCallback((itemId: string, atMs: number, source: 'menu' | 'razor' = 'menu') => {
     const c = cfg.current
     const it = c.allItems.find((i) => i.id === itemId)
-    if (!it) return
+    if (!it || it.kind === 'gap' || it.kind === 'caption') return
     const within = atMs > it.startMs && atMs < it.startMs + it.durMs
     const cut = within ? atMs : c.playheadMs
+    // Boundary guard in LAID space (the cursor's space): a split exactly on an
+    // edge is a no-op in the engine; only dispatch inside the clip body.
     if (cut <= it.startMs || cut >= it.startMs + it.durMs) return
-    void runUserVerb(
-      'edit.split',
-      { track: it.trackId, at_ms: Math.round(cut), rationale: `split ${it.id} @ ${timecode(cut)} (context menu)` },
-      `Could not split clip ${it.id}.`,
-    )
-  }, [cfg])
+    void dispatchLinkedSplit(it, cut, source === 'razor' ? 'user razor' : 'user split (context menu)')
+  }, [cfg, dispatchLinkedSplit])
+
+  /**
+   * Split at the playhead on the selected clips' tracks, else every unlocked
+   * video track (the S / Cmd-B "cut here" convention). The playhead is
+   * RENDER/laid time; each track's cut is planned from its covering laid item
+   * so the dispatched at_ms is that track's EDITORIAL position, and each
+   * video cut propagates to its exact linked audio counterpart.
+   */
+  const splitAtPlayhead = useCallback(() => {
+    const c = cfg.current
+    const locked = (trackId: string) => c.rows.some((row) => row.id === trackId && row.locked)
+    const selTracks = new Set(c.allItems.filter((i) => c.selectedClipIds.includes(i.id) && !locked(i.trackId)).map((i) => i.trackId))
+    const targets = selTracks.size
+      ? [...selTracks]
+      : c.rows.filter((row) => row.kind === 'video' && !locked(row.id)).map((row) => row.id)
+    const seen = new Set<string>()
+    for (const track of targets) {
+      if (seen.has(track)) continue
+      const anchor = c.allItems.find((i) =>
+        i.trackId === track
+        && (i.kind === 'video' || i.kind === 'audio')
+        && c.playheadMs > i.startMs && c.playheadMs < i.startMs + i.durMs)
+      if (!anchor) {
+        // No media body under the playhead on this track (gap / boundary /
+        // past the end) — dispatch the honest miss so the engine's own error
+        // surfaces, converting through the track's laid→editorial map.
+        const trackItems = c.allItems.filter((i) => i.trackId === track)
+        void runUserVerb('edit.split', {
+          track,
+          at_ms: Math.round(laidToEditorialMs(trackItems, c.playheadMs)),
+          rationale: 'split (S / Cmd-B)',
+        }, `Could not split track ${track} at the playhead.`)
+        continue
+      }
+      seen.add(track)
+      // Mark the linked counterpart's track as handled so a selection that
+      // includes both halves doesn't double-split the pair.
+      for (const sib of linkedSiblings(anchor, c.allItems)) seen.add(sib.trackId)
+      void dispatchLinkedSplit(anchor, c.playheadMs, 'user split (S / Cmd-B)')
+    }
+  }, [cfg, dispatchLinkedSplit])
 
   const fadeItem = useCallback((itemId: string, which: 'in' | 'out') => {
     const ms = 500
@@ -218,6 +328,9 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     const c = cfg.current
     const it = c.allItems.find((i) => i.id === itemId)
     if (!it || (it.kind !== 'video' && it.kind !== 'audio')) return
+    // Laid coords are fine end-to-end here: the guard and the src conversion
+    // both use the WITHIN-clip offset (atMs − startMs), which is identical in
+    // laid and editorial time — edit.trim takes source-time args, not at_ms.
     if (atMs <= it.startMs || atMs >= it.startMs + it.durMs) return
     const args = sourceTrimAtTimelinePosition(it, edge, atMs)
     if (!args) return
@@ -256,11 +369,17 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     const c = cfg.current
     const it = c.allItems.find((i) => i.id === itemId)
     if (!it || (it.kind !== 'video' && it.kind !== 'audio')) return
+    // Adjacency + at_ms in EDITORIAL time (edit.crossfade's key,
+    // app/core/src/edit.rs crossfade). Laid adjacency breaks twice over:
+    // an upstream crossfade rewinds every later laid position, and a
+    // crossfade ON this very seam pulls the neighbour's laid start into the
+    // clip's tail (startMs ≠ end), so the neighbour was never found and
+    // re-applying a transition from the menu silently no-opped.
     const onTrack = c.allItems.filter((i) => i.trackId === it.trackId && i.kind !== 'gap')
-    const endMs = it.startMs + it.durMs
-    const endNeighbour = onTrack.find((i) => i.id !== it.id && i.startMs === endMs)
-    const startNeighbour = onTrack.find((i) => i.id !== it.id && i.startMs + i.durMs === it.startMs)
-    const atMs = endNeighbour ? endMs : startNeighbour ? it.startMs : null
+    const edEndMs = it.editorialStartMs + it.durMs
+    const endNeighbour = onTrack.find((i) => i.id !== it.id && i.editorialStartMs === edEndMs)
+    const startNeighbour = onTrack.find((i) => i.id !== it.id && i.editorialStartMs + i.durMs === it.editorialStartMs)
+    const atMs = endNeighbour ? edEndMs : startNeighbour ? it.editorialStartMs : null
     if (atMs === null) return
     void runUserVerb('edit.crossfade', {
       track: it.trackId,
@@ -271,31 +390,26 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     }, 'Could not apply the crossfade.')
   }, [cfg])
 
-  const muteItem = useCallback((itemId: string) => {
+  /** Redirect a video clip to its exact linked audio counterpart (the audio
+   * verbs read TrackKind::Audio only). Unambiguous match only — otherwise the
+   * clicked clip stays the target and the engine's own guidance surfaces. */
+  const audioHalfOf = useCallback((itemId: string): string => {
     const c = cfg.current
     const it = c.allItems.find((i) => i.id === itemId)
-    let target = itemId
-    if (it && it.kind === 'video' && it.asset) {
-      const sib = c.allItems.find(
-        (a) => a.kind === 'audio' && a.asset === it.asset && a.startMs === it.startMs,
-      )
-      if (sib) target = sib.id
-    }
-    void runUserVerb('edit.gain', { clip: target, db: MUTE_DB, rationale: `mute clip ${target} (context menu)` }, `Could not mute clip ${target}.`)
+    if (!it || it.kind !== 'video') return itemId
+    const sibs = linkedSiblings(it, c.allItems)
+    return sibs.length === 1 ? sibs[0].id : itemId
   }, [cfg])
 
+  const muteItem = useCallback((itemId: string) => {
+    const target = audioHalfOf(itemId)
+    void runUserVerb('edit.gain', { clip: target, db: MUTE_DB, rationale: `mute clip ${target} (context menu)` }, `Could not mute clip ${target}.`)
+  }, [audioHalfOf])
+
   const cleanVoiceItem = useCallback((itemId: string) => {
-    const c = cfg.current
-    const it = c.allItems.find((i) => i.id === itemId)
-    let target = itemId
-    if (it && it.kind === 'video' && it.asset) {
-      const sib = c.allItems.find(
-        (a) => a.kind === 'audio' && a.asset === it.asset && a.startMs === it.startMs,
-      )
-      if (sib) target = sib.id
-    }
+    const target = audioHalfOf(itemId)
     void runUserVerb('audio.cleanup_voice', { clip: target, rationale: `clean voice on ${target} (context menu)` }, `Could not clean the voice on clip ${target}.`)
-  }, [cfg])
+  }, [audioHalfOf])
 
   const blurFacesItem = useCallback((itemId: string, atMs: number) => {
     const c = cfg.current
@@ -337,7 +451,10 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
       const it = byId.get(o.clip)
       if (!it) continue
       if ((o.score ?? 1) < 0.3) weak++
-      const at = Math.max(0, Math.round(it.startMs - o.offset_ms))
+      // edit.move at_ms is EDITORIAL time — shift the clip's editorial start
+      // by the measured offset (laid startMs understates the position after
+      // an upstream crossfade).
+      const at = Math.max(0, Math.round(it.editorialStartMs - o.offset_ms))
       await callVerb('edit.move', {
         clip: o.clip,
         to_track: it.trackId,
@@ -371,6 +488,12 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     const c = cfg.current
     const it = c.allItems.find((i) => i.id === itemId)
     if (!it || it.kind !== 'video') return
+    // DELIBERATELY laid coords: edit.split_edit resolves its cut against EDL
+    // segments (app/core/src/split_edit.rs plan_split_edit matches
+    // timeline_out_ms/timeline_in_ms), and the EDL is laid/render time — the
+    // one cumulative-track edit verb NOT keyed on editorial time. Adjacency
+    // here also correctly excludes crossfaded seams (the verb wants butted
+    // clips; a crossfaded neighbour's laid start ≠ this clip's laid end).
     const onTrack = c.allItems.filter((i) => i.trackId === it.trackId && i.kind === 'video')
     const endMs = it.startMs + it.durMs
     const endNeighbour = onTrack.find((i) => i.id !== it.id && i.startMs === endMs)
@@ -473,6 +596,10 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
   const applyCrossfade = useCallback((seam: Seam, durationMs: number, transition = 'dissolve') => {
     void runUserVerb('edit.crossfade', {
       track: seam.trackId,
+      // Seam.atMs is the EDITORIAL boundary (edit.crossfade's key). The laid
+      // coordinate lives in seam.laidMs and is for drawing only — dispatching
+      // it was the harness-caught P1 (not_found on any seam downstream of an
+      // existing crossfade).
       at_ms: seam.atMs,
       duration_ms: durationMs,
       ...(durationMs > 0 ? { transition } : {}),
@@ -494,6 +621,7 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     removeItemById,
     removeTrackById,
     splitItemAt,
+    splitAtPlayhead,
     fadeItem,
     trimItemTo,
     reverseItem,

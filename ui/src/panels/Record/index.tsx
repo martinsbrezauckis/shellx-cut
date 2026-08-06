@@ -50,6 +50,29 @@ export interface RecordProps {
   onOpenOutputSettings?: () => void
 }
 
+/**
+ * What to tell the user when a one-off Save As target is what broke the action.
+ * Both failing paths (export + raw finalize) share this so the wording — and the
+ * two ways out of it — stay identical.
+ */
+const OUTPUT_PATH_HINT =
+  'pick another file with "Choose file", or Clear it to use the default export folder'
+
+/**
+ * Human reason for a rejected promise from the verb/authorization chain.
+ *
+ * `fetch` rejects with a TypeError when the connection itself fails, and its
+ * message is engine-flavoured browser text ("Failed to fetch" / "Load failed")
+ * that means nothing to a user — so that case keeps the plain transport wording.
+ * Everything else is one of OUR thrown Errors (today: withAuthorizedOutputPath
+ * refusing the chosen output folder), whose message is already the useful thing
+ * to show, so it is passed through verbatim.
+ */
+function failureReason(error: unknown): string {
+  if (error instanceof TypeError) return 'server unreachable'
+  return error instanceof Error && error.message ? error.message : 'server unreachable'
+}
+
 interface RecordCard { name: string; status: string; detail: string }
 const RECORD_CARD_LABELS: Record<string, string> = {
   ffmpeg: 'Media tools',
@@ -319,8 +342,17 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       setNote(`Done — clip ${pr.clip_id ?? ''} added to the timeline`)
       setPhase('done')
       onClipAdded?.()
-    } catch {
-      setErr('server unreachable during finalize')
+    } catch (error) {
+      // Same class as exportClip's catch: the RAW path authorizes the chosen Save As
+      // folder through withAuthorizedOutputPath, which THROWS when the engine refuses
+      // it. Reporting that as "server unreachable" sent the user to check the engine
+      // when the actual fix is to pick another recording file — so name the real
+      // reason, and keep the transport wording for the case that really is one
+      // (fetch rejects with a TypeError when the connection fails).
+      const reason = failureReason(error)
+      setErr(rawMode && recordOutputPath
+        ? `finalize failed: ${reason} — ${OUTPUT_PATH_HINT} (${recordOutputPath})`
+        : `finalize failed: ${reason}`)
       setPhase('error')
     } finally {
       clearTick() // stop the finalize elapsed clock on every exit path
@@ -419,15 +451,39 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Export the LAST finalized recording straight to a FILE (screen_record.export) —
   // mp4 or gif — without touching the timeline or re-recording. Uses the retained
   // source+plan through the same human-visible control contract.
+  //
+  // EVERY exit path writes the note. The button fires this as `void exportClip()`,
+  // so a rejected promise has nowhere to surface: before 0.6.106 an export whose
+  // PRECONDITION failed left "Rendering…" on screen forever with no verb ever
+  // issued (the shape the macOS qualification recorded — CLICK ok, no
+  // screen_record.export request at all). Two such preconditions exist and both
+  // now speak:
+  //   · no retained capture — unreachable from the button (it only renders while
+  //     lastCapture is set) but reachable from any programmatic caller, and a
+  //     silent no-op is exactly the failure being fixed;
+  //   · withAuthorizedOutputPath THROWS when the engine refuses to authorize the
+  //     chosen Save As folder (deleted / renamed / unmounted volume). That throw
+  //     happens BEFORE the verb, which is correct — the fence must not be
+  //     bypassed — but the user has to be told, and told what to do about it.
   const exportClip = useCallback(async () => {
-    if (!lastCapture) return
+    if (!lastCapture) { setExportNote('export failed: no finished recording to export'); return }
     setExportNote('Rendering…')
     const outputPath = recordOutputPath ?? undefined
-    const r = await withAuthorizedOutputPath(outputPath, () =>
-      callVerb('screen_record.export', { source: lastCapture.source, plan: lastCapture.plan, format: exportFmt, path: outputPath }))
-    if (!r.ok) { setExportNote(`export failed: ${r.error?.message ?? 'error'}`); return }
-    const pr = r.result as { path?: string }
-    setExportNote(`Saved ${exportFmt.toUpperCase()} → ${pr.path ?? 'output'}`)
+    try {
+      const r = await withAuthorizedOutputPath(outputPath, () =>
+        callVerb('screen_record.export', { source: lastCapture.source, plan: lastCapture.plan, format: exportFmt, path: outputPath }))
+      if (!r.ok) { setExportNote(`export failed: ${r.error?.message ?? 'error'}`); return }
+      const pr = r.result as { path?: string }
+      setExportNote(`Saved ${exportFmt.toUpperCase()} → ${pr.path ?? 'output'}`)
+    } catch (error) {
+      // Name the recording file in the authorization case: the message alone
+      // ("could not authorize the selected output folder") does not say WHICH
+      // folder, and the fix is to pick another one with "Choose file".
+      const reason = failureReason(error)
+      setExportNote(outputPath
+        ? `export failed: ${reason} — ${OUTPUT_PATH_HINT} (${outputPath})`
+        : `export failed: ${reason}`)
+    }
   }, [lastCapture, exportFmt, recordOutputPath])
 
   const chooseOutputPath = useCallback(async () => {

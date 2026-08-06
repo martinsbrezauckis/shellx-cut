@@ -273,6 +273,40 @@ export function createGradeActionCoverage({
           }
         },
       })
+      // ---- crash-safe panel restore guard (2026-08-06 Color-panel fix) -----
+      // panelPersistGuard blocklists a right tab whose mount never confirmed a
+      // paint (software-rendering WebView death). Seed that persisted evidence,
+      // re-enter the Color tab, and prove the honest notice gates the mount;
+      // the "load anyway" action must mount the real panel and — once the
+      // paint confirms — self-heal the blocklist so restore works again.
+      await page.evaluate(() => {
+        localStorage.setItem('cut.panelBlocked.v1', JSON.stringify({ color: Date.now() }))
+      })
+      await page.locator('[data-cut-right-tab="properties"]').first().click()
+      await page.locator('[data-cut-right-tab="color"]').first().click()
+      const blockedNotice = page.locator('[data-cut-panel-render-blocked="color"]').first()
+      await blockedNotice.waitFor({ state: 'visible', timeout: 8000 })
+      const retryButton = page.locator('[data-cut-panel-render-retry="color"]').first()
+      await probe(page, {
+        surface,
+        name: 'grade-render-guard-load-anyway',
+        actionId: 'panel-render-retry',
+        sel: retryButton,
+        group: blockedNotice,
+        groupName: 'panel-render-guard',
+        doClick: async () => { await retryButton.click() },
+        assertResult: async () => {
+          await page.locator('[data-cut-grade-embed]').first().waitFor({ state: 'visible', timeout: 8000 })
+          // Confirmed paint (double-rAF + settle ≈ 400ms) must clear the block
+          // so the NEXT launch restores the Color tab normally again.
+          await page.waitForFunction(() => {
+            const raw = localStorage.getItem('cut.panelBlocked.v1')
+            if (!raw) return true
+            try { return !('color' in JSON.parse(raw)) } catch { return true }
+          }, undefined, { timeout: 8000 })
+          return { ok: true, detail: 'blocked notice shown; load-anyway mounted the panel; blocklist self-healed after paint' }
+        },
+      })
     } finally {
       await restorePickerFixture(page)
       await closeOverlays(page)

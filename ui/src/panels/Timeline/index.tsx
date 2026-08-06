@@ -68,6 +68,7 @@ import {
   centeredLineLeft,
   dragRationale,
   imageAssetIds,
+  laidToEditorialMs,
   layoutTrack,
   minZoomFor,
   msToPx,
@@ -315,11 +316,11 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
     showVerbFailure,
     addTrack,
     rippleTrimAtPlayhead,
-    cleanupEmptyTracks,
     deleteSelection,
     removeItemById,
     removeTrackById,
     splitItemAt,
+    splitAtPlayhead,
     fadeItem,
     trimItemTo,
     reverseItem,
@@ -399,7 +400,23 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
     return !!cfg.current.rows.find((r) => r.id === trackId)?.locked
   }, [])
 
-  useTimelineAssetDrop({ scrollRef, clientXToMs, clientYToRow, setAssetDnd })
+  // Convert a LAID drop position to the EDITORIAL at_ms edit.insert keys on
+  // (engine cumulative-track cursor). Conversion runs against the drop row's
+  // own laid items when it has any, else the base video track (the default
+  // placement target); an empty timeline is identity (the clocks start
+  // aligned). Editorial clocks stay in lockstep across linked-edited tracks
+  // (a crossfade shortens LAID time only), so one converted value serves the
+  // linked video+audio pair placeLinkedAV inserts.
+  const dropMsToEditorial = useCallback((laidMs: number, row: TrackRow | null): number => {
+    const c = cfg.current
+    const trackId = row && c.allItems.some((i) => i.trackId === row.id)
+      ? row.id
+      : c.rows.find((r) => r.kind === 'video' && r.kindIndex === 0)?.id
+    if (!trackId) return Math.round(laidMs)
+    return Math.round(laidToEditorialMs(c.allItems.filter((i) => i.trackId === trackId), laidMs))
+  }, [])
+
+  useTimelineAssetDrop({ scrollRef, clientXToMs, clientYToRow, setAssetDnd, dropMsToEditorial })
 
   // --- zoom with anchor identity (timeline behavior contract) ----------------------------
   const pendingAnchor = useRef<{ anchorMs: number; viewportOffset: number } | null>(null)
@@ -766,7 +783,11 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
           } else if (g.mode === 'slide') {
             void runUserVerb('edit.slide_edit', { clip: it.id, by_ms: by, rationale: `user slide drag: ${it.id} ${secs}` }, `Could not slide clip ${it.id}.`).then((result) => { if (!result?.ok) setGhost(null) })
           } else {
-            const seam = g.mode === 'roll-l' ? it.startMs : it.startMs + it.durMs
+            // edit.roll keys the cut on EDITORIAL time (cumulative clip-
+            // duration sum, app/core/src/trim_edit.rs roll) — the laid edge
+            // (drawn position) drifts left of it after an upstream crossfade.
+            // The live HUD/snap-line during the drag stays laid (display).
+            const seam = g.mode === 'roll-l' ? it.editorialStartMs : it.editorialStartMs + it.durMs
             void runUserVerb('edit.roll', { track: it.trackId, at_ms: seam, by_ms: by, rationale: `user roll drag: cut @ ${timecode(seam)} ${secs}` }, 'Could not roll this edit.').then((result) => { if (!result?.ok) setGhost(null) })
           }
         } else setGhost(null)
@@ -817,10 +838,17 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
               // windows shift); default = linked float (the pair moves while
               // unrelated tracks stay fixed). We pass both resolved flags.
               const ripple = altAtUpRef.current
+              // edit.move splices at EDITORIAL time on the destination track
+              // (app/core/src/edit.rs splice_into_track walks the cumulative
+              // cursor); the ghost's startMs is the LAID drop position, so
+              // convert through the destination track's laid→editorial map.
+              // (The engine gap-fills the source slot first, so the dest
+              // track's editorial layout is unchanged by the removal.)
+              const destItems = c.allItems.filter((i) => i.trackId === final.trackId)
               void callVerb('edit.move', {
                 clip: it.id,
                 to_track: final.trackId,
-                at_ms: final.startMs,
+                at_ms: Math.round(laidToEditorialMs(destItems, final.startMs)),
                 ripple,
                 linked: true,
                 rationale: dragRationale(it.id, final.startMs - it.startMs, final.trackId, trackChanged, ripple ? 'ripple' : 'lift'),
@@ -973,18 +1001,16 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
       return
     }
     // --- Razor click-mode: a clip click splits it at the cursor time ---------
-    // Captions resize via verbs, not razor; the engine's edit.split addresses
-    // a track + at_ms (the clip under that position).
+    // Captions resize via verbs, not razor. The shared splitItemAt action owns
+    // the actual dispatch: laid→EDITORIAL conversion (edit.split keys on the
+    // engine's clip-duration-sum cursor, not the drawn position) AND the
+    // linked A/V propagation (a razor cut lands on the video clip and its
+    // exact linked audio counterpart together — one group, one undo).
     if (c.razorMode && item.kind !== 'caption') {
       e.preventDefault()
       const atMs = clientXToMs(e.clientX)
-      // Guard the boundaries: a split exactly on an edge is a no-op in the
-      // engine; only dispatch inside the clip body.
       if (atMs > item.startMs && atMs < item.startMs + item.durMs) {
-        void runUserVerb('edit.split', {
-          track: item.trackId, at_ms: atMs,
-          rationale: `user razor: split ${item.trackId} @ ${timecode(atMs)}`,
-        }, `Could not split clip ${item.id}.`)
+        splitItemAt(item.id, atMs, 'razor')
       }
       return // razor consumes the gesture — no move/trim
     }
@@ -1012,7 +1038,7 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
       if (m !== mode) e.preventDefault() // tool gestures never text-select
     }
     beginGesture(e, m, item)
-  }, [beginGesture, clientXToMs, isTrackLocked])
+  }, [beginGesture, clientXToMs, isTrackLocked, splitItemAt])
 
   // Click handler suppression after a drag — the click event fires
   // after mouseup; the flag outlives the session.
@@ -1221,15 +1247,10 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
       if (shouldIgnoreGlobalShortcut(e)) return
       if (document.documentElement.dataset.cutKbscope === 'rail') return
       const c = cfg.current
-      // Split at the playhead on the selected clip's track(s), else all video tracks.
-      // Shared by the bare S key and the Cmd/Ctrl+B canonical "cut here" (conventions.
-      const doSplit = () => {
-        const selTracks = new Set(c.allItems.filter((i) => c.selectedClipIds.includes(i.id) && !isTrackLocked(i.trackId)).map((i) => i.trackId))
-        const targets = selTracks.size
-          ? [...selTracks]
-          : (laidTracksRef.current.filter((t) => t.track.kind === 'video' && !isTrackLocked(t.track.id)).map((t) => t.track.id))
-        targets.forEach((track) => void runUserVerb('edit.split', { track, at_ms: c.playheadMs, rationale: 'split (S / Cmd-B)' }, `Could not split track ${track} at the playhead.`))
-      }
+      // Split at the playhead — the hook's splitAtPlayhead owns the whole job:
+      // selected clips' tracks (else all video tracks), laid→EDITORIAL at_ms
+      // conversion per track, and linked A/V propagation. Shared by the bare
+      // S key and the Cmd/Ctrl+B canonical "cut here" (conventions).
       if (e.key === 'Escape') {
         if (gestureRef.current) { // cancel gesture, restore visuals, no verb
           setGhost(null)
@@ -1262,25 +1283,18 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
       // "cut here" key (alias of the bare S key). Conventions reference.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'b') {
         e.preventDefault()
-        doSplit()
+        splitAtPlayhead()
         return
       }
       // LIFT-delete = Alt+Del / Alt+Backspace. Distinct from plain
-      // Del (ripple — close the gap): Alt passes ripple:false so the gap STAYS
-      // OPEN (nothing downstream moves). Handled BEFORE the modifier guard
-      // below (which drops all alt-combos). Captions can't lift (single track);
-      // the engine handles their range like any other.
+      // Del (ripple — close the gap): ripple:false so the gap STAYS OPEN
+      // (nothing downstream moves). Handled BEFORE the modifier guard below
+      // (which drops all alt-combos). The hook's deleteSelection owns the
+      // shared delete rules for BOTH keyboard variants and the toolbar:
+      // linked-A/V expansion, EDITORIAL range_ms, one undo group.
       if (((e.altKey && !e.ctrlKey && !e.metaKey) || (e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey)) && (e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault()
-        c.allItems
-          .filter((i) => c.selectedClipIds.includes(i.id) && i.kind !== 'gap' && !isTrackLocked(i.trackId))
-          .forEach((i) => void runUserVerb('edit.ripple_delete', {
-            track: i.trackId,
-            range_ms: [i.startMs, i.startMs + i.durMs],
-            ripple: false, // LIFT — leave a gap of equal length
-            rationale: `user lift-delete: ${i.id} on ${i.trackId} (gap stays open) @ ${timecode(i.startMs)}`,
-          }, `Could not lift clip ${i.id}.`))
-        c.onSelect([])
+        void deleteSelection(false)
         return
       }
       // Cmd/Ctrl+= (and ) / Cmd/Ctrl+- — the OS-canonical zoom aliases (browsers,
@@ -1309,7 +1323,7 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
       // (lib/keymap.ts) — bindings read live, remaps apply instantly. Zoom
       // keys / Delete / Shift+Z stay literal (conventions, not preferences).
       if (matchesAction(e, 'timeline.split')) {
-        doSplit() // split at the playhead (also Cmd/Ctrl+B)
+        splitAtPlayhead() // split at the playhead (also Cmd/Ctrl+B)
         e.preventDefault()
         return
       }
@@ -1376,44 +1390,14 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
           applyZoom(c.zoom / ZOOM_KEY_FACTOR, c.playheadMs)
           break
         case 'Delete': case 'Backspace': {
-          // RIPPLE-delete (close the gap) each selected clip's range on its track.
-          // ripple:true is the verb default; passed explicitly so the op reads its
-          // intent next to the Alt+Del LIFT variant above.
-          //
-          // Linked A/V: deleting a VIDEO clip ALSO removes its auto-
-          // placed LINKED audio (same asset + same timeline start, on an audio
-          // track). Import splits a muxed file into v1 (video) + a1t (audio), so
-          // without this the audio is orphaned on delete and keeps the timeline
-          // length → the export had a black-screen tail. Surgical: keyed on the
-          // auto-place signature (same asset + same start), so a deliberately
-          // separate same-asset audio clip elsewhere is left untouched. Matches
-          // the linked-A/V delete convention.
-          const sel = c.allItems.filter((i) => c.selectedClipIds.includes(i.id) && i.kind !== 'gap' && !isTrackLocked(i.trackId))
-          // Dedup by track:start so a clip and its linked audio aren't queued twice.
-          const ranges = new Map<string, { track: string; start: number; dur: number; id: string }>()
-          for (const i of sel) {
-            ranges.set(`${i.trackId}:${i.startMs}`, { track: i.trackId, start: i.startMs, dur: i.durMs, id: i.id })
-            if (i.kind === 'video' && i.asset) {
-              for (const a of c.allItems) {
-                if (a.kind === 'audio' && a.asset === i.asset && a.startMs === i.startMs && !isTrackLocked(a.trackId)) {
-                  ranges.set(`${a.trackId}:${a.startMs}`, { track: a.trackId, start: a.startMs, dur: a.durMs, id: a.id })
-                }
-              }
-            }
-          }
-          // A linked A/V delete (or a multi-select delete) is MORE
-          // than one op — tag them all with one group id so a single Ctrl+Z
-          // brings back the whole deleted set, not one clip at a time.
-          const delGroup = ranges.size > 1 ? `grp-del-${crypto.randomUUID()}` : undefined
-          void Promise.all([...ranges.values()].map((r) => runUserVerb('edit.ripple_delete', {
-            track: r.track,
-            range_ms: [r.start, r.start + r.dur],
-            ripple: true, // close the gap (extract)
-            rationale: `user ripple-delete: ${r.id} on ${r.track} (gap closes) @ ${timecode(r.start)}`,
-            ...(delGroup ? { group_id: delGroup } : {}),
-          }, `Could not ripple-delete clip ${r.id}.`))).then((results) => {
-            if (results.every((result) => result?.ok)) { c.onSelect([]); void cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track))) }
-          })
+          // RIPPLE-delete (close the gap). The hook's deleteSelection is the
+          // single delete implementation for keyboard + toolbar: linked-A/V
+          // expansion (a video clip takes its exact linked audio counterpart
+          // with it — import places muxed files as v1 video + a1t audio, and
+          // an orphaned audio half kept the timeline long → black-tail
+          // export), EDITORIAL range_ms, and one group id so a single Ctrl+Z
+          // restores the whole set.
+          void deleteSelection(true)
           break
         }
         default:
@@ -1423,7 +1407,7 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [applyZoom, endGesture, fitToWindow, isTrackLocked, rippleTrimAtPlayhead])
+  }, [applyZoom, deleteSelection, endGesture, fitToWindow, isTrackLocked, rippleTrimAtPlayhead, splitAtPlayhead])
 
   // laidTracks snapshot for the keyboard handler (avoids re-binding on data).
   const laidTracksRef = useRef(laidTracks)
@@ -1445,8 +1429,10 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
       ? seams.filter((s) => sel.includes(s.leftId) || sel.includes(s.rightId))
       : []
     const pool = nearSelection.length ? nearSelection : seams
+    // Nearest-to-playhead compares in LAID/render space (the playhead's own
+    // clock); seam.atMs is editorial and only for the dispatch itself.
     const pick = pool.reduce((best, s) =>
-      Math.abs(s.atMs - c.playheadMs) < Math.abs(best.atMs - c.playheadMs) ? s : best,
+      Math.abs(s.laidMs - c.playheadMs) < Math.abs(best.laidMs - c.playheadMs) ? s : best,
     )
     applyCrossfade(pick, 500, 'dissolve')
   }, [applyCrossfade, isTrackLocked])
@@ -1455,7 +1441,9 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
   const openTrimPopover = useCallback((itemId: string, x: number, y: number) => {
     const it = cfg.current.allItems.find((i) => i.id === itemId)
     if (!it || it.kind === 'gap' || it.kind === 'caption') return
-    setTrimPop({ x, y, clipId: it.id, trackId: it.trackId, clipEndMs: it.startMs + it.durMs })
+    // clipEndMs feeds the popover's ROLL stepper → edit.roll at_ms, which is
+    // EDITORIAL time (engine cumulative cursor) — not the drawn (laid) end.
+    setTrimPop({ x, y, clipId: it.id, trackId: it.trackId, clipEndMs: it.editorialStartMs + it.durMs })
   }, [])
   // Paste attributes: the checkbox dialog. Opens from the clip context menu
   // or Ctrl/Cmd+Alt+V; targets = the selection at open time (the server verb
@@ -1652,7 +1640,10 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
           {activeSeam && (() => {
             const row = rows.find((r) => r.id === activeSeam.trackId)
             const top = RULER_H + (row ? row.top + row.height + 2 : 0)
-            const left = RAIL_W + msToPx(activeSeam.atMs, zoom)
+            // laidMs = visible boundary (render space); atMs is the EDITORIAL
+            // dispatch coordinate and drifts left of the drawn seam after an
+            // upstream crossfade.
+            const left = RAIL_W + msToPx(activeSeam.laidMs, zoom)
             return (
               <CrossfadePopover
                 seam={activeSeam}

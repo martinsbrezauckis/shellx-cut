@@ -1085,7 +1085,7 @@
     {
       "name": "comment.export",
       "domain": "comment",
-      "description": "Export a PORTABLE OFFLINE REVIEW PACKAGE for the latest persisted render receipt: a standalone HTML reviewer, a receipt-verified copy of the rendered media, and a machine-readable manifest. The receipt output must be inside the project's exports folder; this prevents a tampered receipt from turning the export route into an arbitrary-file reader. The reviewer plays the copied render, accepts timecoded notes without a server, and downloads shellx-cut/review-feedback/1 JSON for comment.import. By default no render-affecting op may follow the receipt (later comment/preset/name metadata is harmless), so reviewers never receive a stale cut. Read-only (no op).",
+      "description": "Export a PORTABLE OFFLINE REVIEW PACKAGE for the latest persisted render receipt: a standalone HTML reviewer, a receipt-verified copy of the rendered media, and a machine-readable manifest. The receipt output must be inside an authorized export folder — the project's exports subtree, CUTD_OUTPUTS_DIR, or the folder chosen with project.set_output_dir — which is where the engine is allowed to deliver a render in the first place; this prevents a tampered receipt from turning the export route into an arbitrary-file reader. The reviewer plays the copied render, accepts timecoded notes without a server, and downloads shellx-cut/review-feedback/1 JSON for comment.import. By default no render-affecting op may follow the receipt (later comment/preset/name metadata is harmless), so reviewers never receive a stale cut. Read-only (no op).",
       "args": {
         "type": "object",
         "required": [],
@@ -1786,7 +1786,7 @@
     {
       "name": "edit.split",
       "domain": "edit",
-      "description": "Split the clip under the given timeline position on a track into two clips.",
+      "description": "Split the clip under the given timeline position on a track into two clips. at_ms is EDITORIAL time (the cumulative clip-duration sum) — after a crossfade shortens the realized timeline, render/playhead positions diverge from it.",
       "args": {
         "type": "object",
         "required": [
@@ -1804,6 +1804,10 @@
           },
           "rationale": {
             "type": "string"
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Undo-grouping tag (optional). Ops in ONE logical user action (a linked A/V split cuts the video clip + its audio sibling at the same editorial position) pass the same tag so the undo cursor steps over the whole group in one Ctrl+Z. Omit for a standalone split. Ignored by replay/effects beyond the cursor."
           },
           "include_inverse": {
             "type": "boolean",
@@ -8395,7 +8399,7 @@
     {
       "name": "export.publish",
       "domain": "export",
-      "description": "ONE-CLICK platform export. Resolves a platform id to its 2026-researched encoding spec (output geometry, video + audio bitrate, H.264/mp4) and delegates to render.final with those args — reusing the full render path (background job, auto-run check battery, receipt). Vertical platforms (tiktok/reels) output 9:16 via explicit geometry + cover fit; YouTube/X output 16:9. The result carries the chosen platform spec under `publish`, plus render.final's {job_id, render_id}. This is convenience over render.final — an agent can equally call render.final{width,height,bitrate,format,...} directly. fps comes from the project settings (a publish does not resample fps). For SUBJECT-AWARE vertical reframing use render.reframe instead.",
+      "description": "ONE-CLICK platform export. Resolves a platform id to its 2026-researched encoding spec (output geometry, video + audio bitrate, H.264/mp4) and delegates to render.final with those args — reusing the full render path (background job, auto-run check battery, receipt). The optional `profile` passes through verbatim to render.final's footage-profile check battery (omit = render.final's default). Vertical platforms (tiktok/reels) output 9:16 via explicit geometry + cover fit; YouTube/X output 16:9. The result carries the chosen platform spec under `publish`, plus render.final's {job_id, render_id}. This is convenience over render.final — an agent can equally call render.final{width,height,bitrate,format,...} directly. fps comes from the project settings (a publish does not resample fps). For SUBJECT-AWARE vertical reframing use render.reframe instead.",
       "args": {
         "type": "object",
         "required": [
@@ -8434,6 +8438,15 @@
             ],
             "default": "auto",
             "description": "Encoder tier passthrough. auto = use the GPU encoder when present (faster); off = software (deterministic)."
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "talking_head",
+              "silent_screen_demo"
+            ],
+            "default": "talking_head",
+            "description": "Footage profile passthrough to render.final's auto-run check battery: talking_head = the full strict battery; silent_screen_demo waives lufs/caption_presence/silence_at_edges (recorded as waived_by_profile with the measured outcome kept) and runs a UI-tuned frozen-frame check. Omit for render.final's default behavior (strict battery + auto-detect proposal in the receipt) — a silent screen demo published without this gets caption/loudness FAILs on the receipt that are profile noise, not defects."
           },
           "path": {
             "type": "string",

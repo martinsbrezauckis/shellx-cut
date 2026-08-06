@@ -7,6 +7,10 @@
 // host. Native file-dialog transport is separately owned by the OS-action gate;
 // here its Tauri invoke is narrowly intercepted, then restored.
 
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 export function createRecordActionCoverage({
   probe,
   sleep,
@@ -210,6 +214,102 @@ export function createRecordActionCoverage({
 
   async function fixtureState(page) {
     return page.evaluate(() => JSON.parse(JSON.stringify(window.__fcvRecordFixture)))
+  }
+
+  /**
+   * Does patching `window.__TAURI_INTERNALS__.invoke` actually TAKE in this shell?
+   *
+   * Measured, not assumed, and measured by READ-BACK rather than by reading a
+   * property descriptor: the failure mode is a sloppy-mode assignment to a
+   * sealed object, which throws nothing and reports nothing. Whether the seal is
+   * a frozen object, a non-writable property, or an accessor without a setter is
+   * irrelevant — the only question that decides the lane is whether the value we
+   * wrote is the value we read back.
+   *
+   * The probe writes a marker function and restores the previous value in the
+   * same evaluate, so it cannot leave the bridge patched even if it throws.
+   */
+  async function saveDialogStubTakes(page) {
+    return page.evaluate(() => {
+      const internals = window.__TAURI_INTERNALS__
+      if (!internals) return true // no bridge yet — the stub installs its own
+      const previous = internals.invoke
+      const marker = function shellxCutStubProbe() {}
+      try {
+        internals.invoke = marker
+        return internals.invoke === marker
+      } catch {
+        return false // strict-mode shells throw instead of failing silently
+      } finally {
+        try { internals.invoke = previous } catch { /* sealed: nothing was changed */ }
+      }
+    })
+  }
+
+  /**
+   * Run `body` with the native Save-As command (`plugin:dialog|save`) answered by
+   * a fixed path, then put the previous invoke back.
+   *
+   * Why a narrow, temporary stub instead of the OS-action gate: the row that uses
+   * this proves what the UI does when the engine REFUSES to authorize the chosen
+   * folder, which is a WebView-side contract. Driving a real save panel would add
+   * a second native dialog to every rig run and could not name a folder the engine
+   * will refuse (a real panel only navigates to folders that exist). The dialog
+   * transport itself stays owned by record-output-pick / the OS-action gate.
+   *
+   * The stub delegates every other command to the invoke it replaced, so the
+   * native lane is unchanged for the duration and identical afterwards.
+   *
+   * ONLY VALID WHERE THE BRIDGE IS NOT SEALED — the caller MUST gate on
+   * `saveDialogStubTakes()`. Tauri 2.11 seals `window.__TAURI__` and
+   * `window.__TAURI_INTERNALS__` in native shells (measured: WebView2 reports
+   * `invoke` writable:false; WKWebView fails the assignment read-back), so the
+   * assignment below SILENTLY does nothing there. The click then reaches the
+   * REAL save panel, which nothing dismisses — and an unpaired modal chooser
+   * poisons every later native action, exactly as
+   * `NATIVE_PICKER_CLICK_NA` in full-coverage-verify.mjs warns. That is what
+   * happened in the 2026-08-07 macOS 0.6.106 sweep: one leaked `save` sheet
+   * ("Choose recording output file", field `recording.mp4`) turned 49 later
+   * native rows into "no native dialog appeared", because macOS will not
+   * present a second sheet on a window that already has one.
+   */
+  async function withStubbedSaveDialog(page, chosenPath, body) {
+    await page.evaluate((selected) => {
+      const target = window
+      target.__fcvRecordSaveStubPreviousInvoke = target.__TAURI_INTERNALS__?.invoke
+      target.__fcvRecordSaveStubPreviousInternals = target.__TAURI_INTERNALS__
+      target.__fcvRecordSaveStubPreviousTauri = target.__TAURI__
+      const invoke = async (command, args, options) => {
+        if (command === 'plugin:dialog|save') {
+          target.__fcvRecordFixture?.saveCalls.push(args)
+          return selected
+        }
+        const previous = target.__fcvRecordSaveStubPreviousInvoke
+        if (typeof previous === 'function') return previous(command, args, options)
+        return null
+      }
+      if (target.__TAURI_INTERNALS__) target.__TAURI_INTERNALS__.invoke = invoke
+      else target.__TAURI_INTERNALS__ = { invoke }
+      if (!target.__TAURI__) {
+        target.__TAURI__ = { core: { invoke }, event: { listen: async () => () => {} } }
+      }
+    }, chosenPath)
+    try {
+      return await body()
+    } finally {
+      await page.evaluate(() => {
+        const target = window
+        if (target.__fcvRecordSaveStubPreviousInternals) {
+          target.__fcvRecordSaveStubPreviousInternals.invoke = target.__fcvRecordSaveStubPreviousInvoke
+          target.__TAURI_INTERNALS__ = target.__fcvRecordSaveStubPreviousInternals
+        } else delete target.__TAURI_INTERNALS__
+        if (target.__fcvRecordSaveStubPreviousTauri) target.__TAURI__ = target.__fcvRecordSaveStubPreviousTauri
+        else delete target.__TAURI__
+        delete target.__fcvRecordSaveStubPreviousInvoke
+        delete target.__fcvRecordSaveStubPreviousInternals
+        delete target.__fcvRecordSaveStubPreviousTauri
+      })
+    }
   }
 
   async function restoreFixture(page) {
@@ -581,6 +681,153 @@ export function createRecordActionCoverage({
             }
           },
         })
+      }
+
+      // FAILED EXPORT AUTHORIZATION must be visible.
+      //
+      // A one-off Save As target authorizes its parent folder in the engine's
+      // output fence before the export verb runs (withAuthorizedOutputPath). When
+      // the engine REFUSES that folder — it was deleted, renamed, or lives on a
+      // volume that is no longer mounted — the authorization step throws BEFORE
+      // screen_record.export is ever issued. The 0.6.106 macOS qualification
+      // recorded exactly that shape (CLICK=OK, no screen_record.export request at
+      // all within 150s) and the user was left with a note reading "Rendering…"
+      // forever, because the rejection went into `void exportClip()`.
+      //
+      // Contract proven here, through the real controls: the export note NAMES the
+      // failure and never stays at "Rendering…", and the verb is still correctly
+      // withheld (the engine fence is not bypassed to make a row pass).
+      //
+      // The refused folder is real, not injected: project.set_output_dir
+      // canonicalizes it and ENOENT refuses it through the engine's own code on
+      // every platform — no fetch fixture, no per-OS assertion.
+      //
+      // TRANSPORT IS CHOSEN BY MEASUREMENT, not by platform name — the lane is
+      // decided by whether the JS save stub actually takes in THIS shell:
+      //
+      //  · Stub takes (browser sweep, WebKitGTK — the bridge is not sealed) —
+      //    unchanged: it answers `plugin:dialog|save` with
+      //    /fixture/authorized-elsewhere/recording.mp4, a path that exists on no
+      //    host, and no native dialog is ever opened.
+      //
+      //  · Stub does NOT take (macOS WKWebView, Windows WebView2 — Tauri 2.11
+      //    seals the bridge and the assignment is a silent no-op) — the click
+      //    would reach the REAL save panel with nobody to dismiss it, and an
+      //    unpaired modal chooser poisons every later native action. Measured
+      //    2026-08-07: one leaked sheet cost 49 subsequent native rows. So drive
+      //    the real panel through the OS-action gate, exactly like
+      //    record-output-pick, and earn an unauthorizable folder honestly: pick
+      //    into a temp dir that DOES exist (a real panel only navigates to
+      //    folders that exist), then delete it before Export runs. That is the
+      //    literal user scenario this row is about — "deleted, renamed, or on a
+      //    volume that is no longer mounted".
+      //
+      //  · Stub does not take AND there is no OS-action controller to pair with
+      //    the panel — the row must NOT click at all. Opening an undismissable
+      //    chooser to score one row is exactly the trade that cost 49 rows, so
+      //    the row reports an honest CLICK=N/A instead (the same rule
+      //    `NATIVE_PICKER_CLICK_NA` applies to every other native picker row).
+      const stubTakes = await saveDialogStubTakes(page)
+      const unpairedNativePicker = stubTakes || nativeOsActionsEnabled
+        ? ''
+        : 'save-dialog stub cannot be installed in this sealed native shell and no OS-action ' +
+          'controller is available to dismiss a real panel; clicking would leave an undismissable ' +
+          'modal chooser open and poison every later native action'
+      const refusedDir = stubTakes || unpairedNativePicker
+        ? null
+        : mkdtempSync(join(tmpdir(), 'fcv-record-refused-'))
+      // The lane choice is evidence, not an implementation detail: it is the
+      // difference between "no native dialog was ever opened" and "a real panel
+      // was opened and MUST have been dismissed". Put the measurement in the log
+      // so a receipt can be read without re-deriving it on the rig.
+      console.error(
+        `[fcv] record-export-authorization-refused: save-dialog stub takes=${stubTakes}; ` +
+        `transport=${refusedDir ? 'real native panel + OS-action gate' : unpairedNativePicker ? 'NOT CLICKED (unpaired)' : 'JS stub'}`,
+      )
+      const unauthorizableOutput = refusedDir
+        ? join(refusedDir, 'recording.mp4')
+        : '/fixture/authorized-elsewhere/recording.mp4'
+      const probeRefusedExport = async () => {
+        const exportButton = page.locator('[data-cut-action="record-export"]').first()
+        const exportNote = async () => (
+          await page.locator('[data-cut-rec-export-note]').first().textContent().catch(() => '')
+        ) || ''
+        let exportCallsBefore = 0
+        await probe(page, {
+          surface,
+          name: 'record-export-authorization-refused',
+          actionId: 'record-export',
+          sel: exportButton,
+          group: panel,
+          groupName: 'record-export',
+          // Paired with the OS controller ONLY in the real-panel lane. Where the
+          // stub takes, no native dialog is ever presented and a controller
+          // would simply time out waiting for one.
+          nativeAction: refusedDir ? {
+            mode: 'select',
+            path: unauthorizableOutput,
+            useDoClick: true,
+            verifyResult: true,
+          } : undefined,
+          clickNa: unpairedNativePicker,
+          doClick: async () => {
+            // The PREVIOUS export row left "Saved MP4 → …" on screen. That text
+            // does not start with "Rendering", so a wait for merely "not
+            // Rendering" would return the STALE note instantly and the assertion
+            // would grade it. Remember it and require an actual change.
+            const noteBefore = (await exportNote()).trim()
+            await page.locator('[data-cut-action="record-output-pick"]').first().click()
+            await waitFor(async () => sameHostPath(
+              await page.locator('[data-cut-rec-output-path]').first().getAttribute('data-cut-rec-output-path'),
+              unauthorizableOutput,
+            ))
+            // Native lane: the folder existed only so a real panel could name it.
+            // Remove it now, BEFORE the export, so the engine's canonicalize()
+            // refuses it for real.
+            if (refusedDir) rmSync(refusedDir, { recursive: true, force: true })
+            exportCallsBefore = (await fixtureState(page)).exportCalls.length
+            await exportButton.click()
+            // Bounded: pre-fix the note stays "Rendering…" and this simply expires,
+            // which is what makes the row RED against the swallowed rejection.
+            await waitFor(async () => {
+              const note = (await exportNote()).trim()
+              return !!note && note !== noteBefore && !/^Rendering/i.test(note)
+            })
+          },
+          assertResult: async () => {
+            const note = await exportNote()
+            const exportCalls = (await fixtureState(page)).exportCalls.length
+            return {
+              ok: /export failed/i.test(note)
+                && /authorize/i.test(note)
+                && !/^Rendering/i.test(note.trim())
+                && exportCalls === exportCallsBefore,
+              detail: `note="${note}"; screen_record.export issued=${exportCalls - exportCallsBefore} (must be 0 — the folder was refused)`,
+            }
+          },
+        })
+      }
+      if (refusedDir) {
+        try {
+          await probeRefusedExport()
+        } finally {
+          // Idempotent: doClick already removes it on the happy path, and a row
+          // that failed before that point must not leave a temp dir behind.
+          rmSync(refusedDir, { recursive: true, force: true })
+        }
+      } else if (unpairedNativePicker) {
+        await probeRefusedExport()
+      } else {
+        await withStubbedSaveDialog(page, unauthorizableOutput, probeRefusedExport)
+      }
+      // Back to the default export folder so the raw rows below keep their own
+      // contract (raw_path is asserted absent there). Tolerant of an absent Clear:
+      // that control only mounts while a path is chosen, so if the row above already
+      // failed to select one there is nothing to undo — and the row's own verdict,
+      // not a section crash here, is what must report that.
+      if (await page.locator('[data-cut-action="record-output-clear"]').count()) {
+        await page.locator('[data-cut-action="record-output-clear"]').first().click()
+        await sleep(80)
       }
 
       await page.locator('[data-cut-rec-mode="raw"]').first().click()

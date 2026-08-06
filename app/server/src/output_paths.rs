@@ -38,6 +38,48 @@ pub(crate) fn set_session_output_dir(dir: Option<PathBuf>) {
     }
 }
 
+/// The directories the HTTP export routes may READ from, canonical, most
+/// specific first: `<project>/exports`, then `CUTD_OUTPUTS_DIR`, then the user's
+/// session output dir. Roots that do not currently resolve are dropped.
+///
+/// WHY the read fence extends past `<project>/exports`: the same preference set
+/// that authorizes an export WRITE (`make_fence`) decides where a finished
+/// export physically lands. Before this existed the two disagreed — the engine
+/// happily wrote a render into the user's chosen delivery folder and then the
+/// serve route, fenced to `<project>/exports` alone, could not hand that same
+/// file back, so in-app playback of every outside-the-project export 404'd
+/// (0.6.105/0.6.106 P1). Serving a file the app itself just wrote into a folder
+/// the user explicitly designated is NOT new authority; it is the read half of
+/// an authorization the user already gave. What is deliberately NOT included is
+/// the project dir itself (unlike `make_fence`): reads stay fenced to the
+/// exports SUBTREE, so `project.json`, the op log, media and proxies are never
+/// reachable through an export URL. A momentary Save As authorization
+/// (`withAuthorizedOutputPath`) is likewise NOT retained — it authorized one
+/// write, not a standing read root.
+pub(crate) fn authorized_export_read_roots(project_dir: &Path) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut push = |dir: PathBuf| {
+        // Canonicalize so membership tests compare resolved paths (a symlinked
+        // root and its target are the same fence), and so a root that no longer
+        // exists simply drops out instead of matching by prefix string.
+        if let Ok(canon) = dir.canonicalize() {
+            if canon.is_dir() && !roots.contains(&canon) {
+                roots.push(canon);
+            }
+        }
+    };
+    push(project_dir.join("exports"));
+    if let Ok(d) = std::env::var("CUTD_OUTPUTS_DIR") {
+        if !d.is_empty() {
+            push(PathBuf::from(d));
+        }
+    }
+    if let Some(dir) = session_output_dir() {
+        push(dir);
+    }
+    roots
+}
+
 /// Build the project's PathFence (cut-media owns the output-fencing policy). Writes
 /// may target the project dir, the env-configured CUTD_OUTPUTS_DIR, and the
 /// user's chosen session output dir — those are the only allowed roots.
@@ -297,6 +339,72 @@ pub(crate) fn fenced_existing_file_under_dir(
     Ok(target)
 }
 
+/// Resolve an EXISTING export the engine itself produced, fenced to the same
+/// authorized read roots the HTTP export routes use
+/// (`authorized_export_read_roots`: the `<project>/exports` subtree,
+/// `CUTD_OUTPUTS_DIR`, the session output dir).
+///
+/// WHY this exists next to `fenced_existing_file_under_dir`: a verb that consumes
+/// a previous render (today `comment.export`, whose source is the render named by
+/// a RenderReceipt) must be able to find that render wherever the engine was
+/// authorized to deliver it. Fencing such a lookup to `<project>/exports` alone
+/// made the verb impossible for anyone who had chosen a default export folder —
+/// `render.final` delivers there, then the receipt's `output_path` sits outside
+/// the fence and the verb refuses a file it wrote itself. Reproduction: with a
+/// default export folder set, `receipts/<render>.json` points at that folder and
+/// `comment.export` returns ok:false while the render job reports done.
+///
+/// This grants no new authority: it is the read half of a write the user already
+/// authorized, and it deliberately inherits the roots' exclusion of the project
+/// dir itself, so `project.json`, the op log, media and proxies stay unreachable.
+/// Canonicalization happens FIRST, so `..` and symlinks resolve before the
+/// membership test, and `starts_with` compares whole path components.
+pub(crate) fn fenced_existing_export_read(
+    project_dir: &Path,
+    path: &Path,
+    label: &str,
+    suggested_action: &str,
+) -> Result<PathBuf, CutError> {
+    let target = path.canonicalize().map_err(|e| {
+        CutError::new(
+            error_codes::NOT_FOUND,
+            format!("{label} not found: {} ({e})", path.display()),
+            "the requested file must exist",
+        )
+        .with_suggested_action(suggested_action)
+    })?;
+    if !target.is_file() {
+        return Err(CutError::new(
+            error_codes::NOT_FOUND,
+            format!("{label} is not a file: {}", target.display()),
+            "the requested path must point at a file",
+        )
+        .with_suggested_action(suggested_action));
+    }
+    let roots = authorized_export_read_roots(project_dir);
+    if roots.iter().any(|root| target.starts_with(root)) {
+        return Ok(target);
+    }
+    Err(CutError::new(
+        error_codes::INVALID_ARGS,
+        format!("{label} is outside every authorized export folder"),
+        format!(
+            "resolved path was {}; authorized: {}",
+            target.display(),
+            if roots.is_empty() {
+                "none".to_string()
+            } else {
+                roots
+                    .iter()
+                    .map(|r| r.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ),
+    )
+    .with_suggested_action(suggested_action))
+}
+
 pub(crate) fn resolve_existing_project_file(
     project_dir: &Path,
     requested: &str,
@@ -364,10 +472,22 @@ pub(crate) async fn project_set_output_dir(args: Value) -> Result<VerbResult, Cu
 mod tests {
     use super::*;
 
+    /// The session output dir is process-global (it is a user preference for the
+    /// whole cutd session), and `cargo test` runs the tests in one binary on
+    /// several threads — so every test that reads or writes it has to take this
+    /// lock, or an unrelated test's `set_session_output_dir` decides the outcome.
+    /// Poisoning is recovered from deliberately: a panicking test tells us about
+    /// its own assertion, not about lock hygiene.
+    static SESSION_OUTPUT_DIR_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// the output-fencing contract: output paths are fenced — traversal, foreign dirs and
     /// non-media suffixes are refused.
     #[test]
     fn output_path_fencing() {
+        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -382,8 +502,112 @@ mod tests {
         assert!(fence_output_path(&proj, Some(inside.to_str().unwrap()), "x.mp4").is_err());
     }
 
+    /// comment.export with a default export folder chosen: `render.final`
+    /// delivers the review render THERE, so the receipt's
+    /// output_path sits outside `<project>/exports` and the old
+    /// `fenced_existing_file_under_dir(&dir.join("exports"), …)` refused a file the
+    /// engine had just written itself (`render=done; export=false`). The read fence
+    /// must be the same authorized set the serve routes use — and must still refuse
+    /// a path in neither root, and still refuse the project's own private files.
+    #[test]
+    fn review_render_reads_from_every_authorized_export_root() {
+        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_session_output_dir(None);
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        std::fs::create_dir_all(proj.join("exports")).unwrap();
+        let inside = proj.join("exports/render_001.mp4");
+        std::fs::write(&inside, b"render inside the project").unwrap();
+        let chosen = tempfile::tempdir().unwrap();
+        let delivered = chosen.path().join("render_001.mp4");
+        std::fs::write(&delivered, b"render delivered to the chosen folder").unwrap();
+        let unrelated = tempfile::tempdir().unwrap();
+        let elsewhere = unrelated.path().join("render_001.mp4");
+        std::fs::write(&elsewhere, b"render in a folder nobody authorized").unwrap();
+        let private = proj.join("project.json");
+        std::fs::write(&private, b"{}").unwrap();
+
+        // No session dir: the project's exports subtree is the only root.
+        assert!(fenced_existing_export_read(&proj, &inside, "review render", "x").is_ok());
+        assert!(fenced_existing_export_read(&proj, &delivered, "review render", "x").is_err());
+
+        // The user chose a default export folder — the render that landed there is
+        // now readable, and nothing else moved.
+        set_session_output_dir(Some(chosen.path().to_path_buf()));
+        assert!(
+            fenced_existing_export_read(&proj, &delivered, "review render", "x").is_ok(),
+            "a render delivered to the chosen export folder must be packageable"
+        );
+        assert!(fenced_existing_export_read(&proj, &inside, "review render", "x").is_ok());
+        assert!(
+            fenced_existing_export_read(&proj, &elsewhere, "review render", "x").is_err(),
+            "an unauthorized folder stays refused"
+        );
+        assert!(
+            fenced_existing_export_read(&proj, &private, "review render", "x").is_err(),
+            "the read fence never reaches the project's own files"
+        );
+        assert!(
+            fenced_existing_export_read(&proj, &proj.join("exports/missing.mp4"), "review render", "x")
+                .is_err(),
+            "a missing file is refused, never substituted"
+        );
+        set_session_output_dir(None);
+    }
+
+    /// render.bundle: a publish package is ONE directory, and its manifest
+    /// path is hard-coded into the project tree. With a
+    /// session output dir in force the old `fence_output_path(&dir, None, rel)`
+    /// diverted the platform clips out of the project AND flattened every aspect
+    /// onto one file name, so `<project>/exports/<bundle_id>/` was never created and
+    /// the manifest write failed the job with ENOENT. Pin both halves.
+    #[test]
+    fn bundle_package_members_stay_in_the_project_under_a_session_output_dir() {
+        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let chosen = tempfile::tempdir().unwrap();
+        let chosen_canon = chosen.path().canonicalize().unwrap();
+        set_session_output_dir(Some(chosen.path().to_path_buf()));
+
+        // The pre-fix helper: both aspects collapse into the chosen folder, and the
+        // manifest's directory is never created. This is the defect, pinned.
+        let diverted_a = fence_output_path(&proj, None, "exports/bundle_0_1500/9x16/clip.mp4").unwrap();
+        assert_eq!(diverted_a.parent().unwrap(), chosen_canon);
+
+        // The fix: every member resolves inside the package directory the manifest
+        // already lives in, and that directory exists once the first clip resolves.
+        let manifest_dir = proj.join("exports").join("bundle_0_1500");
+        for aspect in ["9x16", "1x1", "16x9"] {
+            let rel = format!("exports/bundle_0_1500/{aspect}/clip.mp4");
+            let kept = fence_project_output_path(&proj, None, &rel).unwrap();
+            assert!(
+                kept.starts_with(manifest_dir.canonicalize().unwrap()),
+                "{aspect} clip must stay in the package dir, got {}",
+                kept.display()
+            );
+            assert!(
+                kept.parent().unwrap().ends_with(aspect),
+                "{aspect} keeps its own subdirectory instead of flattening"
+            );
+        }
+        assert!(
+            manifest_dir.is_dir(),
+            "the manifest's directory must exist after the clips resolve"
+        );
+        set_session_output_dir(None);
+    }
+
     #[test]
     fn default_output_paths_avoid_existing_files() {
+        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");

@@ -5834,6 +5834,52 @@ fn real_4k_render_software_only() {
 /// CUDA on this box; the system ffmpeg does). Asserts the GPU path actually engaged
 /// (`pipeline == "gpu"`) so a silent software fallback can't masquerade as a GPU
 /// measurement. Writes `real4k_gpu.mp4` for the PSNR compare vs `real4k_sw.mp4`.
+/// The hardware tier must DECLINE a frame size its encoder cannot do, instead of
+/// being swapped in and failing the render at encoder-open time.
+///
+/// The concrete case: NVENC's H.264 engine refuses anything wider than 4096 px
+/// (`Width 7680 exceeds 4096` → `No capable devices found`), while the same GPU's
+/// HEVC engine encodes 8K fine. Before the size gate, an 8K `render.final` was
+/// accepted, failed during encode, and left a 0-byte file in `exports/`.
+///
+/// GPU-shaped, so `#[ignore]`. It asserts an INVARIANT rather than a fixed limit
+/// table — for each codec, `hw_codec_args` must agree with a real probe at that
+/// size on whatever GPU is running. So it is meaningful on NVIDIA, Intel, AMD or
+/// Apple silicon without encoding vendor ceilings into the test.
+#[test]
+#[ignore = "needs a hardware encoder; run explicitly on a GPU host"]
+fn hw_encoder_declines_frame_sizes_it_cannot_encode() {
+    use cut_media::hwencode::{encoder_supports_size, hw_caps, hw_codec_args};
+
+    let caps = hw_caps();
+    let mut checked = 0usize;
+    // 4K is inside every current hardware encoder's range; 8K is where the
+    // H.264 engines stop. Both are exercised so the gate is shown to ALLOW as
+    // well as refuse — a gate that only ever says no is not a gate.
+    for (codec, w, h) in [
+        ("h264", 3840u32, 2160u32),
+        ("h264", 7680, 4320),
+        ("hevc", 3840, 2160),
+        ("hevc", 7680, 4320),
+    ] {
+        let Some(encoder) = caps.for_codec(codec) else {
+            continue; // no hardware tier for this codec on this host
+        };
+        let probed = encoder_supports_size(encoder, w, h);
+        let offered = hw_codec_args(codec, 1, w, h).is_some();
+        assert_eq!(
+            offered, probed,
+            "{encoder} at {w}x{h}: hw_codec_args offered={offered} but a real probe says {probed}"
+        );
+        eprintln!("{encoder} {w}x{h}: supported={probed}, hardware tier offered={offered}");
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no hardware encoder on this host — run this rig on a GPU machine"
+    );
+}
+
 #[test]
 #[ignore = "needs SHELLX_CUT_TEST_4K + SHELLX_CUT_TEST_OUT_DIR + a CUDA ffmpeg; run explicitly"]
 fn real_4k_render_gpu_only() {

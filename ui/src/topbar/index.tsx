@@ -31,6 +31,7 @@ import RenderQueueModal from './RenderQueueModal'
 import OtioImportModal, { type OtioImportPreview } from './OtioImportModal'
 import { BrandMark, Icon } from '../icons'
 import ThemeToggle from '../components/ThemeToggle'
+import UpdateButton from './UpdateButton'
 import StoryboardOverlay from './StoryboardOverlay'
 import PreflightWarning from './PreflightWarning'
 import SequenceSwitcher from './SequenceSwitcher'
@@ -360,10 +361,17 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
       try {
         // A native Save As selection temporarily authorizes its parent in the
         // engine's output fence. Default exports re-assert the stored folder.
+        // Render-backed entries (platform publishes + the plain Video render)
+        // carry the SHARED footage-profile choice (the same `profile` state the
+        // Render menu's Footage select drives) so a silent screen-demo export
+        // stops failing caption/loudness receipt checks. 'auto' maps to
+        // undefined = omit the arg (engine default), exactly like onRender.
         const r = await withAuthorizedOutputPath(explicitPath, async () =>
           opt.id === 'frame'
             ? callVerb('export.frame', { at_ms: Math.max(0, Math.round(playheadMs ?? 0)), ...(explicitPath ? { path: explicitPath } : {}) })
-            : opt.run(explicitPath))
+            : opt.group === 'publish' || opt.id === 'video'
+              ? opt.run(explicitPath, profile === 'auto' ? undefined : profile)
+              : opt.run(explicitPath))
         if (r.ok) {
           // Async renders ('video' + platform publishes) return a job_id, not a
           // path → tell the user where the finished file + its Download button land.
@@ -595,6 +603,12 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
       <ThemeToggle variant="icon" />
 
       <span className="tb-spacer" />
+
+      {/* Quiet update nudge — renders ONLY while the desktop shell reports an
+          available signed release (launch / 6-hourly / manual check). Full
+          status + controls live in Settings > About; browser builds never
+          render it (isTauri() false inside the component). */}
+      <UpdateButton />
 
       {note && (
         <span className="tb-note" data-cut-topbar-note>
@@ -993,6 +1007,29 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
                   Use project exports folder
                 </button>
               )}
+            </div>
+            {/* Footage QC profile — the SAME `profile` state as the Render
+                menu's Footage select (one choice, visible in both menus).
+                The render-backed entries (platform publishes + the Video
+                render) forward it — export.publish{profile} / render.final
+                {profile} — so the receipt's check battery matches the footage
+                (silent screen demo ≠ talking head). 'auto' = omit the arg,
+                engine default. */}
+            <div className="tb-menu-dest" data-cut-export-profile-section>
+              <label className="tb-render-field">
+                <span>Footage</span>
+                <select
+                  className="tb-sel"
+                  data-cut-export-profile
+                  value={profile}
+                  title="Footage profile for the publish check battery (auto = server default + auto-detect proposal). Shared with the Render menu — screen demo waives caption/loudness checks that don't apply to silent footage."
+                  onChange={(e) => setProfile(selectedOption(PROFILES, e.target.value, profile))}
+                >
+                  {PROFILES.map((p) => (
+                    <option key={p} value={p}>{p === 'silent_screen_demo' ? 'Screen demo' : p === 'talking_head' ? 'Talking head' : 'Auto-detect'}</option>
+                  ))}
+                </select>
+              </label>
             </div>
             {EXPORT_GROUPS.map((group) => (
               <div

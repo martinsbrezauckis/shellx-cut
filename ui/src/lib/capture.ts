@@ -22,6 +22,59 @@ export interface CaptureResult {
   notes: string[]
 }
 
+/** Pipeline stage a capture failure is attributed to (structured error
+ *  contract — ui.screenshot is a verification PRIMITIVE, so its failures must
+ *  be diagnosable, never "[object Event]"). */
+export type CaptureStage = 'root-missing' | 'dom-rasterize' | 'canvas-context' | 'png-encode'
+
+/** A capture failure that names its pipeline stage + a human-readable detail.
+ *  Thrown by captureApp(); events.ts relays {code, stage, message} to the
+ *  server so the ui.screenshot verb can fail actionably (2026-08-06 macOS
+ *  bug-probe: the raw html-to-image rejection stringified to "[object Event]",
+ *  hiding both the stage and the failing resource). */
+export class CaptureError extends Error {
+  readonly stage: CaptureStage
+  constructor(stage: CaptureStage, detail: string) {
+    super(`capture failed at ${stage}: ${detail}`)
+    this.name = 'CaptureError'
+    this.stage = stage
+  }
+}
+
+/**
+ * Normalize an unknown thrown/rejected value into a human-readable detail.
+ * html-to-image rejects with the raw resource-load EVENT (its onerror
+ * argument), whose default String() is the useless "[object Event]" — for
+ * events, extract the event type and the failing element (tag + src/href) so
+ * the error names the culprit resource. Exported for unit tests (lib.test.ts).
+ */
+export function captureFailureDetail(err: unknown): string {
+  if (err instanceof Error) return err.message || String(err)
+  if (typeof Event !== 'undefined' && err instanceof Event) {
+    const parts = [`${err.type || 'unknown'} event`]
+    const target = err.target as
+      | (Partial<Pick<HTMLElement, 'tagName'>> & { src?: unknown; currentSrc?: unknown; href?: unknown })
+      | null
+    if (target && typeof target === 'object') {
+      if (typeof target.tagName === 'string') parts.push(`on <${target.tagName.toLowerCase()}>`)
+      const src = [target.currentSrc, target.src, target.href].find(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      )
+      if (src) parts.push(`(${src})`)
+    }
+    return parts.join(' ')
+  }
+  return String(err)
+}
+
+/** Structured {stage, message} for any capture rejection — CaptureError keeps
+ *  its stage; anything else (a bug before staging) is reported honestly as
+ *  stage "unknown". Exported for events.ts (the WS error frame) and tests. */
+export function describeCaptureError(err: unknown): { stage: string; message: string } {
+  if (err instanceof CaptureError) return { stage: err.stage, message: err.message }
+  return { stage: 'unknown', message: captureFailureDetail(err) }
+}
+
 /**
  * Compute the painted content box of a video letterboxed by
  * `object-fit: contain` inside `rect` (the element's border box).
@@ -78,7 +131,7 @@ const TRANSPARENT_PX =
 
 export async function captureApp(): Promise<CaptureResult> {
   const root = document.getElementById('root')
-  if (!root) throw new Error('app root #root not found')
+  if (!root) throw new CaptureError('root-missing', 'app root #root not found')
   const notes: string[] = []
 
   // An <img> that isn't fully loaded-and-valid makes html-to-image REJECT the
@@ -99,19 +152,28 @@ export async function captureApp(): Promise<CaptureResult> {
     else notes.push(`poster image not ready/failed (${img.getAttribute('src')}) — region left blank`)
   }
 
-  const canvas = await toCanvas(root, {
-    pixelRatio: 1,
-    backgroundColor: '#0a0a0a', // --bg; SVG rasterization defaults transparent
-    // Belt: a failed image fetch falls back to a transparent pixel.
-    imagePlaceholder: TRANSPARENT_PX,
-    // Braces: <video> and EVERY <img> are excluded from the SVG path (their
-    // live pixels are composited below); a broken/pending poster therefore
-    // can't reject the whole capture.
-    filter: (el) => !(el instanceof HTMLVideoElement) && !(el instanceof HTMLImageElement && skipImgs.has(el)),
-  })
+  // Stage 'dom-rasterize': the html-to-image DOM→SVG→canvas pass. It rejects
+  // with the raw resource-load Event on any inlining failure the belt/braces
+  // above didn't cover (e.g. a CSS background-image or @font-face fetch) —
+  // rethrow structured so the verb error names the stage + failing resource.
+  let canvas: HTMLCanvasElement
+  try {
+    canvas = await toCanvas(root, {
+      pixelRatio: 1,
+      backgroundColor: '#0a0a0a', // --bg; SVG rasterization defaults transparent
+      // Belt: a failed image fetch falls back to a transparent pixel.
+      imagePlaceholder: TRANSPARENT_PX,
+      // Braces: <video> and EVERY <img> are excluded from the SVG path (their
+      // live pixels are composited below); a broken/pending poster therefore
+      // can't reject the whole capture.
+      filter: (el) => !(el instanceof HTMLVideoElement) && !(el instanceof HTMLImageElement && skipImgs.has(el)),
+    })
+  } catch (err) {
+    throw new CaptureError('dom-rasterize', captureFailureDetail(err))
+  }
 
   const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('2d context unavailable on capture canvas')
+  if (!ctx) throw new CaptureError('canvas-context', '2d context unavailable on capture canvas')
   const rootRect = root.getBoundingClientRect()
 
   for (const video of Array.from(root.querySelectorAll('video'))) {
@@ -148,6 +210,14 @@ export async function captureApp(): Promise<CaptureResult> {
     }
   }
 
-  const dataUrl = canvas.toDataURL('image/png')
+  // Stage 'png-encode': toDataURL throws SecurityError when the canvas was
+  // tainted by a cross-origin draw (should never happen — media is same-origin
+  // via cutd — but a structured error beats a mystery if it ever does).
+  let dataUrl: string
+  try {
+    dataUrl = canvas.toDataURL('image/png')
+  } catch (err) {
+    throw new CaptureError('png-encode', captureFailureDetail(err))
+  }
   return { png_base64: dataUrl.slice('data:image/png;base64,'.length), notes }
 }

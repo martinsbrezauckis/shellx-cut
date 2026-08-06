@@ -20,6 +20,7 @@
 // Callers: App.tsx. Dependencies: react only.
 
 import { useEffect, useState } from 'react'
+import { SAFE_RIGHT_TAB, adoptUnconfirmedPanelAttempt, safeRightTab } from './panelPersistGuard'
 
 /** Which tab the tabbed left sidebar (LeftPanel) is showing. Library is a
  * dedicated workspace; persisted legacy `leftTab:"library"` values migrate to
@@ -108,8 +109,21 @@ const isObject = (v: unknown): v is object => v !== null && typeof v === 'object
 const isLeftTab = (v: string): v is LeftTab => ['transcript', 'assets', 'generate', 'projects', 'find'].includes(v)
 const isRightTab = (v: string): v is RightTab => ['color', 'audio', 'chat'].includes(v)
 
-/** Load + defensively clamp persisted layout (corrupt entry → defaults). */
-function load(): LayoutState {
+/** Load + defensively clamp persisted layout (corrupt entry → defaults).
+ *  Exported for node-level persistence tests (panel-persist-guard.test.ts). */
+export function loadLayout(): LayoutState {
+  // Crash-safety FIRST, on every boot path (even when no layout was persisted):
+  // a right-tab mount sentinel that survived into this boot means the previous
+  // session died before that panel confirmed a paint — blocklist it so the
+  // restore below can never boot back into a panel that blanks the WebView
+  // (2026-08-06 Color-panel failure under Xvfb/llvmpipe). Idempotent; runs
+  // before AppRightRail can arm a new sentinel for THIS session.
+  const crashedTab = adoptUnconfirmedPanelAttempt()
+  if (crashedTab) {
+    // Honest, greppable breadcrumb for rig logs — the app deliberately did not
+    // restore the panel that took the last session down.
+    console.warn(`[cut] right-tab "${crashedTab}" never confirmed a paint last session — not restoring it`)
+  }
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return LAYOUT_DEFAULTS
@@ -148,8 +162,11 @@ function load(): LayoutState {
       // (Color/Audio are no longer modes; they are right-sidebar tabs.)
       workspaceMode: 'edit',
       // The right-sidebar tab IS restored (it's a persistent inspector surface, not
-      // a transient mode): a user who works in Color/Audio returns to it on reload.
-      rightTab,
+      // a transient mode): a user who works in Color/Audio returns to it on reload —
+      // UNLESS that tab failed to render (crash-before-paint or a caught render
+      // error): then the safe Properties tab boots instead and the failed tab
+      // stays reachable by hand behind AppRightRail's honest notice.
+      rightTab: safeRightTab(rightTab, SAFE_RIGHT_TAB),
     }
   } catch {
     return LAYOUT_DEFAULTS // private mode / quota / bad JSON — never fatal
@@ -161,7 +178,7 @@ function load(): LayoutState {
  * 60Hz divider drag doesn't write per-frame; the trailing write always lands).
  */
 export function useLayout() {
-  const [layout, setLayout] = useState<LayoutState>(load)
+  const [layout, setLayout] = useState<LayoutState>(loadLayout)
   useEffect(() => {
     const t = setTimeout(() => {
       try {

@@ -34,6 +34,45 @@ fn no_ui_client() -> CutError {
     )
 }
 
+/// Build the verb error for a screenshot_result that carried no png_base64.
+/// The UI client sends a STRUCTURED failure frame —
+/// `error: {code, stage, message, attempts, first_attempt?}` (lib/capture.ts +
+/// lib/events.ts, one bounded client-side retry) — so the verb error names the
+/// failing capture stage and the human cause instead of the pre-2026-08-06
+/// opaque passthrough (`"[object Event]"`, macOS bug-probe finding). Legacy
+/// string errors and error-less replies still produce an honest message.
+fn screenshot_capture_error(reply: &Value) -> CutError {
+    let err = reply.get("error");
+    let stage = err
+        .and_then(|e| e.get("stage"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let message = err
+        .and_then(|e| e.get("message"))
+        .and_then(|v| v.as_str())
+        // Compat: an older UI client sent `error` as a plain string.
+        .or_else(|| err.and_then(|e| e.as_str()));
+    let attempts = err
+        .and_then(|e| e.get("attempts"))
+        .and_then(|v| v.as_u64());
+    let (headline, cause) = match message {
+        Some(m) => (
+            format!("UI screenshot capture failed at stage '{stage}'"),
+            match attempts {
+                Some(n) => format!("{m} (after {n} attempt(s))"),
+                None => m.to_string(),
+            },
+        ),
+        None => (
+            "UI client returned no image".to_string(),
+            format!("screenshot_result lacked png_base64: {reply}"),
+        ),
+    };
+    CutError::new(error_codes::JOB_FAILED, headline, cause).with_suggested_action(
+        "retry ui.screenshot; if it keeps failing, debug.screenshot captures real screen pixels and render.frame composes output frames",
+    )
+}
+
 /// ui.screenshot{inline?} — ask the UI client to capture its own app root
 /// and relay the PNG back (UI contract: a verification PRIMITIVE).
 pub(super) async fn ui_screenshot(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
@@ -57,13 +96,7 @@ pub(super) async fn ui_screenshot(state: &AppState, args: Value) -> Result<VerbR
     let b64 = reply
         .get("png_base64")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            CutError::new(
-                error_codes::JOB_FAILED,
-                "UI client returned no image",
-                format!("screenshot_result lacked png_base64: {reply}"),
-            )
-        })?;
+        .ok_or_else(|| screenshot_capture_error(&reply))?;
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
@@ -633,5 +666,54 @@ pub(super) async fn system_setup_matte(
             });
             Ok(VerbResult::ok(json!({"job_id": job_id})))
         }
+    }
+}
+
+#[cfg(test)]
+mod screenshot_error_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Structured client failure → verb error names the stage, the human
+    /// cause, and the attempt count (2026-08-06 hardening contract).
+    #[test]
+    fn structured_capture_failure_names_stage_cause_and_attempts() {
+        let reply = json!({
+            "type": "screenshot_result",
+            "error": {
+                "code": "capture_failed",
+                "stage": "dom-rasterize",
+                "message": "capture failed at dom-rasterize: error event on <link> (app.css)",
+                "attempts": 2,
+            }
+        });
+        let e = screenshot_capture_error(&reply);
+        assert_eq!(e.code, error_codes::JOB_FAILED);
+        assert!(e.message.contains("stage 'dom-rasterize'"), "message: {}", e.message);
+        assert!(e.cause.contains("error event on <link> (app.css)"), "cause: {}", e.cause);
+        assert!(e.cause.contains("after 2 attempt(s)"), "cause: {}", e.cause);
+        assert!(
+            !format!("{e:?}").contains("[object Event]"),
+            "the opaque pre-hardening string must never appear"
+        );
+    }
+
+    /// Compat: an old UI client that sent `error` as a plain string still
+    /// yields its text (stage honestly 'unknown').
+    #[test]
+    fn legacy_string_error_still_surfaces_its_text() {
+        let reply = json!({"type": "screenshot_result", "error": "capture blew up"});
+        let e = screenshot_capture_error(&reply);
+        assert!(e.message.contains("stage 'unknown'"), "message: {}", e.message);
+        assert!(e.cause.contains("capture blew up"), "cause: {}", e.cause);
+    }
+
+    /// No error field at all (malformed reply) → the original honest fallback.
+    #[test]
+    fn errorless_reply_keeps_the_no_image_fallback() {
+        let reply = json!({"type": "screenshot_result", "notes": []});
+        let e = screenshot_capture_error(&reply);
+        assert_eq!(e.message, "UI client returned no image");
+        assert!(e.cause.contains("lacked png_base64"), "cause: {}", e.cause);
     }
 }

@@ -1,5 +1,5 @@
 use super::test_actor;
-use crate::dispatch::{dispatch, update_asset};
+use crate::dispatch::{dispatch, parse_args, publish_render_final_args, update_asset, PublishArgs};
 use crate::state::AppState;
 use cut_core::error_codes;
 use serde_json::json;
@@ -198,6 +198,118 @@ async fn render_final_dry_run_plans_without_encoding() {
         .filter(|j| j["kind"] == "render")
         .count();
     assert_eq!(render_jobs, 0, "dry_run must not create a render job");
+}
+
+// ----------------------------------------------------------------------
+// export.publish — delegation contract to render.final (the P3 demo-shoot
+// fix: the footage QC `profile` must pass through so silent screen-demo
+// publishes stop failing caption/loudness checks that don't apply).
+// ----------------------------------------------------------------------
+
+/// PURE delegation contract: the composed render.final args carry the platform
+/// spec always, and the footage `profile` VERBATIM only when the caller sent it
+/// — absence keeps the key out entirely (render.final's own default battery,
+/// today's behavior).
+#[test]
+fn export_publish_profile_passes_through_to_render_final_args() {
+    let spec = cut_media::render::platform_spec("tiktok").expect("tiktok is a known platform");
+
+    // profile present → forwarded verbatim alongside the spec-derived args.
+    let a: PublishArgs = parse_args(json!({
+        "platform": "tiktok",
+        "profile": "silent_screen_demo",
+        "preset": "high",
+        "hardware": "off",
+    }))
+    .expect("valid publish args must parse");
+    let rf = publish_render_final_args(&a, &spec);
+    assert_eq!(rf["profile"], json!("silent_screen_demo"));
+    // Existing passthroughs and spec-derived args are untouched by the fix.
+    assert_eq!(rf["preset"], json!("high"));
+    assert_eq!(rf["hardware"], json!("off"));
+    assert_eq!(rf["width"], json!(1080));
+    assert_eq!(rf["height"], json!(1920));
+    assert_eq!(rf["bitrate"], json!("12000k"));
+
+    // profile absent → NO profile key (not null, not a default): render.final
+    // must see exactly what a direct caller omitting the arg would send.
+    let a: PublishArgs =
+        parse_args(json!({ "platform": "tiktok" })).expect("minimal publish args must parse");
+    let rf = publish_render_final_args(&a, &spec);
+    assert!(
+        !rf.contains_key("profile"),
+        "absent profile must stay absent in the delegated args: {rf:?}"
+    );
+    // dry_run:false likewise stays out (render.final treats absence as false).
+    assert!(!rf.contains_key("dry_run"));
+}
+
+/// Full-dispatch proof: export.publish{profile} passes the compiled schema gate
+/// (the property now exists with additionalProperties:false) and the delegation
+/// completes through the REAL render.final dry_run path with the platform's
+/// explicit geometry. A bogus profile is rejected by the schema enum BEFORE
+/// dispatch, naming the exact path.
+#[tokio::test]
+async fn export_publish_accepts_profile_and_rejects_unknown_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    dispatch(
+        &state,
+        "project.create",
+        json!({"name":"p","dir": dir.path().join("p.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    let media = dir.path().join("clip.mp4");
+    std::fs::write(&media, b"x").unwrap();
+    dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
+    update_asset(&state, "a1", |a| {
+        a.probe = Some(
+            json!({"kind":"video","width":1920,"height":1080,"duration_ms":5000,"has_audio":true}),
+        );
+    })
+    .await
+    .unwrap();
+    dispatch(
+        &state,
+        "edit.insert",
+        json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,5000],"ripple":false}),
+        test_actor(),
+    )
+    .await;
+    // Valid profile + dry_run: schema gate passes, render.final returns the plan
+    // (no encode), and the publish annotation still lands on the result.
+    let r = dispatch(
+        &state,
+        "export.publish",
+        json!({"platform": "tiktok", "profile": "silent_screen_demo", "dry_run": true}),
+        test_actor(),
+    )
+    .await;
+    assert!(r.ok, "{:?}", r.error);
+    let res = r.result.unwrap();
+    assert_eq!(res["dry_run"], true);
+    assert_eq!(res["publish"]["platform"], "tiktok");
+    // The tiktok spec's explicit 9:16 geometry reached render.final.
+    assert_eq!(res["output"]["width"], 1080);
+    assert_eq!(res["output"]["height"], 1920);
+    // Unknown profile → the compiled input schema rejects it up front (enum),
+    // naming the offending path — never a silent fall-through to talking_head.
+    let r = dispatch(
+        &state,
+        "export.publish",
+        json!({"platform": "tiktok", "profile": "bogus_profile", "dry_run": true}),
+        test_actor(),
+    )
+    .await;
+    assert!(!r.ok, "bogus profile must be rejected");
+    let e = r.error.unwrap();
+    assert_eq!(e.code, error_codes::INVALID_ARGS);
+    assert!(
+        e.message.contains("/profile") && e.message.contains("enum"),
+        "the error names the offending path and constraint: {}",
+        e.message
+    );
 }
 
 #[tokio::test]

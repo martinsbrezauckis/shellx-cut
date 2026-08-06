@@ -28,9 +28,9 @@
 use crate::events::Event;
 use crate::generate_handlers;
 use crate::output_paths::{
-    fence_output_path, fence_project_output_path, fenced_existing_file_under_dir, make_fence,
-    publish_output_atomic, resolve_existing_project_file, temp_output_path_for_render,
-    write_output_atomic,
+    fence_output_path, fence_project_output_path, fenced_existing_export_read,
+    fenced_existing_file_under_dir, make_fence, publish_output_atomic,
+    resolve_existing_project_file, temp_output_path_for_render, write_output_atomic,
 };
 use crate::recipes;
 use crate::state::AppState;
@@ -1116,9 +1116,9 @@ use rendering::{
 #[cfg(test)]
 use rendering::{
     dims_from_aspect, jpeg_dimensions, mark_output_checks_unmeasured, next_receipt_id_preview,
-    reserve_receipt_id, resolve_reframe_output_for_qc, storyboard_tile_width,
-    target_size_video_kbps, write_bundle_caption_sidecars, write_storyboard_tiles,
-    PREVIEW_DEFAULT_DURATION_MS,
+    publish_render_final_args, reserve_receipt_id, resolve_reframe_output_for_qc,
+    storyboard_tile_width, target_size_video_kbps, write_bundle_caption_sidecars,
+    write_storyboard_tiles, PublishArgs, PREVIEW_DEFAULT_DURATION_MS,
 };
 pub(crate) use rendering::{dispatch_send, read_receipt, scrub_frame_bytes, snapshot};
 

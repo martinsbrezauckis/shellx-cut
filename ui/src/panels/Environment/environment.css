@@ -758,6 +758,7 @@
   padding: 2px 8px;
 }
 .env-about-tag { margin: 8px 0 0; font: var(--fs-ui-xs) var(--sans); line-height: 1.45; color: var(--ink-3); }
+/* About's update-surface styles live in about-update.css (no-growth ceiling here). */
 .env-about-update { margin: 6px 0 0; font: var(--fs-ui-xs) var(--sans); line-height: 1.45; color: var(--ink-4); }
 .env-about-links { margin-top: 9px; display: flex; align-items: center; gap: 8px; font: var(--fs-mono-xs) var(--mono); }
 .env-about-links a { color: var(--ink-2); text-decoration: none; }

@@ -25,6 +25,11 @@ use std::path::{Path, PathBuf};
 
 /// Env var the engine's ffmpeg/ffprobe resolver reads (cut-media toolpath).
 pub const ENV_FFMPEG_DIR: &str = "SHELLX_CUT_FFMPEG_DIR";
+
+/// Env var: explicit full path to the ffmpeg executable — the engine's
+/// highest-precedence rung (cut-media toolpath ENV_FFMPEG). The shell only
+/// VALIDATES it for honest reporting; the spawned engine reads it itself.
+pub const ENV_FFMPEG_EXE: &str = "SHELLX_CUT_FFMPEG";
 /// Env var the perception sidecar reads to locate instruments.py + the venv.
 pub const ENV_SIDECAR_DIR: &str = "SHELLX_CUT_SIDECAR_DIR";
 /// Env var that turns on the engine's auto-selection of the best HARDWARE-capable
@@ -72,6 +77,39 @@ fn appdata_sidecar_dir() -> Option<PathBuf> {
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
             .map(|b| b.join("shellx-cut/perception"))
     }
+}
+
+/// The engine's persisted manual ffmpeg choice (the UI "Change ffmpeg"
+/// control, system.set_ffmpeg), when it points at an existing file. Mirrors
+/// cut-media::toolpath::override_file_with EXACTLY: an isolated
+/// `SHELLX_CUT_HOME` keeps its override under `<home>/preferences/`, otherwise
+/// the file lives beside the app-data tools dir. The engine reads this file
+/// itself at startup — the shell only consults it so `ffmpeg_ok` reports the
+/// truth about what the engine will resolve (2026-08-06 macOS QA finding:
+/// the shell said ffmpeg_ok=false while the engine rendered fine).
+fn manual_override_ffmpeg() -> Option<PathBuf> {
+    let file = std::env::var_os("SHELLX_CUT_HOME")
+        .filter(|v| !v.is_empty())
+        .map(|home| PathBuf::from(home).join("preferences").join("ffmpeg-override"))
+        .or_else(|| {
+            appdata_tools_dir()
+                .and_then(|tools| tools.parent().map(|root| root.join("ffmpeg-override")))
+        })?;
+    let s = std::fs::read_to_string(file).ok()?;
+    let p = PathBuf::from(s.trim());
+    p.is_file().then_some(p)
+}
+
+/// macOS standard install locations the engine also checks (cut-media
+/// toolpath rung 3b): a GUI .app — and equally an SSH non-login shell on a QA
+/// host — gets a STRIPPED PATH without Homebrew's bin dirs, so a
+/// `brew install ffmpeg` would be reported missing while the engine finds it.
+#[cfg(target_os = "macos")]
+fn macos_system_tool_dirs() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ]
 }
 
 /// Find a directory (among `dirs`, and each one's `bin/` subdir) that contains
@@ -151,6 +189,10 @@ fn runnable_on_path(stem: &str, version_flag: &str) -> bool {
 /// `win64` zip into `%LOCALAPPDATA%`. The target dir each branch names matches
 /// `appdata_tools_dir()` for that OS exactly.
 fn ffmpeg_missing_hint() -> String {
+    // Each branch ends by SAYING WHAT WAS SEARCHED (2026-08-06 macOS QA
+    // finding: an unexplained ffmpeg_ok=false on a box that HAS ffmpeg sends
+    // the reader hunting; naming the searched rungs makes the report
+    // falsifiable at a glance). The lists mirror detect_with_resources.
     if cfg!(target_os = "macos") {
         "ffmpeg is not installed. Core editing + render needs it.\n\
          One-time fix (no admin):\n\
@@ -158,7 +200,10 @@ fn ffmpeg_missing_hint() -> String {
          \x20  Cut detects its keg-only path automatically after restart.\n\
          - Or download a static macOS build and put ffmpeg + ffprobe in:\n\
          \x20   ~/Library/Application Support/ShellX Cut/tools/ffmpeg/bin\n\
-         Then restart ShellX Cut."
+         Then restart ShellX Cut.\n\
+         (Searched: SHELLX_CUT_FFMPEG / SHELLX_CUT_FFMPEG_DIR, the in-app\n\
+         \x20ffmpeg choice, beside the app, the app-data tools dir above,\n\
+         \x20/opt/homebrew/bin, /usr/local/bin, and PATH.)"
             .to_string()
     } else if cfg!(windows) {
         "ffmpeg is not installed. Core editing + render needs it.\n\
@@ -168,14 +213,18 @@ fn ffmpeg_missing_hint() -> String {
          \x20  This is a separate GPL-licensed runtime, not part of Cut.\n\
          2. Extract it to:  %LOCALAPPDATA%\\ShellX Cut\\tools\\ffmpeg\n\
          \x20  (so ffmpeg.exe is at ...\\tools\\ffmpeg\\bin\\ffmpeg.exe)\n\
-         3. Restart ShellX Cut."
+         3. Restart ShellX Cut.\n\
+         (Searched: SHELLX_CUT_FFMPEG / SHELLX_CUT_FFMPEG_DIR, the in-app\n\
+         \x20ffmpeg choice, beside the app, the app-data tools dir above, and PATH.)"
             .to_string()
     } else {
         "ffmpeg is not installed. Core editing + render needs it.\n\
          One-time fix: install it with your package manager so ffmpeg + ffprobe\n\
          are on PATH (e.g. `apt install ffmpeg` or `dnf install ffmpeg`), or put\n\
          them in:  ~/.local/share/shellx-cut/tools/ffmpeg/bin\n\
-         Then restart ShellX Cut."
+         Then restart ShellX Cut.\n\
+         (Searched: SHELLX_CUT_FFMPEG / SHELLX_CUT_FFMPEG_DIR, the in-app\n\
+         \x20ffmpeg choice, beside the app, the app-data tools dir above, and PATH.)"
             .to_string()
     }
 }
@@ -187,8 +236,16 @@ pub struct ToolResolution {
     /// Directory holding ffmpeg[.exe]+ffprobe[.exe] (bundled or app-data), or
     /// None when we rely on PATH.
     pub ffmpeg_dir: Option<PathBuf>,
-    /// True when ffmpeg is usable (bundled dir OR present on PATH).
+    /// True when ffmpeg is usable through ANY rung of the engine's resolution
+    /// ladder (env override, manual choice, bundled/app-data dir, macOS system
+    /// dir, or PATH) — the shell mirrors cut-media::toolpath so this boolean
+    /// states the truth about what the engine will actually resolve.
     pub ffmpeg_ok: bool,
+    /// Which ladder rung satisfied ffmpeg detection:
+    /// "env" | "manual-override" | "bundled-or-appdata" | "system-dir" |
+    /// "path" | "missing". Reported in logs + tools-doctor so a QA log line
+    /// like ffmpeg_ok=true is auditable to its source.
+    pub ffmpeg_source: &'static str,
     /// Directory holding the perception sidecar payload (instruments.py + venv).
     pub sidecar_dir: Option<PathBuf>,
     /// True when a python venv for the sidecar exists (bundled or app-data).
@@ -208,7 +265,27 @@ impl ToolResolution {
     /// executables live under `Contents/MacOS`; checking only `exe_dir` makes the
     /// packaged `perception/` payload invisible on fresh installs.
     pub fn detect_with_resources(exe_dir: &Path, resource_dir: &Path) -> Self {
-        // ── ffmpeg: beside-exe `ffmpeg/` → app-data tools/ffmpeg → PATH ──────
+        // ── ffmpeg — MIRRORS the engine ladder (cut-media::toolpath), same
+        // precedence, so ffmpeg_ok never contradicts what the engine resolves
+        // (2026-08-06 macOS QA finding: SSH/non-login PATH lacks Homebrew, the
+        // shell logged ffmpeg_ok=false while the engine rendered fine via its
+        // broader ladder):
+        //   1a. SHELLX_CUT_FFMPEG (full path)  1b. SHELLX_CUT_FFMPEG_DIR
+        //   1c. persisted manual choice (system.set_ffmpeg override file)
+        //   2/3. beside-exe / resources / app-data tools dir
+        //   3b. macOS system dirs (/opt/homebrew/bin, /usr/local/bin)
+        //   4. PATH
+        // The env/manual rungs are validated but NOT re-exported as
+        // ffmpeg_dir: the engine reads those sources itself.
+        let env_exe_ok = std::env::var_os(ENV_FFMPEG_EXE)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .is_some_and(|p| p.is_file());
+        let env_dir_hit = std::env::var_os(ENV_FFMPEG_DIR)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .and_then(|d| find_tool_dir("ffmpeg", std::slice::from_ref(&d)));
+
         let mut ff_dirs = vec![exe_dir.join("ffmpeg")];
         if resource_dir != exe_dir {
             ff_dirs.push(resource_dir.join("ffmpeg"));
@@ -216,8 +293,29 @@ impl ToolResolution {
         if let Some(t) = appdata_tools_dir() {
             ff_dirs.push(t.join("ffmpeg"));
         }
-        let ffmpeg_dir = find_tool_dir("ffmpeg", &ff_dirs);
-        let ffmpeg_ok = ffmpeg_dir.is_some() || runnable_on_path("ffmpeg", "-version");
+        let bundled_hit = find_tool_dir("ffmpeg", &ff_dirs);
+
+        #[cfg(target_os = "macos")]
+        let system_hit = find_tool_dir("ffmpeg", &macos_system_tool_dirs());
+        #[cfg(not(target_os = "macos"))]
+        let system_hit: Option<PathBuf> = None;
+
+        let (ffmpeg_ok, ffmpeg_dir, ffmpeg_source): (bool, Option<PathBuf>, &'static str) =
+            if env_exe_ok {
+                (true, None, "env")
+            } else if let Some(d) = env_dir_hit {
+                (true, Some(d), "env")
+            } else if manual_override_ffmpeg().is_some() {
+                (true, None, "manual-override")
+            } else if let Some(d) = bundled_hit {
+                (true, Some(d), "bundled-or-appdata")
+            } else if let Some(d) = system_hit {
+                (true, Some(d), "system-dir")
+            } else if runnable_on_path("ffmpeg", "-version") {
+                (true, None, "path")
+            } else {
+                (false, None, "missing")
+            };
 
         // ── sidecar: beside-exe `perception/` → app-data perception/ ─────────
         // "ok" requires a venv python, since instruments.py alone can't run the
@@ -247,6 +345,7 @@ impl ToolResolution {
         Self {
             ffmpeg_dir,
             ffmpeg_ok,
+            ffmpeg_source,
             sidecar_dir,
             sidecar_ok,
         }
@@ -263,8 +362,7 @@ impl ToolResolution {
             "ffmpeg": {
                 "ok": self.ffmpeg_ok,
                 "dir": self.ffmpeg_dir.as_ref().map(|p| p.display().to_string()),
-                "source": if self.ffmpeg_dir.is_some() { "bundled-or-appdata" }
-                          else if self.ffmpeg_ok { "path" } else { "missing" },
+                "source": self.ffmpeg_source,
             },
             "sidecar": {
                 "ok": self.sidecar_ok,
@@ -358,6 +456,121 @@ mod tests {
             None => std::env::remove_var("HOME"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Save-and-restore guard for the env vars the ffmpeg-ladder tests touch,
+    /// so a failing assert can't leak state into sibling tests.
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl EnvRestore {
+        fn capture(keys: &[&'static str]) -> Self {
+            Self(keys.iter().map(|k| (*k, std::env::var_os(k))).collect())
+        }
+    }
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    const LADDER_ENV_KEYS: &[&str] = &[
+        ENV_FFMPEG_EXE,
+        ENV_FFMPEG_DIR,
+        "SHELLX_CUT_HOME",
+        "XDG_DATA_HOME",
+        "HOME",
+        "LOCALAPPDATA",
+    ];
+
+    /// 2026-08-06 macOS QA finding: the shell must report ffmpeg through the
+    /// SAME ladder the engine resolves with — here the SHELLX_CUT_FFMPEG_DIR
+    /// env rung, which detection previously ignored entirely.
+    #[test]
+    fn detect_env_dir_override_reports_env_source() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
+        let tmp = std::env::temp_dir().join(format!("scut-envdir-test-{}", std::process::id()));
+        let ffdir = tmp.join("ff");
+        std::fs::create_dir_all(&ffdir).unwrap();
+        std::fs::write(ffdir.join(exe_name("ffmpeg")), "").unwrap();
+        std::env::remove_var(ENV_FFMPEG_EXE);
+        std::env::set_var(ENV_FFMPEG_DIR, &ffdir);
+        std::env::set_var("SHELLX_CUT_HOME", tmp.join("home"));
+        std::env::set_var("XDG_DATA_HOME", tmp.join("data"));
+        std::env::set_var("HOME", tmp.join("home"));
+        std::env::set_var("LOCALAPPDATA", tmp.join("data"));
+
+        let r = ToolResolution::detect(&tmp.join("empty"));
+        assert!(r.ffmpeg_ok, "env dir rung must satisfy detection");
+        assert_eq!(r.ffmpeg_source, "env");
+        assert_eq!(r.ffmpeg_dir.as_deref(), Some(ffdir.as_path()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The persisted in-app ffmpeg choice (system.set_ffmpeg) must count as
+    /// present — the engine reads that file itself, so reporting it missing
+    /// contradicts actual product behavior.
+    #[test]
+    fn detect_manual_override_file_reports_manual_source() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
+        let tmp = std::env::temp_dir().join(format!("scut-override-test-{}", std::process::id()));
+        let home = tmp.join("cut-home");
+        let chosen = tmp.join("bin").join(exe_name("ffmpeg"));
+        std::fs::create_dir_all(chosen.parent().unwrap()).unwrap();
+        std::fs::write(&chosen, "").unwrap();
+        std::fs::create_dir_all(home.join("preferences")).unwrap();
+        std::fs::write(
+            home.join("preferences").join("ffmpeg-override"),
+            format!("{}\n", chosen.display()),
+        )
+        .unwrap();
+        std::env::remove_var(ENV_FFMPEG_EXE);
+        std::env::remove_var(ENV_FFMPEG_DIR);
+        std::env::set_var("SHELLX_CUT_HOME", &home);
+        std::env::set_var("XDG_DATA_HOME", tmp.join("data"));
+        std::env::set_var("HOME", tmp.join("unix-home"));
+        std::env::set_var("LOCALAPPDATA", tmp.join("data"));
+
+        let r = ToolResolution::detect(&tmp.join("empty"));
+        assert!(r.ffmpeg_ok, "persisted manual choice must satisfy detection");
+        assert_eq!(r.ffmpeg_source, "manual-override");
+        assert!(
+            r.ffmpeg_dir.is_none(),
+            "the engine reads its own override file — do not re-export a dir"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The missing-ffmpeg hint must SAY what was searched (falsifiable report).
+    #[test]
+    fn missing_hint_names_searched_locations() {
+        let hint = ffmpeg_missing_hint();
+        assert!(hint.contains("Searched:"), "hint must list searched rungs");
+        assert!(hint.contains("SHELLX_CUT_FFMPEG"), "hint must name the env overrides");
+        assert!(hint.contains("PATH"), "hint must name the PATH rung");
+    }
+
+    /// Drift guard: the shell's detection MIRRORS cut-media::toolpath (a
+    /// separate workspace, so no shared code). If the engine's ladder changes,
+    /// this test points at the contract that must be re-mirrored.
+    #[test]
+    fn shell_ladder_mirrors_engine_toolpath() {
+        let engine = include_str!("../../../media/src/toolpath.rs");
+        assert!(engine.contains(&format!("pub const ENV_FFMPEG: &str = \"{}\";", ENV_FFMPEG_EXE)));
+        assert!(engine.contains(&format!("pub const ENV_FFMPEG_DIR: &str = \"{ENV_FFMPEG_DIR}\";")));
+        // rung 3b system dirs (macOS) — mirrored by macos_system_tool_dirs().
+        assert!(engine.contains("/opt/homebrew/bin"));
+        assert!(engine.contains("/usr/local/bin"));
+        // manual override file location — mirrored by manual_override_ffmpeg().
+        assert!(engine.contains(".join(\"preferences\").join(\"ffmpeg-override\")"));
+        assert!(engine.contains("root.join(\"ffmpeg-override\")"));
     }
 
     #[test]

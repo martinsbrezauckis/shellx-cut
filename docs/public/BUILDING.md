@@ -88,10 +88,10 @@ release build fails if those updater files are absent or stale. Consolidate the
 fresh files under one private staging root before creating a GitHub release:
 
 ```text
-~/shellx-cut-builds/v0.6.105/
+~/shellx-cut-builds/v0.6.106/
 ├── windows/
-│   ├── ShellX Cut_0.6.105_x64-setup.exe
-│   └── ShellX Cut_0.6.105_x64-setup.exe.sig
+│   ├── ShellX Cut_0.6.106_x64-setup.exe
+│   └── ShellX Cut_0.6.106_x64-setup.exe.sig
 └── macos/
     ├── ShellX Cut.app.tar.gz
     └── ShellX Cut.app.tar.gz.sig
@@ -102,12 +102,12 @@ their native signing and installed-app qualification:
 
 ```bash
 node scripts/release/generate-updater-manifest.mjs \
-  --artifact-root "$HOME/shellx-cut-builds/v0.6.105"
+  --artifact-root "$HOME/shellx-cut-builds/v0.6.106"
 ```
 
 The command cryptographically verifies each `.sig` against the updater public
 key embedded in `tauri.conf.json`, requires both release platforms, binds every
-download URL to tag `v0.6.105`, and then writes `latest.json` plus a local
+download URL to tag `v0.6.106`, and then writes `latest.json` plus a local
 `updater-manifest-verify.json` exact-source receipt. Retain the verification
 receipt outside the published assets. Never publish a hand-written or
 partially populated feed.
@@ -118,11 +118,11 @@ missing from every download surface (product page, `/download/cut/*` routes,
 release page). Upload all of:
 
 ```text
-ShellX Cut_0.6.105_x64-setup.exe        (+ .sig)   Windows installer + updater
-ShellX Cut_0.6.105_aarch64.dmg                     macOS download
+ShellX Cut_0.6.106_x64-setup.exe        (+ .sig)   Windows installer + updater
+ShellX Cut_0.6.106_aarch64.dmg                     macOS download
 ShellX Cut.app.tar.gz                   (+ .sig)   macOS updater payload
-ShellX Cut_0.6.105_amd64.deb                       Debian/Ubuntu
-ShellX Cut-0.6.105-1.x86_64.rpm                    Fedora/RHEL-compatible
+ShellX Cut_0.6.106_amd64.deb                       Debian/Ubuntu
+ShellX Cut-0.6.106-1.x86_64.rpm                    Fedora/RHEL-compatible
 latest.json                                        updater feed
 SHA256SUMS.txt                                     hashes of every asset above
 ```

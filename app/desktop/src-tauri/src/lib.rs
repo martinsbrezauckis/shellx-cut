@@ -77,6 +77,7 @@ use tauri::Emitter;
 
 mod tools;
 mod update_settings;
+mod update_state;
 use tools::ToolResolution;
 
 /// The engine's documented default address (mirrors cutd httpc::SERVER_ADDR).
@@ -234,7 +235,7 @@ fn tools_doctor(state: tauri::State<'_, ToolResolutionState>) -> serde_json::Val
         "ffmpeg": {
             "ok": r.ffmpeg_ok,
             "dir": r.ffmpeg_dir.as_ref().map(|p| p.display().to_string()),
-            "source": if r.ffmpeg_dir.is_some() { "bundled-or-appdata" } else if r.ffmpeg_ok { "path" } else { "missing" },
+            "source": r.ffmpeg_source,
         },
         "sidecar": {
             "ok": r.sidecar_ok,
@@ -518,7 +519,13 @@ fn grant_engine_origin_capability(app: &tauri::App, url: &str) -> Result<(), Str
         // cannot move, resize, close, hide, or otherwise control the shell.
         .permission("core:window:allow-set-fullscreen")
         .permission("core:window:allow-is-fullscreen");
-    let capability = capability.permission("allow-update-preferences");
+    let capability = capability
+        .permission("allow-update-preferences")
+        // Update-state bridge: read the snapshot, request a manual check, or
+        // request an install (which still passes through the shell's native
+        // confirm). No download/restart/filesystem power is granted directly —
+        // the webview can only ask; update_state.rs decides.
+        .permission("allow-update-state");
     // The focused native drop test must cross Tauri's real event path, but
     // engine-served production content must never be able to synthesize native
     // events. Every shipping build script rejects `webdriver-test`; only that
@@ -534,14 +541,17 @@ fn grant_engine_origin_capability(app: &tauri::App, url: &str) -> Result<(), Str
         .map_err(|e| format!("could not authorize native helpers for '{url}': {e}"))
 }
 
-/// Background update check on launch (desktop). Tauri v2's updater has no
-/// built-in dialog, and the engine-served UI is a REMOTE origin that Tauri
-/// denies plugin IPC — so the WHOLE flow lives in the shell: check → native
-/// confirm (the dialog plugin, already registered) → download+install →
-/// restart. The plugin verifies the minisign signature against the bundled
+/// Release-URL binding policy for the updater (desktop). The engine-served UI
+/// is a REMOTE origin that Tauri denies plugin IPC — so the WHOLE update flow
+/// lives in the shell (`update_state.rs`): quiet launch + 6-hourly checks feed
+/// the topbar button / Settings > About, and install runs only on explicit
+/// user request (native confirm → signature-verified download+install →
+/// restart). The plugin verifies the minisign signature against the bundled
 /// `plugins.updater.pubkey` before installing, so a forged/unsigned artifact is
-/// rejected. Network / no-release errors are swallowed (a missing latest.json
-/// must never nag). Spawned detached, so it never blocks startup.
+/// rejected; this comparator additionally requires every release URL to name
+/// the manifest version, so a replayed old artifact behind a new version
+/// number is rejected too. Linux packages skip all checks — see the linux-cfg
+/// `run_automatic_checks` in update_state.rs.
 #[cfg(desktop)]
 fn updater_release_urls_match_version(current: &tauri_plugin_updater::RemoteRelease) -> bool {
     let expected_tag_segment = format!("/v{}/", current.version);
@@ -558,58 +568,42 @@ fn updater_release_urls_match_version(current: &tauri_plugin_updater::RemoteRele
     }
 }
 
-#[cfg(desktop)]
-async fn check_for_update(app: tauri::AppHandle) {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-    use tauri_plugin_updater::UpdaterExt;
-
-    if !update_settings::check_on_launch(&app) {
-        eprintln!("[shellx-cut] launch update check disabled in Settings");
-        return;
-    }
-    let updater = match app.updater() {
-        Ok(u) => u,
-        Err(_) => return,
-    };
-    let update = match updater.check().await {
-        Ok(Some(u)) => u,   // an update is available
-        Ok(None) => return, // already on the latest — silent
-        Err(e) => {
-            eprintln!("[shellx-cut] updater check failed: {e}");
-            return;
-        }
-    };
-    let version = update.version.clone();
-    let current = app.package_info().version.to_string();
-    // Native confirm on the main thread; "Install & restart" => true.
-    let install = app
-        .dialog()
-        .message(format!(
-            "ShellX Cut {version} is available (you're on {current}).\n\nInstall it now? The app will restart."
-        ))
-        .title("Update available")
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "Install & restart".into(),
-            "Later".into(),
-        ))
-        .blocking_show();
-    if !install {
-        return;
-    }
-    if let Err(e) = update
-        .download_and_install(|_chunk, _total| {}, || {})
-        .await
-    {
-        let _ = app
-            .dialog()
-            .message(format!("Update to {version} could not be installed:\n{e}"))
-            .title("Update failed")
-            .blocking_show();
-        return;
-    }
-    // Installed — relaunch into the new version (on Windows the NSIS installer
-    // handles the restart; elsewhere this triggers it).
-    app.restart();
+/// The one CLI question the desktop shell answers by itself, before any GUI
+/// toolkit, window or engine exists: `--version` (and its conventional short
+/// form `-V`).
+///
+/// WHY THIS EXISTS (real defect, 2026-08-04 crash report)
+///   `argv` used to fall straight through into `tauri::Builder::run`, which
+///   builds a `tao` event loop, which calls `gtk::init()` on Linux. Both
+///   outcomes were wrong:
+///     * headless (plain SSH shell, container, package post-install script):
+///       `gtk::init()` fails, tao panics at `event_loop.rs:217` with
+///       "Failed to initialize gtk backend!", and because `[profile.release]`
+///       sets `panic = "abort"` the process dies with SIGABRT. Evidence:
+///       `/var/crash/_usr_bin_shellx-cut.1000.crash` on the Ubuntu 24.04 rig,
+///       `ProcCmdline: /usr/bin/shellx-cut --version`, `Signal: 6`.
+///     * with a display: no crash, but the FULL editor window opens and the
+///       bundled cutd engine starts, and `--version` never returns — so
+///       scripts that probe the installed version leak an app + an engine.
+///
+/// SCOPE — deliberately exact-match only. Anything else (notably a file path a
+/// desktop file manager or `xdg-open` passes) falls through to the normal GUI
+/// start, so this can never swallow a real launch. `--help` is intentionally
+/// NOT claimed: this binary is a GUI shell, not a CLI; the agent/CLI surface is
+/// `cutd`, which has its own argument parser.
+///
+/// WINDOWS NOTE: release builds link with `windows_subsystem = "windows"` and
+/// have no attached console, so the printed line is only visible when the
+/// process is started from a console that inherits stdout (e.g. a piped run).
+/// The exit-without-launching behaviour is identical on every platform.
+fn version_answer<I, S>(args: I, version: &str) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|arg| matches!(arg.as_ref(), "--version" | "-V"))
+        .then(|| format!("shellx-cut {version}"))
 }
 
 /// Desktop + mobile shared entry. Builds the Tauri app, registers the IPC
@@ -619,6 +613,19 @@ async fn check_for_update(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
+
+    // Answer `--version` from the exact PackageInfo the About panel and the
+    // updater report, then return — no GTK, no window, no cutd child. This has
+    // to sit before the builder: `Builder::run` is what touches GTK.
+    // `std::env::args()` skips argv[0] (the program path itself).
+    if let Some(line) = version_answer(
+        std::env::args().skip(1),
+        &context.package_info().version.to_string(),
+    ) {
+        println!("{line}");
+        return;
+    }
+
     #[cfg(windows)]
     let mut context = context;
     #[cfg(windows)]
@@ -657,6 +664,29 @@ pub fn run() {
         data_directory
     };
 
+    // Linux/X11 HEADLESS-RIG GEOMETRY NOTE (2026-08-06 demo-shoot follow-up).
+    // Field report: on an X display with no window manager (Xvfb rigs) the
+    // webview surface "stays at the initial 1440x900 no matter how the X
+    // window is resized". Investigated empirically on the exact library
+    // versions both the dev box and the Linux test rig run (Ubuntu 24.04, GTK
+    // 3.24.41, webkit2gtk 2.52.3, tao 0.35.3, wry 0.55.1), WM-less Xvfb with
+    // the rig env (WEBKIT_DISABLE_COMPOSITING_MODE=1, LIBGL_ALWAYS_SOFTWARE=1,
+    // GDK_BACKEND=x11): a FOREIGN WINDOW RESIZE (`xdotool windowsize <wid> W H`
+    // → ConfigureNotify) propagates correctly at every layer — plain GTK3
+    // child allocation, a bare WebKitWebView's painted surface + JS viewport,
+    // and this very shell running its real UI. No app-side defect exists on
+    // this stack, so nothing is hooked or patched here.
+    //
+    // What CANNOT work without a WM — by X11 design, not a Cut bug: growing
+    // the DISPLAY (`xrandr`/Xvfb screen size) never resizes any toplevel,
+    // because resizing toplevels to fit a screen is precisely the window
+    // manager's job. Rig workaround, in order of preference: size the Xvfb
+    // screen to the intended window size up front (the demo harness already
+    // does 1440x900); resize the WINDOW itself with `xdotool windowsize` when
+    // a mid-session geometry change is needed; or run a minimal WM (openbox)
+    // on the rig display. If a stuck-surface report ever reproduces with a
+    // true window resize, capture `xwininfo -id <wid>` plus a screenshot and
+    // the webkit2gtk version before suspecting this shell.
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
     // Internal automation only: this embeds a WebDriver server so WDIO can
@@ -679,11 +709,20 @@ pub fn run() {
             reason: "engine unavailable: starting up".to_string(),
         })))
         .manage(ToolResolutionState(Mutex::new(ToolResolution::default())))
+        // Update-state service: the snapshot the topbar button + Settings>About
+        // read over the bridge. Seeded with the installed version; the setup
+        // hook spawns the automatic (launch + 6-hourly) check driver.
+        .manage(update_state::UpdateService::new(
+            context.package_info().version.to_string(),
+        ))
         .invoke_handler(tauri::generate_handler![
             engine_status,
             tools_doctor,
             update_settings::get_update_preferences,
             update_settings::set_update_preferences,
+            update_state::get_update_state,
+            update_state::update_check_now,
+            update_state::update_install_now,
         ])
         .setup(move |app| {
             #[cfg(windows)]
@@ -716,9 +755,16 @@ pub fn run() {
                 .unwrap_or_else(|| PathBuf::from("."));
             let tool_res = ToolResolution::detect_with_resources(&exe_dir, &resource_dir);
             let tools_hint = tool_res.bootstrap_hint();
+            // `source` names the ladder rung that satisfied detection (env /
+            // manual-override / bundled-or-appdata / system-dir / path /
+            // missing) so a QA log line is auditable without guessing.
             eprintln!(
-                "[shellx-cut] tools: ffmpeg_ok={} (dir={:?}) sidecar_ok={} (dir={:?})",
-                tool_res.ffmpeg_ok, tool_res.ffmpeg_dir, tool_res.sidecar_ok, tool_res.sidecar_dir
+                "[shellx-cut] tools: ffmpeg_ok={} (source={} dir={:?}) sidecar_ok={} (dir={:?})",
+                tool_res.ffmpeg_ok,
+                tool_res.ffmpeg_source,
+                tool_res.ffmpeg_dir,
+                tool_res.sidecar_ok,
+                tool_res.sidecar_dir
             );
             // also write the resolution to an app-data file. The real UI is
             // served by cutd (a remote origin), where Tauri 2 blocks custom-
@@ -774,10 +820,13 @@ pub fn run() {
                 }
             }
 
-            // Desktop auto-updater: register the plugin + kick a NON-blocking
-            // launch check. Lives shell-side (check_for_update) so the engine-
-            // served remote UI never needs update/restart IPC grants. Safe to
-            // run regardless of engine state — it touches only the release feed.
+            // Desktop auto-updater: register the plugin + start the QUIET
+            // automatic check driver (launch check + a 6-hourly re-check while
+            // the app stays open, both preference-gated — update_state.rs).
+            // Lives shell-side so the engine-served remote UI never needs
+            // update/restart IPC grants; results surface as the topbar update
+            // button + Settings > About, never a startup dialog. Safe to run
+            // regardless of engine state — it touches only the release feed.
             #[cfg(desktop)]
             {
                 let handle = app.handle().clone();
@@ -791,7 +840,7 @@ pub fn run() {
                 );
                 let check_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    check_for_update(check_handle).await;
+                    update_state::run_automatic_checks(check_handle).await;
                 });
             }
 
@@ -899,6 +948,46 @@ mod updater_release_policy_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_flag_is_answered_without_starting_the_app() {
+        // Both conventional spellings answer, and the answer names the binary
+        // plus the exact version string it was handed.
+        assert_eq!(
+            version_answer(["--version"], "0.6.106").as_deref(),
+            Some("shellx-cut 0.6.106"),
+        );
+        assert_eq!(
+            version_answer(["-V"], "0.6.106").as_deref(),
+            Some("shellx-cut 0.6.106"),
+        );
+        // A flag anywhere in argv still answers — argv[0] is skipped by the
+        // caller, so only real arguments reach here.
+        assert_eq!(
+            version_answer(["/tmp/a.cutproj", "--version"], "1.2.3").as_deref(),
+            Some("shellx-cut 1.2.3"),
+        );
+    }
+
+    #[test]
+    fn version_flag_never_swallows_a_normal_gui_launch() {
+        // No arguments (double-click / .desktop launch) and file-path launches
+        // must fall through to the window, as must near-miss spellings.
+        for args in [
+            vec![],
+            vec!["/home/user/Videos/clip.mp4"],
+            vec!["--versions"],
+            vec!["version"],
+            vec!["-v"],
+            vec!["--Version"],
+        ] {
+            assert_eq!(
+                version_answer(args.clone(), "0.6.106"),
+                None,
+                "must not claim {args:?}",
+            );
+        }
+    }
 
     #[test]
     fn shellx_ui_probe_distinguishes_html_from_headless_api() {

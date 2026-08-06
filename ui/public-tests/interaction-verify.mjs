@@ -756,7 +756,8 @@ async function checkGradeSliderNoHang(page) {
   // GradeDrawer's render → a fresh component identity every onChange → React remounted the
   // <input>, dropping focus/the drag mid-interaction so the slider couldn't be moved (felt
   // frozen). Now module-level. Proof: focus Contrast, press ArrowRight 8×; the value MUST
-  // advance ~8 steps (×0.05 = 0.4). With the remount bug focus is lost after step 1 (~0.05).
+  // advance ~8 steps (×0.01 = 0.08 since the 0.6.106 precision fix; ≥0.06 tolerates a
+  // couple of dropped presses). With the remount bug focus is lost after step 1 (~0.01).
   await page.locator('[data-cut-mode="edit"]').click().catch(() => {});
   await sleep(200);
   await page.locator("[data-cut-clip]").first().click().catch(() => {});
@@ -773,8 +774,8 @@ async function checkGradeSliderNoHang(page) {
   await openRightTab(page, "properties").catch(() => {});
   await sleep(200);
   return {
-    pass: v1 - v0 >= 0.3,
-    detail: `contrast ${v0}→${v1} after 8×ArrowRight (≥0.3 ⇒ focus survived renders — no remount/hang)`,
+    pass: v1 - v0 >= 0.06,
+    detail: `contrast ${v0}→${v1} after 8×ArrowRight (≥0.06 at 0.01/step ⇒ focus survived renders — no remount/hang)`,
   };
 }
 

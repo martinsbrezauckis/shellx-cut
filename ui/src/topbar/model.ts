@@ -7,16 +7,24 @@ export const WORKSPACE_MODES: { id: WorkspaceMode; label: string; hint: string }
   { id: 'record', label: 'Record', hint: 'Capture your screen → polished clip' },
 ]
 
-/** Export menu entries, each mapping to one public verb call. */
+/**
+ * Export menu entries, each mapping to one public verb call.
+ * The render-backed entries ('video' + every publish) additionally accept the
+ * footage QC `profile` (second `run` arg — export.publish{profile} passes it
+ * through to render.final's check battery; the 'video' entry sends it to
+ * render.final directly). undefined = engine default; the topbar maps its
+ * shared 'auto' choice to undefined at the call site (onExport). The other
+ * entries (audio/gif/frame/interchange/text) have no check battery — no arg.
+ */
 export const EXPORT_OPTIONS = [
-  { id: 'video', group: 'deliver', label: 'Video (.mp4) — render the timeline', defaultPath: 'ShellX Cut render.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string) => callVerb('render.final', { preset: 'standard', ...(path ? { path } : {}) }) },
+  { id: 'video', group: 'deliver', label: 'Video (.mp4) — render the timeline', defaultPath: 'ShellX Cut render.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('render.final', { preset: 'standard', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
   { id: 'audio', group: 'deliver', label: 'Audio (.mp3) — timeline audio only', defaultPath: 'audio.mp3', filters: [{ name: 'MP3 audio', extensions: ['mp3'] }], run: (path?: string) => callVerb('export.audio', { format: 'mp3', ...(path ? { path } : {}) }) },
   { id: 'gif', group: 'deliver', label: 'GIF (looping — first 15s)', defaultPath: 'clip.gif', filters: [{ name: 'GIF image', extensions: ['gif'] }], run: (path?: string) => callVerb('export.gif', { ...(path ? { path } : {}) }) },
   { id: 'frame', group: 'deliver', label: 'Still frame at playhead (→ Assets)', defaultPath: 'frame.jpg', filters: [{ name: 'JPEG image', extensions: ['jpg', 'jpeg'] }], run: (path?: string) => callVerb('export.frame', { at_ms: 0, ...(path ? { path } : {}) }) },
-  { id: 'pub_youtube', group: 'publish', label: 'YouTube (1080p 16:9)', defaultPath: 'youtube.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string) => callVerb('export.publish', { platform: 'youtube', ...(path ? { path } : {}) }) },
-  { id: 'pub_tiktok', group: 'publish', label: 'TikTok / Shorts (9:16)', defaultPath: 'tiktok.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string) => callVerb('export.publish', { platform: 'tiktok', ...(path ? { path } : {}) }) },
-  { id: 'pub_reels', group: 'publish', label: 'Instagram Reels (9:16)', defaultPath: 'reels.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string) => callVerb('export.publish', { platform: 'reels', ...(path ? { path } : {}) }) },
-  { id: 'pub_x', group: 'publish', label: 'X / Twitter (16:9)', defaultPath: 'x-twitter.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string) => callVerb('export.publish', { platform: 'x', ...(path ? { path } : {}) }) },
+  { id: 'pub_youtube', group: 'publish', label: 'YouTube (1080p 16:9)', defaultPath: 'youtube.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'youtube', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
+  { id: 'pub_tiktok', group: 'publish', label: 'TikTok / Shorts (9:16)', defaultPath: 'tiktok.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'tiktok', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
+  { id: 'pub_reels', group: 'publish', label: 'Instagram Reels (9:16)', defaultPath: 'reels.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'reels', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
+  { id: 'pub_x', group: 'publish', label: 'X / Twitter (16:9)', defaultPath: 'x-twitter.mp4', filters: [{ name: 'MP4 video', extensions: ['mp4'] }], run: (path?: string, profile?: PublishProfile) => callVerb('export.publish', { platform: 'x', ...(profile ? { profile } : {}), ...(path ? { path } : {}) }) },
   { id: 'fcpxml', group: 'interchange', label: 'Final Cut Pro XML', defaultPath: 'timeline.fcpxml', filters: [{ name: 'Final Cut Pro XML', extensions: ['fcpxml'] }], run: (path?: string) => callVerb('export.xml', { format: 'fcpxml', ...(path ? { path } : {}) }) },
   { id: 'premiere', group: 'interchange', label: 'Premiere XML', defaultPath: 'premiere.xml', filters: [{ name: 'Premiere XML', extensions: ['xml'] }], run: (path?: string) => callVerb('export.xml', { format: 'premiere', ...(path ? { path } : {}) }) },
   { id: 'resolve', group: 'interchange', label: 'Resolve XML', defaultPath: 'resolve.fcpxml', filters: [{ name: 'Resolve XML', extensions: ['fcpxml', 'xml'] }], run: (path?: string) => callVerb('export.xml', { format: 'resolve', ...(path ? { path } : {}) }) },
@@ -43,6 +51,9 @@ export type Preset = (typeof PRESETS)[number]
 
 export const PROFILES = ['auto', 'talking_head', 'silent_screen_demo'] as const
 export type Profile = (typeof PROFILES)[number]
+/** The wire subset of Profile: what export.publish{profile} accepts ('auto' is
+ *  a UI-only value meaning "omit the arg — engine default + auto-detect"). */
+export type PublishProfile = Exclude<Profile, 'auto'>
 
 export const ASPECTS = ['project', '16:9', '9:16', '1:1', '4:5'] as const
 export type Aspect = (typeof ASPECTS)[number]

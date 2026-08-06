@@ -137,7 +137,7 @@ async function verifyCategoriesAndTasks(browser) {
     const network = dialog.locator('[data-cut-network-activity]')
     const networkText = await network.textContent()
     check('settings-network-activity-is-disclosed',
-      networkText?.includes('contacts GitHub once when it opens') &&
+      networkText?.includes('contacts GitHub when it opens, and then every 6 hours while it stays open') &&
       networkText.includes('normal request metadata such as your IP address') &&
       networkText.includes('sends no project, media, edit history, or analytics payload'),
     )

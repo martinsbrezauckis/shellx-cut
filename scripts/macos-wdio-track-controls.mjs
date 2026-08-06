@@ -41,7 +41,7 @@ function run(cmd, args, options = {}) {
 }
 
 function usage() {
-  console.log(`Usage: node scripts/macos-wdio-track-controls.mjs [--suite track-controls|media-drag|drop-to-create|composed-playback|adapter-smoke|full-coverage] [--drop-case video|image|both] --host <ssh-host> [--remote-dir ~/Developer/shellx-cut] [--scene-clip <remote media path>] [--image <remote still path>] [--speech-clip <remote media path>] [--face-clip <remote media path>] [--speakers-clip <remote media path>] [--second-clip <remote media path>] [--out <remote evidence dir>] [--section <comma-list>] [--only <substring>] [--trace] [--full] [--strict-candidate-actions] [--real-screen-record] [--embedded-port 4445] [--wdio-log-level silent] [--skip-sync] [--native-input] [--clean-after]
+  console.log(`Usage: node scripts/macos-wdio-track-controls.mjs [--suite track-controls|media-drag|drop-to-create|composed-playback|adapter-smoke|full-coverage] [--drop-case video|image|both] --host <ssh-host> [--remote-dir ~/Developer/shellx-cut] [--scene-clip <remote media path>] [--image <remote still path>] [--speech-clip <remote media path>] [--face-clip <remote media path>] [--speakers-clip <remote media path>] [--second-clip <remote media path>] [--out <remote evidence dir>] [--section <comma-list>] [--only <substring>] [--trace] [--full] [--strict-candidate-actions] [--real-screen-record] [--embedded-port 4445] [--wdio-log-level silent] [--skip-sync] [--native-input] [--clean-after] [--no-terminal-host]
 
 Builds a macOS ShellX Cut debug app with --features webdriver-test and runs the selected WDIO native WKWebView suite on the configured macOS host. Media paths are resolved on the Mac host. This is internal test automation only; shipping build scripts reject webdriver-test.
 
@@ -50,7 +50,17 @@ Legacy --clip and --library-clip remain aliases for --scene-clip and
 --strict-candidate-actions also requires every registered UI action to pass, but
 the receipt deliberately remains candidate-only (FCV_INSTALLED_APP=0).
 When ANTHROPIC_API_KEY is set locally, it is forwarded over SSH stdin to the
-test process only; the value is never placed in argv or written remotely.`)
+test process only; the value is never placed in argv or written remotely.
+
+The suite runs under a Terminal.app-hosted shell by default so macOS TCC grants
+it screen capture (a process spawned straight from the ssh chain is
+responsible-to sshd, which holds no grant, and every live screen_record row
+then fails). The hosted run streams to <out>/hosted-run.log and marshals its
+real status through <out>/hosted-exit-code; a missing or non-numeric sentinel
+is a hard failure. Because the hosted shell inherits nothing from this session,
+Terminal hosting refuses to run while ANTHROPIC_API_KEY is set rather than
+write that secret to disk. --no-terminal-host restores the plain direct spawn
+for runs already started at the Mac's console.`)
 }
 
 async function main() {
@@ -95,6 +105,11 @@ async function main() {
   const section = arg('--section', process.env.FCV_SECTION || '')
   const only = arg('--only', process.env.FCV_ONLY || '')
   const strictCandidateActions = flag('--strict-candidate-actions')
+  // Terminal hosting is the DEFAULT: without it the suite's live screen_record rows fail,
+  // because a binary spawned from this ssh chain is responsible-to sshd and TCC withholds the
+  // Screen Recording grant. --no-terminal-host keeps the plain direct spawn for runs already
+  // started at the Mac's console (where the responsible process is a granted Terminal anyway).
+  const terminalHost = !flag('--no-terminal-host')
   const anthropicKey = readEnvFirstLine('ANTHROPIC_API_KEY')
   const full = flag('--full') || strictCandidateActions
   if (strictCandidateActions && (section || only || suite !== 'full-coverage')) {
@@ -240,46 +255,83 @@ app_cwd="$WDIO_OUT_RESOLVED/app-cwd"
 mkdir -p "$app_cwd"
 chmod 700 "$app_cwd"
 
-SHELLX_CUT_WDIO_APP="$REMOTE_DIR_RESOLVED/scripts/lib/run-isolated-native-app.sh" \
-SHELLX_CUT_WDIO_REAL_APP="$APP_BIN" \
-SHELLX_CUT_WDIO_APP_CWD="$app_cwd" \
-SHELLX_CUT_WDIO_CLIP="$WDIO_SCENE_CLIP_RESOLVED" \
-SHELLX_CUT_WDIO_LIBRARY_CLIP="$WDIO_SPEECH_CLIP_RESOLVED" \
-SHELLX_CUT_WDIO_IMAGE="$WDIO_IMAGE_RESOLVED" \
-SHELLX_CUT_WDIO_DROP_CASE=${JSON.stringify(dropCase)} \
-SHELLX_CUT_WDIO_OUT="$WDIO_OUT_RESOLVED" \
-SHELLX_CUT_WDIO_NATIVE_INPUT="$NATIVE_INPUT" \
-SHELLX_CUT_WDIO_PORT=${JSON.stringify(embeddedPort)} \
-SHELLX_CUT_HOME="$WDIO_OUT_RESOLVED/app-home" \
-SHELLX_CUT_PROJECTS_DIR="$WDIO_OUT_RESOLVED/projects" \
-FCV_UI_DRIVER=tauri-wdio \
-FCV_NATIVE_ACTION_CONTROLLER="$REMOTE_DIR_RESOLVED/scripts/release/native-os-action-controller.mjs" \
-FCV_NATIVE_ACTION_PLATFORM=macos \
-FCV_NATIVE_EXPECTED_PROCESS=shellx-cut \
-SWEEP_CUTD=http://127.0.0.1:6161 \
-FCV_SECTION="$FCV_SECTION_VALUE" \
-FCV_ONLY="$FCV_ONLY_VALUE" \
-FCV_NO_AGENT="$FCV_NO_AGENT_VALUE" \
-FCV_REQUIRE_FULL="$FCV_REQUIRE_FULL_VALUE" \
-FCV_FINAL_ALL_ACTIONS="$FCV_STRICT_ACTIONS_VALUE" \
-FCV_REAL_SCREEN_RECORD="$FCV_REAL_SCREEN_RECORD_VALUE" \
-FCV_AGENT_FIXTURES="$FCV_AGENT_FIXTURES_VALUE" \
-FCV_ACTION_MANIFEST="$REMOTE_DIR_RESOLVED/ui/public-tests/full-ui-action-manifest.json" \
-FCV_SCREENS="$WDIO_OUT_RESOLVED/screens" \
-FCV_RESULT_RECEIPT="$WDIO_OUT_RESOLVED/full-coverage-receipt.json" \
-FCV_TARGET_SURFACE=macos-installed \
-FCV_INSTALLED_APP=0 \
-FCV_SOURCE_CONTENT_MANIFEST_SHA256="$SOURCE_CONTENT_MANIFEST_SHA256" \
-FCV_TRACE="$FCV_TRACE_VALUE" \
-CUT_TEST_MEDIA_DIR="$(dirname "$WDIO_SCENE_CLIP_RESOLVED")" \
-RELEASE_CLIP="$WDIO_SCENE_CLIP_RESOLVED" \
-RELEASE_CLIP_SPEECH="$WDIO_SPEECH_CLIP_RESOLVED" \
-RELEASE_CLIP_FACE="$WDIO_FACE_CLIP_RESOLVED" \
-RELEASE_CLIP_SPEAKERS="$WDIO_SPEAKERS_CLIP_RESOLVED" \
-RELEASE_CLIP2="$WDIO_SECOND_CLIP_RESOLVED" \
-NODE_OPTIONS=--max-old-space-size=8192 \
-WDIO_LOG_LEVEL=${JSON.stringify(wdioLogLevel)} \
-/usr/bin/caffeinate -dimsu -t 14400 npm --prefix ui run "$WDIO_SCRIPT"
+# The suite is written to a command file and then executed EITHER under a Terminal-hosted
+# shell (default) or directly. macOS TCC ties the screen-capture grant to the chain's
+# RESPONSIBLE PROCESS: a binary spawned straight from this ssh session is responsible-to sshd,
+# which holds no Screen Recording grant, so ScreenCaptureKit degrades and every live
+# screen_record row fails. Terminal.app already holds the grant, so hosting the same direct
+# spawn under it restores capture with no machine-config change. Full probe table and the
+# exit-code sentinel design: scripts/lib/run-under-terminal.sh.
+if [ "$TERMINAL_HOST_VALUE" = "1" ] && printenv ANTHROPIC_API_KEY >/dev/null 2>&1; then
+  echo "Terminal-hosted runs cannot forward ANTHROPIC_API_KEY: the hosted shell does not inherit this session's environment, and writing the key into the hosted command file would place a secret on disk (this driver forwards it over stdin precisely to avoid that)." >&2
+  echo "Re-run without ANTHROPIC_API_KEY set (the FCV agent fixtures cover agent actions), or pass --no-terminal-host." >&2
+  exit 1
+fi
+
+FIXTURE_EXPORTS=""
+if [ "$FCV_AGENT_FIXTURES_VALUE" = "1" ]; then
+  FIXTURE_EXPORTS="export CUTD_DRAFT_ADAPTER='$CUTD_DRAFT_ADAPTER'
+export CUTD_JUDGE_ADAPTER='$CUTD_JUDGE_ADAPTER'
+export CUTD_GENERATE_PROMPT_ADAPTER='$CUTD_GENERATE_PROMPT_ADAPTER'
+export CUTD_GENERATE_STORYBOARD_ADAPTER='$CUTD_GENERATE_STORYBOARD_ADAPTER'
+export CUTD_GENERATE_FIXTURE_DELAY_MS='$CUTD_GENERATE_FIXTURE_DELAY_MS'"
+fi
+
+HOSTED_COMMAND="$WDIO_OUT_RESOLVED/hosted-command.sh"
+cat > "$HOSTED_COMMAND" <<HOSTED_EOF
+#!/bin/sh
+set -eu
+export PATH='$PATH'
+cd '$REMOTE_DIR_RESOLVED'
+$FIXTURE_EXPORTS
+export SHELLX_CUT_WDIO_APP='$REMOTE_DIR_RESOLVED/scripts/lib/run-isolated-native-app.sh'
+export SHELLX_CUT_WDIO_REAL_APP='$APP_BIN'
+export SHELLX_CUT_WDIO_APP_CWD='$app_cwd'
+export SHELLX_CUT_WDIO_CLIP='$WDIO_SCENE_CLIP_RESOLVED'
+export SHELLX_CUT_WDIO_LIBRARY_CLIP='$WDIO_SPEECH_CLIP_RESOLVED'
+export SHELLX_CUT_WDIO_IMAGE='$WDIO_IMAGE_RESOLVED'
+export SHELLX_CUT_WDIO_DROP_CASE=${JSON.stringify(dropCase)}
+export SHELLX_CUT_WDIO_OUT='$WDIO_OUT_RESOLVED'
+export SHELLX_CUT_WDIO_NATIVE_INPUT='$NATIVE_INPUT'
+export SHELLX_CUT_WDIO_PORT=${JSON.stringify(embeddedPort)}
+export SHELLX_CUT_HOME='$WDIO_OUT_RESOLVED/app-home'
+export SHELLX_CUT_PROJECTS_DIR='$WDIO_OUT_RESOLVED/projects'
+export FCV_UI_DRIVER=tauri-wdio
+export FCV_NATIVE_ACTION_CONTROLLER='$REMOTE_DIR_RESOLVED/scripts/release/native-os-action-controller.mjs'
+export FCV_NATIVE_ACTION_PLATFORM=macos
+export FCV_NATIVE_EXPECTED_PROCESS=shellx-cut
+export SWEEP_CUTD=http://127.0.0.1:6161
+export FCV_SECTION='$FCV_SECTION_VALUE'
+export FCV_ONLY='$FCV_ONLY_VALUE'
+export FCV_NO_AGENT='$FCV_NO_AGENT_VALUE'
+export FCV_REQUIRE_FULL='$FCV_REQUIRE_FULL_VALUE'
+export FCV_FINAL_ALL_ACTIONS='$FCV_STRICT_ACTIONS_VALUE'
+export FCV_REAL_SCREEN_RECORD='$FCV_REAL_SCREEN_RECORD_VALUE'
+export FCV_AGENT_FIXTURES='$FCV_AGENT_FIXTURES_VALUE'
+export FCV_ACTION_MANIFEST='$REMOTE_DIR_RESOLVED/ui/public-tests/full-ui-action-manifest.json'
+export FCV_SCREENS='$WDIO_OUT_RESOLVED/screens'
+export FCV_RESULT_RECEIPT='$WDIO_OUT_RESOLVED/full-coverage-receipt.json'
+export FCV_TARGET_SURFACE=macos-installed
+export FCV_INSTALLED_APP=0
+export FCV_SOURCE_CONTENT_MANIFEST_SHA256='$SOURCE_CONTENT_MANIFEST_SHA256'
+export FCV_TRACE='$FCV_TRACE_VALUE'
+export CUT_TEST_MEDIA_DIR='$(dirname "$WDIO_SCENE_CLIP_RESOLVED")'
+export RELEASE_CLIP='$WDIO_SCENE_CLIP_RESOLVED'
+export RELEASE_CLIP_SPEECH='$WDIO_SPEECH_CLIP_RESOLVED'
+export RELEASE_CLIP_FACE='$WDIO_FACE_CLIP_RESOLVED'
+export RELEASE_CLIP_SPEAKERS='$WDIO_SPEAKERS_CLIP_RESOLVED'
+export RELEASE_CLIP2='$WDIO_SECOND_CLIP_RESOLVED'
+export NODE_OPTIONS=--max-old-space-size=8192
+export WDIO_LOG_LEVEL=${JSON.stringify(wdioLogLevel)}
+exec /usr/bin/caffeinate -dimsu -t 14400 npm --prefix ui run '$WDIO_SCRIPT'
+HOSTED_EOF
+chmod +x "$HOSTED_COMMAND"
+
+if [ "$TERMINAL_HOST_VALUE" = "1" ]; then
+  "$REMOTE_DIR_RESOLVED/scripts/lib/run-under-terminal.sh" "$HOSTED_COMMAND" "$WDIO_OUT_RESOLVED"
+else
+  /bin/sh "$HOSTED_COMMAND"
+fi
 `
 
   const envPrefix = [
@@ -302,6 +354,7 @@ WDIO_LOG_LEVEL=${JSON.stringify(wdioLogLevel)} \
     `FCV_STRICT_ACTIONS_VALUE=${strictCandidateActions ? '1' : '0'}`,
     `FCV_REAL_SCREEN_RECORD_VALUE=${flag('--real-screen-record') || strictCandidateActions ? '1' : '0'}`,
     `FCV_AGENT_FIXTURES_VALUE=${full ? '1' : '0'}`,
+    `TERMINAL_HOST_VALUE=${terminalHost ? '1' : '0'}`,
   ].join(' ')
   const sshPayload = buildSshEnvPayload(anthropicKey, 'ANTHROPIC_API_KEY', envPrefix, remoteScript)
   await run('ssh', [...SSH_KEEPALIVE_ARGS, host, sshPayload.command], {

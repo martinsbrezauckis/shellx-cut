@@ -23,6 +23,10 @@ interface TimelineAssetDropArgs {
   clientXToMs: (clientX: number) => number
   clientYToRow: (clientY: number) => TrackRow | null
   setAssetDnd: Dispatch<SetStateAction<AssetDropState | null>>
+  /** LAID pointer position → EDITORIAL at_ms for edit.insert (the engine's
+   * cumulative-track cursor; the two diverge after an upstream crossfade).
+   * The hover PREVIEW stays laid — it draws where the pointer is. */
+  dropMsToEditorial: (laidMs: number, row: TrackRow | null) => number
 }
 
 export function useTimelineAssetDrop({
@@ -30,6 +34,7 @@ export function useTimelineAssetDrop({
   clientXToMs,
   clientYToRow,
   setAssetDnd,
+  dropMsToEditorial,
 }: TimelineAssetDropArgs) {
   useEffect(() => {
     const within = (x: number, y: number) => {
@@ -50,10 +55,11 @@ export function useTimelineAssetDrop({
       setAssetDnd(null)
       if (!d) return
       if (!within(d.clientX, d.clientY)) return
-      const atMs = clientXToMs(d.clientX)
       const kind = d.kind === 'audio' ? 'audio' : d.kind === 'image' ? 'image' : 'video'
       const durMs = d.kind === 'image' ? 3000 : undefined
       const row = clientYToRow(d.clientY)
+      // Pointer position is LAID; edit.insert keys on EDITORIAL time.
+      const atMs = dropMsToEditorial(clientXToMs(d.clientX), row)
       const plan = planTimelineAssetDrop({ asset: d.asset, kind, at_ms: atMs, duration_ms: durMs, target: row, overlay: d.alt })
       if (!plan) return
       if (plan.createTrackKind && plan.useCreatedTrackFor) {
@@ -75,5 +81,5 @@ export function useTimelineAssetDrop({
       document.removeEventListener(ASSET_DRAG_MOVE, onMove)
       document.removeEventListener(ASSET_DRAG_DROP, onDrop)
     }
-  }, [clientXToMs, clientYToRow, scrollRef, setAssetDnd])
+  }, [clientXToMs, clientYToRow, dropMsToEditorial, scrollRef, setAssetDnd])
 }

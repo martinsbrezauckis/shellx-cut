@@ -3289,6 +3289,93 @@ async fn edit_split_at_scenes_splits_base_clip() {
     );
 }
 
+/// The linked A/V split contract the Timeline UI depends on. edit.split has no
+/// server-side `linked` arg (unlike edit.trim/edit.move), so the UI dispatches
+/// one edit.split per half of an inferred pair. Two guarantees under test:
+/// 1. `group_id` is DECLARED on edit.split's public schema. Regression guard:
+///    the schema's additionalProperties:false silently REJECTED the UI's
+///    grouped linked split (invalid_args at /group_id → "clicked but nothing
+///    happened") even though the store has always carried the meta-arg
+///    (ops.rs group_id() / store.rs apply); caught live by the linked-split
+///    probe on 2026-08-06.
+/// 2. Grouped splits undo as ONE user action: after splitting the video half
+///    and its audio sibling with a shared tag, a single project.undo restores
+///    both tracks — the same single-Ctrl+Z contract linked delete already has.
+#[tokio::test]
+async fn linked_split_group_id_is_declared_and_undoes_as_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    dispatch(
+        &state,
+        "project.create",
+        json!({"name":"t","dir": dir.path().join("t.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    let media = dir.path().join("clip.mp4");
+    std::fs::write(&media, b"x").unwrap();
+    dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
+    update_asset(&state, "a1", |a| {
+        a.probe = Some(
+            json!({"kind":"video","width":1920,"height":1080,"duration_ms":6000,"has_audio":true}),
+        );
+    })
+    .await
+    .unwrap();
+    // The linked pair exactly as auto-place/insert creates it: same asset,
+    // same source window, video on v1 + audio on a1t.
+    for track in ["v1", "a1t"] {
+        let r = dispatch(
+            &state,
+            "edit.insert",
+            json!({"asset":"a1","track":track,"at_ms":0,"src_range_ms":[0,6000],"ripple":false}),
+            test_actor(),
+        )
+        .await;
+        assert!(r.ok, "insert on {track}: {:?}", r.error);
+    }
+    let media_clips = |project: &cut_core::Project, track: &str| -> usize {
+        project
+            .track(track)
+            .unwrap()
+            .clips
+            .iter()
+            .filter(|c| matches!(c, cut_core::Clip::Media(_)))
+            .count()
+    };
+    // The UI's linked split: one schema-validated edit.split per half at the
+    // SAME editorial position, sharing one undo-group tag.
+    for track in ["v1", "a1t"] {
+        let r = dispatch(
+            &state,
+            "edit.split",
+            json!({"track":track,"at_ms":2000,"group_id":"grp-split-test","rationale":"linked split"}),
+            test_actor(),
+        )
+        .await;
+        assert!(
+            r.ok,
+            "grouped split on {track} must be schema-legal: {:?}",
+            r.error
+        );
+    }
+    let s = dispatch(&state, "project.state", json!({}), test_actor()).await;
+    let project: cut_core::Project = serde_json::from_value(s.result.unwrap()).unwrap();
+    assert_eq!(media_clips(&project, "v1"), 2, "video half split");
+    assert_eq!(media_clips(&project, "a1t"), 2, "audio half split with it");
+    // ONE undo step reverts the WHOLE linked cut (group collapse).
+    let r = dispatch(&state, "project.undo", json!({}), test_actor()).await;
+    assert!(r.ok, "undo: {:?}", r.error);
+    let s = dispatch(&state, "project.state", json!({}), test_actor()).await;
+    let project: cut_core::Project = serde_json::from_value(s.result.unwrap()).unwrap();
+    assert_eq!(media_clips(&project, "v1"), 1, "single undo restores video");
+    assert_eq!(
+        media_clips(&project, "a1t"),
+        1,
+        "the SAME undo restores the audio half — one user action, one Ctrl+Z"
+    );
+}
+
 #[tokio::test]
 async fn split_at_scenes_surfaces_non_boundary_split_failure() {
     let (dir, state, asset_id, _clip_id) = ramped_single_video_clip_fixture().await;
@@ -8602,7 +8689,20 @@ async fn verify_judge_live_claude_on_fixture_render() {
     let state = AppState::new();
     let r = dispatch(&state, "project.open", json!({"path": &dst}), test_actor()).await;
     assert!(r.ok, "{:?}", r.error);
-    let r = dispatch(&state, "verify.judge", json!({}), test_actor()).await;
+    // Pin the backend instead of taking the ladder's `auto`. With `{}` the
+    // ladder is free to step down, and on 2026-08-06 it did exactly that:
+    // auto_selected "claude" -> claude failed (expired OAuth) -> codex failed
+    // -> antigravity failed -> grok answered, and this rig still reported
+    // "1 passed". A rig named live-claude-judge, whose declared requirement is
+    // a logged-in Claude CLI, was proving only "some rung worked". An explicit
+    // backend never steps down, so a broken claude rung now fails the rig.
+    let r = dispatch(
+        &state,
+        "verify.judge",
+        json!({"backend": "claude"}),
+        test_actor(),
+    )
+    .await;
     assert!(r.ok, "{:?}", r.error);
     let res = r.result.unwrap();
     let job_id = res["job_id"].as_str().unwrap().to_string();
@@ -8637,6 +8737,14 @@ async fn verify_judge_live_claude_on_fixture_render() {
     assert_eq!(
         judge["backend"]["listened"], false,
         "CLI frame judge is deaf — honesty flag"
+    );
+    // The rig's whole claim is "the live CLAUDE rung works". Assert the
+    // verdict actually came from it, so a green run can never again mean
+    // "some other rung covered for claude" (see the backend pin above).
+    assert_eq!(
+        judge["backend"]["provider"], "claude",
+        "live-claude-judge must be answered by the claude rung, got {:?}",
+        judge["backend"]["provider"]
     );
 }
 

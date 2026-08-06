@@ -17,7 +17,10 @@ interface TrimPopoverProps {
   y: number
   clipId: string
   trackId: string
-  /** Timeline end of the clip = the roll target cut (clip → next). */
+  /** EDITORIAL end of the clip = the roll target cut (clip → next).
+   * edit.roll keys at_ms on the engine's cumulative clip-duration-sum clock,
+   * which diverges from the drawn (laid) end after an upstream crossfade —
+   * the caller (openTrimPopover) supplies editorialStartMs + durMs. */
   clipEndMs: number
   fps: number
   onClose: () => void

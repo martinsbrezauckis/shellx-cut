@@ -181,7 +181,13 @@ test("full native runners stage deterministic external seams without weakening U
   ]) {
     assert.match(source, /FCV_AGENT_FIXTURES_VALUE/, `${surface} scopes fixture activation to full runs`);
     assert.match(source, /FULL_AGENT_FIXTURE_SHELL/, `${surface} installs the shared external-seam environment`);
-    assert.match(source, /FCV_AGENT_FIXTURES="\$FCV_AGENT_FIXTURES_VALUE"/, `${surface} tells result assertions when the external seam is deterministic`);
+    // Either quoting form proves the wiring: Linux passes the value inline on
+    // the remote command ("$VAR"), macOS writes it into a hosted command file
+    // through an UNQUOTED heredoc, which expands at write time and leaves the
+    // literal value wrapped in single quotes ('1'). Pinning only the double
+    // quoted form would fail a correct runner (verified: unquoted heredoc +
+    // single quotes yields export FCV_AGENT_FIXTURES='1', runtime value 1).
+    assert.match(source, /FCV_AGENT_FIXTURES=(["'])\$FCV_AGENT_FIXTURES_VALUE\1/, `${surface} tells result assertions when the external seam is deterministic`);
   }
   assert.match(fixtureEnv, /scripts\/release\/fixtures:\$PATH/, "the shared environment launches staged CLI fixtures");
   assert.match(fixtureEnv, /CUTD_DRAFT_ADAPTER=/, "the shared environment stages deterministic comment drafting");

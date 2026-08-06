@@ -118,6 +118,7 @@ const boundedTests = [
   "ui/public-tests/lib/fullCoverageSettings.mjs",
   "ui/public-tests/lib/fullCoverageSettingsEnvironment.mjs",
   "ui/public-tests/lib/fullCoverageSettingsTasks.mjs",
+  "ui/public-tests/lib/fullCoverageSettingsUpdate.mjs",
   "ui/public-tests/lib/fullCoverageLibraryActions.mjs",
   "ui/public-tests/lib/fullCoverageProjectsActions.mjs",
   "ui/public-tests/lib/fullCoverageAssetsActions.mjs",

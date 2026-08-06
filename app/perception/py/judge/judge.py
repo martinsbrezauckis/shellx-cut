@@ -203,7 +203,7 @@ timestamps (window start = {start_ms} ms).
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
     """Run a subprocess, raising with stderr attached on failure."""
-    cp = subprocess.run(cmd, capture_output=True, text=True)
+    cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
     if cp.returncode != 0:
         raise RuntimeError(f"{cmd[0]} failed ({cp.returncode}): {cp.stderr[-800:]}")
     return cp

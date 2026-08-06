@@ -1,6 +1,12 @@
 import { callVerb } from './client'
+// The key moved to clientUrls: export URL construction has to know the chosen
+// folder to pick a servable URL shape, and clientUrls is the dependency-free
+// module both sides can import (importing it the other way round would make a
+// cycle through client.ts). Re-exported so every existing importer of
+// EXPORT_OUTPUT_DIR_STORAGE_KEY from this module keeps working.
+import { EXPORT_OUTPUT_DIR_STORAGE_KEY } from './clientUrls'
 
-export const EXPORT_OUTPUT_DIR_STORAGE_KEY = 'cut.outputDir'
+export { EXPORT_OUTPUT_DIR_STORAGE_KEY }
 
 export function getStoredOutputDir(): string | null {
   try {

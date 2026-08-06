@@ -8,7 +8,7 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-> **STATUS — 0.6.105 release line.** The public contract is 260 verbs across 32
+> **STATUS — 0.6.106 release line.** The public contract is 260 verbs across 32
 > domains. REST and MCP coverage are enforced by `scripts/coverage-audit.sh`,
 > typed UI bindings are enforced by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -138,12 +138,19 @@ renders stay on the machine. Optional generation, dubbing, review, stock-media,
 or agent-provider workflows make network requests only when the user starts
 them.
 
-The installed desktop app also contacts GitHub once per launch by default to
-read the signed release feed. GitHub receives normal request metadata such as
-the IP address; Cut adds no project, media, edit-history, or analytics payload.
-The check can be turned off under **Settings > Storage & privacy > Network
-activity**; the choice is stored by the native shell and applies from the next
-launch. Installing an available update still requires confirmation.
+The installed desktop app on Windows and macOS also contacts GitHub by default
+to read the signed release feed: once at launch, then once every 6 hours while
+the app stays open. GitHub receives normal request metadata such as the IP
+address; Cut adds no project, media, edit-history, or analytics payload.
+Finding an update never interrupts the session — it only shows a quiet topbar
+button and the update status in Settings > About, and installing an available
+update still requires confirmation. Automatic checks can be turned off under
+**Settings > Storage & privacy > Network activity**; the choice is stored by
+the native shell, applies immediately to both the launch and periodic checks,
+and the manual "Check for updates" button in Settings > About keeps working.
+Linux packages (deb/rpm) skip the launch and periodic update checks entirely —
+updates arrive as new package downloads — so a Linux launch makes no GitHub
+request at all.
 Windows and Apple-silicon macOS updates are signature-verified before install;
 the release feed is generated only from both verified platform artifacts and
 version-bound GitHub release URLs. Source-build and release steps are documented

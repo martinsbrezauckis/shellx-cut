@@ -309,6 +309,31 @@
   text-overflow: ellipsis;
   max-width: 380px;
 }
+/* --- quiet update nudge (topbar/UpdateButton) ------------------------ */
+/* Same pill family as .tb-jobs / .tb-ffmpeg-setup: hairline pill, small
+   type, a green dot for "good news waiting" — visible without shouting. */
+.tb-update {
+  height: 24px;
+  padding: 0 10px;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--green) 42%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+  color: var(--ink-2);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+}
+.tb-update:hover:not(:disabled) {
+  border-color: var(--green-soft);
+  color: var(--ink);
+}
+.tb-update-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green-soft);
+  flex: none;
+}
+
 .tb-ffmpeg-setup {
   flex: none;
   display: inline-flex;

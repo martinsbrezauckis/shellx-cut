@@ -7,135 +7,466 @@
       "rustTest": "full_battery_on_test_footage_then_cache_hit",
       "source": "app/perception/tests/sidecar_integration.rs",
       "classification": "perception_runtime",
-      "platforms": ["linux", "macos", "windows"],
-      "requirements": ["Provisioned app/perception/py/.venv", "Generated talking-head fixture"],
-      "requiredPaths": ["app/perception/py/.venv", "testdata/talking_head.mp4"],
-      "requiredCommands": ["cargo"],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "Provisioned app/perception/py/.venv",
+        "Generated talking-head fixture"
+      ],
+      "requiredPaths": [
+        "app/perception/py/.venv",
+        "testdata/talking_head.mp4"
+      ],
+      "requiredCommands": [
+        "cargo"
+      ],
       "requiredEnv": [],
-      "inputArtifacts": [{ "path": "testdata/talking_head.mp4" }],
+      "inputArtifacts": [
+        {
+          "path": "testdata/talking_head.mp4"
+        }
+      ],
       "outputArtifacts": [],
       "testBinaryPrefix": "sidecar_integration-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "cut-perception", "--test", "sidecar_integration", "full_battery_on_test_footage_then_cache_hit", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-perception",
+        "--test",
+        "sidecar_integration",
+        "full_battery_on_test_footage_then_cache_hit",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "perception-audio-battery",
       "rustTest": "audio_only_wav_runs_audio_battery",
       "source": "app/perception/tests/sidecar_integration.rs",
       "classification": "perception_runtime",
-      "platforms": ["linux", "macos", "windows"],
-      "requirements": ["Provisioned app/perception/py/.venv", "Runnable ffmpeg"],
-      "requiredPaths": ["app/perception/py/.venv"],
-      "requiredCommands": ["cargo", "ffmpeg"],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "Provisioned app/perception/py/.venv",
+        "Runnable ffmpeg"
+      ],
+      "requiredPaths": [
+        "app/perception/py/.venv"
+      ],
+      "requiredCommands": [
+        "cargo",
+        "ffmpeg"
+      ],
       "requiredEnv": [],
       "inputArtifacts": [],
       "outputArtifacts": [],
       "testBinaryPrefix": "sidecar_integration-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "cut-perception", "--test", "sidecar_integration", "audio_only_wav_runs_audio_battery", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-perception",
+        "--test",
+        "sidecar_integration",
+        "audio_only_wav_runs_audio_battery",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "perception-base-fallback",
       "rustTest": "render_checks_fall_back_without_optional_python_packages",
       "source": "app/perception/tests/sidecar_integration.rs",
       "classification": "perception_runtime",
-      "platforms": ["linux", "macos", "windows"],
-      "requirements": ["System Python without site-packages", "Runnable ffmpeg"],
-      "requiredPaths": ["app/perception/py/instruments.py"],
-      "requiredCommands": ["cargo", "python3", "ffmpeg"],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "System Python without site-packages",
+        "Runnable ffmpeg"
+      ],
+      "requiredPaths": [
+        "app/perception/py/instruments.py"
+      ],
+      "requiredCommands": [
+        "cargo",
+        "python3",
+        "ffmpeg"
+      ],
       "requiredEnv": [],
       "inputArtifacts": [],
       "outputArtifacts": [],
       "testBinaryPrefix": "sidecar_integration-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "cut-perception", "--test", "sidecar_integration", "render_checks_fall_back_without_optional_python_packages", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-perception",
+        "--test",
+        "sidecar_integration",
+        "render_checks_fall_back_without_optional_python_packages",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "silent-footage-profile",
       "rustTest": "silent_screen_footage_fails_talking_head_passes_screen_demo",
       "source": "app/perception/tests/silent_profile.rs",
       "classification": "perception_runtime",
-      "platforms": ["linux", "macos", "windows"],
-      "requirements": ["Provisioned app/perception/py/.venv", "Generated silent-screen fixture", "Runnable ffmpeg and ffprobe"],
-      "requiredPaths": ["app/perception/py/.venv", "testdata/silent_screen.mp4"],
-      "requiredCommands": ["cargo", "ffmpeg", "ffprobe"],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "Provisioned app/perception/py/.venv",
+        "Generated silent-screen fixture",
+        "Runnable ffmpeg and ffprobe"
+      ],
+      "requiredPaths": [
+        "app/perception/py/.venv",
+        "testdata/silent_screen.mp4"
+      ],
+      "requiredCommands": [
+        "cargo",
+        "ffmpeg",
+        "ffprobe"
+      ],
       "requiredEnv": [],
-      "inputArtifacts": [{ "path": "testdata/silent_screen.mp4" }],
+      "inputArtifacts": [
+        {
+          "path": "testdata/silent_screen.mp4"
+        }
+      ],
       "outputArtifacts": [],
       "testBinaryPrefix": "silent_profile-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "cut-perception", "--test", "silent_profile", "silent_screen_footage_fails_talking_head_passes_screen_demo", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-perception",
+        "--test",
+        "silent_profile",
+        "silent_screen_footage_fails_talking_head_passes_screen_demo",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "real-4k-software",
       "rustTest": "real_4k_render_software_only",
       "source": "app/media/tests/media_engine.rs",
       "classification": "real_media",
-      "platforms": ["linux", "macos", "windows"],
-      "requirements": ["Real 3840x2160 source clip", "Writable output directory", "Runnable ffmpeg"],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "Real 3840x2160 source clip",
+        "Writable output directory",
+        "Runnable ffmpeg"
+      ],
       "requiredPaths": [],
-      "requiredCommands": ["cargo", "ffmpeg", "ffprobe"],
-      "requiredEnv": ["SHELLX_CUT_TEST_4K", "SHELLX_CUT_TEST_OUT_DIR"],
-      "inputArtifacts": [{ "env": "SHELLX_CUT_TEST_4K" }],
-      "outputArtifacts": [{ "env": "SHELLX_CUT_TEST_OUT_DIR", "join": "real4k_sw.mp4" }],
+      "requiredCommands": [
+        "cargo",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "requiredEnv": [
+        "SHELLX_CUT_TEST_4K",
+        "SHELLX_CUT_TEST_OUT_DIR"
+      ],
+      "inputArtifacts": [
+        {
+          "env": "SHELLX_CUT_TEST_4K"
+        }
+      ],
+      "outputArtifacts": [
+        {
+          "env": "SHELLX_CUT_TEST_OUT_DIR",
+          "join": "real4k_sw.mp4"
+        }
+      ],
       "testBinaryPrefix": "media_engine-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "cut-media", "--test", "media_engine", "real_4k_render_software_only", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-media",
+        "--test",
+        "media_engine",
+        "real_4k_render_software_only",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "real-4k-gpu",
       "rustTest": "real_4k_render_gpu_only",
       "source": "app/media/tests/media_engine.rs",
       "classification": "hardware",
-      "platforms": ["linux", "windows"],
-      "requirements": ["CUDA-capable GPU", "CUDA-enabled ffmpeg", "Real 3840x2160 source clip", "Writable output directory"],
+      "platforms": [
+        "linux",
+        "windows"
+      ],
+      "requirements": [
+        "CUDA-capable GPU",
+        "CUDA-enabled ffmpeg",
+        "Real 3840x2160 source clip",
+        "Writable output directory"
+      ],
       "requiredPaths": [],
-      "requiredCommands": ["cargo", "ffprobe"],
-      "requiredEnv": ["SHELLX_CUT_FFMPEG", "SHELLX_CUT_TEST_4K", "SHELLX_CUT_TEST_OUT_DIR"],
-      "inputArtifacts": [{ "env": "SHELLX_CUT_FFMPEG" }, { "env": "SHELLX_CUT_TEST_4K" }],
-      "outputArtifacts": [{ "env": "SHELLX_CUT_TEST_OUT_DIR", "join": "real4k_gpu.mp4" }],
+      "requiredCommands": [
+        "cargo",
+        "ffprobe"
+      ],
+      "requiredEnv": [
+        "SHELLX_CUT_FFMPEG",
+        "SHELLX_CUT_TEST_4K",
+        "SHELLX_CUT_TEST_OUT_DIR"
+      ],
+      "inputArtifacts": [
+        {
+          "env": "SHELLX_CUT_FFMPEG"
+        },
+        {
+          "env": "SHELLX_CUT_TEST_4K"
+        }
+      ],
+      "outputArtifacts": [
+        {
+          "env": "SHELLX_CUT_TEST_OUT_DIR",
+          "join": "real4k_gpu.mp4"
+        }
+      ],
       "testBinaryPrefix": "media_engine-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "cut-media", "--test", "media_engine", "real_4k_render_gpu_only", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-media",
+        "--test",
+        "media_engine",
+        "real_4k_render_gpu_only",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "real-4k-vram-fallback",
       "rustTest": "real_4k_vram_over_budget_falls_back_to_software",
       "source": "app/media/tests/media_engine.rs",
       "classification": "real_media",
-      "platforms": ["linux", "macos", "windows"],
-      "requirements": ["Real 3840x2160 source clip", "Writable output directory", "Runnable ffmpeg"],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "Real 3840x2160 source clip",
+        "Writable output directory",
+        "Runnable ffmpeg"
+      ],
       "requiredPaths": [],
-      "requiredCommands": ["cargo", "ffmpeg", "ffprobe"],
-      "requiredEnv": ["SHELLX_CUT_TEST_4K", "SHELLX_CUT_TEST_OUT_DIR"],
-      "inputArtifacts": [{ "env": "SHELLX_CUT_TEST_4K" }],
-      "outputArtifacts": [{ "env": "SHELLX_CUT_TEST_OUT_DIR", "join": "real4k_vram_fallback.mp4" }],
+      "requiredCommands": [
+        "cargo",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "requiredEnv": [
+        "SHELLX_CUT_TEST_4K",
+        "SHELLX_CUT_TEST_OUT_DIR"
+      ],
+      "inputArtifacts": [
+        {
+          "env": "SHELLX_CUT_TEST_4K"
+        }
+      ],
+      "outputArtifacts": [
+        {
+          "env": "SHELLX_CUT_TEST_OUT_DIR",
+          "join": "real4k_vram_fallback.mp4"
+        }
+      ],
       "testBinaryPrefix": "media_engine-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "cut-media", "--test", "media_engine", "real_4k_vram_over_budget_falls_back_to_software", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-media",
+        "--test",
+        "media_engine",
+        "real_4k_vram_over_budget_falls_back_to_software",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "desktop-system-audio",
       "rustTest": "system_audio_captures_signal",
       "source": "app/server/src/screen_record.rs",
       "classification": "permission",
-      "platforms": ["linux", "macos"],
-      "requirements": ["Interactive desktop session", "Desktop audio loopback permission/device", "Runnable ffmpeg"],
+      "platforms": [
+        "linux",
+        "macos"
+      ],
+      "requirements": [
+        "Interactive desktop session",
+        "Desktop audio loopback permission/device",
+        "Runnable ffmpeg"
+      ],
       "requiredPaths": [],
-      "requiredCommands": ["cargo", "ffmpeg"],
+      "requiredCommands": [
+        "cargo",
+        "ffmpeg"
+      ],
       "requiredEnv": [],
       "inputArtifacts": [],
       "outputArtifacts": [],
       "testBinaryPrefix": "cutd-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "server", "system_audio_captures_signal", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "server",
+        "system_audio_captures_signal",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     },
     {
       "id": "live-claude-judge",
       "rustTest": "verify_judge_live_claude_on_fixture_render",
       "source": "app/server/src/dispatch/tests.rs",
       "classification": "authenticated_service",
-      "platforms": ["linux", "macos", "windows"],
-      "requirements": ["Logged-in Claude CLI", "Python 3", "Regression project with a completed render receipt", "Subscription quota approval"],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "Logged-in Claude CLI",
+        "Python 3",
+        "Regression project with a completed render receipt",
+        "Subscription quota approval"
+      ],
       "requiredPaths": [],
-      "requiredCommands": ["cargo", "python3", "claude"],
-      "requiredEnv": ["CUTD_JUDGE_TEST_PROJECT"],
-      "inputArtifacts": [{ "env": "CUTD_JUDGE_TEST_PROJECT", "tree": true }],
+      "requiredCommands": [
+        "cargo",
+        "python3",
+        "claude"
+      ],
+      "requiredEnv": [
+        "CUTD_JUDGE_TEST_PROJECT"
+      ],
+      "inputArtifacts": [
+        {
+          "env": "CUTD_JUDGE_TEST_PROJECT",
+          "tree": true
+        }
+      ],
       "outputArtifacts": [],
       "testBinaryPrefix": "cutd-",
-      "command": ["cargo", "test", "--manifest-path", "app/Cargo.toml", "-p", "server", "verify_judge_live_claude_on_fixture_render", "--", "--ignored", "--nocapture", "--test-threads=1"]
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "server",
+        "verify_judge_live_claude_on_fixture_render",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
+    },
+    {
+      "id": "hw-encoder-size-gate",
+      "rustTest": "hw_encoder_declines_frame_sizes_it_cannot_encode",
+      "source": "app/media/tests/media_engine.rs",
+      "classification": "hardware",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "requirements": [
+        "A hardware video encoder (NVENC/QSV/AMF/VideoToolbox)",
+        "An ffmpeg whose hardware encoders actually work on this host"
+      ],
+      "requiredPaths": [],
+      "requiredCommands": [
+        "cargo"
+      ],
+      "requiredEnv": [
+        "SHELLX_CUT_FFMPEG"
+      ],
+      "inputArtifacts": [
+        {
+          "env": "SHELLX_CUT_FFMPEG"
+        }
+      ],
+      "outputArtifacts": [],
+      "testBinaryPrefix": "media_engine-",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "app/Cargo.toml",
+        "-p",
+        "cut-media",
+        "--test",
+        "media_engine",
+        "hw_encoder_declines_frame_sizes_it_cannot_encode",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ]
     }
   ]
 }

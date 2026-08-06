@@ -79,6 +79,6 @@ items_after_test_module = "allow"
 # the doctor card shows on the installed app). Bump in lockstep with the desktop
 # shell version (app/desktop/src-tauri/Cargo.toml + tauri.conf.json) so the
 # doctor card identifies the running build correctly on every platform.
-version = "0.6.105"
+version = "0.6.106"
 edition = "2021"
 license = "MIT"

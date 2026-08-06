@@ -3270,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "shellx-cut"
-version = "0.6.105"
+version = "0.6.106"
 dependencies = [
  "base64 0.22.1",
  "minisign-verify",
@@ -3283,6 +3283,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-plugin-wdio",
  "tauri-plugin-wdio-webdriver",
+ "tokio",
 ]
 
 [[package]]

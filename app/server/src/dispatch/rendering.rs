@@ -309,13 +309,97 @@ fn audio_format_args(format: &str) -> Option<(Vec<String>, &'static str)> {
     })
 }
 
-/// export.publish{platform, hardware?, preset?, path?, dry_run?} — ONE-CLICK
-/// platform export. Resolves a platform id (youtube|youtube_4k|tiktok|reels|
-/// instagram_feed|x|square, + aliases shorts/twitter/ig) to its 2026-researched
-/// encoding spec (output geometry, video+audio bitrate, format), then DELEGATES
-/// to render.final with those args — reusing the entire render path (job,
-/// auto-run checks, receipt). The result carries the chosen platform + spec so a
-/// caller knows exactly what shipped. This is sugar: an agent can equally call
+/// export.publish args — module-level (not fn-local like most verb Args) so the
+/// pure delegation helper `publish_render_final_args` below is unit-testable
+/// from dispatch/tests/render_verify.rs. Constructed only via `parse_args`.
+#[derive(serde::Deserialize, Default)]
+pub(super) struct PublishArgs {
+    platform: Option<String>,
+    /// Quality tier passthrough (draft|standard|high) — shifts the encoder
+    /// effort; the bitrate target comes from the platform spec.
+    preset: Option<String>,
+    /// Encoder tier passthrough (auto|off) — auto uses the GPU when present.
+    hardware: Option<String>,
+    /// Footage QC profile passthrough (talking_head|silent_screen_demo) —
+    /// selects render.final's post-render check battery. Passed through
+    /// VERBATIM; absent = render.final's own default (strict talking_head
+    /// battery + auto-detect proposal), exactly as if the caller had called
+    /// render.final directly. Fixes the demo-shoot P3 where silent screen-demo
+    /// publishes always got caption/loudness FAILs from the default battery.
+    profile: Option<String>,
+    path: Option<String>,
+    rationale: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// Compose the render.final arg map for a platform publish. PURE (no state, no
+/// I/O) so the delegation contract is unit-testable: the platform spec always
+/// sets geometry/format/bitrates; the caller's optional tiers (preset/hardware),
+/// footage `profile`, path and dry_run pass through ONLY when present (absent
+/// keys keep render.final's own defaults — the byte-identical delegation rule).
+/// `rationale` defaults to a labelled publish line so the op-log stays honest.
+pub(super) fn publish_render_final_args(
+    a: &PublishArgs,
+    platform_spec: &cut_media::render::PlatformSpec,
+) -> serde_json::Map<String, Value> {
+    // Explicit width/height sets Resolution::Explicit (render.final defaults its
+    // fit to cover there — fills the new frame, the publish intent).
+    // bitrate/audio_bitrate hit the exact platform target via the codec-aware
+    // rate-control rewrite.
+    let mut rf = serde_json::Map::new();
+    rf.insert("width".into(), json!(platform_spec.width));
+    rf.insert("height".into(), json!(platform_spec.height));
+    rf.insert("format".into(), json!(platform_spec.format));
+    rf.insert(
+        "bitrate".into(),
+        json!(format!("{}k", platform_spec.video_kbps)),
+    );
+    rf.insert(
+        "rate_control".into(),
+        json!(if platform_spec.cbr { "cbr" } else { "vbr" }),
+    );
+    rf.insert(
+        "audio_bitrate".into(),
+        json!(format!("{}k", platform_spec.audio_kbps)),
+    );
+    if let Some(hw) = a.hardware.as_deref() {
+        rf.insert("hardware".into(), json!(hw));
+    }
+    if let Some(q) = a.preset.as_deref() {
+        rf.insert("preset".into(), json!(q));
+    }
+    // Footage QC profile — verbatim passthrough. render.final parses it fail-fast
+    // (typo → invalid_args before any encode) and the export.publish schema enum
+    // already gates it at the REST/MCP boundary.
+    if let Some(p) = a.profile.as_deref() {
+        rf.insert("profile".into(), json!(p));
+    }
+    if let Some(p) = a.path.as_deref() {
+        rf.insert("path".into(), json!(p));
+    }
+    if a.dry_run {
+        rf.insert("dry_run".into(), json!(true));
+    }
+    rf.insert(
+        "rationale".into(),
+        json!(a
+            .rationale
+            .clone()
+            .unwrap_or_else(|| format!("publish for {}", platform_spec.label))),
+    );
+    rf
+}
+
+/// export.publish{platform, hardware?, preset?, profile?, path?, dry_run?} —
+/// ONE-CLICK platform export. Resolves a platform id (youtube|youtube_4k|tiktok|
+/// reels|instagram_feed|x|square, + aliases shorts/twitter/ig) to its
+/// 2026-researched encoding spec (output geometry, video+audio bitrate, format),
+/// then DELEGATES to render.final with those args — reusing the entire render
+/// path (job, auto-run checks, receipt). `profile` selects the footage QC check
+/// battery exactly like render.final's own arg (absent = render.final default).
+/// The result carries the chosen platform + spec so a caller knows exactly what
+/// shipped. This is sugar: an agent can equally call
 /// render.final{width,height,bitrate,format,…} directly. Vertical platforms
 /// (tiktok/reels) reframe to 9:16 via render.final's explicit geometry + cover
 /// fit (subject-aware reframe is the separate render.reframe verb).
@@ -324,20 +408,7 @@ pub(super) async fn export_publish(
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
-    #[derive(serde::Deserialize, Default)]
-    struct Args {
-        platform: Option<String>,
-        /// Quality tier passthrough (draft|standard|high) — shifts the encoder
-        /// effort; the bitrate target comes from the platform spec.
-        preset: Option<String>,
-        /// Encoder tier passthrough (auto|off) — auto uses the GPU when present.
-        hardware: Option<String>,
-        path: Option<String>,
-        rationale: Option<String>,
-        #[serde(default)]
-        dry_run: bool,
-    }
-    let a: Args = parse_args(args)?;
+    let a: PublishArgs = parse_args(args)?;
     let platform = a.platform.as_deref().ok_or_else(|| {
         CutError::new(
             error_codes::INVALID_ARGS,
@@ -360,44 +431,11 @@ pub(super) async fn export_publish(
         )
         .with_suggested_action("e.g. export.publish{platform:\"youtube\"} or {platform:\"reels\"}")
     })?;
-    // Compose the render.final args from the platform spec and delegate. Explicit
-    // width/height sets Resolution::Explicit (render.final defaults its fit to
-    // cover there — fills the new frame, the publish intent). bitrate/audio_bitrate
-    // hit the exact platform target via the codec-aware rate-control rewrite.
-    let mut rf = serde_json::Map::new();
-    rf.insert("width".into(), json!(spec.width));
-    rf.insert("height".into(), json!(spec.height));
-    rf.insert("format".into(), json!(spec.format));
-    rf.insert("bitrate".into(), json!(format!("{}k", spec.video_kbps)));
-    rf.insert(
-        "rate_control".into(),
-        json!(if spec.cbr { "cbr" } else { "vbr" }),
-    );
-    rf.insert(
-        "audio_bitrate".into(),
-        json!(format!("{}k", spec.audio_kbps)),
-    );
-    if let Some(hw) = a.hardware.as_deref() {
-        rf.insert("hardware".into(), json!(hw));
-    }
-    if let Some(q) = a.preset.as_deref() {
-        rf.insert("preset".into(), json!(q));
-    }
-    if let Some(p) = a.path.as_deref() {
-        rf.insert("path".into(), json!(p));
-    }
-    if a.dry_run {
-        rf.insert("dry_run".into(), json!(true));
-    }
-    rf.insert(
-        "rationale".into(),
-        json!(a
-            .rationale
-            .clone()
-            .unwrap_or_else(|| format!("publish for {}", spec.label))),
-    );
-    // Delegate to the full render path (job + checks + receipt). `?` propagates an
-    // actionable error (empty timeline, bad path) straight through.
+    // Compose the render.final args from the platform spec + caller passthroughs
+    // (pure helper above — unit-tested delegation contract) and delegate to the
+    // full render path (job + checks + receipt). `?` propagates an actionable
+    // error (empty timeline, bad path, unknown footage profile) straight through.
+    let rf = publish_render_final_args(&a, &spec);
     let res = render_final(state, Value::Object(rf), actor).await?;
     // Annotate the render result with the platform facts (the job_id/render_id
     // pass through unchanged), so the caller sees exactly what was targeted.
@@ -1456,7 +1494,16 @@ pub(super) async fn render_final(
             "high" => 2,
             _ => 1,
         };
-        if let Some((hw_video, hw_ext)) = cut_media::hwencode::hw_codec_args(base_codec, q) {
+        // Resolve the REAL output geometry first. A hardware encoder that runs
+        // fine at 4K can refuse 8K outright (NVENC's H.264 engine stops at
+        // 4096 px), and swapping it in blind fails the job at encoder-open time
+        // instead of simply rendering more slowly in software.
+        // `output_geometry` covers every resolution mode, including
+        // `match_source`, whose size is only knowable from the timeline.
+        let (out_w, out_h) = render_opts.output_geometry(&project, &edl);
+        if let Some((hw_video, hw_ext)) =
+            cut_media::hwencode::hw_codec_args(base_codec, q, out_w, out_h)
+        {
             encoder = video_arg_value(&hw_video, "-c:v");
             video_args = hw_video;
             ext = hw_ext;
@@ -2649,7 +2696,22 @@ pub(super) async fn render_bundle(
             );
             let safe = aspect.replace(':', "x");
             let rel = format!("exports/{bundle_id}/{safe}/clip.mp4");
-            let out_path = match fence_output_path(&dir, None, &rel) {
+            // A publish package is ONE directory whose members reference each
+            // other by layout: <project>/exports/<bundle_id>/<aspect>/{clip.mp4,
+            // captions.srt/.vtt, thumb.jpg} plus the manifest one level up. The
+            // manifest path below is hard-coded into the project tree, so the
+            // clips must stay there too — fence_output_path would divert them to a
+            // configured session output dir and, because that branch keeps only
+            // the FILE NAME, flatten every aspect onto one name in one folder.
+            // Symptom when that happens: with a session output
+            // dir in force the clips left the project, <project>/exports/
+            // <bundle_id>/ was therefore never created, and the manifest write
+            // failed the whole job with "could not create temp output …
+            // /exports/bundle_0_1500/.manifest.json.<pid>.<n>.tmp: No such file or
+            // directory". fence_project_output_path is the helper for this exact
+            // requirement (review packages already use it) and behaves identically
+            // when no session output dir is set.
+            let out_path = match fence_project_output_path(&dir, None, &rel) {
                 Ok(p) => p,
                 Err(e) => return st.jobs.fail(&jid, e),
             };

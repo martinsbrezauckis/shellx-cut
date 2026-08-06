@@ -22,7 +22,10 @@ export default function TimelineSeamHandles({
           <div
             key={`seam:${seam.leftId}:${seam.rightId}`}
             className={`tl-seam${seam.xfadeMs > 0 ? ' tl-seam--xfade' : ''}${active ? ' tl-seam--active' : ''}`}
-            style={{ left: msToPx(seam.atMs, zoom) }}
+            // laidMs = the visible boundary in render space; atMs is EDITORIAL
+            // (dispatch-only) and diverges from the drawn position after an
+            // upstream crossfade — never position by it.
+            style={{ left: msToPx(seam.laidMs, zoom) }}
             data-cut-action="seam"
             data-cut-seam={`${seam.leftId}:${seam.rightId}`}
             data-cut-seam-xfade={seam.xfadeMs || undefined}

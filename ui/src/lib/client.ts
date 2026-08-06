@@ -194,7 +194,9 @@ export interface VerbArgs {
   'jobs.list': Record<string, never>
   'jobs.cancel': { job_id: string }
 
-  'edit.split': { track: string; at_ms: number; rationale?: string }
+  // group_id: composite-action tag (store-level meta-arg) — a linked A/V
+  // split is two ops sharing one tag so a single Ctrl+Z undoes the whole cut.
+  'edit.split': { track: string; at_ms: number; rationale?: string; group_id?: string }
   // Cut/align clips to MUSIC BEATS. Beat source =
   // the audio.add_music beat:N markers. mode "split" (default) cuts the track at
   // each selected beat; mode "snap" rolls existing cut boundaries onto beats.
@@ -918,7 +920,9 @@ export interface VerbArgs {
   'export.edl': { path?: string; title?: string; rationale?: string }
   'import.otio': { path: string; mode?: 'preview' | 'replace'; expected_hash?: string; rationale?: string }
   'export.audio': { format?: 'mp3' | 'm4a' | 'aac' | 'wav' | 'flac' | 'opus'; path?: string; track?: string; to_asset?: boolean; rationale?: string }
-  'export.publish': { platform: 'youtube' | 'youtube_4k' | 'tiktok' | 'reels' | 'instagram_feed' | 'x' | 'square'; preset?: 'draft' | 'standard' | 'high'; hardware?: 'auto' | 'off'; path?: string; dry_run?: boolean; rationale?: string }
+  // profile = footage QC profile passthrough to render.final's check battery
+  // (silent_screen_demo waives caption/loudness checks); absent = engine default.
+  'export.publish': { platform: 'youtube' | 'youtube_4k' | 'tiktok' | 'reels' | 'instagram_feed' | 'x' | 'square'; preset?: 'draft' | 'standard' | 'high'; hardware?: 'auto' | 'off'; profile?: 'talking_head' | 'silent_screen_demo'; path?: string; dry_run?: boolean; rationale?: string }
   'export.gif': { range_ms?: [number, number]; fps?: number; width?: number; dither?: 'floyd' | 'bayer' | 'none'; to_asset?: boolean; rationale?: string; path?: string }
   'export.srt': { path?: string }
   'export.vtt': { path?: string }

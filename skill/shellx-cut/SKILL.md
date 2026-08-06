@@ -5,7 +5,7 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-> **Engine v0.6.105.** Synced to the contract (`schema/verbs.json` — the single
+> **Engine v0.6.106.** Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
 > the file): **260 verbs across 32 domains** under the public verb contract. Coverage
 > audit **260/260 REST + 260/260 MCP** (every verb answers on both transports;

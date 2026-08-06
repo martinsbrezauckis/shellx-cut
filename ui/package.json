@@ -1,14 +1,14 @@
 {
   "name": "shellx-cut-ui",
   "private": true,
-  "version": "0.6.105",
+  "version": "0.6.106",
   "type": "module",
   "description": "ShellX Cut UI — Vite + React + TS app shell (UI contract). The UI is an API client, nothing more: all state via verbs/WS, zero local mutation.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:lib": "tsx public-tests/lib.test.ts && tsx public-tests/motion-effects.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts",
+    "test:lib": "tsx public-tests/lib.test.ts && tsx public-tests/motion-effects.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts && tsx public-tests/panel-persist-guard.test.ts && tsx public-tests/grade-drawer.test.ts && tsx public-tests/clip-context-menu.test.ts",
     "sweep": "node public-tests/surface-sweep.mjs",
     "release-verify": "node public-tests/release-verify.mjs",
     "interaction-verify": "node public-tests/interaction-verify.mjs",

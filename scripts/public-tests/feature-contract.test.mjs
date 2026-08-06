@@ -26,7 +26,7 @@ const schema = JSON.parse(read("schema/verbs.json"));
 const verbs = schema.verbs.map((verb) => verb.name);
 const domains = [...new Set(schema.verbs.map((verb) => verb.domain))].sort();
 const tauriConf = JSON.parse(read("app/desktop/src-tauri/tauri.conf.json"));
-const expectedTesterVersion = "0.6.105";
+const expectedTesterVersion = "0.6.106";
 const tauriFrontendDist = tauriConf.build?.frontendDist;
 const fallbackIndex = read("app/desktop/fallback/index.html");
 const serverMain = read("app/server/src/main.rs");

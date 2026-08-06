@@ -281,7 +281,20 @@ export function createClipsActionCoverage({
           const fixture = await fixtureState(page)
           const call = fixture.bundleCalls[0]
           const manifest = page.locator('[data-cut-bundle-manifest]').first()
+          const manifestHref = (await manifest.getAttribute('href')) || ''
           const packageText = await page.locator('[data-cut-clip-bundle]').first().textContent()
+          // The manifest link must name the EXACT file the bundle wrote.
+          //
+          // This used to assert the `/api/export/<rel>` prefix. `5d0c2dff`
+          // deliberately stopped forcing every export into that project-relative
+          // shape: an absolute path with no `exports/` segment — this fixture's
+          // /tmp bundle, and every Save-As target — became either a 404 or, when
+          // the folder's own path contained an `exports/` segment, a BARE NAME
+          // that silently resolved to a stale same-named file inside the project.
+          // So the old prefix assertion was asserting the bug that fix removed;
+          // the exact `/api/export-file?path=` shape is the contract now. Both
+          // shapes stay covered by the exportUrl unit tests (lib.test.ts).
+          const manifestNames = decodeURIComponent(manifestHref.split('path=')[1] || '')
           return {
             ok: fixture.bundleCalls.length === 1
               && call?.candidate?.at_ms === candidateAtMs
@@ -291,8 +304,9 @@ export function createClipsActionCoverage({
               && fixture.statusCalls.length >= 1
               && packageText?.includes('Package ready')
               && packageText?.includes('9:16')
-              && (await manifest.getAttribute('href'))?.includes('/api/export/'),
-            detail: `bundle calls=${fixture.bundleCalls.length}; args=${JSON.stringify(call)}; status calls=${fixture.statusCalls.length}; package="${packageText?.replace(/\s+/g, ' ').trim()}"; manifest=${await manifest.getAttribute('href')}`,
+              && manifestHref.includes('/api/export-file?path=')
+              && manifestNames === '/tmp/fcv_bundle_1000_4500/manifest.json',
+            detail: `bundle calls=${fixture.bundleCalls.length}; args=${JSON.stringify(call)}; status calls=${fixture.statusCalls.length}; package="${packageText?.replace(/\s+/g, ' ').trim()}"; manifest=${manifestHref}`,
           }
         },
       })

@@ -2,10 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import {
   cargoTestBinary,
   collectSourceIdentity,
+  commandExists,
   discoverIgnoredRustTests,
+  envValue,
   loadIgnoredTestManifest,
   manifestPlatform,
   parseIgnoredRigArgs,
@@ -21,7 +25,7 @@ test('every ignored Rust test has exactly one rig classification', () => {
     .map(({ rustTest, source }) => ({ rustTest, source }))
     .sort((a, b) => a.rustTest.localeCompare(b.rustTest))
   assert.deepEqual(discovered, declared)
-  assert.equal(discovered.length, 9)
+  assert.equal(discovered.length, 10)
   assert.equal(new Set(manifest.tests.map((entry) => entry.id)).size, manifest.tests.length)
 })
 
@@ -91,6 +95,49 @@ test('perception rigs default to the checked-out sidecar without overriding call
   const baseFallback = rigExecutionEnv(repoRoot, fallback, {}, 'linux')
   assert.equal(baseFallback.env.SHELLX_CUT_SIDECAR_DIR, resolve(repoRoot, 'app/perception/py'))
   assert.equal(baseFallback.env.SHELLX_CUT_PYTHON, undefined)
+})
+
+// Both cases below are environment-shaped: they cannot be reproduced from this
+// repo's own shell, so the platform and env are injected rather than trusted.
+// Regressions here are silent and expensive — they made every Windows rig
+// unrunnable (case) or let a rig fail after preflight passed (Store alias).
+
+test('environment lookup ignores case, because a spread of process.env drops its proxy', () => {
+  // Windows spells it `Path`. `process.env` resolves that case-insensitively,
+  // but `{ ...process.env }` is a plain object and does not.
+  assert.equal(envValue({ Path: 'C:\\bin' }, 'PATH'), 'C:\\bin')
+  assert.equal(envValue({ PATH: '/usr/bin' }, 'PATH'), '/usr/bin')
+  assert.equal(envValue({ path: '/usr/bin' }, 'PATH'), '/usr/bin')
+  // An exact match still wins, and a genuinely absent name stays undefined.
+  assert.equal(envValue({ PATH: '/a', Path: '/b' }, 'PATH'), '/a')
+  assert.equal(envValue({}, 'PATH'), undefined)
+})
+
+test('command lookup finds real executables and rejects zero-byte Store aliases', () => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'cut-rig-cmd-'))
+  const bin = resolve(dir, 'bin')
+  mkdirSync(bin)
+  // Extensions are spelled to MATCH the PATHEXT entries below. Real Windows
+  // resolves these case-insensitively at the filesystem layer, but this test
+  // runs on a case-sensitive filesystem, so the fixture must be self-consistent
+  // to exercise the lookup logic rather than the host's path semantics.
+  writeFileSync(resolve(bin, 'cargo.EXE'), 'MZ real executable content')
+  // A Microsoft-Store app execution alias: exists, satisfies existsSync, is a
+  // zero-byte reparse point, and cannot run. Preflight must not accept it.
+  writeFileSync(resolve(bin, 'python3.EXE'), '')
+
+  // Windows semantics, with the lowercase `Path` spelling that broke every rig.
+  const winEnv = { Path: bin, PATHEXT: '.EXE;.CMD' }
+  assert.equal(commandExists('cargo', winEnv, 'win32'), true)
+  assert.equal(commandExists('python3', winEnv, 'win32'), false)
+  assert.equal(commandExists('absent', winEnv, 'win32'), false)
+
+  // POSIX: no extension list, and the same zero-byte rejection applies.
+  writeFileSync(resolve(bin, 'ffprobe'), '#!/bin/sh\n')
+  writeFileSync(resolve(bin, 'stub'), '')
+  const posixEnv = { PATH: bin }
+  assert.equal(commandExists('ffprobe', posixEnv, 'linux'), true)
+  assert.equal(commandExists('stub', posixEnv, 'linux'), false)
 })
 
 test('CLI argument parser keeps dirty override explicit', () => {

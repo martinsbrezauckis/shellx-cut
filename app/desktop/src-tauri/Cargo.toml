@@ -13,7 +13,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 [package]
 name = "shellx-cut"
-version = "0.6.105"
+version = "0.6.106"
 default-run = "shellx-cut"
 edition = "2021"
 description = "ShellX Cut — agent-first video editor, wrapped as a native Tauri 2 desktop app. The shell spawns the bundled cutd engine on loopback and points the webview at it."
@@ -48,6 +48,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 minisign-verify = "0.2.5"
+# Timer for the 6-hourly periodic update re-check (update_state.rs). Tauri's
+# async runtime IS tokio, but the tauri crate does not enable tokio's "time"
+# feature — declare it explicitly (features are additive; no second runtime).
+tokio = { version = "1", features = ["time"] }
 
 # Auto-updater (desktop only). The CHECK + install run in the Rust shell (NOT the
 # engine-served remote-origin UI, which Tauri denies plugin IPC) → the native

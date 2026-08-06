@@ -377,31 +377,69 @@ export class EventsClient {
   /**
    * Answer a relayed ui.screenshot request: capture the app root and send
    * screenshot_result back with the correlation id (ui_bridge.rs contract).
-   * On capture failure an EXPLICIT error reply is sent (with no png_base64
-   * the verb fails actionably instead of waiting out its 10s timeout).
+   *
+   * Reliability contract (2026-08-06 macOS bug-probe hardening — ui.screenshot
+   * is a verification PRIMITIVE agents key on):
+   * - ONE bounded retry after a short settle: the observed failure class is a
+   *   transient resource-load rejection inside html-to-image (a poster/font
+   *   finishing or failing mid-serialize), which a second pass typically
+   *   clears. Exactly two attempts — a capture that fails twice must FAIL, not
+   *   hang the verb toward its timeout.
+   * - On final failure an EXPLICIT, STRUCTURED error frame is sent:
+   *   {code, stage, message, attempts} — never the old String(err), which
+   *   collapsed html-to-image's Event rejection into "[object Event]".
    */
   private answerScreenshot(req: { request_id: number }): void {
-    void import('./capture')
-      .then(({ captureApp }) => captureApp())
-      .then(
-        (cap) =>
-          this.ws?.send(
-            JSON.stringify({
-              type: 'screenshot_result',
-              request_id: req.request_id,
-              png_base64: cap.png_base64,
-              notes: cap.notes,
-            }),
-          ),
-        (err) =>
-          this.ws?.send(
-            JSON.stringify({
-              type: 'screenshot_result',
-              request_id: req.request_id,
-              error: String(err),
-            }),
-          ),
-      )
+    void (async () => {
+      try {
+        const capture = await import('./capture')
+        let cap: Awaited<ReturnType<typeof capture.captureApp>>
+        try {
+          cap = await capture.captureApp()
+        } catch (firstErr) {
+          await new Promise((resolve) => setTimeout(resolve, 300))
+          try {
+            cap = await capture.captureApp()
+          } catch (finalErr) {
+            const described = capture.describeCaptureError(finalErr)
+            const first = capture.describeCaptureError(firstErr)
+            this.ws?.send(
+              JSON.stringify({
+                type: 'screenshot_result',
+                request_id: req.request_id,
+                error: {
+                  code: 'capture_failed',
+                  stage: described.stage,
+                  message: described.message,
+                  attempts: 2,
+                  // Both attempts reported when they failed differently —
+                  // a flapping stage is itself diagnostic signal.
+                  ...(first.message !== described.message ? { first_attempt: first.message } : {}),
+                },
+              }),
+            )
+            return
+          }
+        }
+        this.ws?.send(
+          JSON.stringify({
+            type: 'screenshot_result',
+            request_id: req.request_id,
+            png_base64: cap.png_base64,
+            notes: cap.notes,
+          }),
+        )
+      } catch (err) {
+        // Last-resort guard (send/import failure): still answer, still typed.
+        this.ws?.send(
+          JSON.stringify({
+            type: 'screenshot_result',
+            request_id: req.request_id,
+            error: { code: 'capture_failed', stage: 'unknown', message: String(err), attempts: 0 },
+          }),
+        )
+      }
+    })()
   }
 
   /** Exponential backoff 0.5s → 8s cap. */

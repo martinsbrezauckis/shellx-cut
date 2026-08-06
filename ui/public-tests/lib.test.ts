@@ -39,12 +39,14 @@ import { assetReadiness, mediaCapabilitiesFromDoctor, summarizeMediaReadiness } 
 import { libraryMembershipBatches } from '../src/panels/Assets/libraryMembership'
 import { libraryDetailItem } from '../src/panels/Library/model'
 import { nextLibraryItemIndex } from '../src/panels/Library/useLibraryKeyboardNavigation'
-import { layoutTrack, sourceTimelineOccurrences, trackRows } from '../src/panels/Timeline/layout'
+import { laidToEditorialMs, layoutTrack, linkedSiblings, planLinkedSplit, sourceTimelineOccurrences, trackRows, trackSeams, type LaidItem } from '../src/panels/Timeline/layout'
+import { adjacentGapSlot } from '../src/panels/Timeline/ClipContextMenuModel'
 import { trackOrderStatus, trackReorderTargetIndex } from '../src/panels/Timeline/trackControlsModel'
 import { planRippleTrimAtPlayhead, sourceTrimAtTimelinePosition } from '../src/panels/Timeline/rippleTrim'
 import { timelineEditFailureMessage } from '../src/panels/Timeline/editFeedback'
 import { userActionFailureDetail } from '../src/lib/userActionFeedback'
 import { COMMANDS } from '../src/palette/commands'
+import { EXPORT_OPTIONS } from '../src/topbar/model'
 import { preferredProjectLeftTab, shouldReturnToProjectsAfterResync } from '../src/app/model'
 import {
   availableProjectName,
@@ -472,6 +474,97 @@ eq(
   'W at a clip boundary targets the following clip',
 )
 eq(planRippleTrimAtPlayhead(rippleTrimItems, [], 11_000, 'end'), null, 'Ripple trim is a no-op in a timeline gap')
+
+// --- Timeline dual time-base (laid vs EDITORIAL) -----------------------------
+// Red-proofs for the dual-surface harness's live P1 catch: after a crossfade
+// shortens the LAID layout, dispatching laid coordinates targets boundaries the
+// engine (which keys cumulative-track verbs on EDITORIAL time — the plain
+// clip-duration sum) rejects as not_found. Exact live numbers reproduced:
+// 400ms crossfade at editorial 2000 → the next seam is editorial 3642, but the
+// pre-fix UI dispatched laid 3242.
+const xfadeTrackItems = layoutTrack({
+  id: 'v1', kind: 'video', clips: [
+    { id: 'c1', asset: 'a1', src_in_ms: 0, src_out_ms: 2000 },
+    { id: 'c2', asset: 'a1', src_in_ms: 2000, src_out_ms: 3642, xfade_in_ms: 400, xfade_kind: 'dissolve' },
+    { id: 'c3', asset: 'a2', src_in_ms: 0, src_out_ms: 2400 },
+  ],
+} as never)
+eq(xfadeTrackItems.map((i) => i.startMs), [0, 1600, 3242], 'Laid starts rewind by the crossfade overlap (draw/pointer space)')
+eq(xfadeTrackItems.map((i) => i.editorialStartMs), [0, 2000, 3642], 'Editorial starts are crossfade-independent (the engine cursor space)')
+const xfadeSeams = trackSeams(xfadeTrackItems)
+eq(xfadeSeams.map((s) => s.atMs), [2000, 3642], 'Seam.atMs carries the EDITORIAL boundary (pre-fix bug: dispatched laid 3242 where the engine cut is 3642)')
+eq(xfadeSeams.map((s) => s.laidMs), [2000, 3242], 'Seam.laidMs stays the drawn boundary in render space')
+eq(laidToEditorialMs(xfadeTrackItems, 3100), 3500, 'laid→editorial maps a within-clip position through the upstream overlap')
+eq(laidToEditorialMs(xfadeTrackItems, 1800), 1800, 'laid→editorial resolves an overlap-covered position into the LEFT clip tail (identity before any upstream crossfade)')
+eq(laidToEditorialMs(xfadeTrackItems, 5700), 6100, 'laid→editorial extends past the last clip by the overshoot')
+eq(laidToEditorialMs([], 1234), 1234, 'laid→editorial is identity on an empty track')
+
+// --- Linked A/V split planning (demo-v2 P2) ---------------------------------
+// Razor/split and ripple-delete through the UI must land on the insert-created
+// linked audio half too — a video-only cut leaves the audio uncut, drifting
+// out of alignment with a stale total duration.
+const linkedPairItems = [
+  { id: 'v-1', kind: 'video', trackId: 'v1', startMs: 0, editorialStartMs: 0, durMs: 6042, label: 'clip', asset: 'clip', srcInMs: 0, srcOutMs: 6042 },
+  { id: 'a-1', kind: 'audio', trackId: 'a1t', startMs: 0, editorialStartMs: 0, durMs: 6042, label: 'clip', asset: 'clip', srcInMs: 0, srcOutMs: 6042 },
+  { id: 'v-o', kind: 'video', trackId: 'v2', startMs: 0, editorialStartMs: 0, durMs: 6042, label: 'other', asset: 'other', srcInMs: 0, srcOutMs: 6042 },
+] as LaidItem[]
+eq(linkedSiblings(linkedPairItems[0], linkedPairItems).map((i) => i.id), ['a-1'], 'linkedSiblings resolves the exact insert-placed audio counterpart (engine resolve_linked_media criteria)')
+eq(linkedSiblings(linkedPairItems[2], linkedPairItems), [], 'linkedSiblings never matches a different asset')
+eq(
+  linkedSiblings({ ...linkedPairItems[0], srcInMs: 100 } as LaidItem, linkedPairItems),
+  [],
+  'linkedSiblings requires the same source window — a re-trimmed half is no longer an exact counterpart',
+)
+eq(
+  planLinkedSplit(linkedPairItems[0], linkedPairItems, 2000, () => false),
+  { kind: 'ok', targets: [{ track: 'v1', atMs: 2000, clipId: 'v-1' }, { track: 'a1t', atMs: 2000, clipId: 'a-1' }] },
+  'A UI split cuts the video clip AND its linked audio half (the demo-v2 P2 razor fix)',
+)
+eq(
+  planLinkedSplit(linkedPairItems[0], linkedPairItems, 2000, (trackId) => trackId === 'a1t'),
+  { kind: 'locked', trackId: 'a1t' },
+  'Split refuses (not half-splits) when the linked half sits on a locked track',
+)
+eq(
+  planLinkedSplit(
+    linkedPairItems[0],
+    [...linkedPairItems, { ...linkedPairItems[1], id: 'a-dup', trackId: 'a2t' } as LaidItem],
+    2000,
+    () => false,
+  ),
+  { kind: 'ambiguous', candidates: 2 },
+  'Split refuses on multiple exact counterparts rather than guessing (engine ambiguity policy)',
+)
+// Per-track editorial conversion: the pair shares one LAID span, but each
+// track carries its own editorial cursor (here v1 has a 400ms crossfade
+// upstream, a1t does not) — the same cut lands at different editorial at_ms.
+const divergedClockPair = [
+  { id: 'v-lead', kind: 'video', trackId: 'v1', startMs: 0, editorialStartMs: 0, durMs: 2000, label: 'lead', asset: 'lead', srcInMs: 0, srcOutMs: 2000 },
+  { id: 'v-2', kind: 'video', trackId: 'v1', startMs: 1600, editorialStartMs: 2000, durMs: 1642, label: 'clip', asset: 'clip', srcInMs: 2000, srcOutMs: 3642 },
+  { id: 'a-lead', kind: 'audio', trackId: 'a1t', startMs: 0, editorialStartMs: 0, durMs: 1600, label: 'leadA', asset: 'leadA', srcInMs: 0, srcOutMs: 1600 },
+  { id: 'a-2', kind: 'audio', trackId: 'a1t', startMs: 1600, editorialStartMs: 1600, durMs: 1642, label: 'clip', asset: 'clip', srcInMs: 2000, srcOutMs: 3642 },
+] as LaidItem[]
+eq(
+  planLinkedSplit(divergedClockPair[1], divergedClockPair, 2400, () => false),
+  { kind: 'ok', targets: [{ track: 'v1', atMs: 2800, clipId: 'v-2' }, { track: 'a1t', atMs: 2400, clipId: 'a-2' }] },
+  'Linked split converts the shared laid cut through EACH track’s own editorial cursor',
+)
+
+// adjacentGapSlot must hand edit.fit_to_fill the gap's EDITORIAL slot — the
+// laid position understates it after an upstream crossfade (pre-fix: 2600).
+const gapAfterXfadeItems = layoutTrack({
+  id: 'v1', kind: 'video', clips: [
+    { id: 'c1', asset: 'a1', src_in_ms: 0, src_out_ms: 2000 },
+    { id: 'c2', asset: 'a1', src_in_ms: 2000, src_out_ms: 3000, xfade_in_ms: 400, xfade_kind: 'dissolve' },
+    { kind: 'gap', duration_ms: 1000 },
+    { id: 'c3', asset: 'a2', src_in_ms: 0, src_out_ms: 500 },
+  ],
+} as never)
+eq(
+  adjacentGapSlot(gapAfterXfadeItems[1], gapAfterXfadeItems),
+  { track: 'v1', at_ms: 3000, duration_ms: 1000 },
+  'adjacentGapSlot reports the gap in EDITORIAL time (fit_to_fill cursor space)',
+)
 const reverseFastItem = {
   id: 'rev', kind: 'video', trackId: 'v1', startMs: 1000, durMs: 2000,
   label: 'a3', asset: 'a3', srcInMs: 0, srcOutMs: 4000, speed: 2, reverse: true,
@@ -599,6 +692,54 @@ eq(
   exportUrl('\\\\?\\C:\\Users\\Example\\Documents\\ShellX Cut Projects\\screen.cutproj\\exports\\audio.mp3'),
   '/api/export/audio.mp3',
   'windows extended-length (\\\\?\\) representative user path',
+)
+
+// --- exportUrl: exports written OUTSIDE the project (0.6.105/0.6.106 P1) -----
+// Once the user picks a default export folder, every default-named export lands
+// outside the project. Folding those into the project-relative shape produced
+// either a URL the engine cannot resolve (404 → dead in-app playback) or, when
+// the chosen folder's own path contained an `exports/` segment, a BARE NAME
+// that resolved to a stale same-named file inside the project — the app then
+// played the WRONG export silently. The chosen folder decides the shape.
+eq(
+  exportUrl('/home/u/Deliveries/render_007.mp4', '/home/u/Deliveries'),
+  '/api/export-file?path=%2Fhome%2Fu%2FDeliveries%2Frender_007.mp4',
+  'an export in the chosen output folder gets the exact-file URL',
+)
+eq(
+  exportUrl('/home/u/Videos/exports/render_007.mp4', '/home/u/Videos/exports'),
+  '/api/export-file?path=%2Fhome%2Fu%2FVideos%2Fexports%2Frender_007.mp4',
+  'a chosen folder that itself contains exports/ no longer collapses to a bare name',
+)
+eq(
+  exportUrl('/home/u/p.cutproj/exports/audio.mp3', '/home/u/Deliveries'),
+  '/api/export/audio.mp3',
+  'an export inside the project keeps the portable project-relative URL',
+)
+eq(
+  exportUrl('/home/u/Deliveries-evil/render.mp4', '/home/u/Deliveries'),
+  '/api/export-file?path=%2Fhome%2Fu%2FDeliveries-evil%2Frender.mp4',
+  'the output-folder test compares whole segments, not a string prefix',
+)
+eq(
+  exportUrl('/home/u/SaveAs/one-off.mp4', null),
+  '/api/export-file?path=%2Fhome%2Fu%2FSaveAs%2Fone-off.mp4',
+  'an absolute path outside any exports/ segment names the exact file (the engine fences it)',
+)
+eq(
+  exportUrl('audio.mp3', null),
+  '/api/export/audio.mp3',
+  'a bare relative path stays project-relative',
+)
+eq(
+  exportUrl('C:\\Users\\Example\\Deliveries\\render_007.mp4', 'c:\\users\\example\\deliveries'),
+  '/api/export-file?path=C%3A%5CUsers%5CExample%5CDeliveries%5Crender_007.mp4',
+  'windows: case-insensitive folder match, and the RAW native path is what gets sent',
+)
+eq(
+  exportUrl('\\\\?\\C:\\Users\\Example\\Deliveries\\render.mp4', 'C:\\Users\\Example\\Deliveries'),
+  '/api/export-file?path=%5C%5C%3F%5CC%3A%5CUsers%5CExample%5CDeliveries%5Crender.mp4',
+  'windows: the \\\\?\\ prefix survives into the query (the engine resolves it natively)',
 )
 
 eq(
@@ -1431,6 +1572,14 @@ eq(
   eq(clips.includes('platforms.has(p) && platforms.size === 1'), true, 'Clips refuses the last format deselect before state becomes empty')
   eq(clips.includes("setErr('Choose at least one platform.')"), true, 'Clips surfaces a visible message when no bundle format would remain')
   eq(clips.includes('exportUrl,') && clips.includes('function exportUrl(') === false, true, 'Clips uses the cross-platform shared export URL mapper')
+  // Export URL construction contract (0.6.105/0.6.106 P1). One mapper decides
+  // the shape, and it needs the chosen export folder to do it — a second private
+  // copy in a panel is how Receipts ended up dropping the download link for
+  // every render delivered outside the project.
+  eq(urls.includes("export const EXPORT_OUTPUT_DIR_STORAGE_KEY = 'cut.outputDir'"), true, 'clientUrls owns the chosen-export-folder key it needs to pick a URL shape')
+  eq(urls.includes('/api/export-file?path='), true, 'clientUrls can name an export outside the project by exact path')
+  eq(receipts.includes('sharedExportUrl'), true, 'Receipts maps render outputs through the shared export URL mapper')
+  eq(receipts.includes("lastIndexOf('/exports/')"), false, 'Receipts no longer owns a private exports-only URL mapper')
   eq(clips.includes('data-cut-package-status=') && clips.includes('Package needs review') && clips.includes('Package blocked'), true, 'Clips labels publish-package readiness honestly')
   eq(clips.includes('data-cut-bundle-manifest') && clips.includes('data-cut-bundle-issues'), true, 'Clips exposes the hashed package manifest and structured issues')
   eq(statusbar.includes('fixActions.length > 0') && statusbar.includes('unmeasured'), true, 'Status bar separates measured failures from unmeasured receipt checks')
@@ -2312,6 +2461,59 @@ eq(
     fullCoverage.indexOf("rec(S, 'verify.pregate(preflight warning)'") + 260,
   )
   eq(pregateCrosscheck.includes("rowKind: 'support'"), true, 'Pregate verb cross-check cannot impersonate the separately actuated topbar action')
+}
+
+// --- Topbar: platform publishes honor the footage QC profile ------------------
+// The 2026-08-06 demo-shoot P3: export.publish had no way to choose the footage
+// profile, so silent screen-demo publishes always ran the talking_head battery
+// and failed caption_presence/lufs on the receipt. The Export menu now shares
+// the Render menu's Footage choice and forwards it into export.publish.
+{
+  const here = dirname(fileURLToPath(import.meta.url))
+  const topbar = readFileSync(resolve(here, '../src/topbar/index.tsx'), 'utf8')
+
+  // BEHAVIORAL: drive the REAL publish run functions through a captured fetch —
+  // the verb name and the exact JSON body are the wire contract under test.
+  const realFetch = globalThis.fetch
+  const publishCalls: Array<{ url: string; body: Record<string, unknown> }> = []
+  globalThis.fetch = (async (url: unknown, init?: { body?: string }) => {
+    publishCalls.push({ url: String(url), body: JSON.parse(init?.body ?? '{}') as Record<string, unknown> })
+    return { json: async () => ({ ok: true, result: {} }) }
+  }) as typeof fetch
+  try {
+    const publish = EXPORT_OPTIONS.filter((option) => option.group === 'publish')
+    eq(publish.map((option) => option.id), ['pub_youtube', 'pub_tiktok', 'pub_reels', 'pub_x'], 'Publish group carries the four platform entries')
+    const tiktok = publish.find((option) => option.id === 'pub_tiktok')
+    // Selected silent_screen_demo → export.publish is called WITH the profile.
+    await tiktok?.run(undefined, 'silent_screen_demo')
+    eq(publishCalls[0]?.url.endsWith('/api/verb/export.publish'), true, 'Publish run posts the export.publish verb')
+    eq(publishCalls[0]?.body, { platform: 'tiktok', profile: 'silent_screen_demo' }, 'Chosen footage profile is forwarded to export.publish')
+    // 'auto' maps to undefined at the call site → NO profile key on the wire
+    // (the engine default + auto-detect proposal, today's behavior).
+    await tiktok?.run(undefined)
+    eq(publishCalls[1]?.body, { platform: 'tiktok' }, 'Auto profile omits the profile key entirely')
+    eq('profile' in (publishCalls[1]?.body ?? {}), false, 'Auto profile never sends profile: undefined/null')
+    // Save As path still composes with the profile (path + profile together).
+    await tiktok?.run('/tmp/t.mp4', 'silent_screen_demo')
+    eq(publishCalls[2]?.body, { platform: 'tiktok', profile: 'silent_screen_demo', path: '/tmp/t.mp4' }, 'Profile and explicit path compose on one publish call')
+    // The plain Video entry hits render.final directly — same shared choice
+    // (the select sits in the same menu; a render-backed entry ignoring it
+    // would be a silently-dead control).
+    const video = EXPORT_OPTIONS.find((option) => option.id === 'video')
+    await video?.run(undefined, 'silent_screen_demo')
+    eq(publishCalls[3]?.url.endsWith('/api/verb/render.final'), true, 'Video export posts render.final')
+    eq(publishCalls[3]?.body, { preset: 'standard', profile: 'silent_screen_demo' }, 'Video export forwards the chosen footage profile to render.final')
+    await video?.run(undefined)
+    eq(publishCalls[4]?.body, { preset: 'standard' }, 'Video export with auto profile omits the profile key')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  // WIRING: the Export menu renders the shared Footage select and the call site
+  // maps 'auto' → undefined for the publish group only.
+  eq(topbar.includes('data-cut-export-profile'), true, 'Export menu owns a stable Footage-profile selector')
+  eq(topbar.includes("opt.run(explicitPath, profile === 'auto' ? undefined : profile)"), true, 'Publish exports forward the shared footage profile (auto = omit)')
+  eq((topbar.match(/onChange=\{\(e\) => setProfile\(selectedOption\(PROFILES, e\.target\.value, profile\)\)\}/g) || []).length >= 2, true, 'Render and Export menus drive ONE shared profile state')
 }
 
 // --- Environment cards: visible labels are user-outcome first ----------------
@@ -3814,7 +4016,9 @@ eq(
   eq(timelineToolbar.includes('data-cut-action="ripple-trim-end"'), true, 'Timeline toolbar exposes ripple trim end')
   eq(timelineClipActions.includes("callVerb('edit.add_track'"), true, 'Timeline action hook dispatches the public add-track verb')
   eq(timelineClipActions.includes("callVerb('edit.trim'"), true, 'Timeline action hook dispatches linked playhead trims')
-  eq(timelineClipActions.includes('cleanupEmptyTracks(new Set(sel.map((item) => item.trackId)))'), true, 'Delete cleanup only considers tracks touched by that delete')
+  // Delete cleanup scopes to the tracks the delete actually touched — the
+  // `ranges` map holds exactly the selection plus its linked A/V halves.
+  eq(timelineClipActions.includes('cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track)))'), true, 'Delete cleanup only considers tracks touched by that delete')
   eq(timelineClipActions.includes('if (!candidates.has(t.id)) continue'), true, 'Unrelated empty user-created tracks survive delete cleanup')
   eq(existsSync(timelineRippleTrimPath), true, 'Playhead-side ripple trim has a pure planning module')
   eq(timelineRippleTrim.includes('planRippleTrimAtPlayhead'), true, 'Ripple trim planner owns active-clip selection and boundary rules')
@@ -4096,7 +4300,11 @@ eq(
   eq(timelineSeamHandles.includes('data-cut-seam-xfade'), true, 'Timeline seam handles component owns crossfade metadata')
   eq(timelineSeamHandles.includes('tl-seam--xfade'), true, 'Timeline seam handles component owns crossfade class markup')
   eq(timelineSeamHandles.includes('shortDur(seam.xfadeMs)'), true, 'Timeline seam handles component keeps compact duration labels')
-  eq(timelineSeamHandles.includes('msToPx(seam.atMs, zoom)'), true, 'Timeline seam handles component keeps seam time-to-pixel mapping')
+  // Handles draw at the LAID boundary; seam.atMs is the EDITORIAL dispatch
+  // coordinate and diverges from the drawn position after an upstream
+  // crossfade — positioning by it was the harness-caught P1's sibling trap.
+  eq(timelineSeamHandles.includes('msToPx(seam.laidMs, zoom)'), true, 'Timeline seam handles draw at the laid boundary')
+  eq(timelineSeamHandles.includes('msToPx(seam.atMs, zoom)'), false, 'Timeline seam handles never position by the editorial dispatch coordinate')
   eq(existsSync(timelineTrackRowPath), true, 'Timeline track rows have their own component module')
   eq(timeline.includes("from './TimelineTrackRow'"), true, 'Timeline imports the track row component module')
   eq(timeline.includes('data-cut-track={track.id}'), false, 'Timeline panel no longer owns track row selector markup inline')
@@ -5299,11 +5507,13 @@ print(json.dumps(words, ensure_ascii=False))
   const statusbar = readFileSync(resolve(srcRoot, 'statusbar/index.tsx'), 'utf8')
   const statusbarCss = readFileSync(resolve(srcRoot, 'statusbar/statusbar.css'), 'utf8')
   const record = readFileSync(resolve(srcRoot, 'panels/Record/index.tsx'), 'utf8')
+  const recordActionCoverage = readFileSync(resolve(root, 'ui/public-tests/lib/fullCoverageRecordActions.mjs'), 'utf8')
   const tauri = readFileSync(resolve(srcRoot, 'lib/tauri.ts'), 'utf8')
   const client = readFileSync(resolve(srcRoot, 'lib/client.ts'), 'utf8')
   const dispatch = readFileSync(resolve(root, 'app/server/src/dispatch.rs'), 'utf8')
   const screenRecordHandlers = readFileSync(resolve(root, 'app/server/src/dispatch/screen_record_handlers.rs'), 'utf8')
   const renderingHandlers = readFileSync(resolve(root, 'app/server/src/dispatch/rendering.rs'), 'utf8')
+  const reviewHandoff = readFileSync(resolve(root, 'app/server/src/dispatch/review_handoff.rs'), 'utf8')
   const serverState = readFileSync(resolve(root, 'app/server/src/state.rs'), 'utf8')
   const outputPathsPath = resolve(root, 'app/server/src/output_paths.rs')
   const outputPaths = existsSync(outputPathsPath) ? readFileSync(outputPathsPath, 'utf8') : ''
@@ -5397,6 +5607,18 @@ print(json.dumps(words, ensure_ascii=False))
   eq(record.includes('raw_path: rawOutputPath'), true, 'Raw recording stop passes the user-selected output path')
   eq(record.includes('path: outputPath'), true, 'Polished recording export passes a one-off output path')
   eq(record.includes('withAuthorizedOutputPath'), true, 'Record exports authorize a selected Save As parent and restore the stored default')
+  // 0.6.106 finding: exportClip ran as `void exportClip()`, so a rejection from
+  // withAuthorizedOutputPath (engine refuses the chosen Save As folder) surfaced
+  // NOWHERE and the note stayed "Rendering…" with no verb ever issued. Both
+  // authorizing callers in this panel must therefore catch and report; the
+  // behavioural proof is the record-export-authorization-refused row in
+  // lib/fullCoverageRecordActions.mjs (RED before this landed).
+  eq(/catch \(error\) \{[\s\S]*?setExportNote\(/.test(record), true, 'Record export reports a failed authorization instead of leaving "Rendering…" on screen')
+  eq(record.includes("if (!lastCapture) { setExportNote("), true, 'Record export with no retained capture says so instead of silently returning')
+  eq(record.includes('function failureReason('), true, 'Record panel derives one human reason for a rejected verb/authorization promise')
+  eq(record.includes('OUTPUT_PATH_HINT'), true, 'Record failure notes tell the user how to get out of a refused output folder')
+  eq(record.includes("setErr('server unreachable during finalize')"), false, 'Record finalize no longer reports a refused output folder as an unreachable server')
+  eq(recordActionCoverage.includes('record-export-authorization-refused'), true, 'Deterministic Record coverage drives a refused export authorization end to end')
 
   eq(client.includes("'screen_record.stop': { capture_id: string; autoedit?: boolean; mux_raw?: boolean; raw_path?: string"), true, 'Typed client exposes screen_record.stop raw_path')
   eq(client.includes("'export.frame': { at_ms: number; to_asset?: boolean; path?: string"), true, 'Typed client exposes export.frame path')
@@ -5422,6 +5644,27 @@ print(json.dumps(words, ensure_ascii=False))
   eq(renderingHandlers.includes('let path = fence_output_path(') && renderingHandlers.includes('&format!("exports/frame_{}.jpg", a.at_ms)'), true, 'export.frame uses the shared output fence/default folder')
   eq(renderingHandlers.includes('let tmp_out = temp_output_path_for_render(&out)'), true, 'export.range renders through a sibling temp output path')
   eq(renderingHandlers.includes('publish_output_atomic(&t, &o)'), true, 'export.range publishes the temp output only after render success')
+  // 0.6.106 findings 2 + 3 — both are "the engine delivered the file to the
+  // user's chosen export folder, then a second code path could not find it".
+  // Pin the two call sites so a regression to the wrong helper is caught by the
+  // cheap suite; the behavioural proofs are the output_paths unit tests and the
+  // live-verb red/green runs recorded in the commits.
+  eq(
+    renderingHandlers.includes('let out_path = match fence_project_output_path(&dir, None, &rel)'),
+    true,
+    'render.bundle keeps every publish-package member in the project tree its manifest lives in',
+  )
+  eq(
+    reviewHandoff.includes('let source = fenced_existing_export_read(')
+      && reviewHandoff.includes('"review render"'),
+    true,
+    'comment.export reads the review render from every authorized export root, not <project>/exports alone',
+  )
+  eq(
+    outputPaths.includes('pub(crate) fn fenced_existing_export_read('),
+    true,
+    'output path module owns the authorized-export read fence',
+  )
   eq(serverState.includes('fn align_sidecar_ffmpeg_env()'), true, 'server owns early ffmpeg-dir alignment for perception sidecars')
   eq(serverState.includes('pub fn new() -> Self {\n        align_sidecar_ffmpeg_env();'), true, 'AppState aligns perception ffmpeg before first import/enrich job')
   eq(serverState.includes('std::env::set_var(cut_media::toolpath::ENV_FFMPEG_DIR, dir);'), true, 'perception sidecar inherits the resolved ffmpeg directory')
@@ -7033,6 +7276,136 @@ print(json.dumps(words, ensure_ascii=False))
   eq(runtimeActionRecorder.includes('if (normalized[0]) unexpected.add(normalized[0])'), true, 'Runtime recorder reports one stable diagnostic identity only when no expected identity matched')
   eq(fullCoverageReceipt.includes('expectedRuntimeSourceActionIds'), true, 'Strict receipt owns the expected runtime action manifest')
   eq(fullCoverageReceipt.includes('observed,'), true, 'Runtime receipt preserves exact observed action identities for gap diagnosis')
+}
+
+// ── ui.screenshot capture-failure diagnostics (2026-08-06 macOS hardening) ──
+// html-to-image rejects with the raw resource-load EVENT; String(event) is
+// "[object Event]" — the exact opaque error the macOS bug-probe hit. The
+// helpers must name the stage + the failing element instead.
+{
+  const { CaptureError, captureFailureDetail, describeCaptureError } = await import('../src/lib/capture')
+
+  // A DOM-less stand-in for the html-to-image rejection: a real Event whose
+  // target is a stubbed <img> (node's Event allows an own-property override).
+  const fakeImgError = new Event('error')
+  Object.defineProperty(fakeImgError, 'target', {
+    value: { tagName: 'IMG', currentSrc: 'http://127.0.0.1:6161/api/frame?at_ms=0' },
+  })
+  const detail = captureFailureDetail(fakeImgError)
+  eq(detail.includes('[object Event]'), false, 'capture failure detail never collapses to [object Event]')
+  eq(detail.includes('error event'), true, 'capture failure detail names the event type')
+  eq(detail.includes('<img>'), true, 'capture failure detail names the failing element')
+  eq(detail.includes('/api/frame'), true, 'capture failure detail names the failing resource URL')
+
+  const staged = describeCaptureError(new CaptureError('dom-rasterize', detail))
+  eq(staged.stage, 'dom-rasterize', 'CaptureError carries its pipeline stage')
+  eq(staged.message.includes('dom-rasterize'), true, 'staged message names the stage')
+  eq(describeCaptureError('plain failure').stage, 'unknown', 'non-CaptureError failures report stage unknown honestly')
+  eq(describeCaptureError(new Error('boom')).message, 'boom', 'Error rejections keep their message')
+
+  // Source contract: the WS answerer performs exactly one bounded retry and
+  // sends the structured error frame the server parses (ui_system.rs).
+  const srcRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../src')
+  const eventsSrc = readFileSync(resolve(srcRoot, 'lib/events.ts'), 'utf8')
+  eq(eventsSrc.includes('await capture.captureApp()'), true, 'screenshot answerer captures via the real module')
+  eq((eventsSrc.match(/await capture\.captureApp\(\)/g) || []).length, 2, 'exactly TWO capture attempts — one bounded retry, never a loop')
+  eq(eventsSrc.includes("code: 'capture_failed'"), true, 'final failure sends the structured capture_failed frame')
+  eq(eventsSrc.includes('stage: described.stage'), true, 'error frame carries the failing pipeline stage')
+  eq(eventsSrc.includes('attempts: 2'), true, 'error frame reports the attempt count')
+  const captureSrc = readFileSync(resolve(srcRoot, 'lib/capture.ts'), 'utf8')
+  eq(captureSrc.includes("throw new CaptureError('dom-rasterize'"), true, 'html-to-image failures are staged as dom-rasterize')
+  eq(captureSrc.includes("throw new CaptureError('png-encode'"), true, 'toDataURL failures are staged as png-encode')
+}
+
+// --- Shell update-state model (topbar button + Settings > About) ------------
+// Red-proofs the UI half of the update state machine: available → the one
+// quiet button shows; none/idle/error/unsupported → hidden with an honest
+// status line; malformed bridge payloads are rejected. The shell half lives in
+// app/desktop/src-tauri/src/update_state.rs unit tests.
+{
+  const {
+    describeUpdateStatus,
+    formatCheckedAgo,
+    releaseNotesUrl,
+    shouldShowUpdateButton,
+    updateButtonLabel,
+    validShellUpdateState,
+  } = await import('../src/lib/updateState')
+  const snap = (over: Record<string, unknown> = {}) => ({
+    schema: 'shellx-cut/update-state/1' as const,
+    status: 'none' as const,
+    version: null,
+    current: '0.6.105',
+    checked_at: 1_000,
+    error: null,
+    checking: false,
+    installing: false,
+    supported: true,
+    ...over,
+  })
+
+  eq(validShellUpdateState(snap()), true, 'update-state: a well-formed shell snapshot validates')
+  eq(validShellUpdateState(null), false, 'update-state: null payload is rejected')
+  eq(validShellUpdateState({ ...snap(), schema: 'shellx-cut/update-state/2' }), false, 'update-state: a future schema is rejected, not misread')
+  eq(validShellUpdateState({ ...snap(), status: 'sideways' }), false, 'update-state: an unknown status is rejected')
+  eq(validShellUpdateState({ ...snap(), checking: 'yes' }), false, 'update-state: non-boolean flags are rejected')
+
+  const available = snap({ status: 'available', version: '0.7.0' }) as never
+  eq(shouldShowUpdateButton(available), true, 'update-state: available → the topbar button shows')
+  eq(shouldShowUpdateButton(snap() as never), false, 'update-state: up-to-date → no topbar button')
+  eq(shouldShowUpdateButton(snap({ status: 'idle' }) as never), false, 'update-state: idle → no topbar button')
+  eq(shouldShowUpdateButton(snap({ status: 'error', error: 'offline' }) as never), false, 'update-state: check error alone → no topbar button')
+  eq(shouldShowUpdateButton(snap({ status: 'unsupported', supported: false }) as never), false, 'update-state: Linux deb/rpm → no topbar button')
+  eq(shouldShowUpdateButton(snap({ status: 'available', version: '' }) as never), false, 'update-state: available without a version string stays hidden')
+  eq(shouldShowUpdateButton(null), false, 'update-state: no snapshot (browser build) → no topbar button')
+
+  eq(updateButtonLabel(available), 'Update to v0.7.0', 'update-state: button label names the offered version')
+  eq(
+    updateButtonLabel(snap({ status: 'available', version: '0.7.0', installing: true }) as never),
+    'Installing update…',
+    'update-state: install in flight relabels the button',
+  )
+
+  eq(describeUpdateStatus(snap() as never).text, "You're on the latest version.", 'update-state: none reads as latest')
+  eq(describeUpdateStatus(available).text, 'ShellX Cut 0.7.0 is available.', 'update-state: available names the version')
+  eq(
+    describeUpdateStatus(snap({ status: 'error', error: 'update check failed: dns' }) as never),
+    { tone: 'error', text: 'Update check failed: update check failed: dns' },
+    'update-state: a failed check surfaces the exact failure text',
+  )
+  eq(
+    describeUpdateStatus(snap({ status: 'unsupported', supported: false }) as never).text,
+    'Linux builds update through deb/rpm package downloads — the in-app updater is not used.',
+    'update-state: Linux explains its packaging instead of a dead surface',
+  )
+  eq(describeUpdateStatus(snap({ checking: true }) as never).text, 'Checking for updates…', 'update-state: in-flight check reads as checking')
+  eq(describeUpdateStatus(snap({ status: 'idle', checked_at: null }) as never).tone, 'muted', 'update-state: idle stays muted')
+
+  eq(formatCheckedAgo(null, 100_000), null, 'update-state: no completed check → no fake timestamp')
+  eq(formatCheckedAgo(90_000, 100_000), 'Checked just now', 'update-state: <45s reads as just now')
+  eq(formatCheckedAgo(100_000, 160_000), 'Checked a minute ago', 'update-state: ~1min band')
+  eq(formatCheckedAgo(0.5 * 3_600_000, 1.0 * 3_600_000 + 0), 'Checked 30 minutes ago', 'update-state: minute band is exact')
+  eq(formatCheckedAgo(0, 3_600_000), null, 'update-state: epoch zero means never-checked, not 1970')
+  eq(formatCheckedAgo(1_000, 90 * 60_000 + 1_000), 'Checked an hour ago', 'update-state: ~1h band')
+  eq(formatCheckedAgo(1_000, 5 * 3_600_000 + 1_000), 'Checked 5 hours ago', 'update-state: hour band')
+  eq(formatCheckedAgo(1_000, 26 * 3_600_000 + 1_000), 'Checked 1 day ago', 'update-state: day band singular')
+  eq(formatCheckedAgo(1_000, 72 * 3_600_000 + 1_000), 'Checked 3 days ago', 'update-state: day band plural')
+
+  eq(
+    releaseNotesUrl(available),
+    'https://github.com/martinsbrezauckis/shellx-cut/releases/tag/v0.7.0',
+    'update-state: release notes link the exact offered release',
+  )
+  eq(
+    releaseNotesUrl(snap() as never),
+    'https://github.com/martinsbrezauckis/shellx-cut/releases/latest',
+    'update-state: without an offer the notes link the latest release',
+  )
+  eq(
+    releaseNotesUrl(null),
+    'https://github.com/martinsbrezauckis/shellx-cut/releases/latest',
+    'update-state: browser build links the latest release',
+  )
 }
 
 if (failures) {

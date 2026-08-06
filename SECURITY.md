@@ -38,8 +38,9 @@ ShellX Cut is a local-first desktop editor, but local does not mean isolated:
   and agent messages are untrusted inputs. Keep backups of irreplaceable
   source media and review imported projects and generated edits before export.
 - Optional providers, subscription CLI agents, stock-media searches, dubbing,
-  and update checks can make network requests. The normal edit and render path
-  stays local. See the Network activity section in the README.
+  and update checks (automatic at launch and every 6 hours unless turned off,
+  or manual from Settings > About) can make network requests. The normal edit
+  and render path stays local. See the Network activity section in the README.
 - Updater packages are signature-verified on supported release platforms.
   Source builds do not inherit the trust or update guarantees of published
   signed installers.

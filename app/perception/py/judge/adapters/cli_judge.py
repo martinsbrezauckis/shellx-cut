@@ -28,6 +28,32 @@ import judge  # noqa: E402
 ADAPTER_NAME = "cli"
 DEFAULT_PROVIDER = "claude"          # codex / gemini adapters slot in later
 DEFAULT_CLI_MODEL = "sonnet"         # cheap quota; judge work, not authoring
+
+
+def _failure_detail(cp, limit):
+    """Describe a non-zero CLI exit using whichever stream carried the reason.
+
+    Reporting `cp.stderr` alone loses the cause for this CLI: `claude` writes
+    its error ENVELOPE to stdout as JSON — e.g.
+    `{"is_error":true,...,"result":"Failed to authenticate: OAuth session
+    expired and could not be refreshed"}` — and leaves stderr EMPTY. The
+    receipt then recorded `probe CLI exit 1:` with nothing after the colon,
+    which is how an expired login can masquerade as an unexplained failure.
+
+    Prefer stderr when it has content, fall back to stdout, and say so
+    explicitly when both are empty rather than emitting a bare exit code.
+
+    :param cp: completed process from `subprocess.run`
+    :param limit: max characters to keep from the tail of the chosen stream
+    :returns: human-readable detail string, never empty
+    """
+    err = (cp.stderr or "").strip()
+    if err:
+        return err[-limit:]
+    out = (cp.stdout or "").strip()
+    if out:
+        return f"(stderr empty; stdout) {out[-limit:]}"
+    return "(no output on stderr or stdout)"
 DEFAULT_GLOBAL_FPS = 1.0             # docs/public/JUDGE_REVIEW.md §2.1
 DEFAULT_WINDOW_FPS = 5.0             # docs/public/JUDGE_REVIEW.md §2.2
 DEFAULT_MAX_FRAMES = 20              # CLI context cap (each frame = 1 Read img)
@@ -99,7 +125,7 @@ def generate_render_perception(render: str, render_hash: str,
     cp = subprocess.run(
         [python, script, render, "--out", out_path,
          "--asset-id", "render", "--hash", render_hash],
-        capture_output=True, text=True, timeout=SIDECAR_TIMEOUT_S)
+        capture_output=True, text=True, encoding="utf-8", timeout=SIDECAR_TIMEOUT_S)
     if cp.returncode != 0 or not os.path.exists(out_path):
         raise RuntimeError(
             f"perception sidecar failed (exit {cp.returncode}): "
@@ -445,7 +471,7 @@ def detect_providers() -> dict:
     if path:
         try:
             cp = subprocess.run(
-                [path, "--version"], capture_output=True, text=True, timeout=15
+                [path, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=15
             )
             entry["version"] = cp.stdout.strip() or cp.stderr.strip()
         except (subprocess.TimeoutExpired, OSError) as e:
@@ -479,12 +505,12 @@ def preflight_read_probe(claude_bin: str, model: str, bundle: str,
         "--no-session-persistence",
     ]
     try:
-        cp = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+        cp = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                             cwd=bundle, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return False, f"probe exceeded {timeout_s}s timeout"
     if cp.returncode != 0:
-        return False, f"probe CLI exit {cp.returncode}: {cp.stderr[-300:]}"
+        return False, f"probe CLI exit {cp.returncode}: {_failure_detail(cp, 300)}"
     try:
         env = json.loads(cp.stdout)
     except json.JSONDecodeError:
@@ -527,14 +553,14 @@ def invoke_claude(claude_bin: str, sys_p: str, user_p: str, model: str,
         "--no-session-persistence",
     ]
     try:
-        cp = subprocess.run(cmd, input=user_p, capture_output=True, text=True,
+        cp = subprocess.run(cmd, input=user_p, capture_output=True, text=True, encoding="utf-8",
                             cwd=cwd, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return None, {"available": True, "timed_out": True}, (
             f"claude CLI exceeded {timeout_s}s timeout")
     if cp.returncode != 0:
         return None, {"available": True, "exit_code": cp.returncode}, (
-            f"claude CLI exit {cp.returncode}: {cp.stderr[-800:]}")
+            f"claude CLI exit {cp.returncode}: {_failure_detail(cp, 800)}")
     try:
         env = json.loads(cp.stdout)
     except json.JSONDecodeError:
@@ -718,13 +744,32 @@ def main() -> int:
             if ok2:
                 bundle = retry_bundle  # review where Reads provably work
             else:
+                # Name a cause ONLY when the probe output supports it. This
+                # string used to assert "transient EACCES under parallel claude
+                # sessions" unconditionally, so a receipt confidently stated a
+                # cause it had never established — an expired OAuth session
+                # reads identically here, and the wrong cause sends the reader
+                # off chasing session contention. An honest "cause not
+                # established" is far more useful than a confident wrong one.
+                evidence = f"{why1}\n{why2}".lower()
+                if "eacces" in evidence or "permission denied" in evidence:
+                    cause = (
+                        "Known cause: transient EACCES under parallel claude "
+                        "sessions (config-lock contention) — retry when other "
+                        "sessions are idle.")
+                elif "auth" in evidence or "oauth" in evidence or "login" in evidence:
+                    cause = (
+                        "Cause: the claude CLI session is not usable — "
+                        "re-authenticate with `claude login`.")
+                else:
+                    cause = (
+                        "Cause not established from the probe output above; "
+                        "read it directly rather than assuming contention.")
                 skip_reason = (
                     "pre-flight Read probe failed twice (original + fresh "
                     "bundle dir) — full review NOT attempted, 20-frame "
                     f"prompt quota not burned. [1] {why1} [2] {why2}. "
-                    "Known cause: transient EACCES under parallel claude "
-                    "sessions (config-lock contention) — retry "
-                    "when other sessions are idle.")
+                    f"{cause}")
         preflight = {"attempts": attempts}
 
     prev_cwd = os.getcwd()

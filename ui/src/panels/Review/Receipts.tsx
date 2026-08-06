@@ -13,19 +13,21 @@
 // Callers: Review/index.tsx. Deps: ./shared, lib/client types.
 
 import { useState } from 'react'
+import { exportUrl as sharedExportUrl } from '../../lib/client'
 import type { CheckResult, JudgeEnvelope, JudgeIssue, RenderReceipt } from '../../lib/client'
 import { Icon } from '../../icons'
 import { fmtDur, fmtTc } from './shared'
 
-/** Map a render's absolute `exports/<id>.mp4` output path to its download URL on
- *  /api/export/* (the server fences the path to the CURRENT project's exports/
- *  subtree and content-types mp4). Returns null when the path isn't under
- *  exports/ (older receipts / custom render paths). Mirrors panels/Clips. */
+/** Map a render's output path to its download URL. Delegates to the shared
+ *  cross-platform mapper (lib/clientUrls), like panels/Clips.
+ *
+ *  It used to own a private copy that returned null unless the path sat under
+ *  an `/exports/` segment — so a render delivered to the user's chosen export
+ *  folder had NO download link at all, and the copy also missed Windows
+ *  backslash paths. The shared mapper emits the exact-file URL for those, which
+ *  the engine now serves (fenced to the authorized export roots). */
 function exportUrl(absPath: string | null | undefined): string | null {
-  if (!absPath) return null
-  const i = absPath.lastIndexOf('/exports/')
-  if (i < 0) return null
-  return `/api/export/${absPath.slice(i + '/exports/'.length)}`
+  return absPath ? sharedExportUrl(absPath) : null
 }
 
 export interface ReceiptsProps {

@@ -1,10 +1,18 @@
-import { Suspense, lazy, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { OpRecord, Project, RenderReceipt } from '../lib/client'
 import type { DoctorReport } from '../lib/doctor'
 import { isEditableTarget } from '../lib/dom'
 import { Icon } from '../icons'
 import Divider from '../layout/Divider'
+import {
+  armPanelAttempt,
+  confirmPanelPainted,
+  disarmPanelAttempt,
+  disarmPanelAttemptOnOrderlyUnload,
+  isPanelRenderBlocked,
+} from '../layout/panelPersistGuard'
 import type { LayoutState, RightTab } from '../layout/useLayout'
+import PanelErrorBoundary from '../components/PanelErrorBoundary'
 import Review from '../panels/Review'
 import type { ReviewTab, ReviewTabRequest } from '../panels/Review'
 
@@ -48,6 +56,38 @@ const rightTabs: ReadonlyArray<readonly [RightTab, string]> = [
   ['chat', 'Chat'],
 ]
 
+/** How long after the double-rAF paint proof we wait before declaring the tab
+ *  body safely painted. Covers a compositor that dies a frame or two AFTER the
+ *  first committed frame (the llvmpipe/WebKitGTK failure is at/around first
+ *  paint). Kept short so a normal app close rarely lands inside the window —
+ *  a false positive only costs one honest notice + one click next launch. */
+const PANEL_PAINT_SETTLE_MS = 350
+
+/** Rendered as a SIBLING of the active tab body inside the same Suspense, so
+ *  its effect runs in the same commit that mounts the (lazy) panel. Two
+ *  requestAnimationFrame hops prove a frame containing the panel actually
+ *  reached the screen; a settle delay then confirms the attempt. If the
+ *  WebKit web process dies while painting the panel (2026-08-06 Color-panel
+ *  blank under Xvfb/llvmpipe), these callbacks never run, the sentinel armed
+ *  by AppRightRail survives, and the next launch refuses to restore the tab. */
+function PanelPaintConfirm({ tab }: { tab: string }) {
+  useEffect(() => {
+    let raf2 = 0
+    let timer: number | undefined
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        timer = window.setTimeout(() => confirmPanelPainted(tab), PANEL_PAINT_SETTLE_MS)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(raf1)
+      if (raf2) cancelAnimationFrame(raf2)
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [tab])
+  return null
+}
+
 export default function AppRightRail({
   hidden = false,
   layout,
@@ -68,6 +108,40 @@ export default function AppRightRail({
   const railOpen = !layout.railCollapsed
   const railPinned = layout.railPinned
   const [reviewTabRequest, setReviewTabRequest] = useState<ReviewTabRequest | null>(null)
+
+  // ---- crash-safe tab mounting (2026-08-06 Color-panel fix) ----------------
+  // A right-tab body that previously took the WebView down (blocklisted by
+  // panelPersistGuard) is NOT mounted automatically: an honest notice with a
+  // "load anyway" action shows instead. `retryTabs` records the user's/agent's
+  // explicit choice to mount it anyway this session.
+  const activeTab = layout.rightTab
+  const activeTabLabel = rightTabs.find(([id]) => id === activeTab)?.[1] ?? activeTab
+  const bodyMounted = !hidden && railOpen && layout.workspaceMode === 'edit'
+  const [retryTabs, setRetryTabs] = useState<ReadonlySet<string>>(() => new Set())
+  const tabBlocked = useMemo(
+    () => bodyMounted && !retryTabs.has(activeTab) && isPanelRenderBlocked(activeTab),
+    [bodyMounted, retryTabs, activeTab],
+  )
+
+  // Two-phase commit around the mounted tab body: arm the sentinel BEFORE the
+  // browser can paint the panel (layout effect = post-commit, pre-paint), and
+  // disarm on clean switch-away/unmount. PanelPaintConfirm (inside the
+  // Suspense, below) clears it once a painted frame is proven. If the WebKit
+  // web process dies in between, no cleanup runs, the sentinel survives, and
+  // the NEXT launch boots into Properties instead of the killer panel.
+  useLayoutEffect(() => {
+    if (!bodyMounted || tabBlocked) return
+    armPanelAttempt(activeTab)
+    return () => disarmPanelAttempt(activeTab)
+  }, [bodyMounted, tabBlocked, activeTab])
+
+  // Orderly unloads (reload/navigation/quit) fire pagehide with JS alive —
+  // not the crash class the sentinel hunts. Without this, a reload inside the
+  // arm→confirm window would blocklist an innocent tab at the next boot
+  // (2026-08-06 Windows qualification false positive). Once per boot.
+  useEffect(() => {
+    disarmPanelAttemptOnOrderlyUnload()
+  }, [])
 
   useEffect(() => {
     const requestTab = (tab: ReviewTab, diff?: { from: string; to: string }) => {
@@ -195,34 +269,63 @@ export default function AppRightRail({
               </div>
             </div>
             <div className="app__rtab-body">
-              {layout.rightTab === 'properties' && (
-                <Suspense fallback={<SurfaceLoading />}>
-                  <Inspector
-                    project={project}
-                    selectedClipId={selectedClipId}
-                    playheadMs={playheadMs}
-                    doctor={doctor}
-                  />
-                </Suspense>
-              )}
-              {layout.rightTab === 'color' && (
-                <Suspense fallback={<SurfaceLoading />}>
-                  <GradeDrawer project={project} clipId={selectedClipId} />
-                </Suspense>
-              )}
-              {layout.rightTab === 'audio' && (
-                <Suspense fallback={<SurfaceLoading />}>
-                  <MixerDrawer
-                    project={project}
-                    playheadMs={playheadMs}
-                    headOpId={ops.length ? ops[ops.length - 1].op_id : ''}
-                  />
-                </Suspense>
-              )}
-              {layout.rightTab === 'chat' && (
-                <Suspense fallback={<SurfaceLoading />}>
-                  <AgentChat project={project} prefill={agentChatPrefill} />
-                </Suspense>
+              {tabBlocked ? (
+                /* This tab's last mount never confirmed a paint (or its render
+                   threw): under software rendering it can blank the whole
+                   WebView, so it stays OFF until explicitly requested. Same
+                   cd-* grammar as the drawers; both selectors are stable agent
+                   handles (Debuggability Rule). */
+                <section
+                  className="cd-embed"
+                  data-cut-panel-render-blocked={activeTab}
+                  aria-label={`${activeTabLabel} tools not loaded`}
+                >
+                  <div className="cd-body">
+                    <div className="cd-empty">
+                      The {activeTabLabel} tools didn&apos;t finish drawing last time, so they stayed off
+                      to keep the editor usable. This usually happens under software rendering
+                      (virtual machines and remote desktops). Your project and edits are safe.
+                    </div>
+                    <button
+                      type="button"
+                      className="cd-btn cd-btn--primary"
+                      data-cut-panel-render-retry={activeTab}
+                      onClick={() => setRetryTabs((prev) => new Set(prev).add(activeTab))}
+                    >
+                      Load {activeTabLabel} tools
+                    </button>
+                  </div>
+                </section>
+              ) : (
+                /* keyed by tab: a tab switch resets a tripped boundary. The
+                   PanelPaintConfirm sibling commits together with the lazy
+                   panel, so its paint proof covers the panel's actual mount. */
+                <PanelErrorBoundary key={activeTab} tab={activeTab} label={activeTabLabel}>
+                  <Suspense fallback={<SurfaceLoading />}>
+                    {activeTab === 'properties' && (
+                      <Inspector
+                        project={project}
+                        selectedClipId={selectedClipId}
+                        playheadMs={playheadMs}
+                        doctor={doctor}
+                      />
+                    )}
+                    {activeTab === 'color' && (
+                      <GradeDrawer project={project} clipId={selectedClipId} />
+                    )}
+                    {activeTab === 'audio' && (
+                      <MixerDrawer
+                        project={project}
+                        playheadMs={playheadMs}
+                        headOpId={ops.length ? ops[ops.length - 1].op_id : ''}
+                      />
+                    )}
+                    {activeTab === 'chat' && (
+                      <AgentChat project={project} prefill={agentChatPrefill} />
+                    )}
+                    <PanelPaintConfirm tab={activeTab} />
+                  </Suspense>
+                </PanelErrorBoundary>
               )}
             </div>
           </div>

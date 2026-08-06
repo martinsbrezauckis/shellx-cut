@@ -271,8 +271,11 @@ export default function ClipsDrawer({ onClose }: ClipsDrawerProps) {
   )
 }
 
-/** Map an absolute exports/ file path to its download URL on /api/export/*.
- *  The server fences the path to the project exports/ subtree. */
+/** Map a bundle file path to its download URL through the shared mapper.
+ *  Bundle packs are written into the project's exports/ subtree
+ *  (fence_project_output_path), so this stays the project-relative
+ *  /api/export/<rel> shape; a path outside the project would get the
+ *  exact-file shape instead. Either way the server fences the request. */
 function bundleFileUrl(path: string | null | undefined): string | null {
   return path ? exportUrl(path) : null
 }

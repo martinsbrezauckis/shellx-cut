@@ -20,10 +20,11 @@
 //! caller: render::format_codec_args (HW-aware selection) + the server doctor.
 
 use crate::ffmpeg::ffmpeg_bin;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Candidate HW encoders per codec, BEST-FIRST. The first that passes the test
@@ -72,6 +73,11 @@ impl HwCaps {
 static CAPS: OnceLock<HwCaps> = OnceLock::new();
 const HW_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Size probes synthesise real frames, and 8K costs more than 256x256, so the
+/// existence probe's budget is too tight to reuse. A timeout here reads as
+/// "cannot do this size" and falls back to software, which is the safe answer.
+const HW_SIZE_PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Detected HW encoders (probed once, then cached for the process lifetime).
 /// `SHELLX_CUT_NO_HWENC=1` forces the software tier (CI / reproducibility / a
 /// machine whose HW encoder is flaky).
@@ -114,6 +120,23 @@ fn encoder_works(encoder: &str) -> bool {
 /// doctor's multi-candidate scan to probe each discovered ffmpeg, not just the
 /// resolved one.
 fn encoder_works_at(ffmpeg: &OsStr, encoder: &str) -> bool {
+    encoder_works_at_size(ffmpeg, encoder, 256, 256)
+}
+
+/// Does `encoder` run AT THIS FRAME SIZE on the resolved ffmpeg?
+///
+/// Size matters and a fixed-size probe cannot answer it. Hardware encoders carry
+/// their own dimension ceilings: NVENC's H.264 engine refuses anything wider than
+/// 4096 px (`Width 7680 exceeds 4096` → `No capable devices found`) while the
+/// same GPU's HEVC engine encodes 8K happily. A 256x256 probe therefore proves
+/// only that the encoder EXISTS, and swapping it in for an 8K timeline fails the
+/// whole render at encoder-open time — after the job has been accepted, leaving a
+/// 0-byte file behind.
+///
+/// Probing at the real geometry avoids hard-coding a vendor/generation limit
+/// table that would be wrong somewhere: the machine answers for itself, and a
+/// future driver that lifts a ceiling is picked up with no code change.
+fn encoder_works_at_size(ffmpeg: &OsStr, encoder: &str, w: u32, h: u32) -> bool {
     command_status_with_timeout(
         ffmpeg,
         &[
@@ -123,15 +146,36 @@ fn encoder_works_at(ffmpeg: &OsStr, encoder: &str) -> bool {
             "-f",
             "lavfi",
             "-i",
-            "testsrc=duration=0.1:size=256x256:rate=30",
+            &format!("testsrc=duration=0.1:size={w}x{h}:rate=30"),
             "-c:v",
             encoder,
             "-f",
             "null",
             "-",
         ],
-        HW_PROBE_TIMEOUT,
+        HW_SIZE_PROBE_TIMEOUT,
     )
+}
+
+/// Memoised [`encoder_works_at_size`] for the resolved ffmpeg.
+///
+/// Generating a few 8K frames is not free, and a render can repeat, so each
+/// (encoder, width, height) answer is computed once per process. Keyed on the
+/// size too — the whole point is that one encoder can pass at 4K and fail at 8K.
+pub fn encoder_supports_size(encoder: &str, w: u32, h: u32) -> bool {
+    static SIZE_CACHE: OnceLock<Mutex<HashMap<(String, u32, u32), bool>>> = OnceLock::new();
+    let cache = SIZE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (encoder.to_string(), w, h);
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(&key) {
+            return *hit;
+        }
+    }
+    let ok = encoder_works_at_size(&ffmpeg_bin(), encoder, w, h);
+    if let Ok(mut map) = cache.lock() {
+        map.insert(key, ok);
+    }
+    ok
 }
 
 /// Hardware encoder ffmpeg args for `(codec, quality)` using the detected HW
@@ -140,8 +184,26 @@ fn encoder_works_at(ffmpeg: &OsStr, encoder: &str) -> bool {
 /// caller then uses the software tier). The rate-control knob differs per backend
 /// (NVENC/QSV/AMF use a lower-is-better quantizer; VideoToolbox uses a 0-100
 /// higher-is-better quality), so each backend maps the tier to its own scale.
-pub fn hw_codec_args(codec: &str, q: usize) -> Option<(Vec<String>, &'static str)> {
+pub fn hw_codec_args(
+    codec: &str,
+    q: usize,
+    width: u32,
+    height: u32,
+) -> Option<(Vec<String>, &'static str)> {
     let enc = hw_caps().for_codec(codec)?.to_string();
+    // The encoder EXISTS — but existing is not the same as being able to encode
+    // THIS frame size, and getting that wrong fails the render rather than
+    // degrading it. Decline the hardware tier when the size probe says no; the
+    // caller then keeps its software args, which have no such ceiling.
+    if width > 0 && height > 0 && !encoder_supports_size(&enc, width, height) {
+        tracing::info!(
+            encoder = %enc,
+            width,
+            height,
+            "hardware encoder cannot encode this frame size; using the software tier"
+        );
+        return None;
+    }
     let s = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     let qi = q.min(2);
     let hevc_tag = matches!(codec, "hevc" | "h265");
@@ -604,8 +666,10 @@ mod tests {
     /// carries the right rate-control flag for its backend.
     #[test]
     fn hw_args_shape() {
-        assert!(hw_codec_args("definitely_not_a_codec", 1).is_none());
-        if let Some((args, ext)) = hw_codec_args("hevc", 2) {
+        // 0x0 means "size unknown, skip the size gate" — this test is about arg
+        // SHAPE, and a real size probe here would make it depend on the host GPU.
+        assert!(hw_codec_args("definitely_not_a_codec", 1, 0, 0).is_none());
+        if let Some((args, ext)) = hw_codec_args("hevc", 2, 0, 0) {
             assert_eq!(ext, "mp4");
             let enc = args[1].clone();
             assert!(enc.contains("hevc"));

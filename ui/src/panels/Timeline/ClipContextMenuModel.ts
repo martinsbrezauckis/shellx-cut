@@ -18,13 +18,17 @@ export function assetBasename(a: Asset): string {
   return a.path.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean).pop() || a.path
 }
 
-/** The empty slot adjacent to a clip on its own track. */
+/** The empty slot adjacent to a clip on its own track. Adjacency and the
+ * returned at_ms are in EDITORIAL time — edit.fit_to_fill resolves its gap on
+ * the engine's cumulative-track cursor (app/core/src/edit.rs fit_to_fill), and
+ * laid positions rewind after an upstream crossfade. A gap's duration is the
+ * same in both bases (gaps carry no crossfade). */
 export function adjacentGapSlot(it: LaidItem, items: LaidItem[]): { track: string; at_ms: number; duration_ms: number } | null {
-  const endMs = it.startMs + it.durMs
-  const after = items.find((g) => g.kind === 'gap' && g.trackId === it.trackId && g.startMs === endMs)
-  if (after) return { track: it.trackId, at_ms: after.startMs, duration_ms: after.durMs }
-  const before = items.find((g) => g.kind === 'gap' && g.trackId === it.trackId && g.startMs + g.durMs === it.startMs)
-  if (before) return { track: it.trackId, at_ms: before.startMs, duration_ms: before.durMs }
+  const edEndMs = it.editorialStartMs + it.durMs
+  const after = items.find((g) => g.kind === 'gap' && g.trackId === it.trackId && g.editorialStartMs === edEndMs)
+  if (after) return { track: it.trackId, at_ms: after.editorialStartMs, duration_ms: after.durMs }
+  const before = items.find((g) => g.kind === 'gap' && g.trackId === it.trackId && g.editorialStartMs + g.durMs === it.editorialStartMs)
+  if (before) return { track: it.trackId, at_ms: before.editorialStartMs, duration_ms: before.durMs }
   return null
 }
 
