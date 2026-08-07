@@ -125,9 +125,15 @@ jobs:
       - name: Install macOS test deps
         if: matrix.platform == 'macos-latest'
         run: |
-          brew install ffmpeg espeak-ng
-          # The runner image ships its own ffmpeg, which can win PATH over the
-          # Homebrew build and does not carry every filter the render path needs.
+          # Homebrew's STANDARD ffmpeg formula omits vidstab (and other optional
+          # filters), so it cannot run the stabilise/subtitle/colour paths. The
+          # homebrew-ffmpeg tap's ffmpeg-full carries them, and it is what the
+          # maintainer's own macOS build host uses — verified there: ass,
+          # vidstabdetect and zscale all present in ffmpeg-full 8.1.2.
+          brew tap homebrew-ffmpeg/ffmpeg
+          brew install homebrew-ffmpeg/ffmpeg/ffmpeg-full espeak-ng
+          # The runner image also ships its own ffmpeg, so make sure Homebrew's
+          # wins PATH for the steps below.
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       - name: Install Windows test deps

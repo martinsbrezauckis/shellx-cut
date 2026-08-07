@@ -293,12 +293,34 @@ fn gen_still(dir: &Path, name: &str) -> PathBuf {
     out
 }
 
+/// Quote a filesystem path for use inside an ffmpeg **lavfi filter argument**
+/// (`movie=<path>`), which is NOT the same as passing it as a normal argv path.
+///
+/// Inside a filter graph `:` separates options and `\` escapes, so a Windows
+/// path like `C:\Users\x\out.mp4` is parsed as filename `C` followed by garbage
+/// options, and ffprobe emits nothing. The tests then failed with
+/// `YAVG parses: ParseFloatError { kind: Empty }` — an empty stdout, not a bad
+/// number.
+///
+/// The drive colon needs TWO backslashes, not one: the string is unescaped once
+/// by the filter-graph parser and again by the filter's own option parser, so a
+/// single `\:` is consumed by the first pass and the second still sees a bare
+/// separator. Measured on Windows against a real file rather than reasoned
+/// about — `C:\…` , `C:/…` and `C\:/…` all fail to open, while `C\\:/…` and
+/// `'C\:/…'` both return the expected value.
+fn lavfi_path(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "/")
+        .replace(':', "\\\\:")
+}
+
 /// Mean luma (YAVG) of the FIRST frame of a video file via signalstats —
 /// proves what actually rendered (red still ≈ 76, black gap ≈ 16).
 fn first_frame_yavg(path: &Path) -> f64 {
     let out = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-f", "lavfi"])
-        .arg(format!("movie={},signalstats", path.display()))
+        .arg(format!("movie={},signalstats", lavfi_path(path)))
         .args([
             "-show_entries",
             "frame_tags=lavfi.signalstats.YAVG",
@@ -499,7 +521,7 @@ fn render_loops_still_for_clip_duration() {
 fn all_frames_yavg(path: &Path) -> Vec<f64> {
     let out = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-f", "lavfi"])
-        .arg(format!("movie={},signalstats", path.display()))
+        .arg(format!("movie={},signalstats", lavfi_path(path)))
         .args([
             "-show_entries",
             "frame_tags=lavfi.signalstats.YAVG",
