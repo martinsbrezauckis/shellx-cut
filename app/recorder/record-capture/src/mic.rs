@@ -1134,13 +1134,28 @@ mod tests {
 
     #[test]
     fn microphone_join_does_not_wait_for_a_stuck_worker() {
+        // The property under test is "join gives up instead of waiting for the
+        // worker", so what matters is the SEPARATION between the join timeout
+        // and the worker's lifetime — not a tight wall-clock number.
+        //
+        // This previously slept 150 ms, timed out at 20 ms and asserted under
+        // 120 ms, leaving only 30 ms between "gave up early" and "waited for the
+        // worker". That is inside normal scheduler noise on shared CI hardware,
+        // and it failed on a GitHub macOS runner while passing everywhere else.
+        // Widening the gap keeps the proof strict — returning in under 1 s still
+        // demonstrates it did not wait for a 3 s worker — while no longer
+        // measuring the runner's load.
         let handle = thread::spawn(|| -> Result<String> {
-            thread::sleep(Duration::from_millis(150));
+            thread::sleep(Duration::from_secs(3));
             Ok("late.wav".into())
         });
         let started = std::time::Instant::now();
         assert!(join_bounded(handle, Duration::from_millis(20)).is_none());
-        assert!(started.elapsed() < Duration::from_millis(120));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "join_bounded returned after {:?}; it must abandon the 3 s worker, not wait for it",
+            started.elapsed()
+        );
     }
 
     #[test]
