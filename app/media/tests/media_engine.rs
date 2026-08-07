@@ -4435,6 +4435,17 @@ fn render_stabilize_reduces_shake() {
         "ultrafast",
         "-pix_fmt",
         "yuv420p",
+        // Pin the encoder to ONE thread so this fixture is byte-identical on
+        // every machine. x264 derives its thread count from the host's core
+        // count and produces DIFFERENT output per thread count — measured on a
+        // 10-core Mac: threads=1 -> ef2df1c2…, threads=2 -> ff0b8435…,
+        // threads=8 -> eac3c41f…. That made the stabiliser's input differ per
+        // machine, so the motion-reduction assertion below measured a different
+        // clip on a CI runner than on a workstation and failed there (6.4%
+        // against a >=35% bar) while passing 3/3 locally. The fixture was
+        // nondeterministic, not the assertion too tight.
+        "-threads",
+        "1",
     ]
     .iter()
     .map(|s| s.to_string())

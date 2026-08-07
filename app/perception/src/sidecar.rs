@@ -1079,6 +1079,12 @@ mod tests {
         }
     }
 
+    // Builds a UNIX venv layout (`.venv/bin/python`) to exercise the macOS
+    // stub-skipping logic. On Windows the resolver correctly looks for
+    // `.venv/Scripts/python.exe` instead, finds nothing, and returns None — so
+    // the fixture, not the logic, is what fails there. Gated to unix, where the
+    // layout it writes is the real one.
+    #[cfg(unix)]
     #[test]
     fn macos_sidecar_python_skips_apple_stub_venvs() {
         let tmp = tempfile::tempdir().unwrap();
