@@ -126,12 +126,13 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: |
           # Homebrew's STANDARD ffmpeg formula omits vidstab (and other optional
-          # filters), so it cannot run the stabilise/subtitle/colour paths. The
-          # homebrew-ffmpeg tap's ffmpeg-full carries them, and it is what the
-          # maintainer's own macOS build host uses — verified there: ass,
-          # vidstabdetect and zscale all present in ffmpeg-full 8.1.2.
-          brew tap homebrew-ffmpeg/ffmpeg
-          brew install homebrew-ffmpeg/ffmpeg/ffmpeg-full espeak-ng
+          # filters), so it cannot run the stabilise/subtitle/colour paths.
+          # ffmpeg-full carries them, lives in homebrew/core (no tap required)
+          # and ships a bottle, so this is a fast binary install rather than a
+          # source build. It is also exactly what the maintainer's macOS build
+          # host runs — verified there: ffmpeg-full 8.1.2 from homebrew/core,
+          # poured_from_bottle, with ass, vidstabdetect and zscale all present.
+          brew install ffmpeg-full espeak-ng
           # The runner image also ships its own ffmpeg, so make sure Homebrew's
           # wins PATH for the steps below.
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
