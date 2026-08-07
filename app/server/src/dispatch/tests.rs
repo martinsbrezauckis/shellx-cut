@@ -6988,6 +6988,15 @@ async fn autopilot_run_surfaces_comment_apply_failure_before_job() {
 /// strict about its args, so assets.generate must not pass private metadata
 /// like `source` into that sub-call; generated provenance belongs on the
 /// outer result.
+// Drives assets.generate through a fake `codex` CLI that is a POSIX SHELL
+// SCRIPT, so Windows cannot execute it ("%1 is not a valid Win32 application",
+// os error 193). The logic under test — job queueing, cancellation, slot
+// reservation — is platform-independent and is covered on Linux and macOS; only
+// the FIXTURE is unix-specific. Porting it faithfully needs a real cross-platform
+// stub binary, because one of these scripts does awk/grep text processing that a
+// .cmd cannot reproduce; a rough batch translation would test a DIFFERENT stub on
+// Windows, which is worse than not running it. Roadmapped.
+#[cfg(unix)]
 #[tokio::test]
 async fn assets_generate_imports_generated_file_without_extra_media_import_args() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -7281,6 +7290,15 @@ async fn assets_generate_imports_generated_file_without_extra_media_import_args(
     );
 }
 
+// Drives assets.generate through a fake `codex` CLI that is a POSIX SHELL
+// SCRIPT, so Windows cannot execute it ("%1 is not a valid Win32 application",
+// os error 193). The logic under test — job queueing, cancellation, slot
+// reservation — is platform-independent and is covered on Linux and macOS; only
+// the FIXTURE is unix-specific. Porting it faithfully needs a real cross-platform
+// stub binary, because one of these scripts does awk/grep text processing that a
+// .cmd cannot reproduce; a rough batch translation would test a DIFFERENT stub on
+// Windows, which is worse than not running it. Roadmapped.
+#[cfg(unix)]
 #[tokio::test]
 async fn assets_generate_reserves_replaces_and_retains_pending_timeline_slots() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -7539,6 +7557,15 @@ async fn assets_generate_reserves_replaces_and_retains_pending_timeline_slots() 
     }
 }
 
+// Drives assets.generate through a fake `codex` CLI that is a POSIX SHELL
+// SCRIPT, so Windows cannot execute it ("%1 is not a valid Win32 application",
+// os error 193). The logic under test — job queueing, cancellation, slot
+// reservation — is platform-independent and is covered on Linux and macOS; only
+// the FIXTURE is unix-specific. Porting it faithfully needs a real cross-platform
+// stub binary, because one of these scripts does awk/grep text processing that a
+// .cmd cannot reproduce; a rough batch translation would test a DIFFERENT stub on
+// Windows, which is worse than not running it. Roadmapped.
+#[cfg(unix)]
 #[tokio::test]
 async fn assets_generate_queues_and_cancels_provider_work() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -8444,9 +8471,13 @@ async fn verify_judge_fake_adapter_completed() {
         "intent names the render + at_op: {intent}"
     );
     // Bundle dir is PROJECT-local (claude sandbox denies /tmp).
+    // Compare with separators normalised: Windows hands back `.scratch\judge\…`
+    // (and a `\\?\C:\…` extended-length prefix from canonicalize), so a literal
+    // forward-slash `contains` asserted the separator rather than the location.
     let bundle = judge["stub_args"]["bundle_dir"].as_str().unwrap();
+    let bundle_slashes = bundle.replace('\\', "/");
     assert!(
-        bundle.contains(".cutproj") && bundle.contains(".scratch/judge/render_001"),
+        bundle_slashes.contains(".cutproj") && bundle_slashes.contains(".scratch/judge/render_001"),
         "bundle under <proj>/.scratch/judge/: {bundle}"
     );
     // With no backend arg, the wiring passes the ladder default
