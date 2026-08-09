@@ -217,15 +217,23 @@ fn wait_for_windows_pid(path: &std::path::Path) -> u32 {
 
 #[cfg(windows)]
 fn assert_windows_process_gone(pid: u32) {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     for _ in 0..100 {
         let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if process.is_null() {
             return;
         }
+        let mut exit_code = 0;
+        let exited = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0
+            && exit_code != STILL_ACTIVE as u32;
         unsafe { CloseHandle(process) };
+        if exited {
+            return;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("immediate grandchild {pid} escaped the render Job Object");

@@ -166,8 +166,10 @@ fn output_is_capped_while_the_process_is_drained() {
 #[cfg(windows)]
 #[test]
 fn suspended_job_claim_contains_an_immediate_descendant() {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     let temp = tempfile::tempdir().unwrap();
     let pid_file = temp.path().join("immediate-grandchild.pid");
@@ -196,7 +198,13 @@ fn suspended_job_claim_contains_an_immediate_descendant() {
         if process.is_null() {
             return;
         }
+        let mut exit_code = 0;
+        let exited = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0
+            && exit_code != STILL_ACTIVE as u32;
         unsafe { CloseHandle(process) };
+        if exited {
+            return;
+        }
         thread::sleep(Duration::from_millis(10));
     }
     panic!("immediate record-render descendant {pid} escaped its Job Object");
