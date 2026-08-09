@@ -171,6 +171,10 @@ jobs:
       # recorder, and native-window code cannot bypass ordinary CI. `externalBin`
       # is a generated release payload, so a fresh source checkout omits it;
       # the separate smoke-build workflow rebuilds and stages that exact payload.
+      - name: Prepare clean-source Tauri resources
+        shell: bash
+        run: mkdir -p ui/dist
+
       - name: Desktop shell cargo check
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
