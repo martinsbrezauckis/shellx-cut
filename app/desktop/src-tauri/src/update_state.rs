@@ -32,8 +32,8 @@
 //!   of dead buttons.
 //!
 //! SECURITY
-//!   The updater plugin verifies the minisign signature against the runtime
-//!   public key registered in `updater_key_transition.rs` before installing,
+//!   The updater plugin verifies the minisign signature against the configured
+//!   updater public key before installing,
 //!   and the version comparator in lib.rs additionally requires release URLs
 //!   to be bound to the manifest version — both apply unchanged to every check
 //!   this service performs.

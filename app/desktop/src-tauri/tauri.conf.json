@@ -93,7 +93,7 @@
   "plugins": {
     "updater": {
       "active": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3QzYwNDVFQTU3OUEyQjcKUldTM29ubWxYZ1RHSndsZk94c2ZMQkFpNDFFSXJjQUQvUk0wandjSHNSZkJZZmtVZHR1Wkt5MW8K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYyQjIxNTI2RTZERDMzNzAKUldSd005M21KaFd5WXNUazZTSTFVSEhublZxem5vWTZMeDY3WVlSUFJKbThvSHZoZEtNcEV1NkMK",
       "endpoints": [
         "https://github.com/martinsbrezauckis/shellx-cut/releases/latest/download/latest.json"
       ]

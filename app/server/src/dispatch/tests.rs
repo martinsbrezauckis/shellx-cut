@@ -6513,6 +6513,7 @@ async fn import_otio_replaces_complex_timeline_atomically_and_undoes() {
 #[tokio::test]
 async fn generate_storyboard_insert_error_preserves_partial_ops() {
     let _guard = lock_agent_cli_env();
+    let _adapter_python = TestAdapterPythonEnv::install();
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new();
     let r = dispatch(
@@ -6568,9 +6569,7 @@ print(json.dumps({
     .unwrap();
 
     let old_adapter = std::env::var_os("CUTD_GENERATE_STORYBOARD_ADAPTER");
-    let old_python = std::env::var_os(ENV_ADAPTER_PYTHON);
     std::env::set_var("CUTD_GENERATE_STORYBOARD_ADAPTER", &adapter);
-    std::env::set_var(ENV_ADAPTER_PYTHON, "python3");
 
     let r = dispatch(
         &state,
@@ -6583,10 +6582,6 @@ print(json.dumps({
     match old_adapter {
         Some(value) => std::env::set_var("CUTD_GENERATE_STORYBOARD_ADAPTER", value),
         None => std::env::remove_var("CUTD_GENERATE_STORYBOARD_ADAPTER"),
-    }
-    match old_python {
-        Some(value) => std::env::set_var(ENV_ADAPTER_PYTHON, value),
-        None => std::env::remove_var(ENV_ADAPTER_PYTHON),
     }
 
     assert!(r.ok, "{:?}", r.error);
@@ -7219,6 +7214,16 @@ async fn assets_generate_imports_generated_file_without_extra_media_import_args(
         first_job.error
     );
     let res = first_job.result.unwrap();
+    let import_job_id = res["job_id"]
+        .as_str()
+        .expect("generated media import job id");
+    let import_job = wait_job(&state, import_job_id, 30).await;
+    assert_eq!(
+        import_job.state,
+        crate::jobs::JobState::Done,
+        "{:?}",
+        import_job.error
+    );
 
     let reused_queued = dispatch(
         &state,
@@ -7702,7 +7707,24 @@ async fn assets_generate_queues_and_cancels_provider_work() {
     )
     .await;
     assert!(cancel_second.ok, "{:?}", cancel_second.error);
-    assert!(cancel_first.ok, "{:?}", cancel_first.error);
+    assert!(
+        cancel_first.ok
+            || cancel_first.error.as_ref().map(|error| error.code.as_str())
+                == Some("job_cancel_pending"),
+        "{:?}",
+        cancel_first.error
+    );
+    if !cancel_first.ok {
+        for _ in 0..60 {
+            let record = state.jobs.get(first_id).unwrap();
+            if record.state == crate::jobs::JobState::Failed
+                && record.error.as_ref().map(|error| error.code.as_str()) == Some("job_cancelled")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
     for job_id in [first_id, second_id] {
         let record = state.jobs.get(job_id).unwrap();
         assert_eq!(record.state, crate::jobs::JobState::Failed);

@@ -38,6 +38,10 @@ process, network, or unrelated-MCP capability.
 
 ## Quickstart
 
+> **Installing 0.6.107:** download and run the installer or package from the
+> GitHub release. Updating to 0.6.107 from an earlier version through the
+> in-app updater is not supported; this release requires a manual install.
+
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
 debug/API contract. The user manual lives at

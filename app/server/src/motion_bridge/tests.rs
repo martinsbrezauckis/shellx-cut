@@ -1467,8 +1467,18 @@ async fn dispatch_apply_import_real_apply_imports_and_inserts_rendered_media() {
     assert!(undo.ok, "Motion import undo failed: {undo:?}");
     let redo = crate::dispatch::dispatch(&state, "project.redo", json!({}), Actor::system()).await;
     assert!(redo.ok, "Motion import redo failed: {redo:?}");
-    let close =
+    let mut close =
         crate::dispatch::dispatch(&state, "project.close", json!({}), Actor::system()).await;
+    for _ in 0..60 {
+        if close.ok
+            || close.error.as_ref().map(|error| error.code.as_str()) != Some("job_cancel_pending")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        close =
+            crate::dispatch::dispatch(&state, "project.close", json!({}), Actor::system()).await;
+    }
     assert!(close.ok, "project close failed: {close:?}");
     let reopen = crate::dispatch::dispatch(
         &state,

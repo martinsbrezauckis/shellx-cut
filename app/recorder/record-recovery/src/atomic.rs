@@ -21,7 +21,7 @@ pub fn replace_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()?;
     drop(file);
     replace(&part, path)?;
-    File::open(path)?.sync_all()?;
+    open_regular_nofollow(path)?.sync_all()?;
     sync_parent(path)
 }
 

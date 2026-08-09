@@ -55,10 +55,9 @@ tokio = { version = "1", features = ["time"] }
 
 # Auto-updater (desktop only). The CHECK + install run in the Rust shell (NOT the
 # engine-served remote-origin UI, which Tauri denies plugin IPC) → the native
-# minisign-signature verification happens here; v0.6.107 overrides the public
-# key at runtime so installed v0.6.106 apps can authenticate the legacy-key
-# bridge artifact while v0.6.107 trusts only the replacement key for later
-# updates. The remote UI never gets update/restart powers. Desktop-gated
+# minisign-signature verification happens here; bundle-time and runtime
+# verification use the same public key. The remote UI never gets
+# update/restart powers. Desktop-gated
 # (mobile has its own store update path).
 #
 # Global OS hotkey (desktop only). Registers a SINGLE OS-level key (F9) that

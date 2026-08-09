@@ -146,10 +146,6 @@ fn quarantine_before_receipt_is_durable_across_a_retry() {
 }
 
 #[test]
-#[cfg_attr(
-    windows,
-    ignore = "Windows replacement durability is tracked separately"
-)]
 fn corrupt_checkpoint_and_torn_tail_are_both_archived_before_idempotent_seal() {
     let root = tempdir().unwrap();
     let mut owner = ManifestOwner::begin(root.path(), CaptureStart::new("cap", 100)).unwrap();
@@ -206,10 +202,6 @@ fn corrupt_checkpoint_and_torn_tail_are_both_archived_before_idempotent_seal() {
 }
 
 #[test]
-#[cfg_attr(
-    windows,
-    ignore = "Windows replacement durability is tracked separately"
-)]
 fn torn_tail_retry_preserves_a_checkpoint_quarantined_before_the_receipt() {
     use std::io::Write;
 

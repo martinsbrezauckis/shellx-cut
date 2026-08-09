@@ -571,8 +571,8 @@ fn grant_engine_origin_capability(app: &tauri::App, url: &str) -> Result<(), Str
 /// lives in the shell (`update_state.rs`): quiet launch + 6-hourly checks feed
 /// the topbar button / Settings > About, and install runs only on explicit
 /// user request (native confirm → signature-verified download+install →
-/// restart). The plugin verifies the minisign signature against the runtime
-/// key registered by `updater_key_transition`, so a forged/unsigned artifact
+/// restart). The plugin verifies the minisign signature against the configured
+/// updater public key, so a forged/unsigned artifact
 /// is rejected; this comparator additionally requires every release URL to name
 /// the manifest version, so a replayed old artifact behind a new version
 /// number is rejected too. Linux packages skip all checks — see the linux-cfg

@@ -294,8 +294,14 @@ async fn caps_retained_diagnostics_while_draining_pipes() {
     };
     #[cfg(windows)]
     let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "for /L %i in (1,1,6000) do @echo 0123456789& for /L %i in (1,1,6000) do @echo 0123456789 1>&2"]);
+        let mut command = Command::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$value = '0' * 600000; [Console]::Out.Write($value); [Console]::Error.Write($value)",
+        ]);
         command
     };
     #[cfg(not(any(unix, windows)))]

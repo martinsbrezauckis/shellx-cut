@@ -53,7 +53,7 @@ fn corrupt_json_is_quarantined_and_disclosed() {
     assert_eq!(recovered.notices[0].code, "job_record_quarantined");
     assert_eq!(recovered.notices[0].record, "job_007.json");
     assert!(recovered.notices[0].message.contains("invalid JSON"));
-    assert!(recovered.notices[0].quarantine.starts_with("quarantine/"));
+    assert!(Path::new(&recovered.notices[0].quarantine).starts_with("quarantine"));
     assert!(!jobs.join("job_007.json").exists());
     assert_eq!(
         std::fs::read_dir(jobs.join("quarantine")).unwrap().count(),

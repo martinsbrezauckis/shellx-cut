@@ -20,8 +20,16 @@ case "$artifact" in
 esac
 
 if [ "${SHELLX_WINDOWS_SIGNING_REQUIRED:-0}" = "1" ]; then
-  echo "windows-artifact-sign: official signing is unavailable in the public source build" >&2
-  exit 1
+  helper="${SHELLX_WINDOWS_SIGNING_HELPER:-}"
+  if [ -z "$helper" ] || [ ! -x "$helper" ]; then
+    echo "windows-artifact-sign: official signing requires an executable SHELLX_WINDOWS_SIGNING_HELPER" >&2
+    exit 1
+  fi
+  if [ "$(realpath -m "$helper")" = "$(realpath -m "$0")" ]; then
+    echo "windows-artifact-sign: refusing a recursive signing helper" >&2
+    exit 1
+  fi
+  exec "$helper" "$artifact"
 fi
 
 if [ ! -e "$artifact" ]; then

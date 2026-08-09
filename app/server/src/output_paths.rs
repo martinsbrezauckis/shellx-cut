@@ -504,7 +504,12 @@ fn try_reserve_output_path(path: &Path) -> Result<Option<OutputReservation>, Cut
     hide_reservation_artifact(&lease_path);
     match lease.try_lock_exclusive() {
         Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::WouldBlock
+                || (cfg!(windows) && error.raw_os_error() == Some(33)) =>
+        {
+            return Ok(None);
+        }
         Err(error) => {
             return Err(CutError::new(
                 error_codes::IO,
@@ -907,10 +912,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        windows,
-        ignore = "Windows concurrent output lease allocation is tracked separately"
-    )]
     fn default_output_names_are_reserved_atomically_for_concurrent_writers() {
         let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
             .lock()
@@ -978,10 +979,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        windows,
-        ignore = "Windows concurrent output lease allocation is tracked separately"
-    )]
     fn explicit_save_as_conflicts_with_a_live_default_name_reservation() {
         let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
             .lock()
