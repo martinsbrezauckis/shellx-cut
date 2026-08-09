@@ -1,0 +1,536 @@
+{
+  "schema": "shellx-cut/recipes/1",
+  "$comment": "Built-in pipeline manifests. A recipe declares an ordered workflow over public verbs, with named parameters and optional state or render-check gates. The runner creates one automatic checkpoint, dispatches each stage through the normal path, waits for requested jobs, evaluates each gate, and stops with the checkpoint on the first failure. Verbs, checks, and parameters are validated when the catalog loads so contract drift fails tests.",
+  "recipes": [
+    {
+      "name": "first-project",
+      "title": "First edit",
+      "description": "Start with one imported clip: create a transcript, measure its pauses, make a conservative silence cut, add captions, and render a reviewable first version. Preview shows every step before the timeline changes.",
+      "params": {
+        "asset": {
+          "type": "string",
+          "required": true,
+          "description": "Imported asset to edit. It must already be placed on the timeline."
+        }
+      },
+      "stages": [
+        {
+          "id": "transcribe",
+          "verb": "media.transcribe",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "make speech editable and ready for captions",
+          "await_job": true,
+          "gate": { "state": [ { "fact": "transcript_words", "op": "gt", "value": 0 } ] }
+        },
+        {
+          "id": "analyze",
+          "verb": "media.perception",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "measure pauses before changing the timeline",
+          "await_job": true
+        },
+        {
+          "id": "tighten",
+          "verb": "transcript.remove_silences",
+          "args": { "aggressiveness": "calm" },
+          "rationale": "make a conservative first cut without rushing the speaker"
+        },
+        {
+          "id": "captions",
+          "verb": "captions.generate",
+          "args": {},
+          "rationale": "add readable captions",
+          "gate": { "state": [ { "fact": "caption_clips", "op": "gte", "value": 1 } ] }
+        },
+        {
+          "id": "render",
+          "verb": "render.final",
+          "args": { "preset": "standard" },
+          "rationale": "render a first version with review checks",
+          "gate": { "checks": ["caption_presence", "cut_on_word", "duration_matches_edl"] }
+        }
+      ]
+    },
+    {
+      "name": "edit-for-clarity",
+      "title": "Edit for clarity",
+      "description": "Clean spoken footage without changing its message: create a transcript, find pauses, remove repeated takes and filler words, then tighten dead air at the selected intensity. Preview shows the exact five-step plan before anything changes.",
+      "params": {
+        "asset": {
+          "type": "string",
+          "required": true,
+          "description": "Spoken-word asset to clean. It must already be placed on the timeline."
+        },
+        "intensity": {
+          "type": "string",
+          "default": "natural",
+          "enum": ["calm", "natural", "jumpy"],
+          "description": "Pause-tightening feel: calm keeps more breathing room, natural is balanced, and jumpy makes a tight cut. Retake removal stays conservative at every intensity."
+        }
+      },
+      "stages": [
+        {
+          "id": "transcribe",
+          "verb": "media.transcribe",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "make every spoken word available for reviewable edits",
+          "await_job": true,
+          "gate": { "state": [ { "fact": "transcript_words", "op": "gt", "value": 0 } ] }
+        },
+        {
+          "id": "analyze",
+          "verb": "media.perception",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "measure pauses before changing timing",
+          "await_job": true
+        },
+        {
+          "id": "retakes",
+          "verb": "transcript.remove_retakes",
+          "args": { "asset": "{{asset}}", "similarity": 0.72, "keep": "last", "min_words": 3 },
+          "rationale": "remove only closely repeated attempts and keep the final take"
+        },
+        {
+          "id": "fillers",
+          "verb": "transcript.remove_fillers",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "remove common filler words without rewriting speech"
+        },
+        {
+          "id": "tighten",
+          "verb": "transcript.remove_silences",
+          "args": { "asset": "{{asset}}", "aggressiveness": "{{intensity}}" },
+          "rationale": "tighten measured dead air at the chosen intensity"
+        }
+      ]
+    },
+    {
+      "name": "podcast-repurpose",
+      "title": "Podcast repurpose",
+      "description": "Clean a long talking-head/podcast take into a captioned, loudness-normalized publish: transcribe, tighten silences, drop fillers, clean the voice, caption, and render at the target loudness.",
+      "params": {
+        "asset": {
+          "type": "string",
+          "required": true,
+          "description": "Asset id to process (from media.import / project.state). The asset must already be placed on the timeline; its audio should be on its own audio track (edit.detach_audio) so the voice stage and loudness gate apply."
+        },
+        "aggressiveness": {
+          "type": "string",
+          "default": "natural",
+          "enum": ["calm", "natural", "jumpy"],
+          "description": "How aggressively transcript.remove_silences tightens dead air."
+        },
+        "target_lufs": {
+          "type": "integer",
+          "default": -16,
+          "description": "Integrated loudness target for the final render (render.final normalize_loudness). -16 long-form, -14 social, -23 EBU R128."
+        }
+      },
+      "stages": [
+        {
+          "id": "transcribe",
+          "verb": "media.transcribe",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "word-accurate transcript for cuts + captions",
+          "await_job": true,
+          "gate": { "state": [ { "fact": "transcript_words", "op": "gt", "value": 0 } ] }
+        },
+        {
+          "id": "tighten",
+          "verb": "transcript.remove_silences",
+          "args": { "aggressiveness": "{{aggressiveness}}" },
+          "rationale": "remove dead air between phrases",
+          "gate": { "state": [ { "fact": "duration_ms", "op": "lt_start" } ] }
+        },
+        {
+          "id": "fillers",
+          "verb": "transcript.remove_fillers",
+          "args": {},
+          "rationale": "drop um/uh/like filler words"
+        },
+        {
+          "id": "voice",
+          "verb": "audio.cleanup_voice",
+          "args": { "strength": "medium" },
+          "rationale": "eq + denoise + gate + compressor voice chain"
+        },
+        {
+          "id": "captions",
+          "verb": "captions.generate",
+          "args": {},
+          "rationale": "burn-in captions from the transcript",
+          "gate": { "state": [ { "fact": "caption_clips", "op": "gte", "value": 1 } ] }
+        },
+        {
+          "id": "render",
+          "verb": "render.final",
+          "args": { "preset": "high", "normalize_loudness": "{{target_lufs}}" },
+          "rationale": "final publish render, loudness-normalized",
+          "gate": { "checks": ["caption_presence", "lufs", "cut_on_word", "duration_matches_edl"] }
+        }
+      ]
+    },
+    {
+      "name": "talking-head-cleanup",
+      "title": "Talking-head cleanup",
+      "description": "The light pass for a talking-head clip: transcribe, tighten silences, drop fillers, clean the voice, caption, and render at standard quality.",
+      "params": {
+        "asset": {
+          "type": "string",
+          "required": true,
+          "description": "Asset id to process (from media.import / project.state). The asset must already be placed on the timeline; its audio should be on its own audio track (edit.detach_audio) so the voice stage and loudness gate apply."
+        },
+        "aggressiveness": {
+          "type": "string",
+          "default": "natural",
+          "enum": ["calm", "natural", "jumpy"],
+          "description": "How aggressively transcript.remove_silences tightens dead air."
+        }
+      },
+      "stages": [
+        {
+          "id": "transcribe",
+          "verb": "media.transcribe",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "word-accurate transcript for cuts + captions",
+          "await_job": true,
+          "gate": { "state": [ { "fact": "transcript_words", "op": "gt", "value": 0 } ] }
+        },
+        {
+          "id": "tighten",
+          "verb": "transcript.remove_silences",
+          "args": { "aggressiveness": "{{aggressiveness}}" },
+          "rationale": "remove dead air between phrases",
+          "gate": { "state": [ { "fact": "duration_ms", "op": "lt_start" } ] }
+        },
+        {
+          "id": "fillers",
+          "verb": "transcript.remove_fillers",
+          "args": {},
+          "rationale": "drop um/uh/like filler words"
+        },
+        {
+          "id": "voice",
+          "verb": "audio.cleanup_voice",
+          "args": { "strength": "medium" },
+          "rationale": "eq + denoise + gate + compressor voice chain"
+        },
+        {
+          "id": "captions",
+          "verb": "captions.generate",
+          "args": {},
+          "rationale": "burn-in captions from the transcript",
+          "gate": { "state": [ { "fact": "caption_clips", "op": "gte", "value": 1 } ] }
+        },
+        {
+          "id": "render",
+          "verb": "render.final",
+          "args": { "preset": "standard", "normalize_loudness": -16 },
+          "rationale": "final render, loudness-normalized to -16 LUFS",
+          "gate": { "checks": ["cut_on_word", "caption_presence", "lufs"] }
+        }
+      ]
+    },
+    {
+      "name": "screen-demo-polish",
+      "title": "Screen-demo polish",
+      "description": "Turn a narrated screen recording into a trimmed, captioned demo: transcribe, tighten the long dead air, trim the edges, caption, and render with the screen-demo verifier profile.",
+      "params": {
+        "asset": {
+          "type": "string",
+          "required": true,
+          "description": "Asset id to process (from media.import / project.state). The asset must already be placed on the timeline."
+        },
+        "aggressiveness": {
+          "type": "string",
+          "default": "jumpy",
+          "enum": ["calm", "natural", "jumpy"],
+          "description": "Screencasts have long dead air, so the default tightens aggressively."
+        }
+      },
+      "stages": [
+        {
+          "id": "transcribe",
+          "verb": "media.transcribe",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "word-accurate transcript for cuts + captions",
+          "await_job": true,
+          "gate": { "state": [ { "fact": "transcript_words", "op": "gt", "value": 0 } ] }
+        },
+        {
+          "id": "tighten",
+          "verb": "transcript.remove_silences",
+          "args": { "aggressiveness": "{{aggressiveness}}" },
+          "rationale": "remove the long screencast dead air",
+          "gate": { "state": [ { "fact": "duration_ms", "op": "lt_start" } ] }
+        },
+        {
+          "id": "trim_edges",
+          "verb": "edit.trim_edges",
+          "args": {},
+          "rationale": "trim leading/trailing dead air at the edges"
+        },
+        {
+          "id": "captions",
+          "verb": "captions.generate",
+          "args": {},
+          "rationale": "burn-in captions from the transcript",
+          "gate": { "state": [ { "fact": "caption_clips", "op": "gte", "value": 1 } ] }
+        },
+        {
+          "id": "render",
+          "verb": "render.final",
+          "args": { "preset": "high", "profile": "silent_screen_demo" },
+          "rationale": "final render with the screen-demo verifier profile (UI-tuned frozen-frame check)",
+          "gate": { "checks": ["black_or_frozen_frames", "duration_matches_edl"] }
+        }
+      ]
+    },
+    {
+      "name": "phone-clip-cleanup",
+      "title": "Phone clip cleanup",
+      "description": "Clean a phone or camera recording into a captioned social-ready edit: transcribe, tighten pauses, remove fillers, clean the voice, add captions, and render louder for online playback.",
+      "params": {
+        "asset": {
+          "type": "string",
+          "required": true,
+          "description": "Asset id to process. The clip should already be on the timeline."
+        },
+        "aggressiveness": {
+          "type": "string",
+          "default": "natural",
+          "enum": ["calm", "natural", "jumpy"],
+          "description": "How strongly Cut removes long pauses."
+        },
+        "target_lufs": {
+          "type": "integer",
+          "default": -14,
+          "description": "Integrated loudness target for online playback."
+        }
+      },
+      "stages": [
+        {
+          "id": "transcribe",
+          "verb": "media.transcribe",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "make speech editable and captionable",
+          "await_job": true,
+          "gate": { "state": [ { "fact": "transcript_words", "op": "gt", "value": 0 } ] }
+        },
+        {
+          "id": "tighten",
+          "verb": "transcript.remove_silences",
+          "args": { "aggressiveness": "{{aggressiveness}}" },
+          "rationale": "remove dead air without changing the story",
+          "gate": { "state": [ { "fact": "duration_ms", "op": "lt_start" } ] }
+        },
+        {
+          "id": "fillers",
+          "verb": "transcript.remove_fillers",
+          "args": {},
+          "rationale": "remove common filler words"
+        },
+        {
+          "id": "voice",
+          "verb": "audio.cleanup_voice",
+          "args": { "strength": "medium" },
+          "rationale": "make speech clearer"
+        },
+        {
+          "id": "captions",
+          "verb": "captions.generate",
+          "args": {},
+          "rationale": "add readable captions",
+          "gate": { "state": [ { "fact": "caption_clips", "op": "gte", "value": 1 } ] }
+        },
+        {
+          "id": "render",
+          "verb": "render.final",
+          "args": { "preset": "standard", "normalize_loudness": "{{target_lufs}}" },
+          "rationale": "render a clean online copy",
+          "gate": { "checks": ["caption_presence", "lufs", "duration_matches_edl"] }
+        }
+      ]
+    },
+    {
+      "name": "social-short-bundle",
+      "title": "Social short bundle",
+      "description": "Render the current sequence as a publish-ready pack for vertical, square, and widescreen posts.",
+      "params": {
+        "preset": {
+          "type": "string",
+          "default": "standard",
+          "enum": ["draft", "standard", "high"],
+          "description": "Quality tier for the social pack."
+        },
+        "normalize_loudness": {
+          "type": "integer",
+          "default": -14,
+          "description": "Integrated loudness target for each exported version."
+        }
+      },
+      "stages": [
+        {
+          "id": "bundle",
+          "verb": "render.bundle",
+          "args": {
+            "platforms": ["9:16", "1:1", "16:9"],
+            "preset": "{{preset}}",
+            "normalize_loudness": "{{normalize_loudness}}"
+          },
+          "rationale": "make a social delivery pack",
+          "await_job": true
+        }
+      ]
+    },
+    {
+      "name": "area-privacy-mask",
+      "title": "Blur or mask an area",
+      "description": "Add a privacy mask to a clip, such as blurring a face, label, password, or screen area. The default region is centered and can be adjusted after it is added.",
+      "params": {
+        "clip": {
+          "type": "string",
+          "required": true,
+          "description": "Base-track video clip id to mask."
+        },
+        "effect": {
+          "type": "string",
+          "default": "blur",
+          "enum": ["blur", "pixelate", "black"],
+          "description": "Privacy effect to apply."
+        },
+        "strength": {
+          "type": "number",
+          "default": 18,
+          "description": "Blur sigma or pixel block size."
+        },
+        "feather": {
+          "type": "number",
+          "default": 0.02,
+          "description": "Soft edge amount as a fraction of frame height."
+        },
+        "x0": {
+          "type": "number",
+          "default": 0.25,
+          "description": "Left edge of the region as a frame fraction."
+        },
+        "y0": {
+          "type": "number",
+          "default": 0.25,
+          "description": "Top edge of the region as a frame fraction."
+        },
+        "x1": {
+          "type": "number",
+          "default": 0.75,
+          "description": "Right edge of the region as a frame fraction."
+        },
+        "y1": {
+          "type": "number",
+          "default": 0.75,
+          "description": "Bottom edge of the region as a frame fraction."
+        }
+      },
+      "stages": [
+        {
+          "id": "mask",
+          "verb": "edit.add_mask",
+          "args": {
+            "clip": "{{clip}}",
+            "shape": "rect",
+            "points": [["{{x0}}", "{{y0}}"], ["{{x1}}", "{{y1}}"]],
+            "feather": "{{feather}}",
+            "effect": "{{effect}}",
+            "strength": "{{strength}}",
+            "enabled": true
+          },
+          "rationale": "hide sensitive visual details"
+        }
+      ]
+    },
+    {
+      "name": "add-captions",
+      "title": "Add captions",
+      "description": "Transcribe an asset and add timeline captions from its speech without changing the clip timing.",
+      "params": {
+        "asset": {
+          "type": "string",
+          "required": true,
+          "description": "Asset id to transcribe and caption."
+        }
+      },
+      "stages": [
+        {
+          "id": "transcribe",
+          "verb": "media.transcribe",
+          "args": { "asset": "{{asset}}" },
+          "rationale": "create transcript words for captions",
+          "await_job": true,
+          "gate": { "state": [ { "fact": "transcript_words", "op": "gt", "value": 0 } ] }
+        },
+        {
+          "id": "captions",
+          "verb": "captions.generate",
+          "args": {},
+          "rationale": "add readable captions to the timeline",
+          "gate": { "state": [ { "fact": "caption_clips", "op": "gte", "value": 1 } ] }
+        }
+      ]
+    },
+    {
+      "name": "youtube-export",
+      "title": "Export for YouTube",
+      "description": "Render the current timeline with YouTube-ready geometry, bitrate, and container settings.",
+      "params": {
+        "preset": {
+          "type": "string",
+          "default": "high",
+          "enum": ["draft", "standard", "high"],
+          "description": "Quality tier for the YouTube export."
+        },
+        "hardware": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "off"],
+          "description": "Use hardware encoding when available."
+        }
+      },
+      "stages": [
+        {
+          "id": "publish",
+          "verb": "export.publish",
+          "args": { "platform": "youtube", "preset": "{{preset}}", "hardware": "{{hardware}}" },
+          "rationale": "render a YouTube-ready file",
+          "await_job": true
+        }
+      ]
+    },
+    {
+      "name": "tiktok-export",
+      "title": "Export for TikTok",
+      "description": "Render the current timeline with TikTok-ready vertical geometry, bitrate, and container settings.",
+      "params": {
+        "preset": {
+          "type": "string",
+          "default": "high",
+          "enum": ["draft", "standard", "high"],
+          "description": "Quality tier for the TikTok export."
+        },
+        "hardware": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "off"],
+          "description": "Use hardware encoding when available."
+        }
+      },
+      "stages": [
+        {
+          "id": "publish",
+          "verb": "export.publish",
+          "args": { "platform": "tiktok", "preset": "{{preset}}", "hardware": "{{hardware}}" },
+          "rationale": "render a TikTok-ready file",
+          "await_job": true
+        }
+      ]
+    }
+  ]
+}

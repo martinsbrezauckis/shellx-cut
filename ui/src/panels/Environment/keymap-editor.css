@@ -1,0 +1,220 @@
+/* Keyboard shortcut manager. Kept separate from the environment-card styles
+   because this is an interactive settings surface, not a capability card. */
+.env-keymap {
+  margin-top: 14px;
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.env-keymap-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 2px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.env-keymap-summary > span:first-child { display: grid; gap: 3px; }
+.env-keymap-summary strong { font-size: 13px; }
+.env-keymap-summary small { color: var(--ink-3); font-size: 11px; font-weight: 400; }
+.env-keymap-summary-action {
+  color: var(--cut-soft, var(--ink-2));
+  font-size: 11px;
+  white-space: nowrap;
+}
+.env-keymap-summary-open { display: none; }
+.env-keymap-details[open] .env-keymap-summary-closed { display: none; }
+.env-keymap-details[open] .env-keymap-summary-open { display: inline; }
+
+.env-keymap-content { padding: 2px 2px 14px; }
+.env-keymap-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.env-keymap-intro {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.env-keymap-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(130px, 0.45fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+.env-keymap-field { display: grid; gap: 5px; }
+.env-keymap-field > span {
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.env-keymap-field input,
+.env-keymap-field select {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 8px);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: 500 12px/1.2 var(--sans);
+}
+.env-keymap-field input:focus-visible,
+.env-keymap-field select:focus-visible,
+.env-keymap-filters button:focus-visible,
+.env-keymap-key:focus-visible,
+.env-keymap-clear:focus-visible {
+  outline: 2px solid var(--cut-soft, var(--accent));
+  outline-offset: 2px;
+}
+
+.env-keymap-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 9px 0;
+}
+.env-keymap-filters button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  font: 600 11px/1 var(--sans);
+}
+.env-keymap-filters button span {
+  margin-left: 3px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.env-keymap-filters button[aria-pressed="true"] {
+  border-color: var(--cut-soft, var(--accent));
+  background: var(--cut-dim, var(--surface-3));
+  color: var(--ink);
+}
+.env-keymap-filters button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.env-keymap-note {
+  margin: 7px 0;
+  padding: 7px 9px;
+  border-left: 2px solid var(--cut-soft, var(--accent));
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.env-keymap-note--warning {
+  border-left-color: var(--amber, #f59e0b);
+  color: var(--ink);
+}
+.env-keymap-results {
+  margin: 8px 0 5px;
+  color: var(--ink-3);
+  font: 500 10px/1.2 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.env-keymap-rows { display: flex; flex-direction: column; gap: 4px; }
+.env-keymap-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.env-keymap-row:nth-child(odd) { background: color-mix(in srgb, var(--surface-2) 58%, transparent); }
+.env-keymap-row--conflict { border-color: color-mix(in srgb, var(--amber, #f59e0b) 48%, transparent); }
+.env-keymap-group {
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.env-keymap-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink-2);
+}
+.env-keymap-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.env-keymap-badges > span {
+  padding: 2px 5px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--surface-3);
+  color: var(--ink-3);
+  font: 600 9px/1 var(--sans);
+  text-transform: uppercase;
+}
+.env-keymap-badges > .env-keymap-badge--warning {
+  color: var(--amber, #f59e0b);
+}
+.env-keymap-key {
+  min-width: 78px;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink);
+  cursor: pointer;
+  font: 600 11px/1.1 var(--mono);
+  text-align: center;
+}
+.env-keymap-key--armed {
+  border-color: var(--amber, #f59e0b);
+  color: var(--amber, #f59e0b);
+}
+.env-keymap-key--remapped { border-color: var(--cut-soft, var(--accent)); }
+.env-keymap-key--fixed {
+  cursor: default;
+  color: var(--ink-3);
+}
+.env-keymap-clear {
+  min-width: 50px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  font: 600 10px/1 var(--sans);
+}
+.env-keymap-clear:hover { border-color: var(--hairline-2); color: var(--ink); }
+.env-keymap-empty {
+  padding: 18px 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .env-keymap-summary { align-items: flex-start; }
+  .env-keymap-summary-action { display: none; }
+  .env-keymap-head { display: grid; }
+  .env-keymap-head .env-btn { justify-self: start; }
+  .env-keymap-toolbar { grid-template-columns: 1fr; }
+  .env-keymap-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 5px 7px;
+  }
+  .env-keymap-group { grid-column: 1 / -1; }
+  .env-keymap-label { align-items: flex-start; flex-direction: column; }
+  .env-keymap-key { min-width: 70px; }
+}

@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ShellX Cut Manual</title>
+    <meta
+      name="description"
+      content="ShellX Cut manual: setup, interface map, editing workflows, Generate, recording, delivery, and Debug API."
+    />
+    <meta name="robots" content="index,follow" />
+    <meta name="theme-color" content="#050505" />
+    <link rel="icon" href="../assets/icon.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..700,0..100&family=JetBrains+Mono:wght@400;500&family=Onest:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../manual.css?v=13" />
+    <script src="../manual.js?v=21" defer></script>
+  </head>
+  <body class="manual-body">
+    <header class="manual-topbar">
+      <a class="manual-brand" href="../../">
+        <span class="manual-mark">X</span>
+        <span>ShellX Docs</span>
+      </a>
+      <nav class="manual-topnav" aria-label="Docs products">
+        <a href="./">Cut</a>
+        <a href="../canvas/">Design Studio</a>
+        <a href="../drive/">Drive</a>
+        <a href="../vault/">Vault</a>
+        <span class="manual-muted">Browser</span>
+      </nav>
+    </header>
+
+    <div class="manual-shell">
+      <aside class="manual-tree" aria-label="Cut manual sections">
+        <div class="manual-product">
+          <h2>ShellX Cut</h2>
+          <!-- data-app-version = the machine-readable release marker read by an
+               automated release check.
+               Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
+               visible text on this span whenever the manual is updated for a release. -->
+          <span class="manual-version" data-app-version="0.6.107">0.6.107</span>
+        </div>
+        <input
+          class="manual-search"
+          type="search"
+          placeholder="Find a feature"
+          aria-label="Find a feature"
+          data-manual-search
+        />
+
+        <details class="manual-folder" open>
+          <summary>Start</summary>
+          <div class="manual-tree-subgroup">Video readiness</div>
+          <button class="manual-node" data-feature-id="cut.setup.ffmpeg">Why FFmpeg is required</button>
+          <button class="manual-node" data-feature-id="cut.setup.doctor">Run system doctor</button>
+          <button class="manual-node" data-feature-id="cut.setup.ffmpeg_path">Set FFmpeg path</button>
+          <button class="manual-node" data-feature-id="cut.setup.captions">Install captions and STT</button>
+          <div class="manual-tree-subgroup">Agents</div>
+          <button class="manual-node" data-feature-id="cut.setup.cli_install">Install a CLI agent</button>
+          <button class="manual-node" data-feature-id="cut.setup.cli_connect">Connect agent in Settings</button>
+        </details>
+
+        <details class="manual-folder" open>
+          <summary>Interface</summary>
+          <div class="manual-tree-subgroup">Top bar</div>
+          <button class="manual-node" data-feature-id="cut.record.open">Record workspace</button>
+          <button class="manual-node" data-feature-id="cut.top.projects">Projects</button>
+          <button class="manual-node" data-feature-id="cut.top.library">Library</button>
+          <button class="manual-node" data-feature-id="cut.top.settings">Settings</button>
+          <button class="manual-node" data-feature-id="cut.top.manual">Manual</button>
+
+          <div class="manual-tree-subgroup">Header tools</div>
+          <button class="manual-node" data-feature-id="cut.header.title">Title</button>
+          <button class="manual-node" data-feature-id="cut.header.shape">Shape</button>
+          <button class="manual-node" data-feature-id="cut.header.region_mask">Mask / privacy</button>
+          <button class="manual-node" data-feature-id="cut.header.music">Music bed</button>
+          <button class="manual-node" data-feature-id="cut.header.mixer">Audio mixer</button>
+          <button class="manual-node" data-feature-id="cut.header.repurpose">Repurpose into shorts</button>
+          <button class="manual-node" data-feature-id="cut.header.autopilot">Autopilot</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes">Recipes</button>
+          <button class="manual-node" data-feature-id="cut.header.assemble">Assemble AI</button>
+          <button class="manual-node" data-feature-id="cut.header.storyboard">Storyboard</button>
+          <button class="manual-node" data-feature-id="cut.header.comments">Review comments</button>
+          <button class="manual-node" data-feature-id="cut.header.gpu">Faster exports (GPU)</button>
+
+          <div class="manual-tree-subgroup">Header tool choices</div>
+          <button class="manual-node" data-feature-id="cut.header.title.add">Title: add title</button>
+          <button class="manual-node" data-feature-id="cut.header.title.templates">Title: templates</button>
+          <button class="manual-node" data-feature-id="cut.header.title.lower_third">Title: lower third</button>
+          <button class="manual-node" data-feature-id="cut.header.shape.rectangle">Shape: rectangle</button>
+          <button class="manual-node" data-feature-id="cut.header.shape.circle">Shape: circle</button>
+          <button class="manual-node" data-feature-id="cut.header.shape.arrow">Shape: arrow</button>
+          <button class="manual-node" data-feature-id="cut.header.region_mask.face">Mask: blur face</button>
+          <button class="manual-node" data-feature-id="cut.header.region_mask.rectangle">Mask: blur rectangle</button>
+          <button class="manual-node" data-feature-id="cut.header.region_mask.plate">Mask: hide plate/text</button>
+          <button class="manual-node" data-feature-id="cut.header.region_mask.duration">Mask: timed privacy</button>
+          <button class="manual-node" data-feature-id="cut.header.region_mask.custom">Mask: custom shape</button>
+          <button class="manual-node" data-feature-id="cut.header.region_mask.apply">Mask: apply mask</button>
+          <button class="manual-node" data-feature-id="cut.header.music.add">Music: add music</button>
+          <button class="manual-node" data-feature-id="cut.header.music.duck">Music: duck voice</button>
+          <button class="manual-node" data-feature-id="cut.header.mixer.gain">Mixer: track gain</button>
+          <button class="manual-node" data-feature-id="cut.header.mixer.pan">Mixer: pan</button>
+          <button class="manual-node" data-feature-id="cut.header.mixer.mute_solo">Mixer: mute or solo</button>
+          <button class="manual-node" data-feature-id="cut.header.mixer.eq">Mixer: EQ</button>
+          <button class="manual-node" data-feature-id="cut.header.mixer.cleanup">Mixer: cleanup voice</button>
+          <button class="manual-node" data-feature-id="cut.header.repurpose.highlights">Repurpose: find highlights</button>
+          <button class="manual-node" data-feature-id="cut.header.repurpose.vertical">Repurpose: vertical crop</button>
+          <button class="manual-node" data-feature-id="cut.header.repurpose.variants">Repurpose: shorts variants</button>
+          <button class="manual-node" data-feature-id="cut.header.autopilot.plan">Autopilot: plan edit</button>
+          <button class="manual-node" data-feature-id="cut.header.autopilot.apply">Autopilot: apply safe ops</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.browse">Recipes: browse</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.edit_for_clarity">Recipes: edit for clarity</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.describe">Recipes: describe</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.run">Recipes: run</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.phone_cleanup">Recipes: phone cleanup</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.social_bundle">Recipes: social bundle</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.privacy_mask">Recipes: privacy mask</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.captions">Recipes: add captions</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.youtube_export">Recipes: YouTube export</button>
+          <button class="manual-node" data-feature-id="cut.header.recipes.tiktok_export">Recipes: TikTok export</button>
+          <button class="manual-node" data-feature-id="cut.header.assemble.prompt">Assemble: prompt</button>
+          <button class="manual-node" data-feature-id="cut.header.assemble.sources">Assemble: source clips</button>
+          <button class="manual-node" data-feature-id="cut.header.assemble.draft">Assemble: build draft</button>
+          <button class="manual-node" data-feature-id="cut.header.storyboard.generate">Storyboard: generate plan</button>
+          <button class="manual-node" data-feature-id="cut.header.storyboard.review">Storyboard: review shots</button>
+          <button class="manual-node" data-feature-id="cut.header.storyboard.preview">Storyboard: preview sequence</button>
+          <button class="manual-node" data-feature-id="cut.header.storyboard.insert">Storyboard: insert</button>
+          <button class="manual-node" data-feature-id="cut.header.comments.add">Comments: add comment</button>
+          <button class="manual-node" data-feature-id="cut.header.comments.apply">Comments: apply note</button>
+          <button class="manual-node" data-feature-id="cut.header.comments.resolve">Comments: resolve</button>
+
+          <div class="manual-tree-subgroup">Delivery</div>
+          <button class="manual-node" data-feature-id="cut.top.render">Render</button>
+          <button class="manual-node" data-feature-id="cut.top.export">Export menu</button>
+
+          <div class="manual-tree-subgroup">Top menu choices</div>
+          <button class="manual-node" data-feature-id="cut.top.projects.open">Projects: open project</button>
+          <button class="manual-node" data-feature-id="cut.top.projects.create">Projects: create project</button>
+          <button class="manual-node" data-feature-id="cut.top.library.saved">Library: saved assets</button>
+          <button class="manual-node" data-feature-id="cut.top.library.add">Library: add to project</button>
+          <button class="manual-node" data-feature-id="cut.top.render.preview">Render: preview render</button>
+          <button class="manual-node" data-feature-id="cut.top.render.full">Render: full file</button>
+          <button class="manual-node" data-feature-id="cut.top.render.range">Render: selected range</button>
+          <button class="manual-node" data-feature-id="cut.top.export.video">Export: final video</button>
+          <button class="manual-node" data-feature-id="cut.top.export.bundle">Export: platform bundle</button>
+          <button class="manual-node" data-feature-id="cut.top.export.archive">Export: project archive</button>
+          <button class="manual-node" data-feature-id="cut.export.preflight">Export: preflight warnings</button>
+          <button class="manual-node" data-feature-id="cut.export.preflight.black_tail">Preflight: black ending</button>
+          <button class="manual-node" data-feature-id="cut.export.preflight.dead_frames">Preflight: dead frames</button>
+          <button class="manual-node" data-feature-id="cut.export.preflight.pacing">Preflight: long holds</button>
+          <button class="manual-node" data-feature-id="cut.export.preflight.silent_audio">Preflight: silent export</button>
+          <button class="manual-node" data-feature-id="cut.export.preflight.tiny_clips">Preflight: tiny clips</button>
+          <button class="manual-node" data-feature-id="cut.export.preflight.borders">Preflight: black border</button>
+
+          <div class="manual-tree-subgroup">Left sidebar</div>
+          <button class="manual-node" data-feature-id="cut.left.transcript">Transcript tab</button>
+          <button class="manual-node" data-feature-id="cut.left.assets">Assets tab</button>
+          <button class="manual-node" data-feature-id="cut.left.asset_filters">Asset filters</button>
+          <button class="manual-node" data-feature-id="cut.left.asset_needs_action">Assets: needs action</button>
+          <button class="manual-node" data-feature-id="cut.left.media_health">Media Health</button>
+          <button class="manual-node" data-feature-id="cut.left.proxies">Proxy imports</button>
+          <button class="manual-node" data-feature-id="cut.left.import">Import media</button>
+          <button class="manual-node" data-feature-id="cut.left.add_at_playhead">Add at playhead</button>
+          <button class="manual-node" data-feature-id="cut.left.generate">Generate tab</button>
+          <button class="manual-node" data-feature-id="cut.left.generated_history">Generate: history and compare</button>
+          <button class="manual-node" data-feature-id="cut.left.generated_references">Generate: references and variations</button>
+          <button class="manual-node" data-feature-id="cut.left.motion_edit">Motion: Edit in Motion</button>
+          <button class="manual-node" data-feature-id="cut.left.motion_refresh">Motion: refresh linked render</button>
+          <button class="manual-node" data-feature-id="cut.left.motion_tracking">Motion: track and stabilize</button>
+          <button class="manual-node" data-feature-id="cut.left.find">Find tab</button>
+          <button class="manual-node" data-feature-id="cut.left.find.media">Find: media</button>
+          <button class="manual-node" data-feature-id="cut.left.find.moment">Find: moment</button>
+          <button class="manual-node" data-feature-id="cut.left.sequence_index">Find: Sequence Index</button>
+
+          <div class="manual-tree-subgroup">Preview monitor</div>
+          <button class="manual-node" data-feature-id="cut.preview.monitor">Video preview</button>
+          <button class="manual-node" data-feature-id="cut.preview.ffmpeg_setup">Preview setup notice</button>
+          <button class="manual-node" data-feature-id="cut.preview.transport">Play controls</button>
+          <button class="manual-node" data-feature-id="cut.preview.frame">Frame button</button>
+          <button class="manual-node" data-feature-id="cut.preview.render_selection">Render selection</button>
+          <button class="manual-node" data-feature-id="cut.preview.audio">Audio monitor</button>
+          <button class="manual-node" data-feature-id="cut.preview.composed">Composed toggle</button>
+          <button class="manual-node" data-feature-id="cut.preview.guides">Guides</button>
+          <button class="manual-node" data-feature-id="cut.preview.fullscreen">Full-screen preview</button>
+
+          <div class="manual-tree-subgroup">Timeline</div>
+          <button class="manual-node" data-feature-id="cut.timeline.timecode">Timecode</button>
+          <button class="manual-node" data-feature-id="cut.timeline.razor">Razor</button>
+          <button class="manual-node" data-feature-id="cut.timeline.trim">Trim</button>
+          <button class="manual-node" data-feature-id="cut.timeline.snap">Snap</button>
+          <button class="manual-node" data-feature-id="cut.timeline.ripple">Ripple delete</button>
+          <button class="manual-node" data-feature-id="cut.timeline.lift">Lift delete</button>
+          <button class="manual-node" data-feature-id="cut.timeline.speed">Speed controls</button>
+          <button class="manual-node" data-feature-id="cut.timeline.sync">Sync by audio</button>
+          <button class="manual-node" data-feature-id="cut.timeline.multicam">Auto multicam</button>
+          <button class="manual-node" data-feature-id="cut.timeline.beat">Cut to beat</button>
+          <button class="manual-node" data-feature-id="cut.timeline.cleanup_tools">Cleanup tools</button>
+          <button class="manual-node" data-feature-id="cut.timeline.trim_dead_air">Trim dead air</button>
+          <button class="manual-node" data-feature-id="cut.timeline.split_scenes">Split scenes</button>
+          <button class="manual-node" data-feature-id="cut.timeline.mark_scenes">Mark scenes</button>
+          <button class="manual-node" data-feature-id="cut.timeline.grade">Grade, Layer, Matte</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_controls">Timeline: track controls</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_visibility">Track: show or hide</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_lock">Track: lock edits</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_order">Track: layer order</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_mute">Track: mute</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_solo">Track: solo</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_listen">Track: listen</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_gain">Track: gain</button>
+          <button class="manual-node" data-feature-id="cut.timeline.track_pan">Track: pan</button>
+          <button class="manual-node" data-feature-id="cut.timeline.base_overlay">Base track and overlays</button>
+          <button class="manual-node" data-feature-id="cut.timeline.save_assets">Save to Assets and GIF</button>
+
+          <div class="manual-tree-subgroup">Inspector and review</div>
+          <button class="manual-node" data-feature-id="cut.inspector.properties">Properties tab</button>
+          <button class="manual-node" data-feature-id="cut.inspector.color">Color tab</button>
+          <button class="manual-node" data-feature-id="cut.inspector.audio">Audio tab</button>
+          <button class="manual-node" data-feature-id="cut.inspector.chat">Chat tab</button>
+          <button class="manual-node" data-feature-id="cut.inspector.chat_assets">Chat: attach project assets</button>
+          <button class="manual-node" data-feature-id="cut.inspector.chat_review">Chat: review each turn</button>
+          <button class="manual-node" data-feature-id="cut.inspector.tools_overlay">Tools overlay</button>
+          <button class="manual-node" data-feature-id="cut.inspector.pin">Pin tools</button>
+          <button class="manual-node" data-feature-id="cut.inspector.fades">Fades</button>
+          <button class="manual-node" data-feature-id="cut.inspector.transform">Transform</button>
+          <button class="manual-node" data-feature-id="cut.review.ops">Review Ops</button>
+          <button class="manual-node" data-feature-id="cut.review.receipts">Receipts, QC, Scopes, Diff</button>
+          <button class="manual-node" data-feature-id="cut.review.scopes">Video scopes</button>
+        </details>
+
+        <details class="manual-folder" open>
+          <summary>Recording Studio</summary>
+          <button class="manual-node" data-feature-id="cut.record.studio">Studio preview</button>
+          <button class="manual-node" data-feature-id="cut.record.camera_enable">Camera overlay (parked)</button>
+          <button class="manual-node" data-feature-id="cut.record.camera_visible">Show or hide camera</button>
+          <button class="manual-node" data-feature-id="cut.record.camera_position">Camera position</button>
+          <button class="manual-node" data-feature-id="cut.record.camera_size">Camera size</button>
+          <button class="manual-node" data-feature-id="cut.record.camera_shape">Camera shape</button>
+          <button class="manual-node" data-feature-id="cut.record.background">Background</button>
+          <button class="manual-node" data-feature-id="cut.record.raw_streams">Raw streams</button>
+          <button class="manual-node" data-feature-id="cut.record.hotkeys">Recording hotkeys</button>
+          <button class="manual-node" data-feature-id="cut.record.raw_mode">Raw capture mode</button>
+          <button class="manual-node" data-feature-id="cut.record.autoedit">Auto-edit recording</button>
+          <button class="manual-node" data-feature-id="cut.record.studio_event_api">Studio event API</button>
+        </details>
+
+        <details class="manual-folder" open>
+          <summary>Workflows</summary>
+          <button class="manual-node" data-feature-id="cut.workflow.import">Import and organize media</button>
+          <button class="manual-node" data-feature-id="cut.workflow.base_overlay">Build the base timeline, then overlays</button>
+          <button class="manual-node" data-feature-id="cut.workflow.split_trim">Split and trim clips</button>
+          <button class="manual-node" data-feature-id="cut.workflow.captions">Captions and transcript</button>
+          <button class="manual-node" data-feature-id="cut.workflow.edit_for_clarity">Edit for Clarity</button>
+          <button class="manual-node" data-feature-id="cut.workflow.generate">Prompt and storyboard Generate</button>
+          <button class="manual-node" data-feature-id="cut.workflow.generated_media">Compare and place generated media</button>
+          <button class="manual-node" data-feature-id="cut.workflow.motion_roundtrip">Edit a linked clip in Motion</button>
+          <button class="manual-node" data-feature-id="cut.workflow.sequence_index">Search across sequences</button>
+          <button class="manual-node" data-feature-id="cut.workflow.agent_review">Review an agent turn</button>
+          <button class="manual-node" data-feature-id="cut.workflow.recording">Record, polish, and export</button>
+          <button class="manual-node" data-feature-id="cut.workflow.review">Review receipts</button>
+          <button class="manual-node" data-feature-id="cut.workflow.export">Render and export</button>
+        </details>
+
+        <details class="manual-folder" open>
+          <summary>API reference</summary>
+          <button class="manual-node" data-feature-id="cut.api.debug">Debug API overview</button>
+          <button class="manual-node" data-feature-id="cut.api.rest">REST verbs</button>
+          <button class="manual-node" data-feature-id="cut.api.state">Project state</button>
+          <button class="manual-node" data-feature-id="cut.api.events">WebSocket events</button>
+          <button class="manual-node" data-feature-id="cut.api.mcp">MCP server</button>
+          <button class="manual-node" data-feature-id="cut.api.motion_jobs">Motion render status</button>
+          <button class="manual-node" data-feature-id="cut.api.catalog">Verb catalog</button>
+        </details>
+      </aside>
+
+      <main class="manual-content">
+        <section class="manual-hero">
+          <p class="manual-eyebrow">docs.theshellx.com / Cut manual</p>
+          <h1>Learn Cut from the interface.</h1>
+          <p>
+            Setup, editing, Generate, delivery, and the Debug API in one manual.
+            Use the tree to find the exact tool, menu item, filter, or panel you
+            need.
+          </p>
+          <div class="manual-actions">
+            <a class="manual-button primary" href="#first-run">Start with setup</a>
+            <a class="manual-button" href="#interface-map">Open interface map</a>
+            <a class="manual-button" href="#recording-studio">Recording Studio</a>
+            <a class="manual-button" href="#debug-api">Debug API</a>
+          </div>
+        </section>
+
+        <section class="manual-section" id="interface-map">
+          <p class="manual-eyebrow">Interface map</p>
+          <h2>Click a feature to see where it lives.</h2>
+          <div class="manual-surface" aria-label="ShellX Cut interface map">
+            <img
+              src="../assets/cut/cut-main-editor-current.png?v=6e3a3f65-editor"
+              alt="ShellX Cut editor with the Assets tab, editing-readiness summary, preview, and timeline tracks visible"
+            />
+            <div class="manual-highlight" data-manual-highlight data-label="Assets"></div>
+            <div class="manual-popover" data-manual-popover hidden></div>
+          </div>
+
+          <article class="manual-detail" aria-live="polite">
+            <p class="manual-eyebrow">Selected item</p>
+            <h3 data-detail-title>Assets tab</h3>
+            <p data-detail-description>
+              Use Assets to confirm imported media, read per-clip readiness,
+              filter by type or action needed, and add clips to the base
+              timeline at the playhead.
+            </p>
+            <div class="detail-meta">
+              <div>
+                <span>Where</span>
+                <strong data-detail-where>Left sidebar</strong>
+              </div>
+              <div>
+                <span>Requirement</span>
+                <strong data-detail-requirement>Requires a project and at least one imported media file.</strong>
+              </div>
+              <div>
+                <span>Debug/API</span>
+                <strong data-detail-api>media.import, library.add_to_project</strong>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        <section class="manual-section" id="recording-studio">
+          <p class="manual-eyebrow">Recording Studio</p>
+          <h2>Record your screen, and keep the raw streams.</h2>
+          <div class="manual-surface" aria-label="ShellX Cut Recording Studio surface">
+            <img
+              src="../assets/cut/cut-recording-studio-current.png?v=b230b293-record"
+              alt="ShellX Cut Record workspace with Studio preview, a direct camera-unavailable notice, source and audio settings, raw-stream controls, and an enabled Start recording control"
+            />
+          </div>
+          <div class="manual-grid">
+            <article class="manual-card">
+              <h3>Camera capture is parked</h3>
+              <p>Live camera capture is not available in this release. The Record workspace says so directly instead of showing enable, position, size and shape controls that could not work. Screen, microphone and supported system-audio recording are unaffected.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Metadata, not baked pixels</h3>
+              <p>Live Studio changes are saved as timed events so auto-edit can replay background choices and markers into the polished clip.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Raw stream checks</h3>
+              <p>After capture, Cut reports screen, mic, system audio, and Studio event artifacts so the recording can be diagnosed or reused. The camera chip stays dark while camera capture is parked.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Long recording safety</h3>
+              <p>Microphone and Windows system audio are written continuously with bounded memory. Cut exposes the raw WAV only after it finishes cleanly and stops before the WAV format limit could corrupt a long capture.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Windows system audio</h3>
+              <p>On supported Windows 10 and 11 builds, Cut records system audio without opening the physical output driver. Security software may ask once for the new Cut build; if access is denied, screen and microphone recording continue and the missing stream is reported.</p>
+            </article>
+            <article class="manual-card">
+              <h3>macOS system audio</h3>
+              <p>On macOS 14.2 or newer, Cut records system audio through a Core Audio process tap alongside ScreenCaptureKit. The first recording may request Screen Recording and Audio Capture separately; approve both, restart Cut if macOS asks, and retry. A successful take includes <code>system.wav</code>.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Hotkeys</h3>
+              <p>F9 starts or stops recording and F12 adds a marker. The camera bindings (F10, F11, Shift+F11) stay in the keymap but do nothing while camera capture is parked.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="manual-section" id="first-run">
+          <p class="manual-eyebrow">First run</p>
+          <h2>Setup is part of the editor.</h2>
+          <div class="manual-grid">
+            <article class="manual-card">
+              <h3>FFmpeg</h3>
+              <p>
+                Required for clip probe, proxy media, screen recording, preview
+                media, and final export. A fresh PC often needs FFmpeg installed
+                before Cut can work like a video editor. If it is missing,
+                Preview points directly to the Video processing setup card.
+                On macOS, install Homebrew's complete build with
+                <code>brew install ffmpeg-full</code>; Cut detects its keg-only
+                path after restart. The regular Homebrew formula omits filters
+                used by captions, stabilization, and managed color.
+              </p>
+            </article>
+            <article class="manual-card">
+              <h3>Perception and STT</h3>
+              <p>
+                Optional local model setup for transcripts, word cuts, scenes,
+                OCR, diarization inputs, and caption workflows.
+              </p>
+            </article>
+            <article class="manual-card">
+              <h3>CLI agents</h3>
+              <p>
+                Needed for AI planning, Generate prompt and storyboard planning,
+                review assistance, translation workflows, and live agent chat.
+              </p>
+            </article>
+            <article class="manual-card">
+              <h3>Offline work</h3>
+              <p>
+                Basic editing and local renders should remain understandable
+                even when AI models, services, or CLI agents are unavailable.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="manual-section" id="workflows">
+          <p class="manual-eyebrow">Workflows</p>
+          <h2>Common Cut tasks.</h2>
+          <div class="manual-grid">
+            <article class="manual-card">
+              <h3>Import and organize</h3>
+              <p>Create or open a project, import media, check Media Health, filter the asset list, and add clips to the base timeline at the playhead.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Base track and overlays</h3>
+              <p>Use normal Insert or drag from Assets or Library for the story timeline. Imported picture and sound stay linked when moved or trimmed. Use Alt-drag or an overlay lane only when the clip should sit on top, then use track headers to reorder, mute, or solo lanes.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Edit and retime</h3>
+              <p>Split, trim, ripple delete, lift delete, snap, change speed, grade clips, and keep edits reversible. Q ripple-trims from the playhead to the selected clip's start; W trims to its end, closing the gap for linked picture and sound. Add Video Track and Add Audio Track are available in the timeline toolbar.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Caption and translate</h3>
+              <p>Install speech tools, generate transcripts, create captions, style them, and translate captions or transcript text.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Edit for Clarity</h3>
+              <p>Preview the recipe before running it. The pass transcribes, finds pauses and retakes, removes fillers conservatively, and tightens pacing without forcing a render.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Sequence Index</h3>
+              <p>Open Find and choose Sequence Index to search clips and markers across every sequence. Filter by kind, track, offline media, gaps, effects, or hidden, locked, and muted tracks; compact badges expose the matching state. Open a row to switch and seek, or copy the currently shown path-light rows as spreadsheet-safe CSV for QC handoff.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Generated media lifecycle</h3>
+              <p>Use registered project assets as references, label variations, compare takes, choose a result, and insert or replace from verified project history. Cancelled placeholders remain available for an explicit retry.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Edit linked Motion clips</h3>
+              <p>Open a linked package with Edit in Motion, render a verified copy-on-write revision in Canvas, then refresh the same Cut clip. Identity or revision mismatches leave the last good render untouched.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Agent turn review</h3>
+              <p>Attach up to eight registered project assets, use the editable prompt library, then inspect Preview and Diff before Accept, guarded Revert, or Try again. Concurrent edits disable whole-turn revert.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Record and polish</h3>
+              <p>Open Record, choose screen, mic, system audio, and optional camera overlay settings, then stop to keep raw streams and build a polished clip on the timeline.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Review and export</h3>
+              <p>Read ops, receipts, QC, scopes, and diffs before rendering previews, final files, or platform-ready exports.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="manual-section" id="debug-api">
+          <p class="manual-eyebrow">Debug API</p>
+          <h2>Automate and inspect Cut.</h2>
+          <div class="manual-callout">
+            <h3>Local control surface</h3>
+            <p>
+              Use the local API to inspect project state, dispatch editing
+              verbs, watch events, and connect MCP-capable tools to a running
+              Cut server.
+            </p>
+          </div>
+          <table class="manual-api-table">
+            <thead>
+              <tr>
+                <th>Surface</th>
+                <th>Path or command</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>REST verbs</td>
+                <td><code>POST /api/verb/{name}</code></td>
+                <td>Dispatch any verb from the live schema.</td>
+              </tr>
+              <tr>
+                <td>State</td>
+                <td><code>GET /api/state</code></td>
+                <td>Read current project and timeline state.</td>
+              </tr>
+              <tr>
+                <td>Verb catalog</td>
+                <td><code>GET /api/verbs</code></td>
+                <td>Read the machine-readable contract generated from <code>schema/verbs.json</code>.</td>
+              </tr>
+              <tr>
+                <td>Events</td>
+                <td><code>GET /api/events</code> (WebSocket)</td>
+                <td>Watch operations, job progress, render completion, receipts, and UI state.</td>
+              </tr>
+              <tr>
+                <td>Frame inspection</td>
+                <td><code>GET /api/frame?at_ms=</code></td>
+                <td>Inspect the composed timeline frame at a specific time.</td>
+              </tr>
+              <tr>
+                <td>Installed agent docs</td>
+                <td><code>GET /api/agent</code> and <code>/api/agent-doc/&lt;path&gt;</code></td>
+                <td>Discover the complete skill and craft guides, verb schema, feature reference, and Debug API contract installed with this exact build.</td>
+              </tr>
+              <tr>
+                <td>MCP</td>
+                <td><code>cutd mcp</code></td>
+                <td>Expose every Cut verb as an MCP tool for a running Cut server.</td>
+              </tr>
+              <tr>
+                <td>Motion render status</td>
+                <td><code>motion.job.get</code> and <code>motion.job.list</code></td>
+                <td>Name a blocking Motion render with <code>job_id</code>, then poll it from a second request until <code>pollAfterMs</code> disappears. Cut exposes only jobs owned by the open project.</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="manual-callout">
+            <h3>Local-only security boundary</h3>
+            <p>
+              The supported default is one personal workstation / one trusted
+              interactive environment. The API has no token: loopback is a
+              whole-machine boundary, so any local process or account able to
+              connect can operate the editor. Non-loopback binds are refused;
+              Host and Origin checks mitigate browser cross-origin and DNS
+              rebinding but do not authenticate native callers. The non-local
+              escape does not add Cut authentication and is not a supported
+              remote mode. Remote use requires an independently authenticated
+              and authorized SSH/VPN/ShellX broker or equivalent transport;
+              without it, remote access is refused.
+            </p>
+          </div>
+        </section>
+      </main>
+
+    </div>
+  </body>
+</html>

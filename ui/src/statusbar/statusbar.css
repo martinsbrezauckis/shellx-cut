@@ -1,0 +1,80 @@
+/* statusbar/statusbar.css — bottom status bar.
+   40px, --surface-2, top hairline, 12px --ink-3. Tokens from theme.css. */
+
+.sb {
+  display: flex; align-items: center; gap: var(--space-4);
+  height: 100%; padding: 0 var(--space-3);
+  background: var(--surface-2); border-top: 1px solid var(--hairline);
+  color: var(--ink-3); font-size: var(--fs-mono); user-select: none;
+  white-space: nowrap; overflow: hidden;
+}
+
+/* Connection: 7px dot + --mono label */
+.sb-conn { display: flex; align-items: center; gap: 7px; font-family: var(--mono); }
+.sb-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.sb-dot--open { background: var(--green); }
+.sb-dot--connecting { background: var(--orange); animation: sb-pulse 1.2s ease-in-out infinite; }
+.sb-dot--closed { background: var(--err); }
+@keyframes sb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* Job pills (.tl-event pattern: orange dot, name, % mono tabular) */
+.sb-job {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surface-3); border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-pill); padding: 2px 10px;
+  font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--ink-2);
+}
+.sb-job-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--orange);
+  animation: sb-pulse 1.2s ease-in-out infinite;
+}
+.sb-job-pct { font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.sb-job-cancel {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 999px;
+  color: var(--ink-4);
+}
+.sb-job-cancel:hover {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+
+.sb-spacer { flex: 1; }
+
+.sb-output {
+  all: unset; cursor: pointer; display: flex; align-items: center; gap: 5px;
+  min-width: 0; max-width: 280px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill); padding: 2px 8px;
+  background: var(--surface-3); color: var(--ink-2);
+  font: 600 var(--fs-mono-xs) var(--mono);
+}
+.sb-output:hover { border-color: var(--hairline-2); color: var(--ink); }
+.sb-output-label { color: var(--ink-4); }
+.sb-output-path {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Last receipt chip — click opens RECEIPTS tab */
+.sb-receipt {
+  all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  font: 700 var(--fs-mono-xs) var(--mono); letter-spacing: .06em;
+  border-radius: var(--radius-chip); padding: 2px 8px;
+  border: 1px solid transparent; transition: border-color 120ms ease;
+}
+.sb-receipt--pass { color: var(--receipt-pass); background: var(--receipt-pass-bg); }
+.sb-receipt--fail { color: var(--receipt-fail); background: var(--receipt-fail-bg); }
+.sb-receipt--unmeasured { color: var(--receipt-pending); background: var(--receipt-pending-bg); }
+.sb-receipt--none { color: var(--ink-4); cursor: default; font-weight: 400; }
+.sb-receipt:hover { border-color: var(--hairline-2); }
+
+/* Playhead/selection readout — mono fact */
+.sb-pos { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.sb-note {
+  min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+  font: 700 var(--fs-mono-xs) var(--mono); color: var(--warn, #fbbf24);
+}
+
+/* Build id — quietest element on screen */
+.sb-build { font: var(--fs-mono-xs) var(--mono); color: var(--ink-4); }

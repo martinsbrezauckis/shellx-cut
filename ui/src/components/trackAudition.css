@@ -1,0 +1,7 @@
+.track-audition__spinner {
+  animation: track-audition-spin 700ms linear infinite;
+}
+
+@keyframes track-audition-spin {
+  to { transform: rotate(360deg); }
+}

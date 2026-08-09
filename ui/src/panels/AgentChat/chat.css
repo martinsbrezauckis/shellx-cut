@@ -1,0 +1,735 @@
+/* panels/AgentChat — the agent chat box (right-rail tab). Uses the shared
+   design tokens (--ink/--surface/--cut/--hairline). Layout: scrolling log on
+   top, fixed compose row at the bottom. */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Agent selector — pick which coding-agent CLI drives the turn (multi-agent).
+   A slim bar above the log; the trigger opens a listbox of detected agents, each
+   with a readiness/disabled badge + an enforced containment status. Matches the panel's
+   surface/hairline/chip idioms (no new visual language).
+   --------------------------------------------------------------------------- */
+.chat__agentbar {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.chat__agentbar-lead {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.chat__agentsel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 8px);
+  color: var(--ink);
+  font-size: var(--fs-ui-sm);
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.chat__agentsel:hover:not(:disabled) {
+  border-color: var(--cut);
+}
+.chat__agentsel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat__agentsel-name {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+/* Caret points down at rest, flips up when the menu is open. */
+.chat__agentsel .cut-ic:last-child {
+  transform: rotate(180deg);
+  transition: transform 0.15s ease;
+  color: var(--ink-3);
+}
+.chat__agentsel--open .cut-ic:last-child {
+  transform: rotate(0deg);
+}
+
+/* The dropdown listbox — absolutely positioned under the trigger. */
+.chat__agentmenu {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 8px;
+  z-index: 20;
+  min-width: 240px;
+  max-width: calc(100% - 16px);
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface-3);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card, 10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.chat__agentopt {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  border-radius: var(--radius-button, 8px);
+  cursor: pointer;
+}
+.chat__agentopt:hover {
+  background: var(--surface-2);
+}
+.chat__agentopt--active {
+  background: var(--cut-dim);
+}
+.chat__agentopt-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.chat__agentopt-name {
+  font-size: var(--fs-ui-sm);
+  font-weight: 600;
+  color: var(--ink);
+  text-transform: capitalize;
+}
+.chat__agentopt-hint {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-3);
+}
+.chat__agentmenu-note {
+  padding: 6px 8px;
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4);
+}
+
+/* Readiness badge (shared by trigger + rows). A disabled provider is visible but
+   cannot be selected because it lacks an enforceable containment contract. */
+.chat__badge {
+  font-size: var(--fs-ui-xs);
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-chip, 6px);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.chat__badge--ready {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.chat__badge--login {
+  color: var(--amber);
+  background: rgba(212, 166, 87, 0.12);
+  border-color: rgba(212, 166, 87, 0.3);
+}
+.chat__badge--install {
+  color: var(--err);
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.28);
+}
+.chat__badge--disabled {
+  color: var(--orange-soft, var(--amber));
+  background: rgba(234, 128, 54, 0.11);
+  border-color: rgba(234, 128, 54, 0.3);
+}
+
+/* Enforced containment status. Disabled routes read warmer so the unavailable
+   policy state is obvious at a glance. */
+.chat__posture {
+  margin-left: auto;
+  font-size: var(--fs-ui-xs);
+  font-family: var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.chat__posture--warn {
+  color: var(--ic-warn, var(--orange-soft));
+}
+
+.chat__log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat__empty {
+  margin: auto 0;
+  text-align: center;
+  color: var(--ink-3);
+  padding: 16px 8px;
+}
+.chat__empty p {
+  margin: 8px 0 0;
+  font-size: var(--fs-ui-sm);
+  line-height: 1.45;
+}
+.chat__empty .chat__hint {
+  color: var(--ink-4);
+  font-size: var(--fs-ui-xs);
+}
+.chat__empty em {
+  color: var(--ink-2);
+  font-style: normal;
+}
+
+.chat__turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+.chat__turn--user {
+  align-items: flex-end;
+}
+.chat__turn--agent {
+  align-items: flex-start;
+}
+
+.chat__bubble {
+  border-radius: var(--radius-card, 10px);
+  padding: 8px 11px;
+  font-size: var(--fs-ui-sm);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 90%;
+}
+.chat__turn--user .chat__bubble {
+  background: var(--cut);
+  color: #0b0b0d;
+}
+.chat__turn--agent .chat__bubble {
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+}
+.chat__turn--failed .chat__bubble {
+  border-color: var(--err);
+  color: var(--err);
+}
+.chat__bubble--busy {
+  color: var(--ink-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--hairline-2, var(--hairline));
+  border-top-color: var(--cut);
+  border-radius: 50%;
+  animation: chat-spin 0.7s linear infinite;
+}
+@keyframes chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.chat__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.chat__turn-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 90%;
+}
+.chat__turn-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip, 6px);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  font-size: var(--fs-ui-xs);
+}
+.chat__turn-attachment span,
+.chat__turn-attachment {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat__action {
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  background: var(--surface-3);
+  color: var(--cut);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip, 6px);
+  padding: 1px 6px;
+}
+
+.chat__review {
+  width: min(100%, 360px);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.chat__review-head,
+.chat__review-actions {
+  display: flex;
+  align-items: center;
+}
+.chat__review-head {
+  justify-content: space-between;
+  gap: 8px;
+}
+.chat__review-title,
+.chat__review-plan > span {
+  color: var(--ink-3);
+  font-size: var(--fs-ui-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chat__review-state {
+  padding: 2px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  color: var(--amber);
+  font-size: var(--fs-ui-xs);
+  white-space: nowrap;
+}
+.chat__review-state--accepted {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--hairline));
+}
+.chat__review-state--reverted,
+.chat__review-state--retry {
+  color: var(--ink-2);
+}
+.chat__review-plan {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 7px;
+  align-items: baseline;
+}
+.chat__review-plan p {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-ui-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.chat__review-warning,
+.chat__review-error {
+  padding: 6px 7px;
+  border-left: 2px solid var(--amber);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-ui-xs);
+  line-height: 1.35;
+}
+.chat__review-error {
+  border-left-color: var(--err);
+  color: var(--err);
+}
+.chat__review-actions {
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.chat__review-actions button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-ui-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat__review-actions button:hover:not(:disabled) {
+  border-color: var(--cut);
+  color: var(--ink);
+}
+.chat__review-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Error transparency: the agent's OWN final words on a failed turn, surfaced
+   below the red reason bubble — verbatim, never swallowed (PLAN HARD REQ). */
+.chat__agent-said {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 90%;
+  padding: 7px 10px;
+  border-left: 2px solid var(--err);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-chip, 6px) var(--radius-chip, 6px) 0;
+}
+.chat__agent-said-lead {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chat__agent-said-text {
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-2);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat__meta {
+  display: flex;
+  gap: 8px;
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4);
+  padding: 0 2px;
+}
+/* Machine error-category tag on a failed turn (auth / blocked / cli_error / …)
+   — a compact, monospace, muted-red marker with a stable selector. */
+.chat__errkind {
+  font-family: var(--mono);
+  color: var(--err);
+  text-transform: lowercase;
+}
+/* Cost chip: a NOTIONAL API-equivalent estimate, not billed money (the turn
+   runs on the user's own subscription). Dotted underline + help cursor signal
+   "hover for what this means". */
+.chat__cost {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* Suggestion chips — quick-prompts above the compose row. Light, wrap, scroll-free;
+   pre-fill the box on click (discoverability, not dedicated controls). */
+.chat__chips {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px 0;
+  background: var(--surface);
+}
+.chat__chips-lead {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-4);
+}
+.chat__chip {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip, 999px);
+  padding: 3px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat__chip:hover:not(:disabled) {
+  border-color: var(--cut);
+  color: var(--ink);
+}
+.chat__chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat__promptlib-trigger {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 25px;
+  padding: 3px 7px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 6px);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--fs-ui-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat__promptlib-trigger:hover:not(:disabled),
+.chat__promptlib-trigger--open {
+  border-color: var(--cut);
+  color: var(--ink);
+}
+.chat__promptlib-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat__promptlib-trigger .cut-ic:last-child {
+  transform: rotate(180deg);
+  transition: transform 0.15s ease;
+}
+.chat__promptlib-trigger--open .cut-ic:last-child { transform: rotate(0deg); }
+
+.chat__promptlib {
+  position: absolute;
+  z-index: 24;
+  right: 8px;
+  bottom: calc(100% + 6px);
+  left: 8px;
+  max-height: min(420px, calc(100vh - 320px));
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card, 8px);
+  background: var(--surface-3);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
+}
+.chat__promptlib-group + .chat__promptlib-group {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--hairline);
+}
+.chat__promptlib-group h3 {
+  margin: 0 5px 3px;
+  color: var(--ink-4);
+  font: 600 var(--fs-ui-xs) var(--sans);
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.chat__promptlib-group button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius-button, 6px);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.chat__promptlib-group button:hover,
+.chat__promptlib-group button:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+.chat__promptlib-group button > span {
+  font-size: var(--fs-ui-sm);
+  font-weight: 600;
+}
+.chat__promptlib-group button > small {
+  color: var(--ink-3);
+  font-size: var(--fs-ui-xs);
+  line-height: 1.35;
+}
+
+.chat__compose {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.chat__attachments {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 8px 0;
+  background: var(--surface);
+}
+.chat__attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 4px 3px 7px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip, 6px);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  font-size: var(--fs-ui-xs);
+}
+.chat__attachment-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat__attachment-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--ink-3);
+  background: transparent;
+  cursor: pointer;
+}
+.chat__attachment-chip button:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+.chat__attachment-picker {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-end;
+}
+.chat__attach {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card, 8px);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.chat__attach:hover:not(:disabled),
+.chat__attach--open {
+  border-color: var(--cut);
+  color: var(--ink);
+}
+.chat__attach:disabled {
+  color: var(--ink-4);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.chat__attachment-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 25;
+  width: 268px;
+  max-width: calc(100vw - 24px);
+  padding: 4px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card, 8px);
+  background: var(--surface-3);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.chat__attachment-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px;
+  color: var(--ink-4);
+  font-size: var(--fs-ui-xs);
+}
+.chat__attachment-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(260px, 45vh);
+  overflow-y: auto;
+}
+.chat__attachment-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  width: 100%;
+  padding: 7px;
+  border: 0;
+  border-radius: var(--radius-button, 6px);
+  color: var(--ink-2);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-ui-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.chat__attachment-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat__attachment-option:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+.chat__attachment-option--selected {
+  color: var(--cut);
+  background: var(--cut-dim);
+}
+.chat__attachment-option:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chat__input {
+  flex: 1 1 auto;
+  resize: none;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card, 8px);
+  background: var(--bg-0);
+  color: var(--ink);
+  font-size: var(--fs-ui-sm);
+  font-family: inherit;
+  padding: 7px 9px;
+  line-height: 1.4;
+}
+.chat__input:focus {
+  outline: none;
+  border-color: var(--cut);
+}
+.chat__input:disabled {
+  opacity: 0.55;
+}
+.chat__send {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-card, 8px);
+  background: var(--cut);
+  color: #0b0b0d;
+  cursor: pointer;
+}
+.chat__send:disabled {
+  background: var(--surface-3);
+  color: var(--ink-4);
+  cursor: not-allowed;
+}

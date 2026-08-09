@@ -1,0 +1,26 @@
+# cut-core — project model, op-log, EDL, checkpoints, diff (timeline/op-log contract).
+# The shared-types crate: Project/Track/Clip/OpRecord/Receipt/VerbResult/CutError
+# all live here and are re-exported from lib.rs. Every other crate depends on this.
+[package]
+name = "cut-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellX Cut core: project model, append-only op-log, EDL derivation, checkpoints, diff"
+
+[lib]
+name = "cut_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

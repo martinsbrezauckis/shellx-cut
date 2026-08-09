@@ -1,0 +1,685 @@
+/* theme.css — dark ShellX-family theme (UI contract).
+   Keep shared token values stable across product surfaces. Signature accent =
+   editor blue --cut #3b82f6 (violet conflicts with the brand; orange marks
+   active work; red stays FAIL-only). White is the strongest accent.
+   LAYOUT below the token block is the app-shell chrome (top bar 54px,
+   transport, dense timeline).
+   Optional packaged fonts: @fontsource-variable/onest + @fontsource/geist-mono;
+   fallback stacks below keep the app usable when those packages are absent. */
+
+:root {
+  /* surfaces — warm near-black; never cold #000 */
+  --bg: #0a0a0a;            /* app floor */
+  --bg-deep: #050505;       /* preview monitor well only (homepage bg-0) */
+  --bg-grad: linear-gradient(180deg, #0d0d0c 0%, #080807 100%);
+  --surface: #0e0e0d;       /* elevated panel bg */
+  --surface-2: #131312;     /* inputs, rows, bars, clip bodies */
+  --surface-3: #1a1a18;     /* hover, dropdowns, clip hover */
+  --hairline: #1f1f1d;      /* panel dividers */
+  --hairline-2: #2a2a28;    /* inner dividers, chip borders */
+  --border: #353532;        /* focus/hover border */
+
+  /* ink — every tier used for text clears WCAG AA through surface-3. */
+  --ink: #f5f5f4;  --ink-2: #a8a8a4;  --ink-3: #92928e;  --ink-4: #858581;
+
+  /* status (family semantics — fixed meanings, do not repurpose) */
+  --green: #22c55e;  --green-soft: #4ade80;   /* PASS / verified / connected */
+  --orange: #f97316; --orange-soft: #fb923c;  /* running / active job / marker */
+  --amber: #d4a657;                            /* needs review / pending */
+  --err: #ef4444;    --err-brand: #c8423a;     /* FAIL / lost connection */
+  --warm: #fef3c7;                             /* pale hover highlight */
+  --accent: #ffffff;                           /* white IS the strongest accent */
+
+  /* receipt semantics (aliases — use these in receipt UI, not raw colors) */
+  --receipt-pass: var(--green);
+  --receipt-fail: var(--err);
+  --receipt-pending: var(--amber);
+  --receipt-pass-bg: rgba(34,197,94,.07);
+  --receipt-fail-bg: rgba(239,68,68,.08);
+  --receipt-pending-bg: rgba(212,166,87,.07);
+
+  /* Icon tones — thin grey glyphs were
+     invisible in daylight + undifferentiated). A RESTRAINED semantic set, reusing the
+     accent palette, applied to chrome icons so Library/Assets/Record/etc. read at a
+     glance. Dense timeline glyphs stay monochrome (tone="default"). */
+  --ic-brand: var(--cut-soft);   /* primary / agent / active */
+  --ic-media: #4cc2f5;           /* video / clips / film */
+  --ic-audio: #b692f6;           /* mixer / music / mic */
+  --ic-asset: #2dd4bf;           /* library / assets / import — TEAL (cool). NOT gold:
+                                    Gold is not used as a Cut identity colour
+                                    (it's Vault's, collides with --amber/--orange-soft).
+                                    Teal H172° sits between media-cyan H198° and the
+                                    status-greens — distinct from all warm tones AND from
+                                    media/audio/brand, so "library / import" reads cleanly. */
+  --ic-record: #f0686a;          /* capture / live */
+  --ic-success: var(--green-soft);
+  --ic-warn: var(--orange-soft);
+  --ic-danger: var(--err);
+
+  /* CUT signature — editor blue (module accent; playhead/selection/agent) */
+  --cut: #2563eb;  --cut-soft: #5b8def;  /* polished true-blue */
+  --cut-dim: rgba(37,99,235,.16);     /* selection fills, agent badge bg */
+  --cut-glow: rgba(37,99,235,.45);    /* playhead glow, drag affordance */
+
+  /* type — compact desktop scale for a dense NLE */
+  --sans: "Onest Variable","Onest",-apple-system,"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --mono: "Geist Mono","GeistMono","JetBrains Mono","SF Mono",ui-monospace,monospace;
+  --fs-body: 15px; --fs-ui: 14px; --fs-ui-sm: 13px; --fs-ui-xs: 11px;
+  --fs-title-md: 22px; --fs-mono: 12px; --fs-mono-xs: 10px;
+  --fs-micro: 9px;         /* micro badges/labels (e.g. `via ui` suffix) */
+  --fs-tc: 15px;            /* transport timecode readout */
+
+  /* rhythm + radius */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --radius-chip: 6px; --radius-button: 8px; --radius-card: 12px;
+  --radius-modal: 16px; --radius-pill: 999px; --radius-clip: 4px;
+
+  /* z-layers */
+  --z-clip: 1; --z-playhead: 5; --z-sticky: 10; --z-dropdown: 40;
+  --z-scrim: 120; --z-modal: 121; --z-toast: 200;
+
+  /* shadows — overlays only; panels divide by hairlines, never shadows */
+  --shadow-dropdown: 0 8px 28px rgba(0,0,0,.5);
+  --shadow-modal: 0 24px 64px rgba(0,0,0,.55);
+
+  /* ── Additive redesign tokens; source of truth = design.tokens.dtcg.json.
+     Nothing references these yet, so they introduce ZERO visual change. ── */
+  /* motion — compositor-only, asymmetric (exit ≈ 0.8× enter), instant for kbd/agent */
+  --motion-instant: 0ms;
+  --motion-fast: 120ms;  --motion-base: 180ms;  --motion-modal: 200ms;
+  --motion-panel: 280ms; --motion-slow: 350ms;
+  --ease-out: cubic-bezier(0.33,1,0.68,1);
+  --ease-out-strong: cubic-bezier(0.16,1,0.3,1);
+  --ease-in: cubic-bezier(0.32,0,0.67,0);
+  --ease-ios: cubic-bezier(0.32,0.72,0,1);
+  /* Accent polish — true-blue refinement of --cut. */
+  --cut-deep: #1d4ed8;   /* primary-button fill, white-text AA */
+  /* Per-media clip tints (desaturated). */
+  --clip-video: #16242e; --clip-audio: #15241c; --clip-text: #241a2b;
+  --clip-image: #241f14; --clip-fx: #1a2230;
+
+  /* ── primary-button idiom tokens (LIGHT-THEME extraction) ───────────────────
+     The app's primary button is "fill = --accent, text = dark, hover = --warm",
+     repeated across .cd-btn--primary / .tb-btn--primary / .env-btn--primary /
+     .tx__cut-btn / .tx__reel-assemble / .tl-xfade-pop__btn--primary. The text was
+     a hardcoded #0a0a0a/#111 and the hover a raw var(--warm) — neither could flip
+     for a light theme (a near-black button needs WHITE text, not dark). Extracting
+     them to tokens lets the light theme invert the pair. Dark values below ==
+     the previous hardcodes, so dark is unchanged. */
+  --accent-ink: #0a0a0a;        /* text on an --accent fill */
+  --accent-hover: var(--warm);  /* primary-button hover fill (dark: pale cream) */
+
+  /* ── tokens referenced ONLY via inline fallbacks by director/autopilot CSS ──
+     (var(--ink-1, #e8eaed) etc). They were never defined here, so they could not
+     be themed. Define them at EXACTLY their existing fallback values → dark is
+     pixel-identical, and the light block below can now flip them.
+     NOTE: --cut-accent is deliberately NOT defined here — its inline fallbacks
+     disagree across sites (#3b82f6 vs clips' #3366FF), so defining one value would
+     shift the other in dark. It is defined in the LIGHT block only, where all sites
+     should share the one accent; dark keeps each site's own fallback. */
+  --ink-1: #e8eaed;
+  --line: #2a2e36;
+  --surface-1: #15171b;
+  --cut-text-dim: #9aa3b2;
+  --cut-ok: #22c55e;
+  --cut-border: #2a2f3a;
+  /* a SECOND wave of fallback-only tokens (clips/autopilot/director/inspector/
+     context-menus/preview). Same rule: dark == the existing inline fallbacks, so
+     dark is byte-identical; the light block re-points them. --cut-text (#e6e9ef,
+     near-white) was the cause of invisible chip/radio labels on a light backdrop. */
+  --surface-0: #0e0f12;
+  --cut-text: #e6e9ef;
+  --cut-warn: #f59e0b;
+  --cut-chip: #2a2a2a;
+  --cut-line: #2a2a2a;
+  --cut-panel: #1b1b1b;
+  --cut-panel-2: #161a22;
+  --cut-accent-dim: #23304d;
+  --danger: #f8716a;
+  --warn: #e6b450;
+
+  color-scheme: dark;
+}
+
+/* ==========================================================================
+   LIGHT THEME — additive [data-theme="light"] token override (themePref.ts sets
+   the attribute on <html>). Only the COLOUR tokens flip; type/space/radius/z/
+   motion are theme-agnostic and inherited from :root. Palette goal: a warm
+   off-white floor with white elevated panels, dark warm-grey ink at AA contrast,
+   status hues darkened so they read as TEXT on white (not just as dots), and the
+   Cut blue retained as the signature accent. Covered by automated contrast
+   checks and per-panel screenshot tests.
+   ========================================================================== */
+[data-theme="light"] {
+  /* surfaces — warm off-white (mirrors the warm near-black; never cold pure grey) */
+  --bg: #f4f4f2;            /* app floor */
+  --bg-deep: #e6e5e2;       /* recessed wells (the video letterbox itself stays #000) */
+  --bg-grad: linear-gradient(180deg, #f7f7f5 0%, #efefec 100%);
+  --surface: #ffffff;       /* elevated panel bg — lifts above the floor */
+  --surface-2: #ededeb;     /* inputs, rows, bars, clip bodies */
+  --surface-3: #e1e1de;     /* hover, dropdowns, clip hover */
+  --hairline: #e3e3df;      /* panel dividers */
+  --hairline-2: #d3d3ce;    /* inner dividers, chip borders */
+  --border: #adada7;        /* focus/hover border (reads on light) */
+
+  /* ink — dark warm greys. Light surfaces glare more than dark ones, so each tier
+     is darker than a naive inverse: ink/ink-2/ink-3 clear AA (4.5:1) on white and
+     on --surface-2; ink-4 (the deliberately-faint tier — disabled dots, micro
+     sublabels) clears AA-large (3:1) everywhere. Calibrated against the contrast
+     sweep (see report), so no body/label/control text is invisible. */
+  --ink: #1b1b19;  --ink-2: #3c3c36;  --ink-3: #565650;  --ink-4: #646459;
+
+  /* status — darkened for TEXT legibility on light tints; still hue-true as dots/fills */
+  --green: #12703a;  --green-soft: #16a34a;
+  --orange: #c2410c; --orange-soft: #ea580c;
+  --amber: #a04b08;
+  --err: #cf2020;    --err-brand: #b91c1c;
+  --warm: #b45309;   /* warm amber — caption tint/icon (button hover uses --accent-hover) */
+  --accent: #1b1b19; /* near-black IS the strongest accent on light */
+  --accent-ink: #ffffff;    /* WHITE text on the now-dark accent fill */
+  --accent-hover: #38372f;  /* lifted accent for primary-button hover */
+
+  /* receipt soft bgs — a touch stronger alpha so the tint reads over white */
+  --receipt-pass-bg: rgba(21,128,61,.10);
+  --receipt-fail-bg: rgba(220,38,38,.09);
+  --receipt-pending-bg: rgba(180,83,9,.10);
+
+  /* icon tones — darkened so thin Lucide strokes read on white
+     (--ic-brand/-success/-warn/-danger are aliases of the tokens above → auto-flip) */
+  --ic-media: #0369a1;
+  --ic-audio: #6d28d9;
+  --ic-asset: #0d9488;
+  --ic-record: #dc2626;
+
+  /* CUT signature — the deep blue (#1d4ed8) so blue TEXT clears AA both on white
+     and on the light-blue --cut-dim active-state tints (the brighter #2563eb only
+     reached ~4.0:1 there). Still a clearly-blue playhead/selection fill. The
+     dim/glow alpha tints stay the brighter hue (they're fills, not text). */
+  --cut: #1d4ed8;  --cut-soft: #1d4ed8;
+  --cut-dim: rgba(37,99,235,.12);
+  --cut-glow: rgba(37,99,235,.40);
+  --cut-deep: #1d4ed8;
+
+  /* the 7 formerly-fallback-only tokens — light values */
+  --ink-1: #1b1b19;
+  --line: #d3d3ce;
+  --cut-accent: #1d4ed8;
+  --surface-1: #ededeb;
+  --cut-text-dim: #565650;
+  --cut-ok: #12703a;
+  --cut-border: #cfcfc9;
+  /* the second wave — light values. --cut-text flips near-white→dark ink (the key
+     fix); the cut-panel/chip/line surfaces flip to light; warn/danger to dark hues. */
+  --bg-0: #e6e5e2;          /* dark: undefined (no-op); light: a deep light well */
+  --surface-0: #f4f4f2;     /* used as text-on-blue-hover → light reads on the blue */
+  --cut-text: #1b1b19;      /* near-white → dark ink (clips/autopilot/director labels) */
+  --cut-warn: #a04b08;      /* amber text — dark enough for white-ish tints */
+  --cut-chip: #e6e6e3;      /* tag-chip fill */
+  --cut-line: #d3d3ce;      /* hairline border */
+  --cut-panel: #ffffff;     /* elevated panel fill */
+  --cut-panel-2: #f4f4f2;   /* recessed panel fill */
+  --cut-accent-dim: #1d4ed8;/* selected-cell fill that carries WHITE text → keep blue */
+  --danger: #be1f1f;        /* context-menu danger text */
+  --warn: #a04b08;          /* preview warn chip text/dot */
+
+  /* shadows — much softer on a light backdrop */
+  --shadow-dropdown: 0 8px 24px rgba(0,0,0,.16);
+  --shadow-modal: 0 24px 60px rgba(0,0,0,.22);
+
+  /* per-media clip tints — light desaturated (opt-in; mirrors the dark set) */
+  --clip-video: #dbeafe; --clip-audio: #dcfce7; --clip-text: #f3e8ff;
+  --clip-image: #fef3c7; --clip-fx: #e0e7ff;
+
+  color-scheme: light;
+}
+
+/* ── LIGHT-THEME EXCEPTIONS — component colours that are HARDCODED (not tokens),
+   so they cannot flip via the override block above. Each was chosen for the dark
+   theme (a pastel that reads on near-black, or dark text on a then-light accent)
+   and goes invisible / low-contrast on a light backdrop. These rules are LIGHT-ONLY
+   (the [data-theme="light"] prefix raises specificity above the component rule), so
+   the dark theme stays byte-identical. The Record panel defines its own status
+   colours in record.css. */
+
+/* Pastel error/danger text → a dark red that reads on the light-red tints */
+[data-theme="light"] .tx__setup-err,
+[data-theme="light"] .pj-error,
+[data-theme="light"] .pj-badge--missing,
+[data-theme="light"] .pj-forget:hover,
+[data-theme="light"] .lb-act--danger:hover:not(:disabled) { color: #be1f1f; }
+[data-theme="light"] .pj-delete:hover { color: #a81515; }
+[data-theme="light"] .lb-act--danger:hover:not(:disabled) { border-color: #d68a8a; }
+
+/* QC / render-queue verdict text (pastel green/red on translucent tints) */
+[data-theme="light"] .dir-qc-verdict--ok,
+[data-theme="light"] .rq-item-state--done { color: #12703a; }
+[data-theme="light"] .dir-qc-verdict--flag,
+[data-theme="light"] .rq-item-state--failed { color: #be1f1f; }
+
+/* Dark text hardcoded on the (now-darker) blue --cut accent → white text */
+[data-theme="light"] .lb-browse,
+[data-theme="light"] .pj-create-btn,
+[data-theme="light"] .pv-toggle--on,
+[data-theme="light"] .chat__turn--user .chat__bubble,
+[data-theme="light"] .chat__send { color: #ffffff; }
+
+/* Library media-type placeholder glyphs (pastel, on the now-light thumb well) →
+   the darker icon tones so the type still reads at a glance */
+[data-theme="light"] .lb-thumb--video { color: var(--ic-media); }
+[data-theme="light"] .lb-thumb--audio { color: var(--ic-audio); }
+[data-theme="light"] .lb-thumb--image { color: var(--ic-asset); }
+
+*,*::before,*::after { box-sizing: border-box; }
+html,body,#root { margin:0; padding:0; height:100%; background:var(--bg);
+  color:var(--ink); font:400 var(--fs-body)/1.5 var(--sans);
+  letter-spacing:-0.005em; -webkit-font-smoothing:antialiased; overflow:hidden; }
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-thumb { background:var(--hairline-2); border-radius:999px; }
+::-webkit-scrollbar-track { background:transparent; }
+kbd { font:var(--fs-ui-xs) var(--mono); background:var(--surface-2);
+  border:1px solid var(--hairline-2); border-radius:4px; padding:1px 6px; color:var(--ink-2); }
+
+/* ==========================================================================
+   APP SHELL LAYOUT.
+   Grid rows 54px top bar / 1fr middle / 40px status bar. Middle row = flex:
+   left column (transcript ~40% | preview ~60% split over timeline) + the
+   review rail FULL-HEIGHT right (340px default, 280–480 drag, `\` collapse).
+   Inline styles from App.tsx carry the user-dragged sizes (useLayout,
+   persisted to localStorage); the min/max rules here are the floors so
+   the spec holds even before JS clamping runs.
+   ========================================================================== */
+#root { overflow: auto; } /* Below the native minimum the app scrolls instead of clipping. */
+
+.app {
+  display: grid;
+  grid-template-rows: 54px minmax(0, 1fr) 40px;
+  height: 100%;
+  min-width: 1100px;
+  min-height: 680px;
+}
+
+/* One shared, non-blocking failure surface for human-triggered verbs. It stays
+   above drawers/modals without stealing focus and offers setup only when the
+   engine identifies a missing capability. */
+.user-action-feedback {
+  position: fixed;
+  right: 16px;
+  bottom: 52px;
+  z-index: var(--z-toast);
+  width: min(440px, calc(100vw - 32px));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--hairline-2));
+  border-radius: var(--radius-button);
+  background: var(--surface-2);
+  color: var(--ink);
+  box-shadow: var(--shadow-dropdown);
+  font: 600 var(--fs-ui-sm) / 1.35 var(--sans);
+}
+.user-action-feedback__actions { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.user-action-feedback button {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  background: var(--surface-3);
+  color: var(--ink);
+  font: 700 var(--fs-ui-xs) / 1 var(--sans);
+  cursor: pointer;
+}
+.user-action-feedback button:hover { border-color: var(--ink-2); }
+.user-action-feedback button:focus-visible { outline: 2px solid var(--cut-soft); outline-offset: 2px; }
+.user-action-feedback .user-action-feedback__dismiss {
+  width: 30px;
+  padding: 0;
+  font-size: 18px;
+  color: var(--ink-2);
+}
+
+/* middle row: left column + (divider) + review rail. position:relative anchors
+   the comment rail's slide-over overlay (below). */
+.app__middle { display: flex; min-height: 0; min-width: 0; position: relative; }
+
+/* left column: upper split over timeline */
+.app__main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.app__split { flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+.app__transcript { flex: none; min-width: 320px; display: flex; min-height: 0; }
+.app__transcript--collapsed { display: none; } /* collapse button — LeftPanel stays mounted */
+.app__preview {
+  flex: 1;
+  min-width: 480px;
+  display: flex;
+  min-height: 0;
+  container: preview-panel / inline-size;
+}
+.app__timeline { flex: none; min-height: 160px; max-height: 60%; display: flex; min-width: 0; }
+
+/* review/tools rail — pinned mode consumes layout width; overlay mode floats
+   above the editor so the timeline keeps the full middle-row width by default. */
+.app__rail {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+}
+.app__rail--collapsed { display: none; } /* `\` toggle — Review stays mounted */
+.app__rail--pinned { position: relative; }
+.app__rail--overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-dropdown);
+  max-width: min(480px, calc(100% - 36px));
+  border-left: 1px solid var(--hairline);
+  box-shadow: -12px 0 28px rgba(0, 0, 0, 0.34);
+}
+/* the context Inspector docks ABOVE the Review in the rail (Edit mode).
+   It is a TABBED panel (Properties · Color · Audio) with a slim tab strip
+   above the active tab body. Taller cap (60%) than the single-Inspector 48% since
+   the Color/Audio surfaces need more room. */
+.app__inspector {
+  flex: 0 0 60%;
+  max-height: 60%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--hairline, rgba(255, 255, 255, 0.07));
+}
+.app__inspector > section { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.app__rail--overlay .app__inspector {
+  flex: 1 1 auto;
+  max-height: none;
+  border-bottom: none;
+}
+
+/* Right-sidebar tab strip (Properties · Color · Audio). Mirrors the left
+   sidebar's lp__tabs so both rails read as the same kind of tabbed panel. */
+.app__rtab-bar {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  height: 32px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.app__rtabs {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 var(--space-2);
+}
+.app__rtab {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-3);
+  font: 500 var(--fs-ui-sm) var(--sans);
+  cursor: pointer;
+}
+.app__rtab:hover { color: var(--ink-2); }
+.app__rtab--active { color: var(--ink); border-bottom-color: var(--cut); }
+.app__rail-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--space-2) 0 0;
+}
+.app__rail-control {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.app__rail-control:hover,
+.app__rail-control:focus-visible {
+  color: var(--ink);
+  background: var(--surface-2);
+  border-color: var(--hairline);
+  outline: none;
+}
+.app__rail-control--active {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--cut) 16%, transparent);
+  border-color: color-mix(in srgb, var(--cut) 46%, transparent);
+}
+/* the active tab's body fills the rest + scrolls; the embedded grade/mixer bodies
+   already scroll internally (cd-embed), so this just bounds them. */
+.app__rtab-body { flex: 1 1 auto; min-height: 0; display: flex; min-width: 0; overflow: hidden; }
+.app__rtab-body > section { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.app__loading {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-sm);
+  background: var(--surface);
+}
+
+/* Slim re-expand strips shown in place of a collapsed side panel (left sidebar
+   or right review rail). They remain in normal flex layout so their hit areas
+   never cover preview or timeline controls. */
+.app__side-expand {
+  flex: none;
+  width: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border: none;
+  background: var(--surface);
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.app__side-expand--left { border-right: 1px solid var(--hairline); }
+.app__side-expand--right {
+  border-left: 1px solid var(--hairline);
+  box-shadow: -6px 0 16px rgba(0, 0, 0, 0.18);
+}
+.app__side-expand:hover { color: var(--ink); background: var(--surface-2); }
+.app__side-expand--has-selection {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+.app__side-expand-selection {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.app__side-expand-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: var(--fs-ui-xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: inherit;
+  user-select: none;
+}
+
+/* Review-comment rail — a LEFT SLIDE-OVER OVERLAY (absolute, not a layout
+   column): it floats over the left edge of the editor when open and consumes NO
+   layout width, so opening it never reflows/deforms the transcript|preview|rail
+   columns at any window size. A soft right shadow reads it as floating above. */
+.app__comments {
+  position: absolute; top: 0; left: 0; bottom: 0;
+  width: min(300px, 90%);
+  display: flex; min-height: 0;
+  z-index: var(--z-dropdown);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+.app__status { min-width: 0; }
+
+/* panels fill their layout wrappers */
+.app__comments > .panel,
+.app__transcript > .panel,
+.app__preview > .panel,
+.app__timeline > .panel,
+.app__rail > .panel { flex: 1 1 auto; min-width: 0; min-height: 0; }
+
+/* ----- responsive: 1100–1279px --------------------------------------------
+   The native window supports 1100px. In that band the shell fits the viewport:
+   - the top grid row relaxes to `auto` so the WRAPPED top bar (topbar.css) is
+     not clipped by the fixed 54px row;
+   - the three columns' min-widths shrink to a usable-but-tight floor so the
+   transcript|preview split and the review rail all fit without overflow,
+   keeping Render/Export AND the rail (with its `\`/`R` toggle) reachable.
+   Below the native 1100px floor, #root deliberately scrolls. */
+@media (max-width: 1279px) {
+  .app { grid-template-rows: auto minmax(0, 1fr) 40px; }
+  .app__transcript { min-width: 260px; }
+  .app__preview { min-width: 380px; }
+  .app__rail { max-width: 320px; }
+}
+
+/* ----- dividers (: 1px --hairline, 6px hit area, hover --border) --------
+   z-index above panel-internal sticky chrome (timeline ruler --z-sticky:10,
+   its pinned chips +3) — otherwise the ruler wins hit-testing over the
+   divider's 6px zone and the timeline divider can't be grabbed; below
+   --z-dropdown so floating overlays still cover dividers. */
+.divider { flex: none; position: relative; background: var(--hairline);
+  transition: background 120ms ease; z-index: calc(var(--z-sticky) + 10);
+  touch-action: none; }
+.divider--v { width: 1px; cursor: col-resize; }
+.divider--h { height: 1px; cursor: row-resize; }
+/* 6px hit zone: pseudo-element extends hit testing beyond the 1px line */
+.divider--v::before { content: ''; position: absolute; top: 0; bottom: 0; left: -3px; right: -3px; }
+.divider--h::before { content: ''; position: absolute; left: 0; right: 0; top: -3px; bottom: -3px; }
+.divider:hover, .divider--dragging { background: var(--border); }
+
+/* during a drag: force the resize cursor + kill text selection app-wide */
+body.cut-dragging-col, body.cut-dragging-col * { cursor: col-resize !important; user-select: none !important; }
+body.cut-dragging-row, body.cut-dragging-row * { cursor: row-resize !important; user-select: none !important; }
+
+/* ----- panel chrome (: --bg body, hairline separators, never shadows;
+   sticky 40px header — title 11px/600 uppercase .18em --ink-3, meta in mono).
+   No per-panel border: the shell dividers ARE the hairlines between panels. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.panel__header {
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 40px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink-3);
+  font-size: var(--fs-ui-xs);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+/* Placeholder content used by empty panel states. */
+.panel__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: var(--fs-mono);
+  text-align: center;
+  padding: var(--space-4);
+}
+
+/* ----- status bar ---------------------------------------------------------- */
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: 100%;
+  padding: 0 var(--space-3);
+  background: var(--surface);
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: var(--fs-ui-xs);
+  user-select: none;
+}
+
+.statusbar__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+/* family semantics: green connected · orange working · red lost */
+.statusbar__dot--open { background: var(--green); }
+.statusbar__dot--connecting { background: var(--orange); }
+.statusbar__dot--closed { background: var(--err); }
+
+.statusbar__spacer { flex: 1; }
+
+/* ── Icon tones (see --ic-* tokens) ─────────────────────────────────────────
+   `cut-ic` is on every <Icon>. A tone sets the glyph colour (Lucide strokes use
+   currentColor); without a tone the icon takes the base floor below. The floor
+   (untoned glyphs are difficult to see in bright environments)
+   rests an untoned icon one step brighter than muted chrome TEXT (--ink-3 washes out on
+   a bright screen) — lifted to --ink-2. Tones (declared just after, same specificity →
+   they win at rest) keep toned icons on their colour; any icon inside a hovered/focused
+   control still goes full --ink (the more-specific rule below), so hover is unchanged. */
+.cut-ic { color: var(--ink-2); }
+:where(button, [role="button"], a):hover .cut-ic,
+:where(button, [role="button"]):focus-visible .cut-ic { color: var(--ink); }
+.cut-ic--brand   { color: var(--ic-brand); }
+.cut-ic--media   { color: var(--ic-media); }
+.cut-ic--audio   { color: var(--ic-audio); }
+.cut-ic--asset   { color: var(--ic-asset); }
+.cut-ic--record  { color: var(--ic-record); }
+.cut-ic--success { color: var(--ic-success); }
+.cut-ic--warn    { color: var(--ic-warn); }
+.cut-ic--danger  { color: var(--ic-danger); }

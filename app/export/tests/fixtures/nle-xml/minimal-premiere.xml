@@ -1,0 +1,207 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Minimal FCP7 XML (xmeml v5) for Premiere Pro (File > Import). Mirrors the
+     exact shape the fcp7 serializer emits with resolve=false
+     (vendored/nim/fcp7.nim). Scenario: talk.mp4 (1920x1080, 30fps, stereo
+     48kHz) cut to keep source [0s,5s) + [10s,15s) => 10s timeline.
+     All times are INTEGER FRAMES at the sequence timebase (30).
+     start/end = timeline placement, in/out = source range (end-exclusive).
+     One video track + the stereo source "exploded" into 2 linked audio tracks
+     (Premiere's stereo convention). clipitem ids: video 1-2, audio 3-6. -->
+<xmeml version="5">
+  <sequence explodedTracks="true">
+    <name>talk</name>
+    <duration>300</duration>
+    <rate>
+      <timebase>30</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <width>1920</width>
+            <height>1080</height>
+            <pixelaspectratio>square</pixelaspectratio>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+          </samplecharacteristics>
+        </format>
+        <track>
+          <clipitem id="clipitem-1">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>0</start>
+            <end>150</end>
+            <in>0</in>
+            <out>150</out>
+            <file id="file-1">
+              <name>talk</name>
+              <pathurl>/home/user/media/talk.mp4</pathurl>
+              <timecode>
+                <string>00:00:00:00</string>
+                <displayformat>NDF</displayformat>
+                <rate>
+                  <timebase>30</timebase>
+                  <ntsc>FALSE</ntsc>
+                </rate>
+              </timecode>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+              <duration></duration>
+              <media>
+                <video>
+                  <samplecharacteristics>
+                    <rate>
+                      <timebase>30</timebase>
+                      <ntsc>FALSE</ntsc>
+                    </rate>
+                    <width>1920</width>
+                    <height>1080</height>
+                    <pixelaspectratio>square</pixelaspectratio>
+                  </samplecharacteristics>
+                </video>
+                <audio>
+                  <samplecharacteristics>
+                    <depth>16</depth>
+                    <samplerate>48000</samplerate>
+                  </samplecharacteristics>
+                  <channelcount>2</channelcount>
+                </audio>
+              </media>
+            </file>
+            <compositemode>normal</compositemode>
+            <link>
+              <linkclipref>clipitem-1</linkclipref>
+              <mediatype>video</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>1</clipindex>
+            </link>
+            <link>
+              <linkclipref>clipitem-3</linkclipref>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>1</clipindex>
+            </link>
+            <link>
+              <linkclipref>clipitem-5</linkclipref>
+              <mediatype>audio</mediatype>
+              <trackindex>2</trackindex>
+              <clipindex>1</clipindex>
+            </link>
+          </clipitem>
+          <clipitem id="clipitem-2">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>150</start>
+            <end>300</end>
+            <in>300</in>
+            <out>450</out>
+            <file id="file-1"></file>
+            <compositemode>normal</compositemode>
+            <link>
+              <linkclipref>clipitem-2</linkclipref>
+              <mediatype>video</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>2</clipindex>
+            </link>
+            <link>
+              <linkclipref>clipitem-4</linkclipref>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+              <clipindex>2</clipindex>
+            </link>
+            <link>
+              <linkclipref>clipitem-6</linkclipref>
+              <mediatype>audio</mediatype>
+              <trackindex>2</trackindex>
+              <clipindex>2</clipindex>
+            </link>
+          </clipitem>
+        </track>
+      </video>
+      <audio>
+        <numOutputChannels>2</numOutputChannels>
+        <format>
+          <samplecharacteristics>
+            <depth>16</depth>
+            <samplerate>48000</samplerate>
+          </samplecharacteristics>
+        </format>
+        <track currentExplodedTrackIndex="0" totalExplodedTrackCount="2" premiereTrackType="Stereo">
+          <outputchannelindex>1</outputchannelindex>
+          <clipitem id="clipitem-3" premiereChannelType="stereo">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>0</start>
+            <end>150</end>
+            <in>0</in>
+            <out>150</out>
+            <file id="file-1"></file>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+            <labels>
+              <label2>Iris</label2>
+            </labels>
+          </clipitem>
+          <clipitem id="clipitem-4" premiereChannelType="stereo">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>150</start>
+            <end>300</end>
+            <in>300</in>
+            <out>450</out>
+            <file id="file-1"></file>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+            <labels>
+              <label2>Iris</label2>
+            </labels>
+          </clipitem>
+        </track>
+        <track currentExplodedTrackIndex="1" totalExplodedTrackCount="2" premiereTrackType="Stereo">
+          <outputchannelindex>2</outputchannelindex>
+          <clipitem id="clipitem-5" premiereChannelType="stereo">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>0</start>
+            <end>150</end>
+            <in>0</in>
+            <out>150</out>
+            <file id="file-1"></file>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>2</trackindex>
+            </sourcetrack>
+            <labels>
+              <label2>Iris</label2>
+            </labels>
+          </clipitem>
+          <clipitem id="clipitem-6" premiereChannelType="stereo">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>150</start>
+            <end>300</end>
+            <in>300</in>
+            <out>450</out>
+            <file id="file-1"></file>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>2</trackindex>
+            </sourcetrack>
+            <labels>
+              <label2>Iris</label2>
+            </labels>
+          </clipitem>
+        </track>
+      </audio>
+    </media>
+  </sequence>
+</xmeml>

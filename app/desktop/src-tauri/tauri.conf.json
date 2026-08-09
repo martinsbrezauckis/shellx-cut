@@ -1,0 +1,102 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ShellX Cut",
+  "version": "0.6.107",
+  "identifier": "lv.shellx.cut",
+  "build": {
+    "frontendDist": "../fallback"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "ShellX Cut",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 680,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "all",
+    "category": "Video",
+    "shortDescription": "ShellX Cut — agent-first video editor (desktop)",
+    "longDescription": "ShellX Cut is an agent-first video editor: every mutation goes through a verb, every verb emits an operation record, and renders ship with measured receipts. This native desktop build wraps the cutd engine (REST + WS + MCP on 127.0.0.1) in a Tauri 2 window — the UI stays a pure API client, and the full debug/agent surface of a headless `cutd serve` is preserved unchanged. Media verbs shell out to ffmpeg/ffprobe; transcription/perception need the Python sidecar — both are honest runtime dependencies reported per-verb, never silent failures.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/cutd"],
+    "resources": {
+      "../../../ui/dist": "ui-dist",
+      "../../../NOTICE": "NOTICE",
+      "../../perception/py/instruments.py": "perception/instruments.py",
+      "../../perception/py/requirements.txt": "perception/requirements.txt",
+      "../../perception/py/requirements-full.txt": "perception/requirements-full.txt",
+      "../../perception/py/safe_numbers.py": "perception/safe_numbers.py",
+      "../../perception/py/blaze_face_short_range.tflite": "perception/blaze_face_short_range.tflite",
+      "../../perception/py/matte_runner.py": "perception/matte_runner.py",
+      "../../perception/py/matanyone_runner.py": "perception/matanyone_runner.py",
+      "../../perception/py/siglip_index.py": "perception/siglip_index.py",
+      "../../perception/py/track_runner.py": "perception/track_runner.py",
+      "../../perception/py/ocr_runner.py": "perception/ocr_runner.py",
+      "../../perception/py/translate_runner.py": "perception/translate_runner.py",
+      "../../perception/py/dub_runner.py": "perception/dub_runner.py",
+      "../../perception/py/diarize_runner.py": "perception/diarize_runner.py",
+      "../../perception/py/generate_prompt_adapter.py": "perception/generate_prompt_adapter.py",
+      "../../perception/py/generate_storyboard_adapter.py": "perception/generate_storyboard_adapter.py",
+      "../../perception/py/judge": "perception/judge",
+      "../../perception/py/face_runner.py": "perception/face_runner.py",
+      "../../perception/py/face_detection_yunet_2023mar.onnx": "perception/face_detection_yunet_2023mar.onnx",
+      "../../../START_HERE_FOR_AGENT.txt": "agent-docs/START_HERE_FOR_AGENT.txt",
+      "../../../AGENTS.md": "agent-docs/AGENTS.md",
+      "../../../README.md": "agent-docs/README.md",
+      "../../../docs/public/FEATURES.md": "agent-docs/docs/public/FEATURES.md",
+      "../../../docs/public/DEBUG_API.md": "agent-docs/docs/public/DEBUG_API.md",
+      "../../../docs/public/shellx-cut-threat-model.md": "agent-docs/docs/public/shellx-cut-threat-model.md",
+      "../../../docs/public/JUDGE_REVIEW.md": "agent-docs/docs/public/JUDGE_REVIEW.md",
+      "../../../skill/shellx-cut": "agent-docs/skill/shellx-cut",
+      "../../../schema/verbs.json": "agent-docs/schema/verbs.json",
+      "../../../docs/public/FEATURE_CHANGE_WORKFLOW.md": "agent-docs/docs/public/FEATURE_CHANGE_WORKFLOW.md",
+      "../../../docs/public/SHELLX_MOTION_BOUNDARY.md": "agent-docs/docs/public/SHELLX_MOTION_BOUNDARY.md"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "windows/installer-hooks.nsh"
+      },
+      "signCommand": {
+        "cmd": "bash",
+        "args": ["../scripts/windows-artifact-sign.sh", "%1"]
+      }
+    },
+    "macOS": {
+      "entitlements": "macos-entitlements.plist",
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3QzYwNDVFQTU3OUEyQjcKUldTM29ubWxYZ1RHSndsZk94c2ZMQkFpNDFFSXJjQUQvUk0wandjSHNSZkJZZmtVZHR1Wkt5MW8K",
+      "endpoints": [
+        "https://github.com/martinsbrezauckis/shellx-cut/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

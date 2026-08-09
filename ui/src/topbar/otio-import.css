@@ -1,0 +1,136 @@
+.otio-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 1000);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(2px);
+}
+
+.otio-modal {
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+  color: var(--ink-1, #e8eaed);
+  background: var(--surface-1, #15171b);
+  border: 1px solid var(--hairline-2, #2a2e35);
+  border-radius: 8px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+
+.otio-head,
+.otio-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.otio-head {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--hairline-2, #2a2e35);
+}
+
+.otio-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: var(--fs-ui-sm, 13px) var(--mono, ui-monospace);
+}
+
+.otio-close {
+  all: unset;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 5px;
+  color: var(--ink-3, #8a909a);
+}
+
+.otio-close:hover { background: var(--surface-2, #1d2026); color: var(--ink-1, #e8eaed); }
+.otio-close:disabled { opacity: 0.45; cursor: default; }
+.otio-body { padding: 14px 16px; }
+.otio-source { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.otio-source strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.otio-source span { color: var(--ink-3, #8a909a); font-size: 12px; }
+
+.otio-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 14px 0;
+  border: 1px solid var(--hairline-2, #2a2e35);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.otio-summary div { padding: 9px 10px; border-right: 1px solid var(--hairline-2, #2a2e35); }
+.otio-summary div:last-child { border-right: 0; }
+.otio-summary dt { color: var(--ink-3, #8a909a); font-size: 11px; }
+.otio-summary dd { margin: 3px 0 0; font: 14px var(--mono, ui-monospace); }
+.otio-summary [data-state='warning'] dd { color: #fbbf24; }
+
+.otio-track-list {
+  max-height: 180px;
+  overflow: auto;
+  border-top: 1px solid var(--hairline-2, #2a2e35);
+}
+
+.otio-track {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 70px 48px;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--hairline-2, #2a2e35);
+  color: var(--ink-3, #8a909a);
+  font: 11px var(--mono, ui-monospace);
+}
+
+.otio-track-name { color: var(--ink-1, #e8eaed); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.otio-format { display: grid; grid-template-columns: 100px 1fr; gap: 4px 10px; padding: 12px 0 0; font-size: 12px; }
+.otio-format > span, .otio-format small { color: var(--ink-3, #8a909a); }
+.otio-format small { grid-column: 2; }
+
+.otio-warning,
+.otio-error {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 4px 7px;
+  margin-top: 12px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.otio-warning { color: #fbbf24; background: rgba(251, 191, 36, 0.1); }
+.otio-warning small { grid-column: 2; overflow-wrap: anywhere; color: var(--ink-3, #8a909a); }
+.otio-error { color: #f87171; background: rgba(248, 113, 113, 0.1); }
+.otio-actions { justify-content: flex-end; border-top: 1px solid var(--hairline-2, #2a2e35); }
+.otio-actions > span { margin-right: auto; color: var(--ink-3, #8a909a); font-size: 11px; }
+
+.otio-btn {
+  min-height: 32px;
+  padding: 0 13px;
+  cursor: pointer;
+  color: var(--ink-2, #c7ccd4);
+  background: var(--surface-2, #1d2026);
+  border: 1px solid var(--hairline-2, #2a2e35);
+  border-radius: 6px;
+  font: var(--fs-ui-sm, 13px) var(--mono, ui-monospace);
+}
+
+.otio-btn--primary { color: #fff; background: var(--cut, #3b82f6); border-color: var(--cut, #3b82f6); }
+.otio-btn:disabled { opacity: 0.5; cursor: default; }
+
+@media (max-width: 560px) {
+  .otio-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .otio-summary div:nth-child(2) { border-right: 0; }
+  .otio-summary div:nth-child(-n+2) { border-bottom: 1px solid var(--hairline-2, #2a2e35); }
+  .otio-actions { flex-wrap: wrap; }
+  .otio-actions > span { flex: 1 0 100%; }
+}

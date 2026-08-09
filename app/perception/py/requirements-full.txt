@@ -1,0 +1,47 @@
+# ShellX Cut perception sidecar — FULL perception extras (perception contract).
+# Permissive licenses only. Installed BEST-EFFORT by perception_setup.rs AFTER the
+# BASE (onnx-asr) install, with:
+#   uv pip install --only-binary :all: \
+#     --extra-index-url https://download.pytorch.org/whl/cpu \
+#     --index-strategy unsafe-best-match -r requirements-full.txt
+#
+# WHY THESE FLAGS fresh-Windows install fix):
+#   --only-binary :all:  → NEVER compile from source on a user box (no MSVC/LLVM).
+#                          If a wheel is genuinely missing for the platform, uv fails
+#                          FAST with "no usable wheels" instead of a doomed build,
+#                          and the BASE transcription already works regardless.
+#   CPU torch index      → torch/torchvision/torchaudio land as the small +cpu wheels
+#                          on every OS (avoids the ~2 GB CUDA build + nvidia-* deps a
+#                          fresh CPU user box neither has nor needs).
+#   numpy<2.5 (below)    → KEEPS numba on its newest prebuilt WHEEL (numba 0.65.x
+#                          requires numpy<2.5). WITHOUT this pin the resolver lets
+#                          numpy float to 2.5.0, can't use the numba wheel, backtracks
+#                          to ancient sdist-only numba/llvmlite, and tries to COMPILE
+#                          llvmlite — the original fresh-machine build failure.
+#
+# If this entire file fails to install, transcription STILL works (onnx-asr from the
+# base). instruments.py imports each dep lazily inside try/except and degrades to the
+# ffmpeg-based instruments when an extra is absent.
+#
+numpy<2.5             # BSD-3 — PIN: hold numba/llvmlite on their prebuilt wheels (see header)
+#
+# ── FALLBACK transcription (only used when onnx-asr is absent/errors) ──────────
+whisperx              # BSD-2 — word-level timestamps fallback (pulls faster-whisper, torch)
+torchaudio            # BSD-2 — MMS_FA forced alignment for Canary word timestamps
+silero-vad            # MIT — voice activity detection
+soundfile             # BSD-3 — WAV reader for Silero silence analysis
+transformers          # Apache-2.0 — local text translation fallback (Marian/MADLAD)
+sentencepiece         # Apache-2.0 — tokenizer runtime required by Marian/Opus-MT
+scenedetect           # BSD-3 — PySceneDetect content detector (0.7 bundles opencv-python)
+torchvision           # BSD-3 — SSDlite-MobileNetV3 / Faster R-CNN detector for the
+                      # on-demand `subject` instrument (auto-reframe). Rides the torch
+                      # whisperx pulls and keeps the optional detector stack BSD-licensed.
+supervision           # MIT — ByteTrack multi-object tracker (Roboflow), pairs with the
+                      # torchvision detector for stable subject ids across frames.
+mediapipe             # Apache-2.0 — Tasks FaceDetector for FACE-AWARE framing in the
+                      # `subject` instrument (blaze_face_short_range.tflite bundled
+                      # beside instruments.py). GRACEFUL: absent → body+saliency framing.
+rapidocr-onnxruntime  # Apache-2.0 — OCR for redaction auto-detect (edit.redact{ocr_auto}).
+                      # RIDES onnxruntime (NO torch / NO paddle); bundles PP-OCR ONNX
+                      # det+rec models (~14 MB, fetched once on first run).
+# loudness uses the system ffmpeg ebur128 filter — no python dep needed

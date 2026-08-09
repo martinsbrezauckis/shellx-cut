@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hardened-runtime entitlements for the notarized macOS build (wired via
+     tauri.conf.json bundle.macOS.entitlements). The recorder accesses the microphone
+     (cpal/avfoundation), which the hardened runtime blocks WITHOUT this entitlement —
+     so it must be present on the app AND on the cutd sidecar that actually opens the
+     mic; the bundled engine is signed with the same entitlements. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

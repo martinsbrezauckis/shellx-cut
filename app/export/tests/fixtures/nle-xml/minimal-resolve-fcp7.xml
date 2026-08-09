@@ -1,0 +1,152 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Minimal FCP7 XML (xmeml v5), DaVinci Resolve dialect (resolve=true in
+     vendored/nim/fcp7.nim). Imports via File > Import > Timeline.
+     Differences vs the Premiere dialect (minimal-premiere.xml):
+       - no explodedTracks attribute on <sequence>
+       - ONE audio track per timeline audio layer (no stereo "exploding",
+         no premiereTrackType / currentExplodedTrackIndex attributes)
+       - video<->audio links are bare linkclipref pairs
+       - the empty <duration></duration> in the file def is REQUIRED by Resolve
+     NOTE: the preferred Resolve path is FCPXML (minimal.fcpxml);
+     this xmeml dialect is the legacy fallback.
+     Same scenario: keep source [0s,5s) + [10s,15s) @ 30fps => 10s timeline.
+     clipitem ids: video 1-2, audio 3-4. -->
+<xmeml version="5">
+  <sequence>
+    <name>talk</name>
+    <duration>300</duration>
+    <rate>
+      <timebase>30</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <width>1920</width>
+            <height>1080</height>
+            <pixelaspectratio>square</pixelaspectratio>
+            <rate>
+              <timebase>30</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+          </samplecharacteristics>
+        </format>
+        <track>
+          <clipitem id="clipitem-1">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>0</start>
+            <end>150</end>
+            <in>0</in>
+            <out>150</out>
+            <file id="file-1">
+              <name>talk</name>
+              <pathurl>/home/user/media/talk.mp4</pathurl>
+              <timecode>
+                <string>00:00:00:00</string>
+                <displayformat>NDF</displayformat>
+                <rate>
+                  <timebase>30</timebase>
+                  <ntsc>FALSE</ntsc>
+                </rate>
+              </timecode>
+              <rate>
+                <timebase>30</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+              <duration></duration>
+              <media>
+                <video>
+                  <samplecharacteristics>
+                    <rate>
+                      <timebase>30</timebase>
+                      <ntsc>FALSE</ntsc>
+                    </rate>
+                    <width>1920</width>
+                    <height>1080</height>
+                    <pixelaspectratio>square</pixelaspectratio>
+                  </samplecharacteristics>
+                </video>
+                <audio>
+                  <samplecharacteristics>
+                    <depth>16</depth>
+                    <samplerate>48000</samplerate>
+                  </samplecharacteristics>
+                  <channelcount>2</channelcount>
+                </audio>
+              </media>
+            </file>
+            <compositemode>normal</compositemode>
+            <link>
+              <linkclipref>clipitem-1</linkclipref>
+            </link>
+            <link>
+              <linkclipref>clipitem-3</linkclipref>
+            </link>
+          </clipitem>
+          <clipitem id="clipitem-2">
+            <name>talk</name>
+            <enabled>TRUE</enabled>
+            <start>150</start>
+            <end>300</end>
+            <in>300</in>
+            <out>450</out>
+            <file id="file-1"></file>
+            <compositemode>normal</compositemode>
+            <link>
+              <linkclipref>clipitem-2</linkclipref>
+            </link>
+            <link>
+              <linkclipref>clipitem-4</linkclipref>
+            </link>
+          </clipitem>
+        </track>
+      </video>
+      <audio>
+        <track>
+          <clipitem id="clipitem-3">
+            <name>talk</name>
+            <start>0</start>
+            <end>150</end>
+            <enabled>TRUE</enabled>
+            <in>0</in>
+            <out>150</out>
+            <file id="file-1"></file>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+            <link>
+              <linkclipref>clipitem-1</linkclipref>
+              <mediatype>video</mediatype>
+            </link>
+            <link>
+              <linkclipref>clipitem-3</linkclipref>
+            </link>
+          </clipitem>
+          <clipitem id="clipitem-4">
+            <name>talk</name>
+            <start>150</start>
+            <end>300</end>
+            <enabled>TRUE</enabled>
+            <in>300</in>
+            <out>450</out>
+            <file id="file-1"></file>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+            <link>
+              <linkclipref>clipitem-2</linkclipref>
+              <mediatype>video</mediatype>
+            </link>
+            <link>
+              <linkclipref>clipitem-4</linkclipref>
+            </link>
+          </clipitem>
+        </track>
+      </audio>
+    </media>
+  </sequence>
+</xmeml>

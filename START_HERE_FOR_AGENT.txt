@@ -1,0 +1,87 @@
+ShellX Cut agent handoff
+
+Use these files first:
+1. skill/shellx-cut/SKILL.md
+2. skill/shellx-cut/reference.md
+3. schema/verbs.json
+4. docs/public/DEBUG_API.md
+5. docs/public/FEATURE_CHANGE_WORKFLOW.md
+6. docs/public/SHELLX_MOTION_BOUNDARY.md
+7. docs/public/FEATURES.md
+8. docs/public/shellx-cut-threat-model.md
+
+Post-render verification note:
+- Render checks use FFmpeg fallbacks. A missing optional measurement is reported
+  as UNMEASURED rather than a content failure; inspect the receipt's structured
+  runtime cause before diagnosing the media.
+
+Running the installed app exposes the debug/agent API on loopback. Port 6161 is
+the normal default shown below. If it is occupied, read the live address from
+the OS-specific `engine.addr` described in docs/public/DEBUG_API.md; `cutd mcp` and
+`cutd verb` perform that discovery automatically.
+- REST: POST http://127.0.0.1:6161/api/verb/<verb-name>
+- Verb registry: GET http://127.0.0.1:6161/api/verbs
+- Agent docs index: GET http://127.0.0.1:6161/api/agent
+- Bundled docs: GET http://127.0.0.1:6161/api/agent-doc/<path>
+- MCP: cutd mcp proxies the discovered running server when cutd is on PATH or
+invoked by full path
+
+Local trust boundary:
+- Supported default: one personal workstation / one trusted interactive
+  environment. The loopback API has no token and is machine-wide: any local
+  process or OS account that can connect can operate the open editor.
+- Origin/Host checks mitigate browser cross-origin and DNS-rebinding requests;
+  native callers can omit or forge those headers, so they are not caller auth.
+  `cutd mcp` inherits this boundary. Do not use shared/multi-user machines,
+  untrusted local services, host-network containers, or exposed ports for this
+  mode. Remote use requires an independently authenticated and authorized
+  SSH/VPN/ShellX broker or equivalent transport; otherwise refuse it. See
+  docs/public/shellx-cut-threat-model.md before changing deployment.
+
+Safe MCP first steps:
+1. Configure the exact executable reported by GET /api/agent or Settings >
+   Agent control. Claude Code, Codex, Grok Build, and Antigravity CLI setup —
+   including their different scope, permission, and diagnostic behavior — is
+   in docs/public/DEBUG_API.md.
+2. Run system.mcp_test {}. It is read-only and proves handshake, tool discovery,
+   and same-engine proxying.
+3. Run system.doctor {} and project.list {} for read-only discovery.
+4. Create/open a project only when the requested workflow requires mutation.
+5. ui.* verbs require a connected app UI; headless engine verbs do not.
+
+First-edit behavior:
+- The app opens on Projects.
+- A user can drop video, audio, or an image with no project open; Cut creates a
+  sensibly named project, imports the media, and places it on the first timeline.
+- The first video adopts its source resolution and frame rate when the project
+  format is still untouched. These are timeline composition properties, not
+  export-quality choices. Delivery aspect/size/codec/bitrate are chosen per
+  render or export.
+
+Important UI/debug verbs:
+- system.mcp_test (read-only MCP connection proof)
+- system.doctor (read-only environment discovery)
+- project.list (read-only project discovery)
+- ui.state
+- ui.open
+- ui.screenshot
+- debug.screenshot
+
+Motion integration quick path:
+- generate.list {"kind":"motion"}
+- generate.describe {"id":"builtin.motion.cinematic-fog-title"}
+- generate.preview {"id":"builtin.motion.cinematic-fog-title","params":{...}}
+- generate.insert {"id":"builtin.motion.cinematic-fog-title","params":{...}}
+- motion.template_to_cut / motion.script_to_cut
+- motion.job.get / motion.job.list (open-project Motion progress; use the same
+  caller-chosen job_id on the blocking render request, poll no faster than
+  pollAfterMs, and stop when that field disappears)
+- motion.map_import / motion.apply_import
+- motion.link.edit / motion.link.refresh / motion.link.relink
+- motion.link.tracking.* for linked tracking setup, analysis, and application
+
+See docs/public/SHELLX_MOTION_BOUNDARY.md for ownership and fallback behavior, and
+skill/shellx-cut/reference.md for exact argument/result contracts.
+
+This is not a public export checklist. It is the minimal installed-app docs
+payload an agent needs to operate ShellX Cut on a fresh machine.

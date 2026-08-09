@@ -1,0 +1,92 @@
+/* director/DirectorModal styles — agent-first reframe director surface.
+   Uses the shared theme tokens (theme.css): --cut accent, surfaces, hairlines. */
+
+.dir-overlay {
+  position: fixed; inset: 0; z-index: var(--z-modal, 1000);
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px);
+}
+.dir-modal {
+  width: min(560px, 92vw); max-height: 88vh; overflow: auto;
+  background: var(--surface-1, #15171b); color: var(--ink-1, #e8eaed);
+  border: 1px solid var(--hairline-2, #2a2e35); border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+.dir-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--hairline-2, #2a2e35);
+}
+.dir-title { font: var(--fs-ui-sm, 13px) var(--mono, ui-monospace); }
+.dir-sub { color: var(--ink-3, #8a909a); margin-left: 6px; }
+.dir-x {
+  all: unset; cursor: pointer; font-size: 20px; line-height: 1;
+  color: var(--ink-3, #8a909a); padding: 2px 6px; border-radius: 6px;
+}
+.dir-x:hover { background: var(--surface-2, #1d2026); color: var(--ink-1, #e8eaed); }
+
+/* busy (directing / rendering / reviewing) */
+.dir-busy { padding: 36px 24px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.dir-spinner {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 3px solid var(--hairline-2, #2a2e35); border-top-color: var(--cut, #3b82f6);
+  animation: dir-spin 0.8s linear infinite;
+}
+@keyframes dir-spin { to { transform: rotate(360deg); } }
+.dir-busy-label { font: var(--fs-ui-sm, 13px) var(--mono, ui-monospace); color: var(--ink-2, #c7ccd4); }
+.dir-bar { width: 220px; height: 4px; border-radius: 3px; background: var(--surface-2, #1d2026); overflow: hidden; }
+.dir-bar-fill { height: 100%; background: var(--cut, #3b82f6); transition: width 0.25s ease; }
+
+/* pick */
+.dir-pick { padding: 14px 16px; }
+.dir-sheet {
+  width: 100%; border-radius: 8px; border: 1px solid var(--hairline-2, #2a2e35);
+  display: block; margin-bottom: 12px; background: #000;
+}
+.dir-hint { font: var(--fs-ui-xs, 12px) var(--mono, ui-monospace); color: var(--ink-3, #8a909a); margin-bottom: 12px; }
+.dir-scenes { display: flex; flex-direction: column; gap: 8px; }
+.dir-scene {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 10px; border-radius: 8px; background: var(--surface-2, #1d2026);
+}
+.dir-scene-n { font: var(--fs-mono-xs, 12px) var(--mono, ui-monospace); color: var(--ink-2, #c7ccd4); min-width: 72px; }
+.dir-opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.dir-opt {
+  all: unset; cursor: pointer; padding: 4px 10px; border-radius: 6px;
+  font: var(--fs-mono-xs, 12px) var(--mono, ui-monospace);
+  color: var(--ink-2, #c7ccd4); border: 1px solid var(--hairline-2, #2a2e35);
+}
+.dir-opt:hover { border-color: var(--cut-soft, #60a5fa); color: var(--ink-1, #e8eaed); }
+.dir-opt--on { background: var(--cut, #3b82f6); border-color: var(--cut, #3b82f6); color: #fff; }
+
+.dir-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+.dir-btn {
+  all: unset; cursor: pointer; padding: 7px 16px; border-radius: 8px;
+  font: var(--fs-ui-sm, 13px) var(--mono, ui-monospace);
+  color: var(--ink-2, #c7ccd4); border: 1px solid var(--hairline-2, #2a2e35);
+}
+.dir-btn:hover { border-color: var(--cut-soft, #60a5fa); color: var(--ink-1, #e8eaed); }
+.dir-btn--primary { background: var(--cut, #3b82f6); border-color: var(--cut, #3b82f6); color: #fff; }
+.dir-btn--primary:hover { background: var(--cut-soft, #60a5fa); }
+
+/* done / qc */
+.dir-done { padding: 18px 16px; }
+.dir-done-msg { font: var(--fs-ui-sm, 13px) var(--mono, ui-monospace); color: var(--ink-1, #e8eaed); margin-bottom: 12px; }
+.dir-qc { margin: 8px 0; }
+.dir-qc-verdict { font: var(--fs-mono-xs, 12px) var(--mono, ui-monospace); margin-bottom: 8px; padding: 6px 10px; border-radius: 6px; }
+.dir-qc-verdict--ok { color: #34d399; background: rgba(52, 211, 153, 0.1); }
+.dir-qc-verdict--flag { color: #f87171; background: rgba(248, 113, 113, 0.1); }
+.dir-qc-list { margin: 8px 0 0; padding-left: 18px; font: var(--fs-mono-xs, 12px) var(--mono, ui-monospace); color: var(--ink-2, #c7ccd4); }
+
+/* error */
+.dir-error { padding: 24px 16px; display: flex; flex-direction: column; gap: 14px; align-items: center; }
+.dir-error-msg {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  font: var(--fs-ui-sm, 13px) var(--mono, ui-monospace);
+  color: #f87171;
+  text-align: center;
+}

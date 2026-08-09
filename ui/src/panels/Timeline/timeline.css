@@ -1,0 +1,1121 @@
+/* panels/Timeline/timeline.css — timeline panel styles.
+   Tokens come from theme.css; this file only consumes them. One real scroll
+   container (.tl-scroll) — ruler + track headers are position:sticky INSIDE it,
+   so horizontal/vertical sync is by construction (timeline behavior contract lesson:
+   multi-container scroll sync is fragile). */
+
+.tl-root { display: flex; flex-direction: column; height: 100%; min-width: 0; overflow: hidden; position: relative; }
+
+/* Asset drag-in (from the Assets tray): a --cut insertion line marking where the
+   dropped clip will land, with a timecode chip at the top. pointer-events:none so
+   it never intercepts the drop. The scroller tints subtly while an asset hovers. */
+.tl-scroll--asset-dnd { background: var(--cut-dim); }
+.tl-asset-drop {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  background: var(--cut);
+  box-shadow: 0 0 8px var(--cut-glow);
+  pointer-events: none;
+  z-index: calc(var(--z-playhead) + 2);
+}
+.tl-asset-drop__chip {
+  position: absolute;
+  top: 0;
+  left: 3px;
+  padding: 1px 6px;
+  border-radius: var(--radius-chip);
+  background: var(--cut);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  white-space: nowrap;
+}
+
+/* Export RANGE band (drag the ruler to select a span → Save as clip). A
+   translucent accent fill with solid in/out edges, spanning ruler + tracks.
+   pointer-events:none so it never blocks clip gestures (clicks fall through to
+   the ruler, which clears + seeks). */
+.tl-range {
+  position: absolute;
+  pointer-events: none;
+  background: var(--cut-dim);
+  border-left: 2px solid var(--cut);
+  border-right: 2px solid var(--cut);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cut) 22%, transparent);
+  z-index: calc(var(--z-playhead) + 1);
+}
+.tl-range--live { background: color-mix(in srgb, var(--cut) 22%, transparent); }
+.tl-range__flag {
+  position: absolute;
+  top: 1px;
+  padding: 1px 5px;
+  border-radius: var(--radius-chip);
+  background: var(--cut);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  white-space: nowrap;
+}
+.tl-range__flag--in { left: 0; transform: translateX(calc(-100% - 2px)); }
+.tl-range__flag--out { right: 0; transform: translateX(calc(100% + 2px)); }
+.tl-range__dur {
+  position: absolute;
+  bottom: 3px; left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--cut) 85%, black);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  white-space: nowrap;
+}
+
+/* Clip context menu (right-click on a clip) — the discoverable Remove/Split. */
+.tl-ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 1000);
+}
+.tl-ctx {
+  position: fixed;
+  z-index: calc(var(--z-modal, 1000) + 1);
+  min-width: 168px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* The pro-editor menu can be tall (many sections); never exceed the viewport —
+     scroll within itself, and the render clamps top/left so the whole box stays
+     on-screen (B right-click menu). */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-2, #161614);
+  border: 1px solid var(--line, #2a2a28);
+  border-radius: var(--radius-panel, 10px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* Keep context surfaces immediately visible. WKWebView can strand this
+     shared shell at the entrance keyframe's opacity:0 when one menu is
+     replaced by another dialog in the same React batch. */
+  animation: none;
+}
+.tl-ctx__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-control, 7px);
+  background: transparent;
+  color: var(--ink-1, #e8e8e6);
+  font-size: var(--fs-ui-sm, 13px);
+  text-align: left;
+  cursor: pointer;
+}
+.tl-ctx__item:hover { background: var(--surface-3, #232320); }
+.tl-ctx__item--danger { color: var(--danger, #f8716a); }
+.tl-ctx__item--danger:hover { background: color-mix(in srgb, var(--danger, #f8716a) 16%, transparent); }
+.tl-ctx__sep { display: block; height: 1px; margin: 4px 6px; background: var(--line, #2a2a28); }
+/* Disabled-not-hidden: the item stays visible (so the affordance is
+   discoverable) but is dimmed, non-interactive, and its `title` explains why. */
+.tl-ctx__item:disabled {
+  color: var(--ink-3, #6a6a66);
+  cursor: not-allowed;
+}
+.tl-ctx__item:disabled:hover { background: transparent; }
+/* Section label — groups the items (Edit / Trim / Delete / Speed / Picture /
+   Audio / Privacy / Fade). Tiny, uppercase, dim; not a menuitem (aria-hidden). */
+.tl-ctx__label {
+  padding: 4px 10px 2px;
+  font-size: var(--fs-ui-xs, 10px);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3, #6a6a66);
+  user-select: none;
+}
+/* Shortcut hint — the keyboard binding that does the same thing, right-aligned
+   to train toward the keyboard. `margin-left:auto` pushes it to the far edge. */
+.tl-ctx__kbd {
+  margin-left: auto;
+  padding: 1px 5px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-ui-xs, 10px);
+  line-height: 1.4;
+  color: var(--ink-2, #b8b8b4);
+  background: var(--surface-3, #232320);
+  border: 1px solid var(--line, #2a2a28);
+  border-radius: 4px;
+}
+.tl-ctx__item:disabled .tl-ctx__kbd { opacity: 0.5; }
+/* Right-aligned disclosure caret on a row that expands an inline picker (Replace /
+   Fit to fill). Pushed to the far edge like the kbd hint. */
+.tl-ctx__caret { margin-left: auto; opacity: 0.7; }
+/* Inline asset picker revealed under "Replace with…" / "Fit to fill" — an indented,
+   scroll-bounded sub-list of source assets (so a project with many imports never
+   pushes the menu off-screen). */
+.tl-ctx__sub {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* flex-shrink:0 — the parent menu is a flex COLUMN that scrolls when tall; an
+     overflow:auto child otherwise gets min-height:0 and collapses under the flex
+     algorithm, letting the next item paint ON TOP of these options. Keep it at
+     content height (capped, then scroll internally) and let the menu scroll. */
+  flex: 0 0 auto;
+  max-height: 180px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 1px 0 2px;
+  border-left: 2px solid var(--line, #2a2a28);
+}
+.tl-ctx__item--sub {
+  padding-left: 26px;
+  font-size: var(--fs-ui-xs, 12px);
+  color: var(--ink-2, #b8b8b4);
+}
+.tl-ctx__speed-editor { padding: 5px 10px 7px; }
+.tl-ctx__speed-label { display: block; margin-bottom: 4px; font-size: 11px; color: var(--ink-2, #a7a7a0); }
+.tl-ctx__speed-controls { display: flex; gap: 5px; align-items: center; }
+.tl-ctx__speed-input { width: 72px; min-width: 0; padding: 4px 6px; color: var(--ink-1, #e8e8e6); background: var(--surface-2, #191918); border: 1px solid var(--line, #2a2a28); border-radius: 4px; }
+.tl-ctx__speed-help { display: block; margin-top: 4px; font-size: 10px; color: var(--ink-3, #777770); }
+
+/* Timeline toolbar — a real flow row ABOVE the scroll area: timecode (left) ·
+   tools (center) · zoom (right). These were three absolute clusters floating at
+   top:6px OVER the sticky ruler, so they occluded the ruler ticks/labels (a
+   reported overlap bug). A flow strip reserves its own height; the ruler now
+   starts cleanly below it. */
+.tl-toolbar {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  height: 34px; padding: 0 10px;
+  border-bottom: 1px solid var(--hairline);
+  position: relative; z-index: calc(var(--z-sticky) + 4);
+}
+/* The unpinned selected-clip rail overlays the editor. Reserve its live width
+   in the toolbar so right-edge controls remain clickable until the outside
+   pointer-down closes the rail. */
+.app__middle[data-cut-overlay-rail-open='true'] .tl-toolbar {
+  padding-right: calc(var(--cut-overlay-rail-width, 340px) + 10px);
+}
+
+/* Playhead time readout chip — left of the toolbar, never occluded. */
+/* Time readout chip — now a button: click to cycle ms → frames → SMPTE. */
+.tl-tc-chip {
+  flex: none; appearance: none; -webkit-appearance: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 var(--fs-tc) var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink); background: var(--surface-2);
+  border: 1px solid var(--hairline-2); border-radius: var(--radius-chip);
+  padding: 2px 8px; cursor: pointer; user-select: none;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.tl-tc-chip:hover { background: var(--surface-3); border-color: var(--hairline); }
+/* Active-mode badge — dim, smaller, so the number stays the hero. */
+.tl-tc-mode {
+  font: var(--fs-mono-xs) var(--mono); color: var(--ink-3);
+  letter-spacing: 0.04em; padding: 0 3px; border-radius: 3px;
+  background: var(--surface-3);
+}
+.tl-tc-chip[data-cut-time-display='frames'] .tl-tc-mode,
+.tl-tc-chip[data-cut-time-display='smpte'] .tl-tc-mode { color: var(--accent, var(--ink-2)); }
+
+/* Zoom chip — right of the toolbar, +/- hint. */
+.tl-zoom-chip {
+  flex: none; order: 3;
+  display: flex; align-items: center; gap: 6px;
+  font: var(--fs-mono-xs) var(--mono); color: var(--ink-3);
+  background: var(--surface-2); border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip); padding: 2px 6px; user-select: none;
+}
+.tl-zoom-chip button {
+  all: unset; cursor: pointer; color: var(--ink-2); padding: 0 4px;
+  border-radius: 4px; transition: background 120ms ease, color 120ms ease;
+}
+.tl-zoom-chip button:hover { background: var(--surface-3); color: var(--ink); }
+
+/* --- Tool toggles (razor / snap) — centered tool cluster in the toolbar -- */
+.tl-tools {
+  flex: 1; order: 2; display: flex; align-items: center; justify-content: safe center; gap: 4px;
+  user-select: none; min-width: 0; overflow-x: auto; overflow-y: hidden;
+}
+.tl-global-tools { flex: none; display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.tl-tool {
+  all: unset; cursor: pointer; box-sizing: border-box;
+  flex: none; display: flex; align-items: center; gap: 5px; white-space: nowrap;
+  font: 600 var(--fs-ui-xs) var(--sans); letter-spacing: .02em;
+  color: var(--ink-3); padding: 3px 8px; border-radius: 4px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tl-tool svg { color: var(--ink-4); transition: color 120ms ease; }
+.tl-tool:hover { background: var(--surface-3); color: var(--ink-2); }
+.tl-tool:hover svg { color: var(--ink-3); }
+/* "on" = editor blue (selection/position/agent accent — the right semantic) */
+.tl-tool--on { background: var(--cut-dim); color: var(--cut-soft); }
+.tl-tool--on svg { color: var(--cut-soft); }
+.tl-tool:disabled { opacity: .4; cursor: not-allowed; }
+.tl-tool:disabled:hover { background: none; color: var(--ink-3); }
+.tl-tool:disabled:hover svg { color: var(--ink-4); }
+/* Hairline separator inside the tool cluster (groups razor/snap from delete). */
+.tl-tool-sep { width: 1px; align-self: stretch; margin: 2px 2px; background: var(--hairline-2); }
+/* "Save clip" transient outcome note. */
+.tl-save-note { align-self: center; font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--cut-soft); white-space: nowrap; }
+.tl-action-note {
+  order: 2; flex: 0 1 220px; min-width: 72px; overflow: hidden;
+  color: var(--cut-soft); font: var(--fs-mono-xs) var(--mono);
+  white-space: nowrap; text-overflow: ellipsis;
+}
+
+/* Secondary, content-wide edits live in one menu so the fixed-width timeline
+   row keeps the direct editing controls visible. The menu is a toolbar sibling,
+   outside the horizontally scrolling .tl-tools strip, so it cannot be clipped. */
+.tl-automation { position: relative; order: 2; flex: none; }
+.tl-automation__trigger { border: 1px solid var(--hairline-2); }
+.tl-automation__caret { opacity: 0.7; }
+.tl-automation__menu {
+  position: absolute; top: calc(100% + 5px); right: 0; z-index: var(--z-dropdown);
+  width: 220px; box-sizing: border-box; padding: 5px;
+  border: 1px solid var(--hairline-2); border-radius: 6px;
+  background: var(--surface); box-shadow: var(--shadow-dropdown);
+}
+.tl-automation__menu[hidden] { display: none; }
+.tl-automation__menu .tl-tool {
+  width: 100%; min-height: 28px; padding: 6px 8px;
+  justify-content: flex-start; color: var(--ink-2);
+}
+.tl-automation__menu .tl-global-tools {
+  display: flex; flex-direction: column; align-items: stretch; width: 100%; gap: 1px;
+}
+.tl-automation__sep { height: 1px; margin: 4px; background: var(--hairline); }
+.tl-automation__note,
+.tl-automation__menu .tl-save-note {
+  display: block; max-width: 100%; padding: 4px 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: var(--fs-mono-xs) var(--mono); color: var(--cut-soft);
+}
+
+/* --- THE one scroll container ------------------------------------------- */
+.tl-scroll {
+  flex: 1; min-height: 0; overflow: auto; position: relative;
+  background: var(--bg);
+}
+/* Razor mode: the whole lane area shows a blade cursor — clicking a clip
+   splits it (edit.split). The crosshair reads as "I will cut here". */
+.tl-scroll--razor,
+.tl-scroll--razor .tl-clip,
+.tl-scroll--razor .tl-lane { cursor: crosshair; }
+.tl-inner { position: relative; /* width set inline = rail + content */ }
+
+/* --- Ruler (sticky top) --------------------------------------------------- */
+.tl-ruler {
+  position: sticky; top: 0; z-index: var(--z-sticky);
+  height: 28px; background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+  cursor: pointer; user-select: none;
+}
+.tl-ruler-content { position: absolute; top: 0; bottom: 0; /* left = rail */ }
+.tl-tick { position: absolute; bottom: 0; width: 1px; background: var(--hairline-2); }
+.tl-tick--minor { height: 4px; }
+.tl-tick--major { height: 100%; }
+.tl-tick-label {
+  position: absolute; top: 3px; left: 3px; white-space: nowrap;
+  font: var(--fs-mono-xs) var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+/* Corner cell above the track-header rail (sticky both axes). */
+.tl-ruler-corner {
+  position: sticky; left: 0; width: 176px; height: 100%;
+  background: var(--surface); border-right: 1px solid var(--hairline);
+  z-index: 2;
+}
+
+/* --- Track rows ------------------------------------------------------------ */
+.tl-track { display: flex; border-bottom: 1px solid var(--hairline); }
+/* First track of each kind group (video, audio, caption): a stronger top edge so the
+   grouped lanes read as distinct bands. No extra row (border only) = layout height intact. */
+.tl-track--group-start { border-top: 2px solid var(--hairline-2, #34342f); }
+.tl-track-head {
+  position: sticky; left: 0; z-index: calc(var(--z-playhead) + 2);
+  flex: none; width: 176px; background: var(--surface);
+  border-right: 1px solid var(--hairline);
+  display: flex; align-items: center; gap: 6px; padding: 0 8px;
+  font-size: var(--fs-ui-sm); color: var(--ink-2); user-select: none;
+}
+.tl-track-meta {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-width: 0; flex: 1;
+}
+.tl-track-head .tl-kind-icon { color: var(--ink-3); display: flex; }
+.tl-track--caption .tl-kind-icon { color: var(--warm); }
+.tl-track-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-track-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex: none;
+}
+/* Audio has six persistent controls. Stack identity/lock above the transport
+   controls so every action remains inside the fixed sticky rail. */
+.tl-track-head[data-cut-track-kind='audio'] {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  padding-block: 1px;
+}
+.tl-track-head[data-cut-track-kind='audio'] .tl-track-meta {
+  flex: none;
+  width: 100%;
+  height: 16px;
+}
+.tl-track-head[data-cut-track-kind='audio'] .tl-track-meta .tl-lock {
+  margin-left: auto;
+}
+.tl-track-head[data-cut-track-kind='audio'] .tl-track-actions {
+  width: 100%;
+  height: 18px;
+  margin-left: 0;
+  justify-content: flex-end;
+}
+.tl-track-head .tl-gain {
+  font: var(--fs-mono-xs) var(--mono); color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+/* Timeline header track controls stay compact because the rail is sticky and
+   fixed-width. Mute/solo are flags, not gain rewrites. */
+.tl-track-head .tl-mute {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 18px; padding: 0; flex: none;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-chip); color: var(--ink-3); cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.tl-track-head .tl-mute:hover { color: var(--ink-2); border-color: var(--hairline-2); }
+.tl-track-head .tl-mute--on { color: var(--amber); border-color: transparent; }
+.tl-track-head .tl-solo {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 18px; padding: 0; flex: none;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-chip); color: var(--ink-3); cursor: pointer;
+  font: 700 var(--fs-micro) / 1 var(--sans);
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.tl-track-head .tl-solo:hover { color: var(--ink-2); border-color: var(--hairline-2); }
+.tl-track-head .tl-solo--on {
+  color: var(--cut-soft, #93b4ff);
+  border-color: transparent;
+}
+.tl-order-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex: none;
+}
+.tl-track-head .tl-order {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 17px; height: 18px; padding: 0; flex: none;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-chip); color: var(--ink-3); cursor: pointer;
+}
+.tl-track-head .tl-order:hover:not(:disabled) { color: var(--ink-2); border-color: var(--hairline-2); }
+.tl-track-head .tl-order:disabled { opacity: 0.34; cursor: default; }
+.tl-track-head .tl-visibility,
+.tl-track-head .tl-lock {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; flex: none;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-chip); color: var(--ink-3); cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+.tl-track-head .tl-visibility:hover,
+.tl-track-head .tl-lock:hover { color: var(--ink-2); border-color: var(--hairline-2); }
+.tl-track-head .tl-visibility--off { color: var(--ink-4); opacity: .72; }
+.tl-track-head .tl-lock--on { color: var(--amber); border-color: transparent; }
+.tl-track-head .tl-pan {
+  width: 34px; height: 18px; flex: none; box-sizing: border-box;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-chip); color: var(--ink-3);
+  font: 600 var(--fs-micro) / 1 var(--sans);
+  padding: 0 2px; cursor: pointer;
+  appearance: none; text-align: center; text-align-last: center;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.tl-track-head .tl-pan:hover,
+.tl-track-head .tl-pan:focus { color: var(--ink-2); border-color: var(--hairline-2); outline: none; }
+/* Per-track "Listen" (audition) — a play/stop button right after Mute. Accent
+   blue when playing, distinct from Mute's amber. */
+.tl-track-head .tl-listen {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 18px; padding: 0; flex: none; font-size: 9px; line-height: 1;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-chip); color: var(--ink-3); cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.tl-track-head .tl-listen:hover:not(:disabled) { color: var(--ink-2); border-color: var(--hairline-2); }
+.tl-track-head .tl-listen--on { color: var(--cut-soft, #93b4ff); border-color: transparent; }
+.tl-track-head .tl-listen--error { color: var(--red, #ef4444); border-color: var(--red, #ef4444); }
+.tl-track-head .tl-listen:disabled { opacity: 0.5; cursor: default; }
+/* Editable gain readout — a borderless input that reads like the static
+   readout until focused, then shows the --cut edit affordance. Sits flush right
+   like the old span; widens just enough for `-12.0`. */
+.tl-track-head .tl-gain--input {
+  width: 52px; box-sizing: border-box; text-align: right;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-chip); padding: 1px 4px;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  -moz-appearance: textfield; /* hide number spinners (also webkit below) */
+}
+.tl-track-head .tl-gain--input:hover { color: var(--ink-2); border-color: var(--hairline-2); }
+.tl-track-head .tl-gain--input:focus {
+  outline: none; color: var(--ink); background: var(--surface);
+  border-color: var(--cut);
+}
+.tl-track-head .tl-gain--input::-webkit-inner-spin-button,
+.tl-track-head .tl-gain--input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.tl-lane { position: relative; flex: none; /* width set inline */ }
+.tl-track--hidden .tl-lane { opacity: .46; }
+.tl-track--hidden .tl-track-name { color: var(--ink-4); }
+.tl-track--locked .tl-lane { background: rgba(255, 255, 255, 0.015); }
+.tl-track--locked .tl-track-name { color: var(--ink-3); }
+
+/* --- Clips ---------------------------------------------------------------- */
+.tl-clip {
+  position: absolute; top: 3px; bottom: 3px; z-index: var(--z-clip);
+  background: var(--surface-2); border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-clip); overflow: hidden; cursor: default;
+  display: flex; align-items: center; gap: 6px; padding: 0 6px 0 9px;
+  transition: background 120ms ease, border-color 120ms ease;
+  user-select: none;
+}
+/* 3px left edge kind tint */
+.tl-clip::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+}
+.tl-clip--video::before { background: var(--ink-2); }
+.tl-clip--audio::before { background: var(--green-soft); opacity: .45; }
+.tl-clip--caption::before { background: var(--warm); opacity: .55; }
+.tl-clip:hover { background: var(--surface-3); border-color: var(--border); }
+.tl-clip--selected {
+  border-color: var(--cut); box-shadow: inset 0 0 0 1px var(--cut);
+  background: var(--cut-dim);
+}
+.tl-clip--dragging {
+  opacity: .85;
+  box-shadow: 0 0 0 1px var(--cut), 0 4px 16px var(--cut-glow);
+}
+.tl-clip--offline {
+  /* A missing source can belong to a sub-frame or otherwise very narrow clip.
+     Keep its temporal box exact, but let the recovery control escape that box
+     and win over seam handles until the source is repaired. */
+  z-index: calc(var(--z-playhead) + 1);
+  overflow: visible;
+  border-color: color-mix(in srgb, var(--err) 72%, var(--hairline-2));
+  background:
+    repeating-linear-gradient(
+      135deg,
+      var(--receipt-fail-bg) 0,
+      var(--receipt-fail-bg) 7px,
+      var(--surface-2) 7px,
+      var(--surface-2) 14px
+    );
+}
+.tl-clip--offline::before { background: var(--err); opacity: 1; }
+.tl-clip-offline {
+  position: absolute;
+  inset: 0 3px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding-left: 5px;
+  color: var(--receipt-fail);
+  pointer-events: none;
+}
+.tl-clip-offline__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 var(--fs-ui-xs) / 1 var(--sans);
+}
+.tl-clip-offline__relink {
+  pointer-events: auto;
+  margin-left: auto;
+  flex: none;
+  min-width: 24px;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--err) 55%, var(--hairline-2));
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font: 600 var(--fs-ui-xs) / 1 var(--sans);
+  cursor: pointer;
+}
+.tl-clip-offline__relink:hover:not(:disabled) { border-color: var(--err); }
+.tl-clip-offline__relink:disabled { opacity: .55; cursor: wait; }
+.tl-clip--locked { cursor: not-allowed; opacity: .78; }
+.tl-clip--locked .tl-trim { display: none; }
+.tl-clip-name {
+  font-size: var(--fs-mono); color: var(--ink); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.tl-clip-dur {
+  margin-left: auto; font: var(--fs-mono-xs) var(--mono); color: var(--ink-3);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+/* Caption clips: italic preview, dashed border — distinct from AV at a glance */
+.tl-clip--caption { border-style: dashed; }
+.tl-clip--caption .tl-clip-name { font-style: italic; font-size: var(--fs-ui-xs); color: var(--ink-2); }
+
+/* Still-image clips (probe kind=image): alpha-checker left edge — the
+   universal "image" metaphor — + photo glyph. No status color invented
+   (rule 4: color is reserved for meaning). */
+.tl-clip--image::before {
+  background:
+    repeating-conic-gradient(var(--ink-3) 0% 25%, var(--surface-3) 0% 50%)
+    0 0 / 6px 6px;
+  opacity: .8;
+}
+.tl-photo-icon { color: var(--ink-3); flex: none; }
+
+/* Audio waveform overlay (workspace contract v1): a centered peak trace filling the audio
+   clip body, drawn on a <canvas> from media.waveform peaks. Sits BEHIND the
+   clip name/duration (z-index 0 < the default content) and the kind-edge tint
+   (.tl-clip::before, which paints over its left few px); pointer-events none so
+   move/trim/select gestures hit the clip div, not this. Inline width/height
+   (set in the component) match the clip body; `left:0` anchors it, so `width`
+   governs the box and the trailing edge lands exactly at the clip's right. */
+.tl-waveform {
+  position: absolute;
+  left: 0; top: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+/* Slim waveform pinned to the BOTTOM of a VIDEO clip (over the filmstrip), so a
+   talking-head/screen-rec clip shows its audio. z-index above the filmstrip; a
+   subtle dark backing only when the clip actually HAS audio (data-wave=1) so a
+   silent clip shows no empty strip. */
+.tl-waveform--bottom {
+  top: auto; bottom: 0;
+  z-index: 1;
+}
+.tl-waveform--bottom[data-wave='1'] {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0));
+}
+
+/* Thumbnail filmstrip ("frames in the time bar"): the asset's frame strip,
+   sliced to the clip's source range (background-size/position set inline) with a
+   dark gradient layered over it. Fills the clip body; clipped by .tl-clip's
+   overflow:hidden + radius. pointer-events none so gestures hit the clip. The
+   label/duration are raised above it so they stay legible. */
+.tl-clip-film {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+/* Windowed (zoom) overlay: left+width are set inline (the visible sub-rect), so
+   release the inset's right:0 and let width win. Sits above the base strip. */
+.tl-clip-film--zoom {
+  right: auto;
+  z-index: 0;
+}
+.tl-clip-name, .tl-clip-dur { position: relative; z-index: 1; }
+
+/* PiP badge (edit.transform overlay geometry) — quiet outline chip */
+.tl-pip-badge {
+  flex: none;
+  font: 600 var(--fs-micro) var(--mono);
+  letter-spacing: .04em;
+  color: var(--ink-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 13px;
+  background: var(--surface);
+  user-select: none;
+}
+.tl-motion-badge {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  min-width: 15px;
+  height: 15px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--cut) 48%, var(--hairline-2));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--cut) 12%, var(--surface));
+  color: var(--ink);
+  font: 800 var(--fs-micro) var(--mono);
+  line-height: 1;
+  user-select: none;
+}
+.tl-motion-badge--source-dirty,
+.tl-motion-badge--missing-source,
+.tl-motion-badge--render-error,
+.tl-motion-badge--incompatible { border-style: dashed; }
+
+/* Overlay-track tag in the header rail (video tracks above the base) */
+.tl-overlay-tag {
+  font: 600 var(--fs-micro) var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-3);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  padding: 1px 5px;
+  user-select: none;
+}
+
+/* Fade corner triangles (edit.fade): NLE convention — a wedge at the clip
+   corner whose width = the ramp length in time-px. The shaded area is the
+   ATTENUATED part: full-height at the silent/black edge, tapering to zero
+   where the ramp completes. Quiet white (white is the accent; fades are
+   geometry, not status). */
+.tl-fade {
+  position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 1;
+  background: rgba(255, 255, 255, 0.13);
+}
+.tl-fade--in { left: 0; clip-path: polygon(0 0, 0 100%, 100% 0); }
+.tl-fade--out { right: 0; clip-path: polygon(100% 0, 100% 100%, 0 0); }
+
+/* Crossfade overlap wedge (edit.crossfade, xfade_in_ms): an X-shaped bracket
+   at the clip's START spanning the overlap width — the standard NLE "these two
+   clips dissolve across here" glyph. Editor blue (an edit, not a status), drawn
+   above the clip body. The realized timeline is SHORTER by this width (the
+   overlap is shared with the LEFT neighbour). pointer-events none — the seam
+   handle (below) owns the interaction. */
+.tl-xfade {
+  position: absolute; top: 0; bottom: 0; left: 0; z-index: 2; pointer-events: none;
+  background: var(--cut-dim);
+  border-right: 1px solid var(--cut-soft);
+  /* the crossing diagonals read as a dissolve */
+  background-image:
+    linear-gradient(to top right, transparent calc(50% - 0.5px), var(--cut-glow) 50%, transparent calc(50% + 0.5px)),
+    linear-gradient(to bottom right, transparent calc(50% - 0.5px), var(--cut-glow) 50%, transparent calc(50% + 0.5px));
+}
+
+/* Crossfade seam handle: a thin grabber AT a media↔media cut.
+   Default = quiet hairline diamond; with a crossfade set = filled blue;
+   selected = bright + ring. Sits centered on the boundary, full lane height. */
+.tl-seam {
+  position: absolute; top: 3px; bottom: 3px; width: 7px; z-index: 5;
+  transform: translateX(-3.5px); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.tl-seam::after {
+  content: ''; width: 7px; height: 7px; border-radius: 2px;
+  background: var(--surface-3); border: 1px solid var(--hairline-2);
+  transform: rotate(45deg); transition: background 120ms ease, border-color 120ms ease;
+}
+.tl-seam:hover::after { border-color: var(--cut-soft); background: var(--surface-2); }
+.tl-seam--xfade::after { background: var(--cut); border-color: var(--cut-soft); }
+.tl-seam--active::after {
+  background: var(--cut); border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--cut-glow);
+}
+
+/* Crossfade duration popover: floats just below the seam, in
+   content space (inside .tl-inner). Card vocabulary from artifact-base. */
+.tl-xfade-pop {
+  position: absolute; z-index: var(--z-dropdown);
+  transform: translateX(-50%);
+  min-width: 150px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-button); box-shadow: var(--shadow-dropdown);
+  padding: 8px; user-select: none;
+}
+.tl-xfade-pop__title {
+  font: 600 var(--fs-ui-xs) var(--sans); letter-spacing: .02em;
+  color: var(--ink-2); margin-bottom: 6px;
+}
+.tl-xfade-pop__clips { font-family: var(--mono); color: var(--cut-soft); }
+.tl-xfade-pop__row { display: flex; align-items: center; gap: 6px; }
+.tl-xfade-pop__input {
+  flex: 1; min-width: 0; box-sizing: border-box;
+  background: var(--surface); border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip); color: var(--ink);
+  font: var(--fs-mono) var(--mono); font-variant-numeric: tabular-nums;
+  padding: 3px 6px;
+}
+.tl-xfade-pop__input:focus { outline: none; border-color: var(--cut); }
+.tl-xfade-pop__unit { font: var(--fs-mono-xs) var(--mono); color: var(--ink-3); }
+.tl-xfade-pop__note { font: var(--fs-ui-xs) var(--sans); color: var(--ink-4); margin: 5px 0 7px; }
+.tl-xfade-pop__actions { display: flex; gap: 6px; }
+.tl-xfade-pop__btn {
+  all: unset; cursor: pointer; box-sizing: border-box; flex: 1; text-align: center;
+  font: 600 var(--fs-ui-xs) var(--sans); color: var(--ink-2);
+  border: 1px solid var(--hairline-2); border-radius: var(--radius-chip);
+  padding: 3px 0; transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.tl-xfade-pop__btn:hover { background: var(--surface-3); color: var(--ink); }
+.tl-xfade-pop__btn--primary {
+  background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
+}
+.tl-xfade-pop__btn--primary:hover { background: var(--accent-hover); }
+.tl-xfade-pop__btn:disabled { opacity: .4; cursor: not-allowed; }
+.tl-xfade-pop__btn:disabled:hover { background: none; color: var(--ink-2); }
+
+/* Duck envelope (edit.duck gain_windows): dimmed scrim over the music lane.
+   Background gradient (plateau + attack/release wings) is computed inline —
+   px stops depend on zoom. Above clips, below ghost/snap; never interactive. */
+.tl-duck {
+  position: absolute; top: 3px; bottom: 3px; z-index: 3;
+  pointer-events: none;
+  display: flex; align-items: flex-end; justify-content: center;
+  border-radius: var(--radius-clip);
+}
+.tl-duck-label {
+  font: var(--fs-mono-xs) var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink-2); padding-bottom: 1px; user-select: none;
+}
+
+/* Trim handles: 6px zones, outward overhang, per-side cursors (timeline behavior contract) */
+.tl-trim {
+  position: absolute; top: 0; bottom: 0; width: 9px; z-index: 2;
+}
+.tl-trim--l { left: -3px; cursor: w-resize; }
+.tl-trim--r { right: -3px; cursor: e-resize; }
+.tl-trim::after {
+  content: ''; position: absolute; top: 2px; bottom: 2px; width: 2px;
+  background: var(--accent); opacity: 0; transition: opacity 120ms ease;
+}
+.tl-trim--l::after { left: 3px; }
+.tl-trim--r::after { right: 3px; }
+.tl-trim:hover::after { opacity: 1; }
+
+/* Gaps: recessed diagonal hatch — content, not absence. */
+.tl-gap {
+  position: absolute; top: 3px; bottom: 3px; border-radius: var(--radius-clip);
+  background: var(--bg) repeating-linear-gradient(45deg, transparent 0 6px, #111110 6px 7px);
+}
+
+/* Ghost: in-flight verb target — dashed outline until op_applied (states) */
+.tl-ghost {
+  position: absolute; top: 3px; bottom: 3px; z-index: 4; pointer-events: none;
+  border: 1px dashed var(--cut-soft); border-radius: var(--radius-clip);
+  background: var(--cut-dim);
+}
+/* A ghost that has changed track (cross-track drag-move) reads stronger — a
+   solid blue edge so the destination is unmistakable. */
+.tl-ghost[data-cut-ghost-moved] {
+  border-style: solid; box-shadow: 0 0 0 1px var(--cut), 0 2px 10px var(--cut-glow);
+}
+
+/* Drop-track highlight: the row the cursor would drop onto during a move.
+   OK = green inset (engine accepts, same kind); BAD = amber inset (different
+   kind — the engine would refuse, so the drop is disabled). A faint inset
+   ring, never a fill — clips stay readable. */
+.tl-track--drop-ok { box-shadow: inset 0 0 0 1px var(--green); background: rgba(34, 197, 94, 0.04); }
+.tl-track--drop-bad { box-shadow: inset 0 0 0 1px var(--amber); background: rgba(212, 166, 87, 0.05); }
+
+/* Gesture HUD: floating readout following the cursor during trim / move.
+   position:fixed in client space (NOT inside the scroll transform), above
+   everything, never interactive. */
+.tl-hud {
+  position: fixed; z-index: var(--z-toast); pointer-events: none;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--surface-2); border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip); padding: 3px 8px;
+  box-shadow: var(--shadow-dropdown); user-select: none;
+}
+.tl-hud__label {
+  font: 600 var(--fs-mono) var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.tl-hud__sub {
+  font: var(--fs-mono-xs) var(--mono); color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.tl-hud--info { border-color: var(--cut-dim); }
+.tl-hud--info .tl-hud__sub { color: var(--cut-soft); }
+.tl-hud--warn { border-color: rgba(212, 166, 87, 0.5); }
+.tl-hud--warn .tl-hud__label { color: var(--amber); }
+.tl-hud--warn .tl-hud__sub { color: var(--amber); }
+
+/* Snap guide: 1px white vertical line, full height, above clips */
+.tl-snapline {
+  position: absolute; top: 0; bottom: 0; width: 1px; z-index: var(--z-playhead);
+  background: var(--accent); opacity: .7; pointer-events: none;
+}
+
+/* Markers: orange triangle on ruler + 35% drop line through tracks.
+   Draggable — the triangle starts an edit.move_marker gesture;
+   grab cursor signals it. Per-class tint distinguishes beat / capture / plain
+   WITHOUT inventing a new status color (markers stay orange-family):
+     plain   = solid orange (user/agent edit.add_marker)
+     beat    = hollow orange outline (audio.add_music beat grid — many, quiet)
+     capture = amber fill (capture-manifest event claims — a distinct provenance) */
+.tl-marker-tri {
+  position: absolute; bottom: 0; width: 0; height: 0; z-index: 3;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 8px solid var(--orange); transform: translateX(-5px);
+  cursor: grab;
+}
+.tl-marker-tri:hover { filter: brightness(1.25); }
+.tl-marker-tri--dragging { cursor: grabbing; filter: brightness(1.4); }
+/* derived markers (beat / capture) are a read-only visualization — not draggable */
+.tl-marker-tri--fixed { cursor: default; }
+/* beat markers: smaller + hollow-looking (lower-opacity) so a dense beat grid
+   doesn't shout over user markers. */
+.tl-marker-tri--beat {
+  border-left-width: 4px; border-right-width: 4px;
+  border-top: 7px solid var(--orange-soft); opacity: .55; transform: translateX(-4px);
+}
+.tl-marker-tri--beat:hover { opacity: 1; }
+/* Review-comment pins — a blue dot at the TOP of the ruler (with a --surface
+   halo so it reads over ticks), separate from the orange edit markers at the
+   bottom. Open = solid blue, addressed = green. Click seeks + opens the rail. */
+.tl-comment-pin {
+  all: unset; box-sizing: border-box;
+  position: absolute; top: 2px; z-index: 4;
+  width: 8px; height: 8px; transform: translateX(-4px);
+  cursor: pointer; border-radius: 50%;
+  background: var(--cut-soft);
+  border: 1.5px solid var(--surface);
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+.tl-comment-pin:hover { background: #fff; transform: translateX(-4px) scale(1.35); }
+.tl-comment-pin--addressed { background: var(--receipt-pass); }
+.tl-comment-pin--anchor-stale {
+  background: var(--amber);
+  border-color: var(--surface);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 22%, transparent);
+}
+/* capture markers: amber (review/claim semantics — capture manifest events are
+   confidence-tagged CLAIMS, not measured facts; amber = "pending/needs review"). */
+.tl-marker-tri--capture { border-top-color: var(--amber); }
+/* Marker drag ghost: a hollow blue triangle at the proposed at_ms. */
+.tl-marker-ghost {
+  position: absolute; bottom: 0; width: 0; height: 0; z-index: 4; pointer-events: none;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 8px solid var(--cut-soft); transform: translateX(-5px); opacity: .85;
+}
+.tl-marker-line {
+  position: absolute; top: 0; bottom: 0; width: 1px; z-index: 2;
+  background: var(--orange); opacity: .35; pointer-events: none;
+}
+
+/* Playhead: 2px --cut line, full height incl. ruler, glow; NEVER tweened.
+   Position is an imperative style write (timeline behavior contract). */
+.tl-playhead {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  z-index: calc(var(--z-playhead) + 1);
+  background: var(--cut); box-shadow: 0 0 8px var(--cut-glow);
+  pointer-events: none;
+}
+/* Ruler grab handle: 11px blue inverted pentagon at the playhead top */
+.tl-playhead-handle {
+  position: absolute; top: 0; left: -4.5px; width: 11px; height: 12px;
+  background: var(--cut); pointer-events: auto; cursor: ew-resize;
+  clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%);
+}
+
+/* Empty state — teach the verb. */
+.tl-empty {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; color: var(--ink-4); font-size: var(--fs-ui-sm);
+  font-family: var(--mono);
+}
+/* …with a project but no media, the hint is a real CTA button that opens the
+   topbar Import dialog (cut:open-import) — a human can start the edit here. */
+.tl-empty--cta {
+  all: unset; box-sizing: border-box;
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; gap: 8px; cursor: pointer;
+  color: var(--cut-soft); font-size: var(--fs-ui-sm); font-family: var(--mono);
+  transition: color 120ms ease, background 120ms ease;
+}
+.tl-empty--cta:hover { color: var(--cut); background: var(--cut-dim); }
+.tl-empty--cta:focus-visible { color: var(--cut); outline: 1px solid var(--cut); outline-offset: -2px; }
+
+/* ── edit.speed: toolbar speed control + per-clip retime badge ──────────────
+   Placement/styling follows the compact toolbar layout. */
+.tl-speed { display: flex; align-items: center; gap: 3px; }
+.tl-speed__label {
+  font: 600 var(--fs-ui-xs) var(--sans); letter-spacing: .02em;
+  color: var(--ink-4); padding: 0 2px; user-select: none;
+}
+.tl-speed__preset { padding: 3px 6px; font-variant-numeric: tabular-nums; }
+.tl-speed__input {
+  all: unset; box-sizing: border-box; width: 46px;
+  font: 600 var(--fs-ui-xs) var(--mono); color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--hairline-2);
+  border-radius: 4px; padding: 2px 5px; text-align: center;
+}
+.tl-speed__input:disabled { opacity: .4; cursor: not-allowed; }
+.tl-speed__input::placeholder { color: var(--ink-4); }
+/* Per-clip speed badge — sibling of .tl-pip-badge; edit accent, never a status colour. */
+.tl-speed-badge {
+  flex: none; font: 600 var(--fs-micro) var(--mono); letter-spacing: .02em;
+  color: var(--cut-soft); border: 1px solid var(--cut-dim);
+  border-radius: 3px; padding: 0 3px; line-height: 13px;
+  background: var(--surface); user-select: none;
+}
+
+/* Per-clip grade badge — sibling of the speed badge; edit accent (a grade is an
+   edit, not a status). The ◐ glyph reads as "tone/contrast" at a glance. */
+.tl-grade-badge {
+  flex: none; font: 600 var(--fs-ui-xs) var(--sans); line-height: 13px;
+  color: var(--cut-soft); border: 1px solid var(--cut-dim);
+  border-radius: 3px; padding: 0 3px;
+  background: var(--surface); user-select: none;
+}
+
+/* Transition-style picker in the crossfade seam popover (58 ffmpeg xfade styles). */
+.tl-xfade-pop__style {
+  width: 100%;
+  background: var(--surface-2, #14161a);
+  color: var(--ink-2, #d6dae0);
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: 500 var(--fs-ui-sm, 12px)/1 var(--sans);
+  cursor: pointer;
+}
+.tl-xfade-pop__style:hover { border-color: var(--cut, #2563eb); }
+
+/* Marker rename + color swatches (MarkerContextMenu) — matches tl-ctx__item
+   spacing; swatches are small filled circles, the hollow one clears. */
+.tl-ctx__rename {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px 6px;
+}
+.tl-ctx__rename-input {
+  flex: 1; min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline-2, #3a3a36);
+  border-radius: var(--radius-control, 7px);
+  background: var(--surface-1, #191917);
+  color: var(--ink-1, #e8e8e6);
+  font-size: var(--fs-ui-sm, 13px);
+}
+.tl-ctx__rename-ok {
+  display: flex; align-items: center; justify-content: center;
+  padding: 5px 7px; border: 0;
+  border-radius: var(--radius-control, 7px);
+  background: transparent; color: var(--ink-2, #b9b9b4); cursor: pointer;
+}
+.tl-ctx__rename-ok:hover { background: var(--surface-3, #232320); color: var(--ink-1, #e8e8e6); }
+.tl-ctx__note {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 6px;
+  padding: 2px 6px 6px;
+}
+.tl-ctx__note-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  max-height: 96px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--hairline-2, #3a3a36);
+  border-radius: var(--radius-control, 7px);
+  background: var(--surface-1, #191917);
+  color: var(--ink-1, #e8e8e6);
+  font: 500 var(--fs-ui-xs, 12px)/1.35 var(--sans);
+}
+.tl-ctx__note-ok {
+  display: flex; align-items: center; justify-content: center;
+  align-self: start;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control, 7px);
+  background: transparent;
+  color: var(--ink-2, #b9b9b4);
+  cursor: pointer;
+}
+.tl-ctx__note-ok:hover { background: var(--surface-3, #232320); color: var(--ink-1, #e8e8e6); }
+.tl-ctx__swatches {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 8px 8px;
+}
+.tl-ctx__swatch {
+  width: 15px; height: 15px; padding: 0;
+  border: 1px solid transparent; border-radius: 50%;
+  cursor: pointer;
+}
+.tl-ctx__swatch:hover { transform: scale(1.15); }
+.tl-ctx__swatch--active { border-color: var(--ink-1, #e8e8e6); }
+.tl-ctx__swatch--none {
+  background: transparent;
+  border: 1px dashed var(--ink-3, #8a8a84);
+}
+
+/* Marquee / rubber-band selection rectangle (client-fixed overlay). */
+.tl-marquee {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  border: 1px dashed var(--accent, #7aa2ff);
+  background: color-mix(in srgb, var(--accent, #7aa2ff) 12%, transparent);
+  border-radius: 2px;
+}
+
+/* Paste-attributes dialog — centered independently of the clip-menu click.
+   It is a modal, not a positioned context menu; WKWebView can otherwise keep
+   the inherited menu animation at opacity:0 during the menu→dialog swap. */
+.tl-pa {
+  left: 50%;
+  top: 50%;
+  min-width: 320px;
+  padding: 10px;
+  transform: translate(-50%, -50%);
+  animation: none;
+}
+.tl-pa__title { font-weight: 600; font-size: var(--fs-ui-sm, 13px); padding: 2px 4px 8px; color: var(--ink-1, #e8e8e6); }
+.tl-pa__sub { display: block; font-weight: 400; font-size: 11px; color: var(--ink-3, #8a8a84); margin-top: 2px; }
+.tl-pa__row { display: flex; align-items: baseline; gap: 8px; padding: 5px 4px; cursor: pointer; border-radius: var(--radius-control, 7px); }
+.tl-pa__row:hover { background: var(--surface-3, #232320); }
+.tl-pa__label { font-size: var(--fs-ui-sm, 13px); color: var(--ink-1, #e8e8e6); white-space: nowrap; }
+.tl-pa__hint { font-size: 10px; color: var(--ink-3, #8a8a84); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-pa__note { font-size: 11px; color: var(--amber, #d9a441); padding: 6px 4px 0; white-space: normal; }
+.tl-pa__actions { display: flex; justify-content: flex-end; gap: 6px; padding-top: 8px; }
+.tl-pa__actions .tl-ctx__item { width: auto; }
+.tl-pa__apply { font-weight: 600; }
+
+/* Trim popover rows (rides the tl-ctx + tl-pa shells). NOTE: class is
+   tl-trimpop — the bare .tl-trim is the clip TRIM HANDLE (absolute, z 2). */
+.tl-trimpop {
+  min-width: 300px;
+  padding: 10px;
+  /* WKWebView can retain tl-ctx-in's initial opacity when React replaces the
+     clip menu with this dialog in the same batch. The trim surface must never
+     remain interactable-but-invisible; its immediate appearance is clearer. */
+  animation: none;
+}
+.tl-trimpop__row { display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: var(--radius-control, 7px); }
+.tl-trimpop__row:hover { background: var(--surface-3, #232320); }
+.tl-trimpop__label { flex: 1; font-size: var(--fs-ui-sm, 13px); color: var(--ink-1, #e8e8e6); white-space: nowrap; }
+.tl-trimpop__btns { display: flex; gap: 4px; }
+.tl-trimpop__step {
+  min-width: 34px; padding: 4px 6px;
+  border: 1px solid var(--hairline-2, #3a3a36);
+  border-radius: var(--radius-control, 7px);
+  background: var(--surface-1, #191917);
+  color: var(--ink-1, #e8e8e6);
+  font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.tl-trimpop__step:hover { background: var(--surface-3, #232320); }
+
+/* Trim tool: cursor affordances per mode — body drags slip/slide, edge
+   drags roll. Set via data-cut-trimtool on the scroller. */
+[data-cut-trimtool='slip'] .tl-clip,
+[data-cut-trimtool='slide'] .tl-clip { cursor: ew-resize; }
+[data-cut-trimtool='roll'] .tl-trim { cursor: col-resize; }
+/* In ROLL mode the crossfade seam handle (z 5, sits ON TOP of the trim
+   handles at every clip boundary) must yield the pointer — rolling IS the
+   seam operation; the popover would otherwise eat the edge drag. */
+[data-cut-trimtool='roll'] .tl-seam { pointer-events: none; }

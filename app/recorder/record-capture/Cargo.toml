@@ -1,0 +1,94 @@
+[package]
+name = "record-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ShellX Record — screen+input capture abstraction (ReplayCapture everywhere; per-OS LiveCapture behind features)."
+
+[features]
+default = []
+# Platform live-capture backends. Enable ONLY when building for that target
+# (e.g. cargo xwin --target x86_64-pc-windows-msvc --features capture-windows).
+# The module is also cfg(windows)/cfg(macos) gated, so a wrong-platform build is
+# a no-op rather than a break.
+capture-windows = ["dep:windows-capture", "dep:windows", "dep:rdevin", "mic"]
+capture-macos = ["dep:rdevin", "dep:screencapturekit", "mic"]
+# Linux = XDG ScreenCast portal (ashpd) + GStreamer encode + rdevin (X11) + cpal.
+# Needs libpipewire/dbus/x11/alsa dev libs to build, a desktop session to run.
+capture-linux = ["dep:ashpd", "dep:tokio", "dep:enumflags2", "dep:rdevin", "dep:evdev", "dep:pipewire", "dep:libspa", "mic"]
+# Microphone/voice capture (cpal default input → WAV via hound). Lightweight,
+# pure-Rust, cross-platform; only compiled in capture builds (needs platform audio
+# libs — WASAPI/CoreAudio/ALSA — so never in the plain Linux default build).
+mic = ["dep:cpal", "dep:hound", "dep:windows", "dep:windows-core"]
+
+[dependencies]
+record-core = { workspace = true }
+cut-media = { path = "../../media" }
+record-recovery = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+# rdevin (global input hook) is cross-platform; only compiled when a capture
+# feature is on (never on the plain Linux/WSL build).
+rdevin = { version = "0.1", optional = true }
+cpal = { version = "0.15", optional = true }
+hound = { version = "3", optional = true }
+
+# Build-time only: compile the macOS Core Audio tap shim (src/mac_systemaudio.mm). The
+# build.rs gates it to target_os=macos + feature capture-macos, so this is inert elsewhere.
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+# Native checkpoint and system-audio tests run on macOS as well as Linux; keep
+# their temporary-file helper test-only so production capture dependencies stay
+# unchanged.
+tempfile.workspace = true
+
+# windows-capture (WGC) only exists on the windows target.
+[target.'cfg(windows)'.dependencies]
+windows-capture = { version = "2", optional = true }
+# Raw Win32 for our OWN window enumeration (windows-capture's Window::enumerate uses
+# EnumChildWindows(GetDesktopWindow()) which returns EMPTY from cutd's sidecar thread —
+# we use EnumWindows on a thread attached to the INTERACTIVE desktop instead).
+# Pin the SAME 0.62 windows-capture links to avoid a duplicate `windows` crate.
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Variant",
+] }
+windows-core = { version = "0.62", optional = true }
+# ScreenCaptureKit (SCK) only exists on the macOS target — the Mac counterpart to
+# windows-capture (WGC): per-window/display enumeration + SCStream + SCRecordingOutput
+# direct-to-file (feature macos_15_0). The supported macOS range provides these APIs.
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "8", optional = true, features = ["macos_15_0"] }
+
+# Linux capture deps (ashpd = XDG portals, tokio = async runtime for the handshake).
+# enumflags2 must match ashpd's (0.7) for SourceType BitFlags type identity.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"], optional = true }
+enumflags2 = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"], optional = true }
+# evdev (/dev/input) for Wayland global input — passive, needs `input` group.
+evdev = { version = "0.13", optional = true }
+# pipewire-rs: Wayland unified capture (frames + SPA_META_Cursor) in ONE stream.
+# gst can't expose the cursor metadata; pipewire-rs reads MemFd frames directly +
+# the cursor position meta. Used on Wayland; X11 stays on gst+rdevin.
+pipewire = { version = "0.10", optional = true }
+libspa = { version = "0.10", optional = true }
+
+[[example]]
+name = "windows_loopback_probe"
+required-features = ["capture-windows"]
+
+[[example]]
+name = "linux_system_audio_probe"
+required-features = ["capture-linux"]

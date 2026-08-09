@@ -1,0 +1,42 @@
+/* Task-oriented Inspector additions: collapsed state summaries and actionable
+   prerequisite messages. Kept separate from the legacy Inspector stylesheet so
+   new task surfaces do not regrow that extraction backlog. */
+
+.insp__setup-blocker {
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber, #f59e0b) 40%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--amber, #f59e0b) 8%, transparent);
+  color: var(--ink-2, #d6dae0);
+  font: var(--fs-ui-sm)/1.4 var(--sans);
+}
+.insp__setup-blocker button {
+  justify-self: start;
+  border: none;
+  background: transparent;
+  color: var(--cut-soft, #93b4ff);
+  font: 700 var(--fs-ui-sm)/1 var(--sans);
+  padding: 0;
+  cursor: pointer;
+}
+.insp__setup-blocker button:hover {
+  color: var(--ink, #f2f3f5);
+  text-decoration: underline;
+}
+
+.is__heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.is__summary {
+  color: var(--ink-4, #6b7280);
+  font: 500 var(--fs-ui-xs, 11px)/1.25 var(--sans);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.is__summary--active { color: var(--cut-soft, #93b4ff); }
+.is__summary--warning { color: var(--amber, #f59e0b); }

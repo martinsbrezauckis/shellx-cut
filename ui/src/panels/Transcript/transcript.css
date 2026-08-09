@@ -1,0 +1,567 @@
+/* transcript.css — Transcript panel styles (tokens from theme.css).
+   Flowing words at --fs-body/1.8 --ink-2; playhead word gets
+   --ink + 2px --cut underline; selection --cut-dim; removed spans struck +
+   collapsed; fillers dotted --amber; floating Cut toolbar above selection. */
+
+/* Header: [search] [pass-note] [spacer] [Tools ▾] — search inline,
+   secondary actions under the Tools menu. Reset the panel-header uppercase/
+   tracking so the controls read as normal-case UI. */
+.tx__header {
+  gap: var(--space-2);
+  z-index: calc(var(--z-dropdown) + 1);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+.tx__header-spacer { flex: 1; }
+
+.tx__pass-note {
+  font-family: var(--mono);
+  font-size: var(--fs-mono-xs);
+  color: var(--ink-3);
+  max-width: 130px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---- Tools dropdown ------------------------------------------------------- */
+.tx__tools { position: relative; flex: none; }
+.tx__tools-btn { display: inline-flex; align-items: center; gap: 5px; }
+.tx__tools-caret { opacity: 0.7; }
+
+.tx__tools-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: var(--z-dropdown);
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-1);
+  background: var(--surface-3);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  box-shadow: var(--shadow-dropdown);
+}
+
+.tx__tools-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-chip);
+  color: var(--ink-2);
+  font-family: var(--sans);
+  font-size: var(--fs-ui-sm);
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.tx__tools-item:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
+.tx__tools-item:disabled { color: var(--ink-4); cursor: not-allowed; }
+.tx__tools-item--on { color: var(--cut-soft); }
+.tx__tools-item--inline { flex: 1; }
+.tx__tools-check { width: 12px; color: var(--cut-soft); }
+
+.tx__tools-row { display: flex; align-items: center; gap: 6px; }
+.tx__tools-sep { height: 1px; background: var(--hairline); margin: 3px 4px; }
+
+/* aggressiveness select — .field pattern; the empty option gates the pass */
+.tx__aggr {
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  font: 400 var(--fs-ui-xs) var(--sans);
+  padding: 3px 6px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+.tx__aggr:hover, .tx__aggr:focus { border-color: var(--border); }
+
+/* pass buttons — ghost buttons (artifact-base .btn--ghost) */
+.tx__pass-btn {
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  font: 500 var(--fs-ui-xs) var(--sans);
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.tx__pass-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border); color: var(--ink); }
+.tx__pass-btn:disabled { color: var(--ink-4); cursor: not-allowed; }
+
+/* reel-mode toggle, active state — blue accent = "where the action is" (rule 4) */
+.tx__pass-btn--on {
+  background: var(--cut-dim);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: var(--cut-soft);
+}
+.tx__pass-btn--on:hover:not(:disabled) {
+  background: var(--cut-dim);
+  border-color: var(--cut);
+  color: var(--cut-soft);
+}
+
+.tx__body {
+  position: relative; /* anchors the floating Cut toolbar */
+  padding: var(--space-3) var(--space-4);
+  user-select: none;  /* word spans are the selection unit, not text */
+}
+
+.tx__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-4);
+  font-size: var(--fs-ui-sm);
+}
+/* …a real CTA button when a project is open (opens the topbar Import dialog) */
+.tx__empty--cta {
+  all: unset;
+  box-sizing: border-box;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--cut-soft);
+  font-size: var(--fs-ui-sm);
+  transition: color 120ms ease, background 120ms ease;
+}
+.tx__empty--cta:hover { color: var(--cut); background: var(--cut-dim); }
+.tx__empty--cta:focus-visible { color: var(--cut); outline: 1px solid var(--cut); outline-offset: -2px; }
+
+/* Cold-install perception setup card (transcription engine not ready). */
+.tx__setup {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+.tx__setup-title {
+  margin: 0;
+  font: 600 var(--fs-ui)/1.3 var(--sans);
+  color: var(--ink);
+}
+.tx__setup-body {
+  margin: 0;
+  max-width: 34ch;
+  color: var(--ink-3);
+  font: var(--fs-ui-sm)/1.5 var(--sans);
+}
+.tx__setup-err {
+  margin: 0;
+  color: #ff9a9a;
+  font-size: var(--fs-ui-sm);
+}
+.tx__setup-progress {
+  margin: 0;
+  color: var(--cut-soft);
+  font-size: var(--fs-ui-sm);
+}
+.tx__setup-btn {
+  margin-top: 2px;
+  padding: 8px 16px;
+  border: 1px solid var(--cut);
+  border-radius: 8px;
+  background: var(--cut-dim);
+  color: var(--cut);
+  font: 600 var(--fs-ui-sm)/1 var(--sans);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tx__setup-btn:hover { background: var(--cut); color: var(--surface-0, #0e0f12); }
+.tx__setup-btn:focus-visible { outline: 1px solid var(--cut); outline-offset: 2px; }
+
+/* sticky mini-header per asset */
+.tx__asset-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--surface);
+  font: 500 var(--fs-mono-xs) var(--mono);
+  color: var(--ink-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: var(--space-2);
+}
+
+.tx__flow {
+  margin: 0 0 var(--space-4);
+  font-size: var(--fs-body);
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+
+/* per-source empty state: muted line (matches .tx__empty's --ink-4) when a
+   source has no transcribed words — distinguishes "no speech" from "broken" */
+.tx__flow--empty {
+  color: var(--ink-4);
+  font-size: var(--fs-ui-sm);
+  font-style: italic;
+}
+
+/* ---- words ---------------------------------------------------------------- */
+.tx-word {
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tx-word:hover { color: var(--ink); }
+
+/* playhead word: --ink + 2px --cut underline */
+.tx-word--active {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 0 var(--cut);
+}
+
+/* range selection: --cut-dim bg, white text */
+.tx-word--sel { background: var(--cut-dim); color: var(--accent); }
+
+/* in-flight cut (verb sent, op_applied pending) — ghost, never committed look */
+.tx-word--pending { opacity: 0.45; background: var(--cut-dim); }
+
+/* filler words pre-removal: dotted --amber underline */
+.tx-word--filler {
+  text-decoration: underline dotted var(--amber);
+  text-underline-offset: 4px;
+}
+
+/* Non-destructive MUTE: amber strike + dim — the word still occupies its
+   time (unlike the grey strike of a CUT), it just plays silent. */
+.tx-word--muted {
+  opacity: 0.6;
+  text-decoration: line-through var(--amber);
+}
+
+/* Non-destructive ignore: grey and dotted underline. The word is still
+   in the source transcript, but transcript-derived outputs skip it. */
+.tx-word--ignored {
+  color: var(--ink-4);
+  text-decoration: underline dotted var(--ink-4);
+  text-underline-offset: 4px;
+}
+
+/* ---- removed spans (struck, collapsed, restore on hover) ------------------ */
+.tx-removed {
+  position: relative;
+  color: var(--ink-4);
+  text-decoration: line-through;
+  font-size: 60%;
+  border-radius: 3px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tx-removed .tx-word { color: inherit; cursor: default; }
+.tx-removed:hover { color: var(--ink-3); }
+
+/* rail-hover highlight (Review row hover toggles .op-link-hot via op-id) */
+.tx-removed.op-link-hot {
+  background: var(--cut-dim);
+  color: var(--cut-soft);
+  animation: tx-flash 300ms ease;
+}
+@keyframes tx-flash {
+  0% { background: var(--cut-glow); }
+  100% { background: var(--cut-dim); }
+}
+
+.tx-restore {
+  display: inline-block;
+  position: static;
+  background: transparent;
+  color: var(--green);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-pill);
+  font: 500 var(--fs-mono-xs) var(--sans);
+  padding: 1px 8px;
+  margin: 0 4px;
+  cursor: pointer;
+  vertical-align: middle;
+  /* Recovery should never depend on discovering a hover-only target. Keep the
+     exact Restore action visible and in normal inline flow so it reserves its
+     own width instead of covering the next selectable transcript words. */
+  opacity: 1;
+  pointer-events: auto;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.tx-restore:hover { background: rgba(34, 197, 94, 0.1); border-color: var(--green); }
+
+/* ---- floating Cut toolbar (Canvas ContextToolbar pattern) ----------------- */
+.tx__cut-toolbar {
+  position: absolute;
+  z-index: var(--z-dropdown);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: min(360px, calc(100% - 16px));
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-button);
+  padding: 4px 6px;
+  box-shadow: var(--shadow-dropdown);
+}
+
+.tx__cut-btn {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: var(--radius-chip);
+  font: 600 var(--fs-ui-sm) var(--sans);
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.tx__cut-btn:hover { background: var(--accent-hover); }
+
+.tx__cut-tc {
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  padding-right: 4px;
+}
+
+/* ---- reel tray (highlight-reel authoring) --------------------------------- */
+/* Sits between the sticky header and the scrolling body. Pure VIEW state — the
+   reel is built only by the Assemble dispatch (zero-local-mutation contract). Editor-blue accent
+   marks it as the "where the action is" surface (rule 4). */
+.tx__reel {
+  flex: 0 0 auto;
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+  padding: var(--space-2) var(--space-4);
+  max-height: 38%;
+  overflow-y: auto;
+}
+
+.tx__reel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.tx__reel-title {
+  font: 600 var(--fs-mono-xs) var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cut-soft);
+}
+.tx__reel-asset { color: var(--ink-3); text-transform: none; letter-spacing: 0; }
+
+.tx__reel-meta {
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.tx__reel-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* primary assemble button — white-on-dark (.btn primary) */
+.tx__reel-assemble {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: var(--radius-chip);
+  font: 600 var(--fs-ui-xs) var(--sans);
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.tx__reel-assemble:hover:not(:disabled) { background: var(--accent-hover); }
+.tx__reel-assemble:disabled { background: var(--surface-3); color: var(--ink-4); cursor: not-allowed; }
+
+.tx__reel-empty {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-4);
+  font-style: italic;
+}
+
+.tx__reel-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.tx__reel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  padding: 3px 6px 3px 8px;
+}
+
+/* ordinal = reel position (the order that ships to transcript.assemble) */
+.tx__reel-idx {
+  flex: 0 0 auto;
+  min-width: 16px;
+  text-align: center;
+  font: 600 var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--cut-soft);
+}
+
+.tx__reel-snippet {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-ui-sm);
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tx__reel-range {
+  flex: 0 0 auto;
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.tx__reel-rm {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--ink-3);
+  border: none;
+  border-radius: var(--radius-chip);
+  font: 600 var(--fs-ui-sm) var(--sans);
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.tx__reel-rm:hover { background: var(--receipt-fail-bg); color: var(--err); }
+
+.tx__reel-note {
+  margin: var(--space-2) 0 0;
+  font: var(--fs-mono-xs) var(--mono);
+  color: var(--ink-3);
+}
+
+/* transcript.search — header find box */
+.tx__search { display: inline-flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0; }
+.tx__search-input {
+  font-family: var(--mono); font-size: var(--fs-mono-xs);
+  background: var(--surface-2); color: var(--ink); border: 1px solid var(--border);
+  border-radius: var(--radius-chip); padding: 3px 7px; flex: 1 1 auto; min-width: 70px; max-width: 180px;
+}
+.tx__search-input::placeholder { color: var(--ink-4); }
+.tx__search-note { font-family: var(--mono); font-size: var(--fs-mono-xs); color: var(--cut); white-space: nowrap; }
+
+/* view toggle (Clip / Program / Source) + EDL timeline transcript view. */
+.tx__viewtoggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--surface-2, #1b1e24);
+}
+.tx__viewbtn {
+  border: none;
+  background: transparent;
+  color: var(--ink-3, #aab1bd);
+  font: 600 var(--fs-ui-xs, 11px)/1 var(--sans);
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.tx__viewbtn:hover { color: var(--ink, #f2f3f5); }
+.tx__viewbtn--on {
+  background: var(--cut, #2563eb);
+  color: #fff;
+}
+
+.txv {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px 64px;
+}
+.txv__clip { display: flex; flex-direction: column; gap: 4px; }
+.txv__clip-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  border-top: 1px solid var(--hairline, rgba(255, 255, 255, 0.07));
+}
+.txv__clip-line {
+  font: 700 var(--fs-ui-xs, 11px)/1 var(--mono, ui-monospace);
+  color: var(--cut, #2563eb);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.txv__clip-id { font: var(--fs-ui-xs, 11px)/1 var(--mono, ui-monospace); color: var(--ink-4, #6b7280); }
+.txv__flow {
+  margin: 0;
+  font: var(--fs-ui)/1.7 var(--sans);
+  color: var(--ink-2, #d6dae0);
+}
+.txv__w {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+  transition: background 80ms ease, color 80ms ease;
+}
+.txv__w:hover { background: var(--surface-2, #1b1e24); color: var(--ink, #f2f3f5); }
+.txv__w--sel { background: var(--cut-dim, rgba(37, 99, 235, 0.25)); color: var(--ink, #f2f3f5); }
+.txv__w--play { box-shadow: inset 0 -2px 0 var(--cut, #2563eb); color: var(--ink, #f2f3f5); }
+.txv__cut-bar {
+  position: sticky;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px auto 0;
+  padding: 6px 8px;
+  width: fit-content;
+  border-radius: 9px;
+  background: var(--surface-3, #21252c);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+.txv__cut-note { color: var(--ink-3, #aab1bd); font-size: var(--fs-ui-sm); padding: 0 4px; }
+.txv__cut-btn {
+  border: none;
+  background: var(--cut, #2563eb);
+  color: #fff;
+  font: 600 var(--fs-ui-sm)/1 var(--sans);
+  padding: 7px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.txv__cut-btn:hover { filter: brightness(1.1); }
+.txv__cut-x {
+  border: none;
+  background: transparent;
+  color: var(--ink-4, #6b7280);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 6px;
+}
+.txv__cut-x:hover { color: var(--ink, #f2f3f5); }

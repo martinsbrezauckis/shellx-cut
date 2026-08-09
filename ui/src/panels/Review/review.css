@@ -1,0 +1,826 @@
+/* review.css — Review rail styles (tokens from theme.css).
+   OPS feed rows (badge/rationale/effects, focused/accepted/
+   rejected), RECEIPTS cards (across-the-room banner, check rows, evidence,
+   judge stub), DIFF (selectors, chips, tinted op list). Rail focus scope =
+   2px --cut top edge. */
+
+.rr { outline: none; height: 100%; }
+/* RAIL keyboard scope indicator — subtle --cut 2px top edge on the panel */
+.rr--focused { box-shadow: inset 0 2px 0 0 var(--cut); }
+
+.rr__header { justify-content: space-between; }
+
+.rr__pending-chip {
+  font: 600 var(--fs-mono-xs) var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+  background: var(--receipt-pending-bg);
+  border: 1px solid rgba(212, 166, 87, 0.35);
+  border-radius: var(--radius-chip);
+  padding: 2px 7px;
+}
+
+/* header collapse button — folds the rail (mirror of the left sidebar's). */
+.rr__collapse {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  border-radius: var(--radius-chip);
+}
+.rr__collapse:hover { color: var(--ink); background: var(--surface-3); }
+
+/* ---- tabs (.rr-tabs pattern) ---------------------------------------------- */
+.rr__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+.rr__tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--ink-3);
+  font: 600 var(--fs-ui-xs) var(--sans);
+  letter-spacing: 0.12em;
+  padding: 7px 0 6px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.rr__tab:hover { color: var(--ink-2); }
+.rr__tab--active { color: var(--ink); border-bottom-color: var(--cut); }
+
+.rr__tab-count {
+  margin-left: 5px;
+  font: 600 var(--fs-micro) var(--mono);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-pill);
+  padding: 1px 5px;
+}
+
+/* inner views own their scrollbar — the body itself never double-scrolls */
+.rr__body { display: flex; flex-direction: column; overflow: hidden; }
+
+.rr__empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-4);
+  font-size: var(--fs-ui-sm);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.rr__keyhint {
+  flex: none;
+  padding: 5px var(--space-3);
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-4);
+  font-size: var(--fs-mono-xs);
+  user-select: none;
+}
+
+/* ---- OPS feed -------------------------------------------------------------- */
+.rr-ops { flex: 1; overflow-y: auto; }
+
+.rr-op {
+  position: relative;
+  padding: 10px var(--space-3) 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  cursor: default;
+  transition: background 120ms ease;
+}
+.rr-op:hover { background: var(--surface-2); }
+.rr-op:hover .rr-op__actions,
+.rr-op--focused .rr-op__actions,
+.rr-op:focus-within .rr-op__actions { display: flex; }
+
+/* focused (keyboard cursor): bg + 2px --cut left edge (family selected) */
+.rr-op--focused { background: var(--surface-2); box-shadow: inset 2px 0 0 0 var(--cut); }
+
+/* accepted: green check on the right edge */
+.rr-op--accepted .rr-op__check { display: inline; }
+
+/* rejected: dim 55%, verb struck, red ✕ */
+.rr-op--rejected { opacity: 0.55; }
+.rr-op--rejected .rr-op__verb { text-decoration: line-through; }
+
+.rr-op__l1 { display: flex; align-items: baseline; gap: 6px; }
+
+/* actor badges (office-suite .trust pattern) — EVERY row has one */
+.rr-badge {
+  font: 600 var(--fs-mono-xs) var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-radius: var(--radius-chip);
+  padding: 2px 7px;
+  flex: none;
+}
+.rr-badge--agent { color: var(--cut); background: var(--cut-dim); border: 1px solid rgba(59, 130, 246, 0.3); }
+.rr-badge--human { color: var(--ink-2); background: transparent; border: 1px solid var(--hairline-2); }
+.rr-badge--system { color: var(--ink-3); background: transparent; border: 1px dashed var(--hairline-2); }
+
+.rr-op__via { font: var(--fs-micro) var(--mono); color: var(--ink-4); flex: none; }
+
+.rr-op__verb {
+  font: 500 var(--fs-mono) var(--mono);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rr-op__age { margin-left: auto; font: var(--fs-mono-xs) var(--mono); color: var(--ink-4); flex: none; }
+
+.rr-op__rationale { margin-top: 3px; font-size: var(--fs-ui-sm); color: var(--ink-2); }
+.rr-op__rationale--none { font-style: italic; color: var(--ink-4); }
+
+.rr-op__effects {
+  margin-top: 3px;
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.rr-op__edge {
+  position: absolute;
+  top: 10px;
+  right: var(--space-3);
+  font-size: var(--fs-mono);
+  pointer-events: none;
+}
+.rr-op__check { display: none; color: var(--green); }
+.rr-op__cross { color: var(--err); }
+
+/* review actions (mouse hover, keyboard cursor, or tab focus) */
+.rr-op__actions {
+  display: none;
+  position: absolute;
+  right: var(--space-3);
+  bottom: 8px;
+  gap: 4px;
+}
+.rr-op__act {
+  background: var(--surface-3);
+  color: var(--green);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  font-size: var(--fs-ui-xs);
+  width: 24px;
+  height: 20px;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+.rr-op__act:hover { border-color: var(--green); }
+.rr-op__act--reject { color: var(--err); }
+.rr-op__act--reject:hover { border-color: var(--err); }
+
+/* ---- RECEIPTS --------------------------------------------------------------- */
+.rr-receipts { flex: 1; overflow-y: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
+
+.rr-rc {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+/* the across-the-room verdict (rule 2 of the feel) */
+.rr-rc__banner {
+  font: 700 var(--fs-body) var(--sans);
+  letter-spacing: 0.04em;
+  padding: 10px var(--space-3);
+}
+.rr-rc__banner--pass { color: var(--receipt-pass); background: var(--receipt-pass-bg); box-shadow: inset 3px 0 0 0 var(--receipt-pass); }
+.rr-rc__banner--fail { color: var(--receipt-fail); background: var(--receipt-fail-bg); box-shadow: inset 3px 0 0 0 var(--receipt-fail); }
+.rr-rc__banner--pending {
+  color: var(--receipt-pending);
+  background: var(--receipt-pending-bg);
+  box-shadow: inset 3px 0 0 0 var(--receipt-pending);
+  animation: rr-pulse 1.6s ease-in-out infinite;
+}
+.rr-rc__banner--unmeasured {
+  color: var(--receipt-pending);
+  background: var(--receipt-pending-bg);
+  box-shadow: inset 3px 0 0 0 var(--receipt-pending);
+}
+@keyframes rr-pulse { 50% { opacity: 0.55; } }
+
+.rr-rc__meta {
+  font: var(--fs-mono-xs) var(--mono);
+  color: var(--ink-3);
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+}
+/* The rendered-video download — the receipt IS the deliverable. Accent it so the
+   user sees where their .mp4 comes out. */
+.rr-rc__download {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 1px 8px;
+  border: 1px solid var(--cut);
+  border-radius: 4px;
+  color: var(--cut);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.rr-rc__download:hover { background: var(--cut); color: var(--bg-0); }
+
+/* check rows */
+.rr-check { border-bottom: 1px solid var(--hairline); }
+.rr-check:last-child { border-bottom: none; }
+.rr-check--fail { background: var(--receipt-fail-bg); }
+.rr-check--unmeasured { background: rgba(212, 166, 87, 0.06); }
+
+.rr-check__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 7px var(--space-3);
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease;
+}
+.rr-check__row:hover { background: var(--surface-3); }
+
+.rr-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.rr-dot--pass { background: var(--green); box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18); }
+.rr-dot--fail { background: var(--err); box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18); }
+.rr-dot--pending { background: var(--amber); box-shadow: 0 0 0 2px rgba(212, 166, 87, 0.18); animation: rr-pulse 1.6s ease-in-out infinite; }
+.rr-dot--unmeasured {
+  background: transparent;
+  border: 1px solid var(--amber);
+  box-sizing: border-box;
+}
+
+.rr-check__name { font-size: var(--fs-ui-sm); color: var(--ink); }
+.rr-check__metric { margin-left: auto; font: var(--fs-mono-xs) var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.rr-check__state { font: 700 var(--fs-mono-xs) var(--sans); letter-spacing: 0.08em; flex: none; }
+.rr-check__name + .rr-check__state { margin-left: auto; } /* no metric → state right-aligns */
+.rr-check__state--pass { color: var(--receipt-pass); }
+.rr-check__state--fail { color: var(--receipt-fail); }
+.rr-check__state--pending { color: var(--receipt-pending); }
+.rr-check__state--unmeasured { color: var(--receipt-pending); }
+
+/* expanded evidence: data, never prose-only */
+.rr-check__evidence { padding: 4px var(--space-3) 10px; }
+
+.rr-check__seeks { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.rr-seek {
+  background: transparent;
+  border: none;
+  color: var(--cut-soft);
+  text-decoration: underline;
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  padding: 1px 2px;
+}
+.rr-seek:hover { color: var(--cut); }
+
+.rr-check__json {
+  margin: 0;
+  font: var(--fs-ui-xs) var(--mono);
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip);
+  padding: 8px;
+  overflow-x: auto;
+  max-height: 180px;
+}
+
+/* ---- footage_profile metadata row (documents, never gates) ---------------- */
+.rr-rc__profile {
+  font: var(--fs-mono-xs) var(--mono);
+  color: var(--ink-3);
+  padding: 5px var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.rr-rc__profile-proposal { color: var(--amber); }
+
+/* ---- waived checks: amber-muted, NEVER green (rule 3/4 of the feel) -------- */
+.rr-check--waived { background: rgba(212, 166, 87, 0.04); }
+.rr-dot--waived {
+  background: transparent;
+  border: 1px dashed var(--amber);
+  box-sizing: border-box;
+}
+.rr-check--waived .rr-check__name { color: var(--ink-2); }
+.rr-check__state--waived { color: var(--amber); opacity: 0.8; }
+.rr-check__measured {
+  font: 600 var(--fs-micro) var(--mono);
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex: none;
+}
+.rr-check__measured--pass { color: var(--ink-3); border: 1px solid var(--hairline-2); }
+.rr-check__measured--fail { color: var(--err); border: 1px solid rgba(239, 68, 68, 0.3); }
+.rr-check__waiver-note {
+  font: var(--fs-ui-xs) var(--sans);
+  color: var(--amber);
+  margin-bottom: 6px;
+}
+
+/* judge: ran = plain line; stub = dashed amber, never pass-like (rule 3) */
+.rr-rc__judge {
+  font: 600 var(--fs-ui-xs) var(--sans);
+  letter-spacing: 0.08em;
+  padding: 8px var(--space-3);
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-2);
+}
+.rr-rc__judge--stub {
+  color: var(--receipt-pending);
+  border: 1px dashed rgba(212, 166, 87, 0.5);
+  border-radius: var(--radius-chip);
+  margin: 8px var(--space-3) 10px;
+  background: var(--receipt-pending-bg);
+  text-align: center;
+}
+.rr-rc__judge--error {
+  color: var(--err);
+  border-top: 1px solid var(--hairline);
+}
+
+/* ---- judge section (verify.judge completed) -------------------------------- */
+.rr-judge { border-top: 1px solid var(--hairline); }
+.rr-judge__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 8px var(--space-3) 2px;
+  cursor: pointer;
+  text-align: left;
+}
+.rr-judge__badge {
+  font: 700 var(--fs-ui-xs) var(--sans);
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+}
+.rr-judge__badge--pass { color: var(--receipt-pass); background: var(--receipt-pass-bg); }
+.rr-judge__badge--fail { color: var(--receipt-fail); background: var(--receipt-fail-bg); }
+.rr-judge__badge--review { color: var(--receipt-pending); background: var(--receipt-pending-bg); }
+.rr-judge__conf {
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.rr-judge__count { font: var(--fs-mono-xs) var(--mono); color: var(--ink-3); }
+.rr-judge__chev { margin-left: auto; color: var(--ink-4); font-size: var(--fs-mono-xs); }
+.rr-judge__backend {
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-4);
+  padding: 2px var(--space-3) 8px;
+}
+.rr-judge__body { padding: 0 var(--space-3) 10px; }
+.rr-judge__summary {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-2);
+  margin-bottom: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.rr-judge__issue {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip);
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: var(--surface);
+}
+.rr-judge__issue-head { display: flex; align-items: center; gap: 6px; }
+.rr-judge__sev {
+  font: 600 var(--fs-micro) var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex: none;
+}
+.rr-judge__sev--critical, .rr-judge__sev--major { color: var(--err); border: 1px solid rgba(239, 68, 68, 0.35); }
+.rr-judge__sev--minor { color: var(--amber); border: 1px solid rgba(212, 166, 87, 0.35); }
+.rr-judge__kind { font: var(--fs-mono-xs) var(--mono); color: var(--ink-3); }
+.rr-judge__evidence {
+  font-size: var(--fs-ui-xs);
+  color: var(--ink-2);
+  margin-top: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.rr-judge__fix { font-size: var(--fs-ui-xs); color: var(--ink-3); margin-top: 3px; font-style: italic; }
+.rr-judge__noissues { font-size: var(--fs-ui-xs); color: var(--ink-4); }
+
+/* ---- DIFF -------------------------------------------------------------------- */
+.rr-diff { flex: 1; overflow-y: auto; padding: var(--space-3); }
+
+.rr-diff__selectors { display: flex; align-items: center; gap: 6px; }
+.rr-diff__sel {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  font: var(--fs-ui-xs) var(--sans);
+  padding: 4px 6px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+.rr-diff__sel:hover, .rr-diff__sel:focus { border-color: var(--border); }
+.rr-diff__arrow { color: var(--ink-4); flex: none; }
+
+.rr-diff__error { margin-top: var(--space-2); font-size: var(--fs-ui-xs); color: var(--err); }
+
+.rr-diff__chips { display: flex; flex-wrap: wrap; gap: 4px; margin: var(--space-3) 0; }
+.rr-chip {
+  font: 500 var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  padding: 2px 8px;
+}
+.rr-chip--add { color: var(--green-soft); background: rgba(34, 197, 94, 0.08); border-color: rgba(34, 197, 94, 0.25); }
+.rr-chip--del { color: var(--err); background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.25); }
+
+.rr-diff__ops { display: flex; flex-direction: column; }
+.rr-diff__op {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  padding: 6px 4px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease;
+}
+.rr-diff__op:hover { background: var(--surface-2); }
+.rr-diff__op--add { background: rgba(34, 197, 94, 0.08); }
+.rr-diff__op--del { background: rgba(239, 68, 68, 0.08); }
+.rr-diff__op--add:hover { background: rgba(34, 197, 94, 0.14); }
+.rr-diff__op--del:hover { background: rgba(239, 68, 68, 0.14); }
+
+.rr-diff__op-verb { font: 500 var(--fs-mono-xs) var(--mono); color: var(--ink); flex: none; }
+.rr-diff__op-fx {
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Undo surface (history affordance) ----------------------------------- */
+/* A thin bar above the OPS feed: the tip-undo button + the tip op it targets.
+   The feed below IS the history list — this just makes the latest-undo action
+   visible and one-click. Wired to edit.restore (tip) / project.revert (deep). */
+.rr__undo {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+.rr__undo-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 600 var(--fs-ui-xs) var(--sans); letter-spacing: .02em;
+  color: var(--ink-2); background: var(--surface-2);
+  border: 1px solid var(--hairline-2); border-radius: var(--radius-chip);
+  padding: 3px 9px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.rr__undo-btn svg { color: var(--ink-3); transition: color 120ms ease; }
+.rr__undo-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); border-color: var(--border); }
+.rr__undo-btn:hover:not(:disabled) svg { color: var(--cut-soft); }
+.rr__undo-btn:disabled { opacity: .4; cursor: not-allowed; }
+.rr__undo-tip {
+  font: var(--fs-ui-xs) var(--sans); color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.rr__undo-verb { font-family: var(--mono); color: var(--ink-2); }
+.rr__undo-empty { color: var(--ink-4); }
+
+/* Refused-restore guidance — the engine's words, verbatim (tip-only).
+   Amber/dashed: this is a "couldn't do it, here's the real path" notice, not a
+   pass and not an error toast. Mono for the engine's exact message text. */
+.rr__undo-guidance {
+  margin: 0; padding: 8px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--receipt-pending-bg);
+  border-left: 3px solid var(--amber);
+}
+.rr__undo-guidance-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.rr__undo-guidance-tag {
+  font: 600 var(--fs-mono-xs) var(--sans); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--amber);
+}
+.rr__undo-guidance-x {
+  all: unset; cursor: pointer; color: var(--ink-3); font-size: var(--fs-ui-xs);
+  line-height: 1; padding: 2px 4px; border-radius: 3px;
+}
+.rr__undo-guidance-x:hover { color: var(--ink); background: var(--surface-3); }
+.rr__undo-guidance-msg { font: 500 var(--fs-ui-sm) var(--sans); color: var(--ink); margin-bottom: 4px; }
+.rr__undo-guidance-cause {
+  font: var(--fs-mono-xs) var(--mono); color: var(--ink-2); line-height: 1.5;
+  margin-bottom: 4px;
+}
+.rr__undo-guidance-action {
+  font: var(--fs-ui-xs) var(--sans); color: var(--cut-soft); line-height: 1.45;
+}
+
+/* The one suggested action the rail can fire directly: project.revert{to} — the
+   engine's blunt escape hatch when a rebase is refused. Amber pill (matches the
+   guidance frame); the title spells out that later ops are dropped. */
+.rr__undo-guidance-revert {
+  all: unset;
+  cursor: pointer;
+  margin-top: 6px;
+  display: inline-block;
+  font: 600 var(--fs-ui-xs) var(--sans);
+  color: var(--amber);
+  background: var(--receipt-pending-bg);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-chip);
+  padding: 4px 9px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.rr__undo-guidance-revert:hover { background: var(--amber); color: #1a140a; }
+
+/* ---- OP-REBASE row affordances (engine 4408dbd; salvaged f3a3d27) -----------
+   The salvage commit wired the markup (rebase reject button, confirm step, KEPT
+   flash, dependent highlight) but shipped without these styles, so the visual
+   distinctions the feature promises were absent. These rules supply them. */
+
+/* "Undo (keep later edits)" — a text button distinct from the plain reject:
+   blue --cut family = selective history edit, deliberate and gated. */
+.rr-op__act--rebase,
+.rr-op__act--rebase-go {
+  width: auto;
+  padding: 0 8px;
+  color: var(--cut);
+  font: 600 var(--fs-mono-xs) var(--sans);
+  letter-spacing: 0.02em;
+}
+.rr-op__act--rebase:hover,
+.rr-op__act--rebase-go:hover { border-color: var(--cut); background: var(--cut-dim); }
+
+/* Inline confirm step — one extra click, no modal. Shown in place of the
+   accept/reject glyphs while confirming. The question label names the act. */
+.rr-op__confirm { display: flex; align-items: center; gap: 5px; }
+.rr-op__confirm-q {
+  font: 600 var(--fs-mono-xs) var(--sans); color: var(--cut-soft);
+  white-space: nowrap; letter-spacing: 0.02em;
+}
+.rr-op__act--cancel { color: var(--ink-3); }
+.rr-op__act--cancel:hover { border-color: var(--err); color: var(--err); }
+
+/* KEPT flash — the ops the engine re-based OVER and kept intact. Green left
+   edge + a soft green wash, transient (cleared on a 2.4s timer in index.tsx).
+   Green = "verified, kept" (PASS family), the reassurance that nothing downstream
+   was lost by the rebase. */
+.rr-op--kept {
+  background: rgba(34, 197, 94, 0.08);
+  box-shadow: inset 3px 0 0 0 var(--green);
+}
+.rr-op__kept-badge {
+  font: 600 var(--fs-micro) var(--sans); text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--green); background: rgba(34, 197, 94, 0.14);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: var(--radius-chip);
+  padding: 1px 6px; flex: none;
+}
+
+/* Dependent highlight — later edits named as blockers by a refused selective
+   undo. Red/amber edge + outcome badge so the user sees what is in the way. */
+.rr-op--dependent {
+  background: rgba(239, 68, 68, 0.07);
+  box-shadow: inset 3px 0 0 0 var(--err);
+}
+.rr-op__dep-badge {
+  font: 600 var(--fs-micro) var(--sans); text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--err); background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius-chip);
+  padding: 1px 6px; flex: none;
+}
+
+/* ── QC tab (verify.* receipts + one-click fixes) ───────────────────────── */
+.qc { display: flex; flex-direction: column; gap: var(--space-2, 8px); padding: var(--space-2, 8px); overflow-y: auto; }
+.qc__bar { display: flex; align-items: center; gap: 10px; }
+.qc__run {
+  font: var(--fs-ui-xs); font-family: var(--mono, monospace);
+  background: var(--cut-soft); color: var(--cut); border: 1px solid var(--border);
+  border-radius: var(--radius-chip, 4px); padding: 3px 10px; cursor: pointer;
+}
+.qc__run:disabled { opacity: .5; cursor: default; }
+.qc__note { font: var(--fs-mono-xs); color: var(--ink-3); }
+.qc__card {
+  border: 1px solid var(--border); border-left: 3px solid var(--ink-4);
+  border-radius: var(--radius-card, 6px); padding: 8px 10px; background: var(--hairline);
+}
+.qc__card--pass { border-left-color: var(--receipt-pass, var(--green)); }
+.qc__card--fail { border-left-color: var(--receipt-fail, var(--err)); }
+.qc__card-head { display: flex; align-items: center; gap: 8px; }
+.qc__card-title { font: var(--fs-ui-sm); font-weight: 600; color: var(--ink); }
+.qc__verdict { font: var(--fs-mono-xs); font-weight: 700; letter-spacing: .04em; }
+.qc__card--pass .qc__verdict { color: var(--receipt-pass, var(--green)); }
+.qc__card--fail .qc__verdict { color: var(--receipt-fail, var(--err)); }
+.qc__card-tag { margin-left: auto; font: var(--fs-mono-xs); color: var(--ink-4); }
+.qc__metrics { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.qc__metrics li { font: var(--fs-mono-xs); font-family: var(--mono, monospace); color: var(--ink-2); }
+.qc__fix { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.qc__fixbtn {
+  font: var(--fs-mono-xs); font-family: var(--mono, monospace);
+  background: transparent; color: var(--cut); border: 1px solid var(--cut-dim, var(--border));
+  border-radius: var(--radius-chip, 4px); padding: 2px 8px; cursor: pointer;
+}
+.qc__fixbtn:hover { background: var(--cut-soft); }
+.qc__fixbtn:disabled { opacity: .45; cursor: default; }
+.qc__fixbtn--muted { color: var(--ink-3); border-color: var(--border); }
+.qc__fixbtn .cut-icon { vertical-align: -2px; margin-right: 3px; }
+.qc__shift { display: inline-flex; align-items: center; gap: 4px; font: var(--fs-mono-xs); color: var(--ink-3); }
+.qc__shift input { width: 56px; font: var(--fs-mono-xs); font-family: var(--mono, monospace); background: var(--hairline-2); color: var(--ink); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; }
+.qc__fix select { font: var(--fs-mono-xs); font-family: var(--mono, monospace); background: var(--hairline-2); color: var(--ink); border: 1px solid var(--border); border-radius: 3px; padding: 1px 4px; }
+.qc__dim, .qc__err { font: var(--fs-mono-xs); color: var(--ink-4); margin-top: 4px; }
+.qc__brand-status { font: var(--fs-mono-xs); color: var(--ink-3); }
+.qc__brand-editor { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.qc__brand-editor summary { cursor: pointer; font: var(--fs-ui-xs); color: var(--ink-2); }
+.qc__brand-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px 8px; margin-top: 8px; }
+.qc__brand-grid label { display: flex; flex-direction: column; gap: 3px; min-width: 0; font: var(--fs-mono-xs); color: var(--ink-3); }
+.qc__brand-grid input, .qc__brand-grid select { min-width: 0; width: 100%; box-sizing: border-box; font: var(--fs-mono-xs); font-family: var(--mono, monospace); background: var(--hairline-2); color: var(--ink); border: 1px solid var(--border); border-radius: 3px; padding: 3px 5px; }
+.qc__brand-wide, .qc__brand-swatches { grid-column: 1 / -1; }
+.qc__brand-swatches { display: flex; gap: 5px; min-height: 14px; }
+.qc__brand-swatches span { width: 14px; height: 14px; border: 1px solid var(--border); border-radius: 2px; }
+.qc__brand-actions { display: flex; gap: 7px; margin-top: 8px; }
+
+/* ---- SCOPES --------------------------------------------------------------- */
+.scopes {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px);
+  overflow-y: auto;
+}
+
+.scopes__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scopes__time,
+.scopes__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: var(--fs-mono-xs);
+  font-family: var(--mono, monospace);
+  color: var(--ink-3);
+}
+
+.scopes__time input {
+  width: 76px;
+  font: var(--fs-mono-xs);
+  font-family: var(--mono, monospace);
+  background: var(--hairline-2);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+
+.scopes__kinds {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.scopes__kind {
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font: 600 var(--fs-mono-xs) var(--sans);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.scopes__kind--on {
+  color: var(--cut);
+  border-color: rgba(59, 130, 246, 0.4);
+  background: var(--cut-dim);
+}
+
+.scopes__warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.scopes__warnings span {
+  font: 600 var(--fs-micro) var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--amber);
+  background: var(--receipt-pending-bg);
+  border: 1px solid rgba(212, 166, 87, 0.35);
+  border-radius: var(--radius-chip);
+  padding: 2px 7px;
+}
+
+.scopes__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.scopes__metric {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  padding: 7px 8px;
+  min-width: 0;
+}
+
+.scopes__metric-title,
+.scopes__metric-detail {
+  display: block;
+  font: var(--fs-mono-xs);
+  font-family: var(--mono, monospace);
+  color: var(--ink-4);
+}
+
+.scopes__metric-value {
+  display: block;
+  margin: 3px 0 2px;
+  font: 600 var(--fs-ui-sm) var(--sans);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scopes__images {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.scopes__images a {
+  display: grid;
+  gap: 4px;
+  font: 600 var(--fs-mono-xs) var(--sans);
+  color: var(--cut);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: var(--radius-chip);
+  padding: 3px 8px;
+  text-decoration: none;
+}
+
+.scopes__images img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #050608;
+  border-radius: 2px;
+}
+
+.scopes__images a:hover {
+  background: var(--cut-dim);
+}
+
+@media (max-width: 780px) {
+  .scopes__grid { grid-template-columns: 1fr; }
+}

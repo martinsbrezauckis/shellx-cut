@@ -1,0 +1,29 @@
+# ShellX Cut perception sidecar — BASE transcription deps (perception contract).
+# Permissive licenses only. Provisioned by perception_setup.rs with
+#   uv pip install --only-binary :all: -r requirements.txt
+# into a standalone CPython 3.12 venv (system python on real desktops is too old —
+# macOS ships 3.9 < onnx-asr's 3.10 floor; uv installs a managed 3.12).
+#
+# ── WHY THIS FILE IS JUST onnx-asr fresh-Windows install fix) ──────
+# The BASE install MUST succeed on a fresh user machine with ZERO developer tools
+# (no MSVC C++ compiler, no LLVM). onnx-asr is onnxruntime-based and ships prebuilt
+# wheels for win/mac/linux on cp312, so `--only-binary :all:` installs it with NO
+# source build → working transcription immediately. The heavier, torch-based
+# perception extras (whisperX fallback, auto-reframe detector, face framing, beat
+# grid, OCR) moved to requirements-full.txt and are installed BEST-EFFORT afterward;
+# if they ever fail, transcription still works (instruments.py imports each extra
+# lazily inside try/except and degrades gracefully).
+#
+# Root cause of the old failure: the previous single file installed the whole stack
+# at once WITHOUT --only-binary. An unpinned numpy floated to 2.5.0, which exceeds
+# the newest numba's `numpy<2.5` ceiling, so pip's resolver backtracked to an ancient
+# sdist-only numba/llvmlite and tried to COMPILE llvmlite from source → "Build
+# failures usually indicate a problem with the build environment" on a box with no
+# compiler. Splitting the install + --only-binary makes that impossible.
+#
+# PRIMARY transcription engine
+# NVIDIA Parakeet-TDT-0.6B via ONNX Runtime — native, accurate word timestamps,
+# punctuation + caps, and NO torch. [cpu] = onnxruntime CPU build; [hub] = HF model
+# download. macOS forces the CPU EP at runtime (CoreML fails on the model's
+# external-data init). Pinned for reproducibility.
+onnx-asr[cpu,hub]==0.11.0  # MIT — Parakeet-TDT ONNX STT (PRIMARY words engine)

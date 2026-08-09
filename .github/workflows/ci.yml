@@ -1,0 +1,187 @@
+# ShellX Cut CI
+#
+# Runs on every push and pull request. A fresh runner type-checks, lints, tests,
+# and audits only the files in this repository. Cross-platform packaging is
+# exercised separately by release.yml.
+#
+# The Rust suite runs on all three shipped platforms. ShellX Cut ships Windows,
+# macOS and Linux installers, and a single-platform run cannot stand in for the
+# other two: `#[cfg(windows)]` and `#[cfg(target_os = "macos")]` bodies are not
+# compiled at all on a Linux runner, and behaviour that depends on OS path,
+# environment or locale semantics is invisible there by construction.
+#
+# `fail-fast: false` keeps every platform reporting when one breaks — whether a
+# failure is universal or platform-specific is the first thing worth knowing.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node-and-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Setup node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+
+      - name: UI install
+        run: npm ci --ignore-scripts
+        working-directory: ui
+
+      - name: UI build
+        run: npm run build
+        working-directory: ui
+
+      - name: UI library tests
+        run: npm run test:lib
+        working-directory: ui
+
+      - name: Install cargo-audit
+        # Preinstalled on the ubuntu-22.04 runner image but absent from the
+        # leaner ubuntu-24.04 image; the dependency audit shells out to it.
+        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
+        with:
+          tool: cargo-audit
+
+      - name: Public release-check tests
+        run: >
+          node --test
+          scripts/public-tests/cross-host-media.test.mjs
+          scripts/public-tests/dependency-audit.test.mjs
+          scripts/public-tests/safe-data.test.mjs
+          scripts/public-tests/third-party-notice.test.mjs
+
+      - name: Dependency audit
+        run: node scripts/release/dependency-audit.mjs
+
+      - name: Generated verb contract is current
+        run: node scripts/generate-verb-contract.mjs --check
+
+      - name: Verb-argument sync check
+        run: bash scripts/verbargs-sync.sh
+
+  rust:
+    name: Rust (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 90
+    strategy:
+      # One platform failing must not cancel the others — see the header.
+      fail-fast: false
+      matrix:
+        platform:
+          - ubuntu-24.04
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          workspaces: ./app -> target
+          # Keyed per platform so three targets never share one cache entry.
+          key: ${{ matrix.platform }}
+
+      - name: Install Linux build deps
+        if: matrix.platform == 'ubuntu-24.04'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y \
+            build-essential pkg-config clang libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libdbus-1-dev \
+            libx11-dev libxi-dev libxtst-dev \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            ffmpeg espeak-ng
+
+      # macOS and Windows need no system libraries for the capture backends —
+      # `capture-macos` (avfoundation/ScreenCaptureKit) and `capture-windows`
+      # (WGC/Media Foundation) bind OS frameworks that are already present, and
+      # Cargo selects them automatically from the `[target.'cfg(target_os …)']`
+      # blocks in app/server/Cargo.toml. Only ffmpeg is missing: the media
+      # crate shells out to it, and neither runner image ships it.
+      - name: Install macOS test deps
+        if: matrix.platform == 'macos-latest'
+        run: |
+          # Homebrew's STANDARD ffmpeg formula omits vidstab (and other optional
+          # filters), so it cannot run the stabilise/subtitle/colour paths.
+          # ffmpeg-full carries them, lives in homebrew/core (no tap required)
+          # and ships a bottle, so this is a fast binary install rather than a
+          # source build. It provides ass, vidstabdetect, and zscale.
+          brew install ffmpeg-full espeak-ng
+          # The runner image also ships its own ffmpeg, so make sure Homebrew's
+          # wins PATH for the steps below.
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Windows test deps
+        if: matrix.platform == 'windows-latest'
+        run: choco install ffmpeg --no-progress -y
+
+      # Cut's render path uses ass (subtitles), vidstab (stabilisation) and zscale
+      # (colour). An ffmpeg built without them does not fail honestly: tests die
+      # with a bare "No such filter: 'ass'" that reads like a product defect, which
+      # is exactly how the first macOS CI run presented. Check the capability here
+      # and name what is missing, so the environment is blamed where it is at fault.
+      - name: Verify ffmpeg carries the filters the render path needs
+        shell: bash
+        run: |
+          echo "ffmpeg on PATH: $(command -v ffmpeg)"
+          ffmpeg -hide_banner -version | head -1
+          missing=""
+          for f in ass vidstabdetect zscale; do
+            ffmpeg -hide_banner -filters 2>/dev/null | grep -qw "$f" || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::ffmpeg is missing required filter(s):$missing" >&2
+            exit 1
+          fi
+          echo "all required filters present"
+
+      # Formatting is byte-identical everywhere, so checking it three times
+      # would only spend wall-clock. Clippy is NOT redundant across platforms:
+      # it type-checks the cfg-gated bodies that this runner alone compiles.
+      - name: cargo fmt --check
+        if: matrix.platform == 'ubuntu-24.04'
+        run: cargo fmt --check
+        working-directory: app
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: app
+
+      # The Tauri shell is intentionally outside app/Cargo.toml's workspace.
+      # Compile it explicitly on every shipped OS so cfg-gated updater,
+      # recorder, and native-window code cannot bypass ordinary CI. `externalBin`
+      # is a generated release payload, so a fresh source checkout omits it;
+      # the separate smoke-build workflow rebuilds and stages that exact payload.
+      - name: Desktop shell cargo check
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
+        run: cargo check --lib
+        working-directory: app/desktop/src-tauri
+
+      - name: Windows updater process ownership handoff
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/public-tests/windows-updater-process-handoff.ps1
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+        working-directory: app

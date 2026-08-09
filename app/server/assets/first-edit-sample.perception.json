@@ -1,0 +1,51 @@
+{
+  "schema": "shellx-cut/perception/1",
+  "asset_hash": "",
+  "source_path": "",
+  "instruments_run": ["words", "silence", "scenes", "beats", "loudness"],
+  "words": {
+    "asset": "a1",
+    "model": "bundled-script-v1",
+    "language": "en",
+    "words": [
+      {"idx": 0, "word": "Welcome", "start_ms": 100, "end_ms": 430, "confidence": 1.0},
+      {"idx": 1, "word": "to", "start_ms": 440, "end_ms": 570, "confidence": 1.0},
+      {"idx": 2, "word": "your", "start_ms": 580, "end_ms": 790, "confidence": 1.0},
+      {"idx": 3, "word": "first", "start_ms": 800, "end_ms": 1050, "confidence": 1.0},
+      {"idx": 4, "word": "Shell", "start_ms": 1060, "end_ms": 1330, "confidence": 1.0},
+      {"idx": 5, "word": "X", "start_ms": 1340, "end_ms": 1440, "confidence": 1.0},
+      {"idx": 6, "word": "Cut", "start_ms": 1450, "end_ms": 1710, "confidence": 1.0},
+      {"idx": 7, "word": "edit.", "start_ms": 1720, "end_ms": 2280, "confidence": 1.0},
+      {"idx": 8, "word": "This", "start_ms": 4850, "end_ms": 5100, "confidence": 1.0},
+      {"idx": 9, "word": "sample", "start_ms": 5110, "end_ms": 5500, "confidence": 1.0},
+      {"idx": 10, "word": "has", "start_ms": 5510, "end_ms": 5690, "confidence": 1.0},
+      {"idx": 11, "word": "two", "start_ms": 5700, "end_ms": 5870, "confidence": 1.0},
+      {"idx": 12, "word": "quiet", "start_ms": 5880, "end_ms": 6190, "confidence": 1.0},
+      {"idx": 13, "word": "gaps", "start_ms": 6200, "end_ms": 6470, "confidence": 1.0},
+      {"idx": 14, "word": "for", "start_ms": 6480, "end_ms": 6630, "confidence": 1.0},
+      {"idx": 15, "word": "a", "start_ms": 6640, "end_ms": 6710, "confidence": 1.0},
+      {"idx": 16, "word": "calm", "start_ms": 6720, "end_ms": 6970, "confidence": 1.0},
+      {"idx": 17, "word": "first", "start_ms": 6980, "end_ms": 7230, "confidence": 1.0},
+      {"idx": 18, "word": "cut.", "start_ms": 7240, "end_ms": 7800, "confidence": 1.0},
+      {"idx": 19, "word": "Preview", "start_ms": 10530, "end_ms": 10970, "confidence": 1.0},
+      {"idx": 20, "word": "the", "start_ms": 10980, "end_ms": 11140, "confidence": 1.0},
+      {"idx": 21, "word": "plan,", "start_ms": 11150, "end_ms": 11420, "confidence": 1.0},
+      {"idx": 22, "word": "add", "start_ms": 11430, "end_ms": 11650, "confidence": 1.0},
+      {"idx": 23, "word": "captions,", "start_ms": 11660, "end_ms": 12120, "confidence": 1.0},
+      {"idx": 24, "word": "and", "start_ms": 12130, "end_ms": 12320, "confidence": 1.0},
+      {"idx": 25, "word": "render", "start_ms": 12330, "end_ms": 12690, "confidence": 1.0},
+      {"idx": 26, "word": "your", "start_ms": 12700, "end_ms": 12940, "confidence": 1.0},
+      {"idx": 27, "word": "first", "start_ms": 12950, "end_ms": 13210, "confidence": 1.0},
+      {"idx": 28, "word": "version.", "start_ms": 13220, "end_ms": 14450, "confidence": 1.0}
+    ]
+  },
+  "silences": [
+    {"start_ms": 2540, "end_ms": 4802, "source": "ffmpeg"},
+    {"start_ms": 8190, "end_ms": 10488, "source": "ffmpeg"}
+  ],
+  "scenes": [],
+  "beats": {"bpm": 0.0, "beats_ms": []},
+  "loudness": {"integrated_lufs": -18.79, "true_peak_dbtp": -2.37, "windows": []},
+  "black_spans": [],
+  "frozen_spans": []
+}

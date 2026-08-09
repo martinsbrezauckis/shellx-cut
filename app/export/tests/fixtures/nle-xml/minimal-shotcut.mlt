@@ -1,0 +1,52 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- Minimal MLT XML for Shotcut (File > Open) and the melt CLI. Mirrors the
+     exact shape the MLT serializer emits
+     (vendored/nim/shotcut.nim). Same scenario: talk.mp4 (1920x1080, 30fps)
+     cut to keep source [0s,5s) + [10s,15s) => 10s timeline.
+     Times are wall-clock timecodes HH:MM:SS.mmm evaluated against the
+     <profile> frame rate. One <chain> per CLIP (not per source file);
+     trimming happens on the <entry> in/out, which reference SOURCE time.
+     MLT 'out' is an INCLUSIVE frame position. -->
+<mlt LC_NUMERIC="C" version="7.33.0" title="Shotcut version 25.10.31" producer="main_bin">
+  <profile description="automatic" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="16" display_aspect_den="9" frame_rate_num="30" frame_rate_den="1" colorspace="709" />
+  <playlist id="main_bin">
+    <property name="xml_retain">1</property>
+  </playlist>
+  <producer id="bg">
+    <property name="length">00:00:10.000</property>
+    <property name="eof">pause</property>
+    <property name="resource">#000000</property>
+    <property name="mlt_service">color</property>
+    <property name="mlt_image_format">rgba</property>
+    <property name="aspect_ratio">1</property>
+  </producer>
+  <playlist id="background">
+    <entry producer="bg" in="00:00:00.000" out="00:00:10.000">1</entry>
+  </playlist>
+  <chain id="chain0" out="00:00:05.000">
+    <property name="length">00:00:05.000</property>
+    <property name="eof">pause</property>
+    <property name="resource">/home/user/media/talk.mp4</property>
+    <property name="mlt_service">avformat</property>
+    <property name="caption">talk</property>
+  </chain>
+  <chain id="chain1" out="00:00:15.000">
+    <property name="length">00:00:15.000</property>
+    <property name="eof">pause</property>
+    <property name="resource">/home/user/media/talk.mp4</property>
+    <property name="mlt_service">avformat</property>
+    <property name="caption">talk</property>
+  </chain>
+  <playlist id="playlist0">
+    <property name="shotcut:video">1</property>
+    <property name="shotcut:name">V1</property>
+    <entry producer="chain0" in="00:00:00.000" out="00:00:05.000" />
+    <entry producer="chain1" in="00:00:10.000" out="00:00:15.000" />
+  </playlist>
+  <tractor id="tractor0" in="00:00:00.000" out="00:00:10.000">
+    <property name="shotcut">1</property>
+    <property name="shotcut:projectAudioChannels">2</property>
+    <track producer="background" />
+    <track producer="playlist0" />
+  </tractor>
+</mlt>

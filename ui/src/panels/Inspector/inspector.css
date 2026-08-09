@@ -1,0 +1,359 @@
+/* inspector.css — the context-revealed Inspector. Tokens come from the theme. */
+.insp {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface, #14161a);
+}
+.insp__head {
+  flex: none;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--hairline, rgba(255, 255, 255, 0.07));
+}
+.insp__title { margin: 0; font: 600 var(--fs-ui)/1.2 var(--sans); color: var(--ink, #f2f3f5); }
+.insp__scope {
+  display: block;
+  margin-top: 2px;
+  font: var(--fs-ui-xs, 11px)/1.3 var(--mono, ui-monospace);
+  color: var(--ink-3, #aab1bd);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.insp__body { flex: 1; overflow: auto; padding: 12px 14px 24px; display: flex; flex-direction: column; gap: 16px; }
+/* SCROLL-CONTAINER INVARIANT: .insp__body is a flex column AND a scroll container
+   (overflow:auto). Its blocks must keep their NATURAL height and let the body
+   SCROLL — they must never be shrunk by flexbox. Each `.is` section sets
+   `overflow:hidden`, which zeroes its automatic flex min-height, so without this the
+   sections shrink to fit a short body: when the stack overflows (the normal case for
+   a video clip), a tall section (Speed/Retime) collapses to a ~2px sliver that CLIPS
+   its own buttons — Reverse/Freeze became un-clickable because their layout hit-box
+   no longer matched their (clipped) paint-box. `flex:none` pins every child to its
+   content height; the body scrolls as intended. */
+.insp__body > * { flex: none; }
+
+.insp__group { display: flex; flex-direction: column; gap: 8px; }
+.insp__group-title {
+  font: 700 var(--fs-ui-xs, 11px)/1 var(--sans);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--ink-4, #6b7280);
+}
+.insp__group-title--sub { margin-top: 6px; }
+
+/* Small per-control caption (shape editor: Type / Label / Color rows). */
+.insp__label {
+  display: block; margin-bottom: 2px;
+  color: var(--ink-3, #aab1bd); font: var(--fs-ui-sm)/1.3 var(--sans);
+}
+
+.insp__props { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+.insp__props dt { color: var(--ink-3, #aab1bd); font: var(--fs-ui-sm)/1.3 var(--sans); }
+.insp__props dd { margin: 0; color: var(--ink, #f2f3f5); font: var(--fs-ui-sm)/1.3 var(--sans); }
+
+.insp__hint { margin: 0; color: var(--ink-4, #6b7280); font: var(--fs-ui-sm)/1.5 var(--sans); }
+.insp__hint--error { color: var(--danger, #dc2626); }
+.insp__row { display: flex; gap: 6px; flex-wrap: wrap; }
+.insp__btn {
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--ink-2, #d6dae0);
+  font: 600 var(--fs-ui-sm)/1 var(--sans);
+  padding: 7px 11px; border-radius: 7px; cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.insp__btn:hover { border-color: var(--cut, #2563eb); color: var(--ink, #f2f3f5); }
+.insp__btn:disabled { opacity: 0.5; cursor: default; }
+/* Active/armed state (e.g. Reverse on, Draw-region armed) — filled in the
+   editor action color, matching .insp__chip--on. */
+.insp__btn--on {
+  border-color: var(--cut, #2563eb);
+  background: var(--cut-dim, rgba(37, 99, 235, 0.18));
+  color: var(--cut-soft, #93b4ff);
+}
+/* Prominent one-click action (e.g. Clean voice) — same accent shell as
+   .insp__chip--accent so the primary button reads first in its group. */
+.insp__btn--accent {
+  border-color: var(--cut, #2563eb);
+  background: var(--cut-dim, rgba(37, 99, 235, 0.18));
+  color: var(--cut-soft, #93b4ff);
+  font-weight: 700;
+}
+.insp__btn--accent:hover { background: var(--cut, #2563eb); color: #fff; }
+
+.insp__tools { display: flex; flex-direction: column; gap: 4px; }
+.insp__tool {
+  text-align: left;
+  border: none; background: transparent;
+  color: var(--ink-2, #d6dae0);
+  font: 500 var(--fs-ui-sm)/1 var(--sans);
+  padding: 8px 10px; border-radius: 7px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.insp__tool:hover { background: var(--cut-dim, rgba(37, 99, 235, 0.18)); color: var(--cut-soft, #93b4ff); }
+
+/* Effects picker — one-click edit.effect toggles (cont.12: wire the engine's
+   one-click effect catalog into the human UI). A compact chip grid; active
+   effects read as filled. */
+.insp__effects { display: flex; flex-wrap: wrap; gap: 6px; }
+.insp__chip {
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--ink-2, #d6dae0);
+  font: 600 var(--fs-ui-sm)/1 var(--sans);
+  padding: 6px 10px; border-radius: 999px; cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.insp__chip:hover { border-color: var(--cut, #2563eb); color: var(--ink, #f2f3f5); }
+.insp__chip--on {
+  border-color: var(--cut, #2563eb);
+  background: var(--cut-dim, rgba(37, 99, 235, 0.18));
+  color: var(--cut-soft, #93b4ff);
+}
+
+/* Blend-mode select (overlay video) — matches the chip/btn shell. */
+.insp__select {
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  background: var(--surface-2, #14161a);
+  color: var(--ink-2, #d6dae0);
+  font: 600 var(--fs-ui-sm)/1 var(--sans);
+  padding: 7px 10px; border-radius: 7px; cursor: pointer; width: 100%;
+}
+.insp__select:hover { border-color: var(--cut, #2563eb); }
+
+/* Caption composer (project scope) — text input + style controls. The select
+   here sizes to content (auto), unlike the full-width blend select above. */
+.insp__field { margin-bottom: 6px; }
+.insp__text {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  background: var(--surface-2, #14161a);
+  color: var(--ink, #f2f3f5);
+  font: 500 var(--fs-ui-sm)/1.3 var(--sans);
+  padding: 7px 10px; border-radius: 7px;
+}
+.insp__text:focus { outline: none; border-color: var(--cut, #2563eb); }
+.insp__row .insp__select { width: auto; flex: 1 1 auto; min-width: 84px; }
+/* A text input that flexes inside a row (the grade-gallery look-name field). */
+.insp__text--grow { flex: 1 1 auto; width: auto; min-width: 96px; box-sizing: border-box; }
+.insp__row .insp__text { flex: 1 1 auto; width: auto; min-width: 96px; box-sizing: border-box; }
+
+/* Layer/window list rows (layered grades + power windows) — one line each with a
+   summary on the left and a mini Remove on the right. */
+.insp__list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.insp__list-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 8px; border-radius: 7px;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.10));
+  background: var(--surface-2, #14161a);
+}
+.insp__list-label { color: var(--ink-2, #d6dae0); font: 500 var(--fs-ui-sm)/1.3 var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insp__effect-chain { display: flex; flex-direction: column; gap: 6px; }
+.insp__chain-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; }
+.insp__chain-params { color: var(--ink-4, #6b7280); font: var(--fs-ui-xs, 11px)/1.2 var(--mono, ui-monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insp__chain-actions { display: flex; flex: 0 0 auto; gap: 2px; }
+.insp__chain-action {
+  display: inline-grid; width: 26px; height: 26px; padding: 0; place-items: center;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--ink-3, #aab1bd); cursor: pointer;
+}
+.insp__chain-action:hover { border-color: var(--hairline-2, rgba(255, 255, 255, 0.12)); color: var(--ink, #f2f3f5); }
+.insp__chain-action:disabled { opacity: 0.35; cursor: default; }
+/* Compact Remove button for a list row. */
+.insp__btn--mini { padding: 4px 8px; flex: 0 0 auto; }
+.insp__inline { display: inline-flex; align-items: center; }
+.insp__inline input[type='color'] {
+  width: 30px; height: 30px; padding: 0; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12)); background: transparent;
+}
+.insp__num {
+  width: 58px;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  background: var(--surface-2, #14161a);
+  color: var(--ink-2, #d6dae0);
+  font: 600 var(--fs-ui-sm)/1 var(--sans);
+  padding: 7px 8px; border-radius: 7px;
+}
+
+/* "Blur faces" — the primary one-click privacy action (auto-detect + blur). */
+.insp__chip--accent {
+  border-color: var(--cut, #2563eb);
+  background: var(--cut-dim, rgba(37, 99, 235, 0.18));
+  color: var(--cut-soft, #93b4ff);
+  font-weight: 700;
+}
+.insp__chip--accent:hover { background: var(--cut, #2563eb); color: #fff; }
+
+/* "More effects…" overflow toggle — a quiet, italic chip so it reads as a
+   disclosure control, not another effect. Catalog-driven (effects.list). */
+.insp__chip--more {
+  font-style: italic;
+  opacity: 0.85;
+  border-style: dashed;
+}
+.insp__chip--more:hover { opacity: 1; }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   collapsible section stack — InspectorSection + PropertyRow.
+   All tokens from theme.css; no hardcoded colors. The `is-*` classes style the
+   collapsible section; the `pr-*` classes style the uniform property row.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* InspectorSection — collapsible titled container. */
+.is {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  background: var(--surface-2, #131312);
+  overflow: hidden;
+}
+.is__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  padding: 8px 10px;
+}
+.is__disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink, #f5f5f4);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.is__caret {
+  flex: none;
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-3, #6f6f6c);
+}
+.is__title {
+  font: 700 var(--fs-ui-xs, 11px)/1 var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-2, #a8a8a4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.is__head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+/* Bypass dot — filled (active) by default; hollow ring when bypassed. */
+.is__bypass {
+  border: none;
+  background: transparent;
+  color: var(--cut, #2563eb);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px;
+  cursor: pointer;
+}
+.is__bypass--off { color: var(--ink-4, #3a3a38); }
+.is__bypass:hover { color: var(--cut-soft, #5b8def); }
+.is__reset {
+  border: none;
+  background: transparent;
+  color: var(--ink-3, #6f6f6c);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.is__reset { display: inline-flex; align-items: center; justify-content: center; }
+.is__reset:hover { color: var(--ink, #f5f5f4); background: var(--surface-3, #1a1a18); }
+.is__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 10px 10px;
+  border-top: 1px solid var(--hairline, #1f1f1d);
+}
+
+/* PropertyRow — the uniform grammar: label · numeric · slider · ◇ · ↺.
+   A CSS grid keeps every row's columns aligned across the whole section (the
+   uniformity is the reason the stack feels intuitive). */
+.pr {
+  display: grid;
+  grid-template-columns: 72px 64px 1fr 20px 20px;
+  align-items: center;
+  gap: 8px;
+}
+.pr[aria-disabled='true'] { opacity: 0.5; }
+.pr__label {
+  font: 500 var(--fs-ui-sm, 13px)/1.2 var(--sans);
+  color: var(--ink-2, #a8a8a4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pr__num-wrap { position: relative; display: flex; align-items: center; }
+.pr__num {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  background: var(--surface-3, #1a1a18);
+  color: var(--ink, #f5f5f4);
+  font: 600 var(--fs-ui-sm, 13px)/1 var(--mono, ui-monospace);
+  padding: 6px 7px;
+  border-radius: 6px;
+  text-align: right;
+  /* leave room for the unit suffix when present */
+  -moz-appearance: textfield;
+}
+.pr__num::-webkit-outer-spin-button,
+.pr__num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.pr__num:focus { outline: none; border-color: var(--cut, #2563eb); }
+.pr__unit {
+  position: absolute;
+  right: 7px;
+  pointer-events: none;
+  font: 500 var(--fs-ui-xs, 11px)/1 var(--sans);
+  color: var(--ink-3, #6f6f6c);
+}
+/* Slider — reuse the native range track but tint the thumb in the editor blue. */
+.pr__slider {
+  width: 100%;
+  accent-color: var(--cut, #2563eb);
+  cursor: pointer;
+}
+.pr__slider:disabled { cursor: default; }
+/* Reserved column keeps Reset aligned across every row. */
+.pr__action-spacer { display: block; width: 16px; }
+/* Reset ↺ — quiet until hovered; disabled (dim) when already at default. */
+.pr__reset {
+  border: none;
+  background: transparent;
+  color: var(--ink-3, #6f6f6c);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  justify-self: center;
+}
+.pr__reset:hover { color: var(--ink, #f5f5f4); }
+.pr__reset:disabled { opacity: 0.3; cursor: default; }
+
+/* ENGAGEMENT (score.clip) — the big 0..100 readout in the Inspector clip section. */
+.insp__score {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.insp__score-num {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--cut, #f97316);
+  font-variant-numeric: tabular-nums;
+}
+.insp__score-max {
+  font-size: 12px;
+  color: var(--ink-4, #6f6f6c);
+}

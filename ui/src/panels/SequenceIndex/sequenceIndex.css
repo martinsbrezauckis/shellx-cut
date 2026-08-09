@@ -1,0 +1,144 @@
+.si {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.si__search {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 6px;
+}
+.si__search input,
+.si__filters select {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 6px);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: var(--fs-ui-sm) var(--sans);
+}
+.si__search input { padding: 0 9px; }
+.si__search button,
+.si__copy,
+.si__row-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 6px);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.si__search button:hover:not(:disabled),
+.si__copy:hover:not(:disabled),
+.si__row-actions button:hover:not(:disabled) { border-color: var(--cut); color: var(--ink); }
+.si button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.si__toolbar {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.si__kinds {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 6px);
+  overflow: hidden;
+}
+.si__kinds button {
+  min-width: 0;
+  height: 30px;
+  border: 0;
+  border-right: 1px solid var(--hairline-2);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font: 500 var(--fs-ui-sm) var(--sans);
+  cursor: pointer;
+}
+.si__kinds button:last-child { border-right: 0; }
+.si__kinds button[aria-pressed='true'] { background: var(--cut-dim); color: var(--cut-soft); }
+
+.si__filters {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.si__filters select { width: 100%; padding: 0 7px; }
+
+.si__summary {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--ink-3);
+  font-size: var(--fs-ui-xs);
+}
+.si__summary span:first-child { color: var(--ink-2); font-weight: 600; }
+.si__copy-status { min-width: 58px; margin-left: auto; text-align: right; }
+.si__copy { width: 24px; height: 24px; padding: 0; }
+.si__error { flex: none; color: var(--err); font-size: var(--fs-ui-sm); }
+.si__empty { margin: auto; color: var(--ink-4); font-size: var(--fs-ui-sm); text-align: center; }
+
+.si__results {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.si__row {
+  flex: none;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-card, 8px);
+  background: var(--surface-2);
+}
+.si__row-icon { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; color: var(--ink-3); }
+.si__row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.si__row-main strong { overflow: hidden; color: var(--ink); font-size: var(--fs-ui-sm); text-overflow: ellipsis; white-space: nowrap; }
+.si__row-main span { overflow: hidden; color: var(--ink-3); font: var(--fs-ui-xs) var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.si__badges { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.si__badges span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 1px 5px;
+  border: 1px solid var(--hairline-2);
+  border-radius: 4px;
+  color: var(--ink-3);
+  font: 500 var(--fs-ui-xs) var(--sans);
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+.si__badges span[data-kind='issue'] { border-color: color-mix(in srgb, var(--warn) 45%, var(--hairline-2)); color: var(--warn); }
+.si__badges span[data-kind='effect'] { color: var(--cut-soft); }
+.si__row-main p { margin: 2px 0 0; color: var(--ink-3); font-size: var(--fs-ui-xs); line-height: 1.35; }
+.si__row-actions { display: flex; gap: 4px; }
+.si__row-actions button { width: 28px; height: 28px; padding: 0; }
+
+@media (max-height: 720px) {
+  .si { gap: 4px; padding: 6px; }
+  .si__toolbar { gap: 4px; }
+  .si__filters { gap: 4px; }
+}

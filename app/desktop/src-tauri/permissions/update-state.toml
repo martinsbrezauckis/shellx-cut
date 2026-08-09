@@ -1,0 +1,14 @@
+# Update-state bridge permission for the validated engine-served origin.
+#
+# The three commands are the ENTIRE update surface the webview can reach:
+#   get_update_state    — read the honest snapshot (status/version/checked_at/error)
+#   update_check_now    — request one manual release-feed check (explicit user click)
+#   update_install_now  — request the install flow; the SHELL still runs the native
+#                         confirm dialog and the signature-verified install itself,
+#                         so remote content can only ask, never act.
+# See src/update_state.rs for the service; lib.rs grants this permission to the
+# one validated loopback origin alongside allow-update-preferences.
+[[permission]]
+identifier = "allow-update-state"
+description = "Allows the validated ShellX Cut UI to read update status, request a manual check, and request the confirmed install flow."
+commands.allow = ["get_update_state", "update_check_now", "update_install_now"]

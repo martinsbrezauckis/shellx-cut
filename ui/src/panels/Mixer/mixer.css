@@ -1,0 +1,276 @@
+/* mixer.css — the audio mixer drawer body (mx-*). The shell (cd-scrim/cd-drawer/
+   cd-head) comes from ../drawer.css; this styles the per-track strips. */
+
+.mx-drawer {
+  width: 360px;
+}
+
+.mx-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.mx-empty {
+  color: var(--ink-4, #6b7280);
+  font-size: 12px;
+  padding: 8px 2px;
+}
+
+/* Add-audio-track action — a dashed "ghost" button so it reads as "create new",
+   distinct from the solid channel strips. */
+.mx-addtrack {
+  border: 1px dashed var(--hairline-2, rgba(255, 255, 255, 0.18));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-3, #9aa1ab);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 9px 10px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.mx-addtrack:hover {
+  color: var(--ink, #e6e9ee);
+  border-color: var(--accent, #34d399);
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+
+/* One channel strip: header (name + dB) over a fader + the M/S buttons. */
+.mx-strip {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+.mx-strip--muted {
+  opacity: 0.6;
+}
+.mx-strip--solo {
+  border-color: #f5c451;
+  box-shadow: 0 0 0 1px rgba(245, 196, 81, 0.35) inset;
+}
+
+.mx-strip-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mx-kind {
+  font-size: 12px;
+  opacity: 0.8;
+}
+.mx-name {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink-2, #c9ced6);
+}
+.mx-dbval {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--ink-3, #9aa1ab);
+}
+
+/* The level fader — full width of the strip's first column. */
+.mx-fader {
+  grid-column: 1;
+  width: 100%;
+  accent-color: var(--accent, #34d399);
+  cursor: pointer;
+}
+
+.mx-btns {
+  grid-column: 2;
+  display: flex;
+  gap: 6px;
+}
+.mx-btn {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.14));
+  background: transparent;
+  color: var(--ink-3, #9aa1ab);
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.mx-btn:hover {
+  border-color: var(--accent, #34d399);
+}
+/* Mute ON = red; Solo ON = amber. */
+.mx-btn--on {
+  background: #ef4444;
+  border-color: #ef4444;
+  color: #fff;
+}
+.mx-btn--solo.mx-btn--on {
+  background: #f5c451;
+  border-color: #f5c451;
+  color: #1a1505;
+}
+/* Listen (audition) — accent-blue play/stop, distinct from M/S. */
+.mx-btn--listen {
+  font-size: 11px;
+}
+.mx-btn--listen.mx-btn--on {
+  background: var(--cut, #2563eb);
+  border-color: var(--cut, #2563eb);
+  color: #fff;
+}
+.mx-btn--listen:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.mx-btn--listen.mx-btn--error {
+  color: var(--red, #ef4444);
+  border-color: var(--red, #ef4444);
+}
+
+/* Per-track level meter (Audio Monitoring v2b) — a slim vertical dBFS bar at the
+   end of the strip head. Reads the track's STEM sampled at the playhead (the
+   track's exact mix contribution); green→amber→red zones, peak-hold tick, red
+   glow on clip. Goes empty when the track is muted or the stem isn't decoded. */
+.mx-meter {
+  position: relative;
+  width: 6px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.18));
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.mx-meter-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 0%;
+  background: linear-gradient(to top, #3fb950 0%, #3fb950 62%, #e6b450 82%, #f85149 100%);
+  transition: height 60ms linear;
+}
+.mx-meter-peak {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: var(--ink-2, #c9d1d9);
+  transition: bottom 80ms linear;
+}
+.mx-meter[data-cut-strip-meter-clip] {
+  border-color: #f85149;
+  box-shadow: 0 0 3px 1px #f85149;
+}
+
+/* Loudness target selector (top of the mixer body) — the integrated-LUFS standard
+   every "Measure loudness" button checks against (verify.loudness). */
+.mx-loud-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px 2px;
+}
+.mx-loud-target-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3, #6f6f6c);
+}
+.mx-loud-select {
+  appearance: none;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.18));
+  border-radius: 6px;
+  color: var(--ink-2, #c9ced6);
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.mx-loud-select:focus {
+  outline: none;
+  border-color: var(--cut, #2563eb);
+}
+
+/* Per-track integrated-loudness row: Measure button + the LUFS verdict badge. */
+.mx-loud {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mx-loud-btn {
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.18));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3, #9aa1ab);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.mx-loud-btn:hover:not(:disabled) {
+  color: var(--ink, #e6e9ee);
+  border-color: var(--cut, #2563eb);
+}
+.mx-loud-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* The LUFS verdict badge — green within ±1 LU of target, amber out of tolerance,
+   muted when not yet measured. Colors use theme tokens with no hardcoded brand. */
+.mx-loud-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.18));
+  color: var(--ink-3, #9aa1ab);
+}
+.mx-loud-badge--empty {
+  opacity: 0.6;
+}
+.mx-loud-badge--ok {
+  color: var(--green, #22c55e);
+  border-color: color-mix(in srgb, var(--green, #22c55e) 55%, transparent);
+  background: var(--receipt-pass-bg, rgba(34, 197, 94, 0.07));
+}
+.mx-loud-badge--off {
+  color: var(--amber, #d4a657);
+  border-color: color-mix(in srgb, var(--amber, #d4a657) 55%, transparent);
+  background: color-mix(in srgb, var(--amber, #d4a657) 8%, transparent);
+}
+.mx-loud-gap {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+/* Pan / balance row (edit.pan) — compact L…C…R slider under the fader. */
+.mx-pan {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 2px;
+}
+.mx-pan-edge {
+  font-size: 10px; color: var(--ink-3, #8a8a84); user-select: none;
+}
+.mx-pan-slider { flex: 1; min-width: 0; accent-color: var(--ink-2, #b9b9b4); }
+.mx-pan-val {
+  min-width: 26px; text-align: right;
+  font-size: 10px; font-variant-numeric: tabular-nums;
+  color: var(--ink-2, #b9b9b4);
+}

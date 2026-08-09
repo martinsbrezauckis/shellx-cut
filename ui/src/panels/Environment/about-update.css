@@ -1,0 +1,30 @@
+/* about-update.css — styles for the Settings > About update surface
+   (About.tsx: status line, checked-ago stamp, check/install actions).
+   Split out of environment.css, which sits under a module-size-gate
+   no-growth ceiling. Status tone classes mirror lib/updateState
+   describeUpdateStatus (ok / action / error / muted). */
+
+/* Update surface (installed shell only — About.tsx renders it when the
+   bridge answers; browser builds show prose only). */
+.env-about-updates {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 10px);
+  background: var(--surface);
+}
+.env-about-status { margin: 0; font: var(--fs-ui-xs) var(--sans); line-height: 1.45; color: var(--ink-2); }
+.env-about-status--ok { color: var(--green-soft); }
+.env-about-status--action { color: var(--ink); font-weight: 600; }
+.env-about-status--error { color: var(--err); }
+.env-about-status--muted { color: var(--ink-4); }
+/* Inline failure fragment appended to an otherwise-positive status line
+   (e.g. update still available, but the last install attempt failed). */
+.env-about-status-error { color: var(--err); font-weight: 400; }
+.env-about-checked {
+  margin: 4px 0 0;
+  font: var(--fs-mono-xs) var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-4);
+}
+.env-about-update-actions { margin-top: 8px; display: flex; align-items: center; gap: 8px; }

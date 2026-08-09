@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "shellx-cut/ops.schema.json",
+  "title": "OpRecord",
+  "description": "One line of ops.jsonl — the append-only operation log (timeline/op-log contract). Ops are immutable; rejection or history navigation appends a NEW operation instead of rewriting an old one. Current undo recomputes a journal prefix and records its result; the optional inverse field is retained only for historic snapshot-era replay. Mirrors cut_core::ops::OpRecord exactly.",
+  "type": "object",
+  "required": ["op_id", "ts", "actor", "verb", "args", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "op_id": {
+      "type": "string",
+      "pattern": "^op_[0-9]{6,}$",
+      "description": "Monotonic zero-padded id; ordering equals log order"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp with millisecond precision"
+    },
+    "actor": {
+      "type": "object",
+      "required": ["kind", "name", "via"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["agent", "human", "system"] },
+        "name": { "type": "string", "description": "e.g. 'claude', 'editor', 'cutd'" },
+        "via": { "type": "string", "description": "Surface used: mcp | rest | cli | ui | internal" },
+        "request": {
+          "type": "object",
+          "required": ["caller", "request_id", "fingerprint"],
+          "additionalProperties": false,
+          "properties": {
+            "caller": { "type": "string", "description": "Stable serialized identity of the original transport caller" },
+            "request_id": { "type": "string" },
+            "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "expected_revision": { "type": "string", "pattern": "^op_[0-9]{6,}$" }
+          }
+        }
+      }
+    },
+    "verb": {
+      "type": "string",
+      "description": "Fully-qualified verb name from schema/verbs.json, e.g. 'transcript.cut_words'"
+    },
+    "args": {
+      "description": "The verb args as received (shape per the verb's args schema)"
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Why the actor did it — shown verbatim in the review rail"
+    },
+    "effects": {
+      "type": "array",
+      "description": "What actually changed on the timeline",
+      "items": {
+        "type": "object",
+        "properties": {
+          "track": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "inverse": {
+      "type": "object",
+      "description": "Legacy snapshot-era undo payload. Current records omit it and recompute by replay; retained so historic journals and their old edit.restore records remain readable.",
+      "required": ["verb", "args"],
+      "additionalProperties": false,
+      "properties": {
+        "verb": { "type": "string" },
+        "args": {}
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["applied", "rejected"],
+      "description": "applied = normal; rejected = undone via review (the undoing itself is a new edit.restore op)"
+    }
+  }
+}

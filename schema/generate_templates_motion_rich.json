@@ -1,0 +1,272 @@
+{
+  "schema": "shellx-cut/generate-templates/1",
+  "templates": [
+    {
+      "id": "builtin.motion.cinematic-fog-title",
+      "source": "builtin",
+      "kind": "motion",
+      "title": "Cinematic fog title",
+      "summary": "Footage-rich atmospheric title with four depth layers, scene-aware fog, moving light, and safe auto-fit copy.",
+      "tags": ["motion", "cinematic", "fog", "atmosphere", "title", "trailer", "rendered-media"],
+      "params": {
+        "eyebrow": {
+          "type": "string",
+          "default": "A SHELLX ORIGINAL",
+          "description": "Short overline above the main title"
+        },
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "Main cinematic title"
+        },
+        "subtitle": {
+          "type": "string",
+          "default": "Layered atmosphere, source-aware depth and cinematic light.",
+          "description": "Supporting line kept inside the declared safe area"
+        },
+        "fogDensity": {
+          "type": "number",
+          "default": 0.66,
+          "minimum": 0.2,
+          "maximum": 0.9,
+          "step": 0.02,
+          "description": "Scene-aware fog density"
+        },
+        "accentColor": {
+          "type": "color",
+          "default": "#FBBF24",
+          "description": "Light and title accent"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "default": 6000,
+          "minimum": 4000,
+          "maximum": 12000,
+          "step": 100,
+          "description": "Rendered Motion clip duration"
+        }
+      },
+      "defaults": { "duration_ms": 6000, "engine": "shellx-motion", "family": "cinematic-fog-title" },
+      "capabilities": ["preview", "insert", "rendered_media", "motion_template", "rich_environment", "quality_manifest", "text_fit", "safe_area"],
+      "lowering": {
+        "verb": "motion.template_to_cut",
+        "args": {
+          "template": "cinematic-fog-title",
+          "params": {
+            "eyebrow": "{{eyebrow}}",
+            "title": "{{title}}",
+            "subtitle": "{{subtitle}}",
+            "fogDensity": "{{fogDensity}}",
+            "accentColor": "{{accentColor}}"
+          },
+          "duration_ms": "{{duration_ms}}",
+          "checkpoint": false
+        }
+      },
+      "verification": {
+        "expects": ["motion_receipt", "quality_manifest", "rendered_media", "asset_imported", "clip_created", "frame_changed", "text_fit"]
+      }
+    },
+    {
+      "id": "builtin.motion.editorial-liquid-surface",
+      "source": "builtin",
+      "kind": "motion",
+      "title": "Editorial liquid surface",
+      "summary": "Refracted editorial scene with deterministic water optics, caustics, depth, and restrained campaign copy.",
+      "tags": ["motion", "editorial", "water", "liquid", "refraction", "caustics", "rendered-media"],
+      "params": {
+        "eyebrow": {
+          "type": "string",
+          "default": "FIELD NOTES / 07",
+          "description": "Short editorial section label"
+        },
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "Main editorial headline"
+        },
+        "subtitle": {
+          "type": "string",
+          "default": "A replaceable frame refracted through deterministic light, depth and liquid motion.",
+          "description": "Supporting editorial copy"
+        },
+        "waveHeight": {
+          "type": "number",
+          "default": 0.46,
+          "minimum": 0.1,
+          "maximum": 0.8,
+          "step": 0.02,
+          "description": "Liquid surface displacement"
+        },
+        "accentColor": {
+          "type": "color",
+          "default": "#5EEAD4",
+          "description": "Editorial accent"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "default": 6000,
+          "minimum": 4000,
+          "maximum": 12000,
+          "step": 100,
+          "description": "Rendered Motion clip duration"
+        }
+      },
+      "defaults": { "duration_ms": 6000, "engine": "shellx-motion", "family": "editorial-liquid-surface" },
+      "capabilities": ["preview", "insert", "rendered_media", "motion_template", "rich_environment", "quality_manifest", "text_fit", "safe_area"],
+      "lowering": {
+        "verb": "motion.template_to_cut",
+        "args": {
+          "template": "editorial-liquid-surface",
+          "params": {
+            "eyebrow": "{{eyebrow}}",
+            "title": "{{title}}",
+            "subtitle": "{{subtitle}}",
+            "waveHeight": "{{waveHeight}}",
+            "accentColor": "{{accentColor}}"
+          },
+          "duration_ms": "{{duration_ms}}",
+          "checkpoint": false
+        }
+      },
+      "verification": {
+        "expects": ["motion_receipt", "quality_manifest", "rendered_media", "asset_imported", "clip_created", "frame_changed", "text_fit"]
+      }
+    },
+    {
+      "id": "builtin.motion.keyed-subject-promo",
+      "source": "builtin",
+      "kind": "motion",
+      "title": "Keyed subject promo",
+      "summary": "Presenter-led composition with chroma keying, spill suppression, matte cleanup, motion blur, and branded copy.",
+      "tags": ["motion", "presenter", "green-screen", "chroma-key", "composite", "promo", "rendered-media"],
+      "params": {
+        "eyebrow": {
+          "type": "string",
+          "default": "CREATOR MODE",
+          "description": "Short campaign overline"
+        },
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "Main presenter-promo headline"
+        },
+        "subtitle": {
+          "type": "string",
+          "default": "A cleaned, spill-suppressed subject inside a moving branded scene.",
+          "description": "Supporting campaign copy"
+        },
+        "badge": {
+          "type": "string",
+          "default": "LOCAL COMPOSITE",
+          "description": "Short end-frame badge"
+        },
+        "spillSuppression": {
+          "type": "number",
+          "default": 0.72,
+          "minimum": 0,
+          "maximum": 1,
+          "step": 0.02,
+          "description": "Green spill cleanup strength"
+        },
+        "accentColor": {
+          "type": "color",
+          "default": "#C084FC",
+          "description": "Composite accent"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "default": 6000,
+          "minimum": 4000,
+          "maximum": 12000,
+          "step": 100,
+          "description": "Rendered Motion clip duration"
+        }
+      },
+      "defaults": { "duration_ms": 6000, "engine": "shellx-motion", "family": "keyed-subject-promo" },
+      "capabilities": ["preview", "insert", "rendered_media", "motion_template", "chroma_key", "matte_cleanup", "quality_manifest", "text_fit", "safe_area"],
+      "lowering": {
+        "verb": "motion.template_to_cut",
+        "args": {
+          "template": "keyed-subject-promo",
+          "params": {
+            "eyebrow": "{{eyebrow}}",
+            "title": "{{title}}",
+            "subtitle": "{{subtitle}}",
+            "badge": "{{badge}}",
+            "spillSuppression": "{{spillSuppression}}",
+            "accentColor": "{{accentColor}}"
+          },
+          "duration_ms": "{{duration_ms}}",
+          "checkpoint": false
+        }
+      },
+      "verification": {
+        "expects": ["motion_receipt", "quality_manifest", "keying_evidence", "rendered_media", "asset_imported", "clip_created", "frame_changed", "text_fit"]
+      }
+    },
+    {
+      "id": "builtin.motion.tracked-callout-overlay",
+      "source": "builtin",
+      "kind": "motion",
+      "title": "Tracked callout overlay",
+      "summary": "Product annotation whose ring, leader, panel, and copy follow one synchronized baked tracking path.",
+      "tags": ["motion", "tracked-callout", "annotation", "product-demo", "inspection", "overlay", "rendered-media"],
+      "params": {
+        "title": {
+          "type": "string",
+          "required": true,
+          "description": "Main product-demo headline"
+        },
+        "subtitle": {
+          "type": "string",
+          "default": "A baked path keeps the annotation connected while the product frame moves.",
+          "description": "Supporting product-demo copy"
+        },
+        "calloutTitle": {
+          "type": "string",
+          "default": "Adaptive cooling core",
+          "description": "Tracked callout heading"
+        },
+        "calloutDetail": {
+          "type": "string",
+          "default": "Thermal load drops 18% under sustained local rendering.",
+          "description": "Tracked callout detail"
+        },
+        "accentColor": {
+          "type": "color",
+          "default": "#22D3EE",
+          "description": "Callout ring, leader, and panel accent"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "default": 6000,
+          "minimum": 4000,
+          "maximum": 12000,
+          "step": 100,
+          "description": "Rendered Motion clip duration"
+        }
+      },
+      "defaults": { "duration_ms": 6000, "engine": "shellx-motion", "family": "tracked-callout-overlay" },
+      "capabilities": ["preview", "insert", "rendered_media", "motion_template", "tracked_callout", "quality_manifest", "text_fit", "safe_area"],
+      "lowering": {
+        "verb": "motion.template_to_cut",
+        "args": {
+          "template": "tracked-callout-overlay",
+          "params": {
+            "title": "{{title}}",
+            "subtitle": "{{subtitle}}",
+            "calloutTitle": "{{calloutTitle}}",
+            "calloutDetail": "{{calloutDetail}}",
+            "accentColor": "{{accentColor}}"
+          },
+          "duration_ms": "{{duration_ms}}",
+          "checkpoint": false
+        }
+      },
+      "verification": {
+        "expects": ["motion_receipt", "quality_manifest", "rendered_media", "asset_imported", "clip_created", "frame_changed", "text_fit"]
+      }
+    }
+  ]
+}

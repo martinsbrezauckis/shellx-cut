@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "shellx-cut/public-export-manifest@1",
+  "project": "shellx-cut",
+  "sourceCommit": "8b80be7824b588e7aeb4f6e5ca039385379bf25f",
+  "sourceTree": "04b7bf9deab6f74dac7b6aa8eb15b1e8bd46cc42",
+  "payloadSha256": "d824639ad8d9d4b35a959346c9dc44c5c7e8531009f99d51f4e867af1ce2238a",
+  "payloadFileCount": 835,
+  "payloadBytes": 15406045
+}
