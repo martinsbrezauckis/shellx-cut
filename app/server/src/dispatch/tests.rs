@@ -343,13 +343,13 @@ fn translation_auto_keeps_cli_runtime_failures_honest() {
     #[cfg(windows)]
     std::fs::write(
         &claude,
-        "@echo off\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}\r\n",
+        "@echo off\r\nmore >nul\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}\r\n",
     )
     .unwrap();
     #[cfg(not(windows))]
         std::fs::write(
             &claude,
-            "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}'\n",
+            "#!/usr/bin/env sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}'\n",
         )
         .unwrap();
     make_executable(&claude);
@@ -360,13 +360,13 @@ fn translation_auto_keeps_cli_runtime_failures_honest() {
     #[cfg(windows)]
         std::fs::write(
             &codex,
-            "@echo off\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"codex unavailable\"}\r\n",
+            "@echo off\r\nmore >nul\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"codex unavailable\"}\r\n",
         )
         .unwrap();
     #[cfg(not(windows))]
         std::fs::write(
             &codex,
-            "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"codex unavailable\"}'\n",
+            "#!/usr/bin/env sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"codex unavailable\"}'\n",
         )
         .unwrap();
     make_executable(&codex);
@@ -377,13 +377,13 @@ fn translation_auto_keeps_cli_runtime_failures_honest() {
     #[cfg(windows)]
         std::fs::write(
             &grok,
-            "@echo off\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"grok unavailable\"}\r\n",
+            "@echo off\r\nmore >nul\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"grok unavailable\"}\r\n",
         )
         .unwrap();
     #[cfg(not(windows))]
         std::fs::write(
             &grok,
-            "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"grok unavailable\"}'\n",
+            "#!/usr/bin/env sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"grok unavailable\"}'\n",
         )
         .unwrap();
     make_executable(&grok);
@@ -485,13 +485,13 @@ fn translation_auto_tries_next_cli_agent_before_local_fallback() {
     #[cfg(windows)]
     std::fs::write(
         &claude,
-        "@echo off\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}\r\n",
+        "@echo off\r\nmore >nul\r\necho {\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}\r\n",
     )
     .unwrap();
     #[cfg(not(windows))]
         std::fs::write(
             &claude,
-            "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}'\n",
+            "#!/usr/bin/env sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"weekly limit\"}'\n",
         )
         .unwrap();
     make_executable(&claude);
@@ -503,13 +503,13 @@ fn translation_auto_tries_next_cli_agent_before_local_fallback() {
     #[cfg(windows)]
         std::fs::write(
             &codex,
-            "@echo off\r\necho {\"type\":\"session.created\",\"session_id\":\"t\"}\r\necho {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[{\\\"i\\\":1,\\\"text\\\":\\\"Hola\\\"}]\"}}\r\n",
+            "@echo off\r\nmore >nul\r\necho {\"type\":\"session.created\",\"session_id\":\"t\"}\r\necho {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[{\\\"i\\\":1,\\\"text\\\":\\\"Hola\\\"}]\"}}\r\n",
         )
         .unwrap();
     #[cfg(not(windows))]
         std::fs::write(
             &codex,
-            "#!/usr/bin/env sh\nprintf '%s\\n' '{\"type\":\"session.created\",\"session_id\":\"t\"}'\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[{\\\"i\\\":1,\\\"text\\\":\\\"Hola\\\"}]\"}}'\n",
+            "#!/usr/bin/env sh\ncat >/dev/null\nprintf '%s\\n' '{\"type\":\"session.created\",\"session_id\":\"t\"}'\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[{\\\"i\\\":1,\\\"text\\\":\\\"Hola\\\"}]\"}}'\n",
         )
         .unwrap();
     make_executable(&codex);

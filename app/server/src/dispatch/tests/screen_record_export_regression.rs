@@ -57,15 +57,18 @@ fn synth_tone(out: &Path, frequency: u32, duration_s: u32) {
 }
 
 async fn wait_export(state: &AppState, job_id: &str) -> Value {
-    for _ in 0..2_400 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
         let record = state.jobs.get(job_id).expect("export job record");
         match record.state {
             JobState::Done => return record.result.expect("completed export result"),
             JobState::Failed => panic!("export job failed: {:?}", record.error),
-            _ => tokio::time::sleep(Duration::from_millis(10)).await,
+            _ if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+            _ => panic!("export job {job_id} did not complete within 120 seconds"),
         }
     }
-    panic!("export job {job_id} did not complete")
 }
 
 async fn export_capture(state: &AppState, source: &Path, plan: &Path, output: &Path) -> Value {
