@@ -178,6 +178,10 @@ fn truncated_final_segment_reports_exact_known_tail() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows replacement durability is tracked separately"
+)]
 fn pid_reuse_is_ambiguous_and_torn_tail_keeps_valid_prefix() {
     let mut start = CaptureStart::new("cap", 100);
     start.owner_identity = "other-process".into();
