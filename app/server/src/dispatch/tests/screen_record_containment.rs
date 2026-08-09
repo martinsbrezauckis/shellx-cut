@@ -106,6 +106,7 @@ async fn screen_record_stop_ignores_forged_legacy_marker_project_path() {
     .await;
 
     assert!(stopped.ok, "{:?}", stopped.error);
+    let inside_project = std::fs::canonicalize(inside_project).unwrap();
     assert_eq!(
         stopped.result.unwrap()["project"],
         serde_json::Value::String(inside_project.display().to_string())

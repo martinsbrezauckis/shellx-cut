@@ -946,13 +946,14 @@ mod tests {
         start.wait();
         let names: std::collections::BTreeSet<PathBuf> =
             (0..workers).map(|_| rx.recv().unwrap()).collect();
+        let canonical_project = std::fs::canonicalize(project.as_ref()).unwrap();
         assert_eq!(
             names.len(),
             workers,
             "each concurrent default gets a unique path"
         );
-        assert!(names.contains(&project.join("exports/recording.mp4")));
-        assert!(names.contains(&project.join("exports/recording-2.mp4")));
+        assert!(names.contains(&canonical_project.join("exports/recording.mp4")));
+        assert!(names.contains(&canonical_project.join("exports/recording-2.mp4")));
         hold_reservations.wait();
         for join in joins {
             join.join().expect("allocation worker");
@@ -1022,7 +1023,10 @@ mod tests {
             OutputPathPolicy::MP4,
         )
         .expect("an unlocked crash-left marker is reclaimable");
-        assert_eq!(recovered.as_ref(), output);
+        let canonical_output = std::fs::canonicalize(&proj)
+            .unwrap()
+            .join("exports/recording.mp4");
+        assert_eq!(recovered.as_ref(), canonical_output);
         assert_eq!(
             std::fs::read(&marker).unwrap(),
             b"",
@@ -1067,7 +1071,10 @@ mod tests {
             OutputPathPolicy::MP4,
         )
         .expect("a valid nested relative path remains supported");
-        assert_eq!(nested.as_ref(), proj.join("exports/nested/out.mp4"));
+        let canonical_nested = std::fs::canonicalize(&proj)
+            .unwrap()
+            .join("exports/nested/out.mp4");
+        assert_eq!(nested.as_ref(), canonical_nested);
         assert!(proj.join("exports/nested").is_dir());
     }
 

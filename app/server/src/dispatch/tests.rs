@@ -12,6 +12,28 @@ fn lock_agent_cli_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+struct TestAdapterPythonEnv {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl TestAdapterPythonEnv {
+    fn install() -> Self {
+        let previous = std::env::var_os(ENV_ADAPTER_PYTHON);
+        let python = find_python_on_path().expect("test adapter Python on PATH");
+        std::env::set_var(ENV_ADAPTER_PYTHON, python);
+        Self { previous }
+    }
+}
+
+impl Drop for TestAdapterPythonEnv {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(ENV_ADAPTER_PYTHON, value),
+            None => std::env::remove_var(ENV_ADAPTER_PYTHON),
+        }
+    }
+}
+
 fn test_actor() -> Actor {
     Actor {
         kind: cut_core::ActorKind::Agent,
@@ -6725,6 +6747,7 @@ async fn add_marker_result_has_no_inverse_but_restore_works() {
 async fn comment_draft_fake_adapter_stores_validated_draft() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _agent_env = lock_agent_cli_env();
+    let _adapter_python = TestAdapterPythonEnv::install();
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new();
     let r = dispatch(
@@ -6952,6 +6975,7 @@ async fn assets_fetch_local_folder_requires_search_dir_scope() {
 async fn comment_apply_executes_draft_checkpoint_and_reverts() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _agent_env = lock_agent_cli_env();
+    let _adapter_python = TestAdapterPythonEnv::install();
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new();
     let r = dispatch(
@@ -8455,6 +8479,7 @@ async fn wait_job(state: &AppState, job_id: &str, secs: u64) -> crate::jobs::Job
 async fn verify_judge_fake_adapter_completed() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _agent_env = lock_agent_cli_env();
+    let _adapter_python = TestAdapterPythonEnv::install();
     let dir = tempfile::tempdir().unwrap();
     let (state, rpath) = judge_fixture(dir.path()).await;
     // A perception sidecar file for the render → must be passed through.
@@ -8541,6 +8566,7 @@ async fn verify_judge_fake_adapter_completed() {
 async fn verify_judge_fail_verdict_normalizes_to_reject() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _agent_env = lock_agent_cli_env();
+    let _adapter_python = TestAdapterPythonEnv::install();
     let dir = tempfile::tempdir().unwrap();
     let (state, _rpath) = judge_fixture(dir.path()).await;
     let stub = write_stub_adapter(
@@ -8577,6 +8603,7 @@ async fn verify_judge_fail_verdict_normalizes_to_reject() {
 async fn verify_judge_explicit_backend_threads_provider() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _agent_env = lock_agent_cli_env();
+    let _adapter_python = TestAdapterPythonEnv::install();
     let dir = tempfile::tempdir().unwrap();
     let (state, rpath) = judge_fixture(dir.path()).await;
     let stub = write_stub_adapter(
@@ -8649,6 +8676,7 @@ async fn verify_judge_missing_adapter_is_honest_not_run() {
 async fn verify_judge_adapter_crash_fails_job_with_all_streams() {
     let _env = JUDGE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _agent_env = lock_agent_cli_env();
+    let _adapter_python = TestAdapterPythonEnv::install();
     let dir = tempfile::tempdir().unwrap();
     let (state, rpath) = judge_fixture(dir.path()).await;
     let stub = dir.path().join("crash.py");

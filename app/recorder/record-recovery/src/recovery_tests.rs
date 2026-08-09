@@ -9,10 +9,22 @@ use crate::{
 };
 
 fn tools(dir: &Path) -> (String, String) {
+    #[cfg(not(windows))]
     let ffmpeg = dir.join("ffmpeg");
+    #[cfg(windows)]
+    let ffmpeg = dir.join("ffmpeg.cmd");
+    #[cfg(not(windows))]
     let ffprobe = dir.join("ffprobe");
+    #[cfg(windows)]
+    let ffprobe = dir.join("ffprobe.cmd");
+    #[cfg(not(windows))]
     fs::write(&ffmpeg, "#!/bin/sh\nlast=\nfor arg do last=$arg; done\n[ \"$last\" = - ] || printf checkpoint > \"$last\"\n").unwrap();
+    #[cfg(windows)]
+    fs::write(&ffmpeg, "@echo off\r\nset last=\r\n:next\r\nif \"%~1\"==\"\" goto done\r\nset \"last=%~1\"\r\nshift\r\ngoto next\r\n:done\r\nif \"%last%\"==\"-\" exit /b 0\r\n>\"%last%\" <nul set /p =checkpoint\r\n").unwrap();
+    #[cfg(not(windows))]
     fs::write(&ffprobe, "#!/bin/sh\nprintf '{\"format\":{\"duration\":\"0.100\"},\"streams\":[{\"codec_type\":\"video\",\"nb_read_frames\":\"1\"}]}'\n").unwrap();
+    #[cfg(windows)]
+    fs::write(&ffprobe, "@echo off\r\necho {\"format\":{\"duration\":\"0.100\"},\"streams\":[{\"codec_type\":\"video\",\"nb_read_frames\":\"1\"}]}\r\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
