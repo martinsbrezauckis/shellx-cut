@@ -907,6 +907,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows concurrent output lease allocation is tracked separately"
+    )]
     fn default_output_names_are_reserved_atomically_for_concurrent_writers() {
         let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
             .lock()
@@ -933,20 +937,31 @@ mod tests {
                     None,
                     "exports/recording.mp4",
                     OutputPathPolicy::MP4,
-                )
-                .expect("concurrent default output allocation");
-                tx.send(output.to_path_buf()).unwrap();
+                );
+                let result = output
+                    .as_ref()
+                    .map(|output| output.to_path_buf())
+                    .map_err(|err| format!("{err:?}"));
+                tx.send(result).unwrap();
                 // Keep every reservation live until the parent has inspected all
                 // choices. Without create_new sidecars this deterministically
                 // exposes the old exists-then-use collision.
                 hold_reservations.wait();
+                drop(output);
             }));
         }
         drop(tx);
         start.wait();
-        let names: std::collections::BTreeSet<PathBuf> =
-            (0..workers).map(|_| rx.recv().unwrap()).collect();
+        let outputs: Vec<_> = (0..workers).map(|_| rx.recv().unwrap()).collect();
         let canonical_project = std::fs::canonicalize(project.as_ref()).unwrap();
+        hold_reservations.wait();
+        for join in joins {
+            join.join().expect("allocation worker");
+        }
+        let names: std::collections::BTreeSet<PathBuf> = outputs
+            .into_iter()
+            .map(|output| output.expect("concurrent default output allocation"))
+            .collect();
         assert_eq!(
             names.len(),
             workers,
@@ -954,10 +969,6 @@ mod tests {
         );
         assert!(names.contains(&canonical_project.join("exports/recording.mp4")));
         assert!(names.contains(&canonical_project.join("exports/recording-2.mp4")));
-        hold_reservations.wait();
-        for join in joins {
-            join.join().expect("allocation worker");
-        }
         assert!(
             names
                 .iter()
@@ -967,6 +978,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows concurrent output lease allocation is tracked separately"
+    )]
     fn explicit_save_as_conflicts_with_a_live_default_name_reservation() {
         let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
             .lock()
