@@ -199,18 +199,14 @@ route to the same surface registry.
   revert rather than risking rollback of someone else's work. A categorized
   prompt library pre-fills eight common Polish, Repurpose, Speech, and Review
   outcomes without sending or spending an agent turn until the user presses Send.
-  Agent Chat currently launches only the pinned Claude Code 2.1.224 route. Cut
-  starts it in a disposable cwd with a minimal environment, disables native CLI
-  tools, and permits only a filtered Cut MCP surface: inspect the already-open
-  project plus reversible in-project edits. Project switching/deletion,
-  import/search/fetch, plugin/process/network actions, render/export,
-  navigation/revert, and recursive chat are absent and rejected if guessed.
-  Cut re-checks the version and required CLI policy flags before every turn and
-  fails closed on drift.
-  Codex and Grok remain visible in Doctor but are disabled for unattended Agent
-  Chat until their CLIs offer equivalent enforceable tool denial; Cut returns an
-  actionable error rather than falling through to either provider. This is not
-  an operating-system sandbox; review every resulting edit.
+  Agent Chat launches the user's installed Claude Code or Codex CLI. Claude uses
+  Cut's pinned 2.1.224 contained route in a disposable cwd with native CLI tools
+  disabled. Codex keeps the user's normal configuration, native sandbox, and
+  permissions; Cut neither copies nor rewrites its login files. Both routes add
+  a filtered Cut MCP surface for inspecting the open project and applying
+  reversible in-project edits. Grok remains visible in Doctor but is disabled
+  until the next release. Review every resulting edit, especially when using a
+  local CLI that retains its own native tools and integrations.
 
 ## Generate
 

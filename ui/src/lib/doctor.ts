@@ -230,9 +230,8 @@ export function hasMatteSetupAction(card: DoctorCard): boolean {
 // Chat-agent state — the agent.chat multi-agent selection dropdown
 // ---------------------------------------------------------------------------
 
-/** The coding-agent CLIs that Doctor reports for `agent.chat`. Claude is the
- *  only currently launchable route; Codex and Grok remain listed as disabled
- *  until their upstream CLIs expose equivalent enforceable containment. */
+/** The coding-agent CLIs that Doctor reports for `agent.chat`. Claude and Codex
+ *  are launchable; Grok remains listed as a planned provider. */
 export const CHAT_AGENTS = ['claude', 'codex', 'grok'] as const
 export type ChatAgentName = (typeof CHAT_AGENTS)[number]
 
@@ -243,8 +242,8 @@ export type ChatAgentName = (typeof CHAT_AGENTS)[number]
  *  `authenticated` is BEST-EFFORT: 'yes' = a confirmed session, 'no' = no
  *  credentials, 'unknown' = a creds FILE exists but its session can't be
  *  verified headlessly — deliberately NOT counted as ready, so the dropdown
- *  never shows a false green. `posture` reports whether launch is contained or
- *  disabled; it is derived from the backend enforcement policy. */
+ *  never shows a false green. `posture` truthfully reports whether Cut contains
+ *  the route or uses the local CLI's normal user-configured permissions. */
 export interface ChatAgentState {
   installed: boolean
   resolved: string | null
@@ -315,8 +314,8 @@ export function chatAgentBadge(name: ChatAgentName, state: ChatAgentState | null
     : { kind: 'ready', label: 'Available', hint: 'signs in on first call if needed' }
 }
 
-/** Display the backend's enforced containment status. Disabled providers are
- *  warning-styled because selecting them cannot launch a headless edit. */
+/** Display the backend's launch posture. Disabled providers are warning-styled
+ *  because selecting them cannot launch an edit. */
 export function chatAgentPosture(state: ChatAgentState | null): { text: string; warn: boolean } | null {
   if (!state?.posture) return null
   const warn = state.posture.startsWith('disabled:')

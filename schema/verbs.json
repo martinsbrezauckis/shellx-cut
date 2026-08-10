@@ -6115,7 +6115,7 @@
     {
       "name": "agent.chat",
       "domain": "agent",
-      "description": "Natural-language timeline editing — the agent chat box. Launches only the pinned, contained Claude Code contract with Cut's MCP server wired to THIS running serve; Codex and Grok explicitly return not_contained rather than falling through. The contained turn can inspect only the already-open project and make reversible in-project edits. Cut filters that capability manifest at both MCP tools/list and tools/call: project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are neither exposed nor callable. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state, never arbitrary source paths. The op-log is the receipt: every allowed verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no contained CLI on PATH, CLI version/flag drift, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
+      "description": "Natural-language timeline editing through the user's installed Claude Code or Codex CLI. Claude uses Cut's pinned contained contract; Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Cut adds a filtered MCP server connected to THIS running serve without copying CLI credentials. That Cut MCP surface permits inspection of the already-open project and reversible in-project edits while denying project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat. A Codex installation may retain its own native tools and integrations according to the user's Codex configuration. Grok is detected but returns not_available until the next release. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
       "args": {
         "type": "object",
         "required": [
@@ -6144,7 +6144,7 @@
               "codex",
               "grok"
             ],
-            "description": "Which subscription CLI to drive. Omit = the first installed + chat-wired agent (claude). An explicit pick that is absent or not yet wired degrades honestly."
+            "description": "Which local subscription CLI to drive. Claude and Codex are wired; Grok is reserved for the next release. Omit = the first installed + chat-wired agent, preferring Claude. An unavailable explicit pick degrades honestly."
           },
           "model": {
             "type": "string",
@@ -6160,7 +6160,7 @@
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
-          "filesystem": false,
+          "filesystem": true,
           "process": true,
           "network": true,
           "ui": false

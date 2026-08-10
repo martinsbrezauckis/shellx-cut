@@ -1,8 +1,9 @@
 // panels/AgentChat — the agent chat box (the headline natural-language editor).
 // Role: a right-rail tab where the user types an edit request; the cutd
-// `agent.chat` verb launches a pinned, contained Claude Code CLI wired to cutd's
-// MCP server, so its tool calls are editing verbs on the live project. Codex and
-// Grok are shown as disabled until their native-tool denial can be enforced.
+// `agent.chat` launches the selected local CLI wired to cutd's MCP server, so
+// its Cut tool calls are editing verbs on the live project. Claude uses Cut's
+// contained route; Codex keeps the user's normal Codex settings and permissions.
+// Grok remains visible as planned for the next release.
 // Request/response per turn (no token streaming): a "working…"
 // state, then one agent bubble with the reply, the ops it applied (each a normal,
 // undoable op — pairs with Ctrl+Z / project.undo), the agent name + an
@@ -14,7 +15,7 @@
 // agent. It is populated from `system.doctor` → `judge.<agent>.details.chat`
 // (refreshed on open — auth-state changes don't fire the doctor change-detector,
 // so we re-scan when the menu opens; it's cheap). Each agent shows a containment
-// badge (ready / needs-login / install / disabled). DEFAULT = pinned Claude; the
+  // badge (ready / needs-login / install / disabled). DEFAULT = Claude; the
 // choice persists (lib/chatAgentPref) and rides into
 // `agent.chat {message, agent}`.
 //
@@ -219,8 +220,8 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
     setLog((l) => [...l, { role: 'user', text: message, attachments: turnAttachments }])
     setBusy(true)
     try {
-      // Pass the selected provider. The backend rejects an uncontained explicit
-      // selection with a structured `not_contained` response.
+      // Pass the selected provider. The backend rejects a provider without an
+      // enabled Agent Chat route with a structured response.
       const r = await callVerb('agent.chat', {
         message,
         agent,

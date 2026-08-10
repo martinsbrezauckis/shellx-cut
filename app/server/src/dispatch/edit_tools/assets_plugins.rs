@@ -645,14 +645,12 @@ async fn agent_chat_turn_review(
 }
 
 /// agent.chat{message, attachments?, agent?, model?, timeout_ms?} — natural-language timeline
-/// editing (the headline agent-chat feature). Launches only a pinned Claude Code
-/// contract with native tools excluded from its allowlisted registry and Cut's
-/// strict MCP server as its toolset.
-/// The CLI runs from a fresh disposable cwd with a minimal environment, so its Cut
-/// MCP calls are editing verbs proxied back to THIS running serve (the same open
-/// project the UI shows). Codex/Grok remain detectable but return `not_contained`:
-/// their present headless CLIs cannot enforce equivalent tool denial. The op-log is
-/// the receipt — every verb the agent calls is a reversible, attributed op.
+/// editing (the headline agent-chat feature). Claude uses its pinned contained
+/// contract; Codex uses the user's normal native CLI configuration and sandbox.
+/// Both run from a fresh disposable cwd with Cut's MCP server connected to THIS
+/// running serve (the same open project the UI shows). Grok remains detectable
+/// but returns `not_available` until the next release. The op-log is the receipt
+/// for every reversible Cut verb the selected agent applies.
 /// NO model is hosted; the CLI's logged-in subscription does the reasoning. The
 /// handler holds NO project lock during the spawn (the agent's verbs acquire it per
 /// call over the proxy — holding it would deadlock).
@@ -661,8 +659,8 @@ async fn agent_chat_turn_review(
 /// op-log grew because an edit landed, producing `ok:true`.
 /// Every path echoes the validated attachment IDs. Every failure returns `ok:false` with a
 /// structured `error` (machine category) + `reason` (human) the UI renders:
-///   not_available (no supported installed CLI) · not_contained (an explicit
-///   Codex/Grok request) · unsupported_capability (Claude version/flags drift) ·
+///   not_available (no supported installed CLI or a deferred provider) ·
+///   unsupported_capability (required provider flags are absent) ·
 ///   spawn (resolved but failed to launch) · timeout · blocked (a CLI cancelled a
 ///   Cut MCP call) · auth (login/expired session) · cli_error (stderr surfaced) ·
 ///   no_change (ran but edited nothing — carries the agent's own final message).
@@ -738,13 +736,12 @@ pub(in crate::dispatch) async fn agent_chat(
             "cost_usd": Value::Null,
         })))
     };
-    // Do not quietly fall through from an explicitly requested provider whose CLI
-    // cannot be contained. Its normal provider detection remains visible in Doctor,
-    // but this headless editing route refuses to launch it.
+    // Do not quietly fall through from an explicitly requested provider whose
+    // Agent Chat route is not enabled in this release.
     if let Some(requested) = a.agent.as_deref() {
         if let Some(reason) = crate::chat::broker::unavailable_reason(requested) {
             return fail(
-                "not_contained",
+                "not_available",
                 reason.into(),
                 Some(requested.into()),
                 vec![],
@@ -754,7 +751,7 @@ pub(in crate::dispatch) async fn agent_chat(
             );
         }
     }
-    // Pick the only installed provider with a verified containment contract.
+    // Pick the first installed provider with an implemented Agent Chat route.
     let Some(agent) = crate::chat::pick_agent(a.agent.as_deref()) else {
         // Detection is resolve_agent-based (process PATH first, THEN the explicit
         // install-dir ladder incl. grok's off-PATH ~/.grok/bin / a Finder-stripped
@@ -773,20 +770,18 @@ pub(in crate::dispatch) async fn agent_chat(
                 )
             } else {
                 format!(
-                    "'{req}' is not a supported Agent Chat provider — only pinned Claude is \
-                     contained for unattended editing. \
+                    "'{req}' is not a supported Agent Chat provider — choose Claude or Codex. \
                      Detected agents: {installed:?}."
                 )
             }
         } else if installed.is_empty() {
-            "no coding-agent CLI was found (looked beyond PATH too: ~/.local/bin, Homebrew, \
-             ~/.grok/bin). Install the supported Claude Code version and sign in to use Agent Chat."
+            "no supported coding-agent CLI was found (looked beyond PATH too: ~/.local/bin, \
+             Homebrew, ~/.grok/bin). Install Claude Code or Codex and sign in to use Agent Chat."
                 .into()
         } else {
             format!(
-                "no contained Claude Agent Chat route is available. Detected CLIs: {installed:?}; \
-                 Codex and Grok are not launched because their current headless contracts cannot \
-                 enforce native-tool denial."
+                "no ready Claude or Codex Agent Chat route is available. Detected CLIs: \
+                 {installed:?}."
             )
         };
         return fail(
@@ -805,16 +800,16 @@ pub(in crate::dispatch) async fn agent_chat(
         .unwrap_or_else(|_| "cutd".into());
     // The addr the spawned `cutd mcp` must proxy verbs to = THIS serve (so the
     // agent edits the project the UI shows, not whichever serve last wrote the
-    // shared discovery file). The contained Claude process and its Cut MCP child
-    // inherit these two proxy values from the sanitized launch environment.
+    // shared discovery file). The provider launch policy passes these values to
+    // the Cut MCP child without changing the user's CLI credentials.
     let proxy_addr = state
         .addr
         .read()
         .await
         .clone()
         .unwrap_or_else(crate::httpc::server_addr);
-    // Create a new, empty, disposable cwd for every turn. It starts with only the
-    // strict Cut MCP config below; the CLI never runs in the project or user cwd.
+    // Create a new, empty, disposable cwd for every turn. The CLI never runs in
+    // the project or user cwd; edits reach the project through Cut's MCP verbs.
     let suffix = {
         use std::sync::atomic::{AtomicU64, Ordering};
         static C: AtomicU64 = AtomicU64::new(0);
@@ -827,7 +822,7 @@ pub(in crate::dispatch) async fn agent_chat(
         Ok(workspace) => workspace,
         Err(reason) => {
             return fail(
-                "not_contained",
+                "not_available",
                 reason,
                 Some(agent.into()),
                 vec![],
@@ -838,13 +833,26 @@ pub(in crate::dispatch) async fn agent_chat(
         }
     };
     let ws = workspace.path().to_path_buf();
-    let contained_env = match crate::chat::broker::sanitized_environment(&proxy_addr, &proxy_actor)
-    {
-        Ok(environment) => environment,
-        Err(reason) => {
+    let launch_env = match agent {
+        "claude" => match crate::chat::broker::sanitized_environment(&proxy_addr, &proxy_actor) {
+            Ok(environment) => environment,
+            Err(reason) => {
+                return fail(
+                    "not_available",
+                    reason,
+                    Some(agent.into()),
+                    vec![],
+                    None,
+                    None,
+                    None,
+                );
+            }
+        },
+        "codex" => crate::chat::broker::native_environment(&proxy_addr, &proxy_actor),
+        _ => {
             return fail(
-                "not_contained",
-                reason,
+                "not_available",
+                format!("agent '{agent}' has no launch environment"),
                 Some(agent.into()),
                 vec![],
                 None,
@@ -872,9 +880,10 @@ pub(in crate::dispatch) async fn agent_chat(
     let agent_path = crate::gen::resolve_agent(agent)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| agent.to_string());
-    if let Err(reason) = crate::chat::broker::verify_installed_claude(
+    if let Err(reason) = crate::chat::broker::verify_installed_agent(
+        agent,
         std::path::Path::new(&agent_path),
-        &contained_env,
+        &launch_env,
         &ws,
     )
     .await
@@ -909,8 +918,7 @@ pub(in crate::dispatch) async fn agent_chat(
             None,
         );
     };
-    // A future provider with an equivalent verified containment contract may
-    // declare an additional workspace-local config file here.
+    // A future provider may declare an additional workspace-local config file.
     if let Some((rel, contents)) = &cmd.config_file {
         let cfg_path = ws.join(rel);
         if let Some(parent) = cfg_path.parent() {
@@ -928,8 +936,8 @@ pub(in crate::dispatch) async fn agent_chat(
     let prompt = crate::chat::build_prompt(&msg, &attachments);
     let timeout =
         std::time::Duration::from_millis(a.timeout_ms.unwrap_or(180_000).clamp(10_000, 600_000));
-    // The contained Claude `-p` contract receives its prompt on stdin. The
-    // placeholder branch is retained only for a future verified provider.
+    // Claude and Codex receive the prompt on stdin. The placeholder branch is
+    // retained for a future provider that needs a prompt file.
     let resolved_args: Vec<String> = if cmd.via_stdin {
         cmd.args.clone()
     } else {
@@ -964,7 +972,7 @@ pub(in crate::dispatch) async fn agent_chat(
                 )
             },
         )?;
-    contained_env.apply(&mut command);
+    launch_env.apply(&mut command);
     command
         .current_dir(&ws)
         .stdin(std::process::Stdio::piped())

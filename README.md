@@ -25,16 +25,13 @@ AI output as an opaque final file.
 
 ![ShellX Cut Recording Studio with source selection and capture controls](docs/public/site/manual/assets/cut/cut-recording-studio-current.png)
 
-Unattended Agent Chat currently uses the pinned, contained Claude Code route.
-Its MCP surface is limited to inspecting the open project and reversible
-in-project edits; it cannot switch projects, import/search/fetch files, run
-plugins/processes, render/export, navigate/revert, or recurse into Agent Chat.
-Codex and Grok remain available for their other Cut integrations but are not
-launched by Agent Chat until their CLIs support equivalent enforced tool denial.
-The schema-owned Agent Chat capability is independent from the engine's
-behavior flags: a permitted Cut edit can still use bounded registered media or
-ffmpeg internally, while the provider receives no arbitrary native file,
-process, network, or unrelated-MCP capability.
+Agent Chat supports the user's installed Claude Code or Codex CLI. Claude uses
+Cut's pinned contained route. Codex uses the user's normal Codex configuration,
+native sandbox, and permissions; Cut does not copy or rewrite its login files.
+Both receive a filtered Cut MCP surface for inspecting the open project and
+making reversible in-project edits. Grok remains planned for the next release.
+Review every resulting edit, especially when selecting a local CLI that retains
+its own native tools and integrations.
 
 ## Quickstart
 

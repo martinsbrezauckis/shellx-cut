@@ -1912,7 +1912,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
   "agent.chat": {
     "mutation_class": "external_side_effect",
     "side_effects": {
-      "filesystem": false,
+      "filesystem": true,
       "process": true,
       "network": true,
       "ui": false

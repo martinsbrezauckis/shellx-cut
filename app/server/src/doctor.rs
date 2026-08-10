@@ -932,7 +932,7 @@ fn chat_auth_state(agent: &str, resolved: Option<&Path>) -> (&'static str, Strin
 
 /// The chat-agent state block for a judge card's `details`, or `Value::Null` for a
 /// judge rung that is NOT a chat agent (antigravity). 3-level: installed (resolved)
-/// → authenticated (best-effort) → ready, plus an enforced containment status.
+/// → authenticated (best-effort) → ready, plus the provider's launch posture.
 fn chat_agent_block(
     provider: &str,
     found: bool,
@@ -948,7 +948,7 @@ fn chat_agent_block(
             .unwrap_or(false);
     let wired = crate::chat::is_wired(provider) && version_supported;
     let (authenticated, auth_detail) = chat_auth_state(provider, resolved);
-    // READY = installed && supported containment/version && CONFIRMED auth. An
+    // READY = installed && supported route/version && CONFIRMED auth. An
     // installed but unwired (or version-mismatched) CLI remains visible as disabled.
     let ready = found && wired && authenticated == "yes";
     let posture = if provider == "claude" && found && !version_supported {
@@ -1691,11 +1691,19 @@ mod tests {
     fn judge_cards_carry_chat_agent_state_and_posture() {
         // The agent-dropdown reads the 3-level chat state folded into the judge
         // cards: installed / wired / authenticated (yes|no|unknown) / ready + the
-        // containment status — for the three detectable chat-agent CLIs only.
+        // launch posture — for the three detectable chat-agent CLIs only.
         let cards = judge_cards();
         for (id, posture, wired) in [
-            ("judge.codex", "disabled: no enforceable containment", false),
-            ("judge.grok", "disabled: no enforceable containment", false),
+            (
+                "judge.codex",
+                "native CLI: uses your Codex settings and permissions",
+                true,
+            ),
+            (
+                "judge.grok",
+                "disabled: planned for the next release",
+                false,
+            ),
         ] {
             let c = cards.iter().find(|c| c.id == id).expect("chat-agent card");
             let chat = &c.details["chat"];

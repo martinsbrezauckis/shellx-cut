@@ -535,13 +535,13 @@ The server validates every ID against the open project, rejects duplicates, and
 caps each turn at eight attachments. The response echoes the validated IDs in
 `result.attachments` on both the success and structured no-edit paths.
 
-Headless editing currently supports only the pinned Claude Code 2.1.224
-contract. Cut verifies its version and required policy flags before every turn,
-uses a disposable cwd and sanitized environment, disables native CLI tools, and
-allows only the strict Cut MCP server. `agent:"codex"` and `agent:"grok"`
-return an actionable `result.error:"not_contained"` response rather than launch
-an uncontained provider. This limits the exposed CLI tool surface, but is not an
-operating-system sandbox; see [SECURITY.md](../../SECURITY.md).
+Headless editing supports installed Claude Code and Codex CLIs. Claude uses the
+pinned 2.1.224 contained contract: Cut verifies its version and policy flags,
+uses a disposable cwd and sanitized environment, and disables native CLI tools.
+Codex keeps the user's normal configuration, native sandbox, and permissions;
+Cut adds the live project's MCP server and does not copy or rewrite Codex login
+files. `agent:"grok"` returns an actionable `result.error:"not_available"`
+response until the next release. See [SECURITY.md](../../SECURITY.md).
 
 Every launched turn also returns a review contract:
 

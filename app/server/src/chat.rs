@@ -18,14 +18,10 @@
 //! spawn (with a timeout) lives in dispatch.rs `agent_chat`. Honest degradation:
 //! no CLI / an un-wired agent → `ok:false` with a clear reason, never a fake reply.
 //!
-//! The only enabled headless route is a pinned Claude Code capability contract:
-//! native built-in tools are absent from the provider's allowlisted registry,
-//! only Cut's strict MCP config remains, and `--setting-sources ""` plus
-//! `--disable-slash-commands` keep user/project/local settings and skills out
-//! while preserving subscription authentication. The process receives a
-//! disposable cwd plus a minimal environment. Codex needs
-//! danger-full-access for unattended MCP calls; Grok has no verified native-tool
-//! deny contract. Both remain detectable but are deliberately disabled here.
+//! Claude keeps its pinned contained capability contract. Codex is also wired,
+//! using the user's normal Codex config and native sandbox/permission policy;
+//! Cut only adds the live project's filtered MCP server. Grok remains visible
+//! but is deferred to the next release.
 
 #[path = "chat/broker.rs"]
 pub(crate) mod broker;
@@ -47,7 +43,7 @@ pub fn detect(agent: &str) -> bool {
     crate::gen::resolve_agent(agent).is_some()
 }
 
-/// Is the chat turn supported by an enforceable headless containment policy?
+/// Is the chat turn implemented for this provider?
 pub fn is_wired(agent: &str) -> bool {
     broker::supported_headless_agent(agent)
 }
@@ -88,28 +84,33 @@ pub fn mcp_config(cutd_exe: &str) -> serde_json::Value {
 pub struct ChatCommand {
     pub cmd: String,
     pub args: Vec<String>,
-    /// The contained Claude invocation receives the prompt on STDIN.
+    /// Claude and Codex receive the prompt on STDIN.
     pub via_stdin: bool,
-    /// Reserved for a future provider that has a verified containment contract.
+    /// Reserved for a future provider with a workspace-local config file.
     pub config_file: Option<(String, String)>,
 }
 
 /// Build the chat-CLI invocation for `agent`.
-/// Returns the fixed, contained Claude invocation. Codex/Grok return `None`
-/// until their upstream clients provide a tested equivalent policy.
+/// Returns the provider's local CLI invocation. Grok remains deferred.
 pub fn build_command(
     agent: &str,
     agent_path: &str,
     mcp_config_path: &str,
-    _cutd_exe: &str,
-    _proxy_addr: &str,
-    _proxy_actor: &str,
+    cutd_exe: &str,
+    proxy_addr: &str,
+    proxy_actor: &str,
     model: Option<&str>,
 ) -> Option<ChatCommand> {
     match agent {
         "claude" => Some(ChatCommand {
             cmd: agent_path.into(),
             args: broker::claude_args(mcp_config_path, model),
+            via_stdin: true,
+            config_file: None,
+        }),
+        "codex" => Some(ChatCommand {
+            cmd: agent_path.into(),
+            args: broker::codex_args(cutd_exe, proxy_addr, proxy_actor, model),
             via_stdin: true,
             config_file: None,
         }),
@@ -178,8 +179,8 @@ pub fn build_prompt(message: &str, attachments: &[String]) -> String {
     sections.join("\n")
 }
 
-/// Truthful headless status for each detected provider. Only the pinned Claude
-/// route is contained; unsupported providers are shown as disabled.
+/// Truthful launch posture for each detected provider. Claude is contained;
+/// Codex uses its native user-configured sandbox and permissions.
 pub fn security_posture(agent: &str) -> Option<&'static str> {
     broker::security_posture(agent)
 }
@@ -237,7 +238,7 @@ pub fn classify_failure(
             "blocked",
             format!(
                 "{agent} cancelled the Cut MCP tool call at its approval boundary, so no edit was \
-                 applied. Retry the contained Claude route after resolving the CLI prompt or login."
+                 applied. Resolve the CLI prompt or login, then retry the turn."
             ),
         );
     }
@@ -447,11 +448,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_contained_claude_is_wired() {
-        // Wiring is deterministic (PATH-independent). The other detected providers
-        // have no enforceable native-tool policy, so they are intentionally disabled.
+    fn claude_and_codex_are_wired() {
+        // Wiring is deterministic (PATH-independent). Grok remains deferred.
         assert!(is_wired("claude"));
-        assert!(!is_wired("codex"));
+        assert!(is_wired("codex"));
         assert!(!is_wired("grok"));
         assert!(!is_wired("nope"));
         // An explicit unknown agent never resolves, regardless of PATH.
@@ -562,8 +562,52 @@ mod tests {
     }
 
     #[test]
-    fn uncontained_provider_commands_are_disabled() {
-        for agent in ["codex", "grok", "dalle"] {
+    fn codex_command_uses_native_cli_policy_and_cut_mcp() {
+        let command = build_command(
+            "codex",
+            "/usr/local/bin/codex",
+            "/tmp/unused-mcp.json",
+            "C:\\Program Files\\ShellX Cut\\cutd.exe",
+            "127.0.0.1:6161",
+            "agent:chat-test:agent.chat",
+            Some("gpt-5.6-codex"),
+        )
+        .unwrap();
+        assert_eq!(command.cmd, "/usr/local/bin/codex");
+        assert!(command.via_stdin);
+        assert!(command.config_file.is_none());
+        assert!(command.args.starts_with(&[
+            "exec".into(),
+            "-".into(),
+            "--json".into(),
+            "--skip-git-repo-check".into(),
+            "--ephemeral".into(),
+        ]));
+        assert!(command
+            .args
+            .iter()
+            .any(|arg| arg.contains("mcp_servers.cutd.command=\"C:\\\\Program Files")));
+        assert!(command.args.iter().any(|arg| {
+            arg.contains("CUTD_PROXY_ADDR=\"127.0.0.1:6161\"")
+                && arg.contains("CUTD_PROXY_ACTOR=\"agent:chat-test:agent.chat\"")
+        }));
+        assert!(command
+            .args
+            .windows(2)
+            .any(|args| args == ["--model", "gpt-5.6-codex"]));
+        for forbidden in [
+            "danger-full-access",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "approval_policy=\"never\"",
+        ] {
+            assert!(!command.args.iter().any(|arg| arg == forbidden));
+        }
+    }
+
+    #[test]
+    fn deferred_provider_commands_are_disabled() {
+        for agent in ["grok", "dalle"] {
             assert!(build_command(
                 agent,
                 agent,
@@ -666,11 +710,11 @@ mod tests {
         );
         assert_eq!(
             security_posture("grok"),
-            Some("disabled: no enforceable containment")
+            Some("disabled: planned for the next release")
         );
         assert_eq!(
             security_posture("codex"),
-            Some("disabled: no enforceable containment")
+            Some("native CLI: uses your Codex settings and permissions")
         );
         // A non-chat agent (the antigravity judge rung, or anything unknown) has none.
         assert_eq!(security_posture("agy"), None);

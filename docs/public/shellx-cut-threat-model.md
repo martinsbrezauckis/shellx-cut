@@ -56,6 +56,7 @@ browser from another origin ─────> Origin/Host guard (rejected)
 | Default `127.0.0.1`/`::1` listener | Local process/account connects directly with no Origin or forged headers. | Accepted by design only inside the whole-machine trusted deployment. | On a shared or compromised machine it can operate the editor. |
 | `cutd mcp` stdio proxy | A configured local MCP client invokes generated tools. | Proxy reaches the same running engine; it adds no caller authentication. | It inherits the machine-wide API trust boundary. |
 | Claude `agent.chat` | Hostile prompt/attachment attempts native or unrelated Cut actions. | Pinned CLI, native-tool denial, and Cut capability filtering limit that provider route. | Not an OS sandbox and does not protect the unauthenticated REST/MCP surface. |
+| Codex `agent.chat` | A selected local Codex turn uses its configured native tools and integrations. | Cut adds only its filtered MCP surface and records every resulting Cut verb for review/revert. | Codex retains the user's native sandbox, permissions, rules, and configured tools; select it only when that local CLI is trusted. |
 | `SHELLX_CUT_ALLOW_NON_LOCAL=1` | LAN/public client connects or forges headers. | Default refuses this bind; the opt-in is unsupported as a Cut remote mode. | Cut adds no remote auth; direct exposure grants the full surface. |
 
 ## Abuse paths and mitigations
@@ -72,17 +73,18 @@ browser from another origin ─────> Origin/Host guard (rejected)
    the full surface. An independently authenticated SSH/VPN/broker/proxy may be
    a separate deployment, but Cut makes no assurance about it.
 4. Hostile project content tries to steer `agent.chat` through native tools or
-   broader Cut MCP verbs. The contained Claude route restricts both layers and
-   records review/revert material, but it is not host isolation and cannot turn
-   local TCP into authenticated per-user access.
+   broader Cut MCP verbs. The contained Claude route restricts both layers.
+   Codex intentionally keeps its normal user-configured native capabilities.
+   Both routes filter Cut's MCP verbs and record review/revert material, but
+   neither can turn local TCP into authenticated per-user access.
 
 ## Residual risk and operator guidance
 
 Do not use the default unauthenticated loopback mode on shared/multi-user
 machines, with untrusted local apps/services, in containers that share host
 networking, or with an exposed port. Keep the listener loopback-only. Treat
-Agent Chat's provider containment as distinct from machine trust, inspect its
-edits, and use its checkpoint/revert controls as recovery tools.
+Agent Chat's provider posture as distinct from machine trust, inspect its edits,
+and use its checkpoint/revert controls as recovery tools.
 
 For a future supported remote or multi-principal deployment, Cut must add a
 native, verified per-caller/per-user capability authentication mechanism and

@@ -1,12 +1,16 @@
-//! Contained Claude Code launch policy for `agent.chat`.
+//! Launch policies for the local subscription CLIs used by `agent.chat`.
 //!
-//! This is deliberately pinned to the locally verified Claude Code contract.
-//! A different upstream version is not assumed to preserve tool-denial
-//! semantics: it fails closed before a chat prompt is sent.
+//! Claude uses Cut's pinned, contained contract. Codex deliberately keeps its
+//! normal user configuration and native sandbox/permission policy; Cut adds its
+//! own MCP server without redefining the user's machine permissions.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
+
+#[path = "broker/codex.rs"]
+mod codex;
+pub(crate) use codex::args as codex_args;
 
 pub const SUPPORTED_CLAUDE_VERSION: &str = "2.1.224";
 
@@ -21,6 +25,14 @@ const REQUIRED_HELP_TOKENS: &[&str] = &[
     "--disallowedTools",
     "--permission-mode",
     "--no-session-persistence",
+    "--model",
+];
+
+const REQUIRED_CODEX_EXEC_HELP_TOKENS: &[&str] = &[
+    "--config",
+    "--json",
+    "--skip-git-repo-check",
+    "--ephemeral",
     "--model",
 ];
 
@@ -44,13 +56,14 @@ impl IsolatedWorkspace {
     }
 }
 
-/// The intentionally small environment inherited by a contained Claude turn.
+/// Environment policy for one local-agent launch.
 #[derive(Clone, Debug)]
-pub struct SanitizedEnvironment {
+pub struct LaunchEnvironment {
+    clear_inherited: bool,
     vars: Vec<(OsString, OsString)>,
 }
 
-impl SanitizedEnvironment {
+impl LaunchEnvironment {
     #[cfg(test)]
     pub fn names(&self) -> Vec<String> {
         self.vars
@@ -60,7 +73,9 @@ impl SanitizedEnvironment {
     }
 
     pub fn apply(&self, command: &mut tokio::process::Command) {
-        command.env_clear();
+        if self.clear_inherited {
+            command.env_clear();
+        }
         command.envs(self.vars.iter().cloned());
     }
 }
@@ -82,7 +97,7 @@ pub fn sanitized_environment_from<I>(
     inherited: I,
     proxy_addr: &str,
     proxy_actor: &str,
-) -> Result<SanitizedEnvironment, String>
+) -> Result<LaunchEnvironment, String>
 where
     I: IntoIterator<Item = (OsString, OsString)>,
 {
@@ -121,7 +136,8 @@ where
         OsString::from("SHELLX_CUT_AGENT_CONTAINED"),
         OsString::from("1"),
     );
-    Ok(SanitizedEnvironment {
+    Ok(LaunchEnvironment {
+        clear_inherited: true,
         vars: vars.into_iter().collect(),
     })
 }
@@ -129,25 +145,40 @@ where
 pub fn sanitized_environment(
     proxy_addr: &str,
     proxy_actor: &str,
-) -> Result<SanitizedEnvironment, String> {
+) -> Result<LaunchEnvironment, String> {
     sanitized_environment_from(std::env::vars_os(), proxy_addr, proxy_actor)
 }
 
-/// The only headless Agent Chat route that has an executable containment
-/// contract today. Codex needs danger-full-access for MCP calls and Grok has no
-/// verified native-tool deny mode, so neither is launched headlessly.
+/// Preserve the user's normal CLI environment and auth/config routing for
+/// Codex. Cut only adds the exact live-engine proxy values consumed by its MCP
+/// child; it does not copy, move, or rewrite the CLI's credential files.
+pub fn native_environment(proxy_addr: &str, proxy_actor: &str) -> LaunchEnvironment {
+    LaunchEnvironment {
+        clear_inherited: false,
+        vars: vec![
+            (
+                OsString::from("CUTD_PROXY_ADDR"),
+                OsString::from(proxy_addr),
+            ),
+            (
+                OsString::from("CUTD_PROXY_ACTOR"),
+                OsString::from(proxy_actor),
+            ),
+        ],
+    }
+}
+
+/// Providers with an implemented local Agent Chat route. This is a wiring
+/// statement, not a claim that every provider shares Claude's containment.
 pub fn supported_headless_agent(agent: &str) -> bool {
-    agent == "claude"
+    matches!(agent, "claude" | "codex")
 }
 
 pub fn unavailable_reason(agent: &str) -> Option<&'static str> {
     match agent {
-        "codex" => Some(
-            "Codex Agent Chat is disabled: its headless MCP route requires danger-full-access, so Cut cannot enforce native file, shell, or network denial. Use the pinned contained Claude route instead.",
-        ),
-        "grok" => Some(
-            "Grok Agent Chat is disabled: Cut has no verified upstream native-tool deny contract for its headless CLI. Use the pinned contained Claude route instead.",
-        ),
+        "grok" => {
+            Some("Grok Agent Chat is not enabled in this release. Use Claude or Codex instead.")
+        }
         _ => None,
     }
 }
@@ -155,7 +186,8 @@ pub fn unavailable_reason(agent: &str) -> Option<&'static str> {
 pub fn security_posture(agent: &str) -> Option<&'static str> {
     match agent {
         "claude" => Some("contained: pinned Claude Code 2.1.224"),
-        "codex" | "grok" => Some("disabled: no enforceable containment"),
+        "codex" => Some("native CLI: uses your Codex settings and permissions"),
+        "grok" => Some("disabled: planned for the next release"),
         _ => None,
     }
 }
@@ -214,15 +246,40 @@ pub fn verify_claude_capability_contract(version: &str, help: &str) -> Result<()
     Ok(())
 }
 
+pub fn verify_codex_capability_contract(version: &str, exec_help: &str) -> Result<(), String> {
+    if !version.to_ascii_lowercase().contains("codex") {
+        return Err(format!(
+            "the resolved Codex executable returned an unexpected version string: {:?}",
+            version.trim()
+        ));
+    }
+    let missing: Vec<&str> = REQUIRED_CODEX_EXEC_HELP_TOKENS
+        .iter()
+        .copied()
+        .filter(|token| !exec_help.contains(token))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "the installed Codex CLI does not advertise required Agent Chat flags: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 async fn probe(
+    agent: &str,
     executable: &Path,
-    argument: &str,
-    environment: &SanitizedEnvironment,
+    arguments: &[&str],
+    environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<String, String> {
-    let args = vec![argument.to_string()];
+    let args = arguments
+        .iter()
+        .map(|argument| (*argument).to_string())
+        .collect::<Vec<_>>();
     let mut command = crate::gen::agent_tokio_command(executable, &args)
-        .map_err(|error| format!("cannot probe Claude CLI safely: {error}"))?;
+        .map_err(|error| format!("cannot probe {agent} CLI: {error}"))?;
     environment.apply(&mut command);
     command.current_dir(workspace);
     let output = crate::jobs::run_owned(
@@ -233,13 +290,17 @@ async fn probe(
     .await
     .map_err(|error| match error.termination() {
         Some(crate::jobs::ProcessTermination::DeadlineExceeded) => {
-            format!("Claude capability probe {argument} timed out")
+            format!("{agent} capability probe {} timed out", arguments.join(" "))
         }
-        _ => format!("Claude capability probe {argument} failed: {error}"),
+        _ => format!(
+            "{agent} capability probe {} failed: {error}",
+            arguments.join(" ")
+        ),
     })?;
     if !output.status.success() {
         return Err(format!(
-            "Claude capability probe {argument} exited {}",
+            "{agent} capability probe {} exited {}",
+            arguments.join(" "),
             output.status.code().unwrap_or(-1)
         ));
     }
@@ -248,12 +309,37 @@ async fn probe(
 
 pub async fn verify_installed_claude(
     executable: &Path,
-    environment: &SanitizedEnvironment,
+    environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<(), String> {
-    let version = probe(executable, "--version", environment, workspace).await?;
-    let help = probe(executable, "--help", environment, workspace).await?;
+    let version = probe("Claude", executable, &["--version"], environment, workspace).await?;
+    let help = probe("Claude", executable, &["--help"], environment, workspace).await?;
     verify_claude_capability_contract(&version, &help)
+}
+
+pub async fn verify_installed_agent(
+    agent: &str,
+    executable: &Path,
+    environment: &LaunchEnvironment,
+    workspace: &Path,
+) -> Result<(), String> {
+    match agent {
+        "claude" => verify_installed_claude(executable, environment, workspace).await,
+        "codex" => {
+            let version =
+                probe("Codex", executable, &["--version"], environment, workspace).await?;
+            let help = probe(
+                "Codex",
+                executable,
+                &["exec", "--help"],
+                environment,
+                workspace,
+            )
+            .await?;
+            verify_codex_capability_contract(&version, &help)
+        }
+        _ => Err(format!("agent '{agent}' has no Agent Chat launch contract")),
+    }
 }
 
 #[cfg(test)]

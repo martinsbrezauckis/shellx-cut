@@ -28,15 +28,12 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   added as a NEW audio track; reuses `transcript.translate` + the OmniVoice TTS
 >   service). `transcript.translate` / `captions.translate` are TEXT-only
 >   translation (CLI-primary, local Opus-MT/MADLAD fallback — no dubbing).
-> - **Agent chat (natural-language editing)** — `agent.chat` launches only the
->   pinned Claude Code `2.1.224` contract. The CLI runs in a disposable cwd and
->   sanitized environment with native tools disabled; only cutd's strict MCP
->   server can apply verbs to the SAME live project (no model hosted; subscription
->   auth, not a metered key). Cut verifies the CLI flags/version for every turn
->   and fails closed on drift. Codex and Grok remain detectable but are disabled
->   for unattended Agent Chat because their current headless contracts cannot
->   enforce equivalent native-tool denial. Every applied verb is a normal
->   reversible op.
+> - **Agent chat (natural-language editing)** — `agent.chat` launches the user's
+>   installed Claude Code or Codex CLI. Claude uses Cut's pinned `2.1.224`
+>   contained contract. Codex keeps the user's normal configuration, native
+>   sandbox, and permissions; Cut adds its filtered MCP server without copying or
+>   rewriting Codex login files. Grok is planned for the next release. Every Cut
+>   verb applied by either route is a normal reversible op.
 >   `attachments` can carry up to eight registered project asset IDs as references;
 >   the server validates them against the open project and exposes no arbitrary
 >   source-path input. Each launched turn returns `plan` plus a `review` artifact
