@@ -5,7 +5,9 @@
 //! an actionable detail. Honest about what is COMPILED (feature/cfg gated) vs what
 //! is merely present at runtime. The UI/agent uses this to drive install/permission.
 
-use crate::{doctor_portal::LINUX_PORTAL_BACKEND_DETAIL, doctor_probe, doctor_process};
+use crate::{
+    doctor_portal::LINUX_PORTAL_BACKEND_DETAIL, doctor_probe, doctor_process, doctor_system_audio,
+};
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 
@@ -208,6 +210,7 @@ fn doctor_with_screen_card(screen_card: Card) -> Vec<Card> {
     }
 
     cards.push(screen_card);
+    cards.push(doctor_system_audio::card());
 
     let (in_status, in_detail) = input_backend();
     cards.push(Card::new("input_hook", "capture", in_status, in_detail));
@@ -289,6 +292,7 @@ mod tests {
         let ids: Vec<&str> = cards.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"ffmpeg"));
         assert!(ids.contains(&"screen_capture"));
+        assert!(ids.contains(&"system_audio"));
         assert!(ids.contains(&"input_hook"));
         assert!(ids.contains(&"webcam"));
         let webcam = cards.iter().find(|card| card.id == "webcam").unwrap();

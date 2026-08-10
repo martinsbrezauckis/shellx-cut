@@ -14,6 +14,7 @@ import type {
   ProjectHealthResult,
 } from '../../lib/clientResults'
 import type { CaptureRecoveryInventory } from './captureRecoveryModel'
+import { editingCacheRow } from './cacheHealthModel'
 
 export type HealthState = 'healthy' | 'attention' | 'recoverable' | 'active-recovery' | 'unrecoverable' | 'unsupported' | 'checking'
 export type HealthAction = 'assets' | 'recording' | 'toolchain' | null
@@ -24,7 +25,7 @@ export interface RecorderDoctor {
 }
 
 export interface HealthRow {
-  id: 'journal' | 'media' | 'jobs' | 'capture' | 'toolchain'
+  id: 'journal' | 'media' | 'cache' | 'jobs' | 'capture' | 'toolchain'
   label: string
   state: HealthState
   summary: string
@@ -81,6 +82,7 @@ export function mergeProjectHealthPage(
   for (const asset of next.media.assets) assets.set(asset.asset, asset)
   return {
     ...next,
+    editing_cache: next.editing_cache ?? previous.editing_cache,
     complete: !next.media.has_more,
     media: {
       ...next.media,
@@ -126,13 +128,41 @@ function labelledReasons(jobs: JobRecord[]): string {
   return [...reasons].map((reason) => reason!.replaceAll('_', ' ')).join(', ')
 }
 
+/** Plain replay-cost summary from already-verified project.health facts. */
+export function journalReplaySummary(health: AggregatedProjectHealth): string {
+  const records = health.journal.log_records ?? 0
+  const cache = health.journal.cache === 'rebuilt'
+    ? 'The project cache was rebuilt from durable history.'
+    : 'The project cache matches durable history.'
+  const snapshot = health.journal.snapshot
+  if (snapshot.status === 'verified') {
+    const covered = Math.min(records, Math.max(0, snapshot.prefix_ops ?? 0))
+    const replay = Math.max(0, records - covered)
+    return `${cache} A verified snapshot covers ${covered} record${plural(covered)}; ${replay} newer record${plural(replay)} will replay on reopen.`
+  }
+  if (snapshot.status === 'rejected') {
+    return `${cache} The prior snapshot was rejected, so all ${records} durable record${plural(records)} will replay on reopen.`
+  }
+  return `${cache} No replay snapshot is stored, so all ${records} durable record${plural(records)} will replay on reopen.`
+}
+
 function journalRow(projectHealth: AggregatedProjectHealth | null, hasProject: boolean, scanFailed: boolean): HealthRow {
   if (!hasProject) return unsupported('journal', 'Edit journal', 'Open a project to inspect its durable journal.')
   if (scanFailed) return attention('journal', 'Edit journal', 'The health check did not complete. Check again; close and reopen the project if its journal changed.')
   if (!projectHealth) return checking('journal', 'Edit journal', 'Checking journal identity and recovery evidence…')
   const { journal } = projectHealth
-  if (journal.status === 'verified') return healthy('journal', 'Edit journal', `${journal.log_records ?? 0} durable records verified.`)
-  if (journal.status === 'recovered') return recoverable('journal', 'Edit journal', 'Recovery evidence was recorded; review the notice before continuing.', journal.notices.map((notice) => notice.message).join(' '))
+  const replay = journalReplaySummary(projectHealth)
+  if (journal.status === 'verified') {
+    return {
+      id: 'journal',
+      label: 'Edit journal',
+      state: 'healthy',
+      summary: `${journal.log_records ?? 0} durable records verified.`,
+      detail: replay,
+      action: null,
+    }
+  }
+  if (journal.status === 'recovered') return recoverable('journal', 'Edit journal', 'Recovery evidence was recorded; review the notice before continuing.', `${journal.notices.map((notice) => notice.message).join(' ')} ${replay}`.trim())
   return attention('journal', 'Edit journal', 'Journal identity is not current. Close and reopen the project before relying on it.', journal.notices.map((notice) => notice.message).join(' '))
 }
 
@@ -210,12 +240,19 @@ function captureRow(input: {
       'recording',
     )
   }
-  return healthy(
-    'capture',
-    'Capture',
-    `${input.recovery.captures.length} complete capture recovery record${plural(input.recovery.captures.length)} reported in this check.`,
-    'recording',
-  )
+  const audioPacketReceipts = input.recovery.captures.filter(
+    (capture) => capture.receipt?.audio_first_packet_offset_ms != null,
+  ).length
+  return {
+    id: 'capture',
+    label: 'Capture',
+    state: 'healthy',
+    summary: `${input.recovery.captures.length} complete capture recovery record${plural(input.recovery.captures.length)} reported in this check.`,
+    detail: audioPacketReceipts > 0
+      ? `System audio timing was recorded for ${audioPacketReceipts} capture${plural(audioPacketReceipts)} in this project.`
+      : undefined,
+    action: 'recording',
+  }
 }
 
 function toolchainRow(report: DoctorReport | null, scanFailed: boolean): HealthRow {
@@ -244,6 +281,7 @@ export function healthRecoveryRows(input: {
   return [
     journalRow(input.projectHealth, input.hasProject, input.projectHealthScanFailed === true),
     mediaRow(input.projectHealth, input.hasProject, input.projectHealthScanFailed === true),
+    editingCacheRow(input.projectHealth?.editing_cache, input.hasProject, input.projectHealthScanFailed === true),
     jobsRow(input.jobs, input.jobsScanFailed === true),
     captureRow({
       hasProject: input.hasProject,

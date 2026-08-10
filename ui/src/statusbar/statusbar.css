@@ -39,6 +39,11 @@
   color: var(--err);
   background: color-mix(in srgb, var(--err) 12%, transparent);
 }
+.sb-job-cancel:disabled {
+  cursor: wait;
+  color: var(--ink-4);
+  opacity: .55;
+}
 
 .sb-spacer { flex: 1; }
 

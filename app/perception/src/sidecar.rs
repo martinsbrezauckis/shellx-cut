@@ -20,7 +20,8 @@ use std::time::Duration;
 mod owned;
 pub use owned::{
     build_contact_sheet_owned, build_qc_sheet_owned, run_instruments_owned,
-    run_instruments_owned_progress, run_subject_owned, transcribe_owned_progress,
+    run_instruments_owned_ephemeral, run_instruments_owned_progress, run_subject_owned,
+    transcribe_owned_progress,
 };
 
 /// Progress sink the sidecar drives from the python child's stderr `PROGRESS`
@@ -502,6 +503,7 @@ pub fn run_instruments(
         model,
         None,
         None,
+        true,
     )
 }
 
@@ -527,6 +529,7 @@ pub fn run_instruments_progress(
         model,
         progress,
         None,
+        true,
     )
 }
 
@@ -539,16 +542,19 @@ fn run_instruments_with_owner(
     model: Option<&str>,
     progress: Option<Arc<SidecarProgress>>,
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
+    persist: bool,
 ) -> Result<PerceptionReport, CutError> {
     // ---- cache check -----------------------------------------------------
-    if let Some(cached) = load_report(receipts_dir, asset_id)? {
-        let covers = set
-            .names()
-            .iter()
-            .all(|n| cached.instruments_run.iter().any(|r| r == n));
-        if cached.asset_hash == asset_hash && covers {
-            tracing::debug!(asset_id, "perception cache hit");
-            return Ok(cached);
+    if persist {
+        if let Some(cached) = load_report(receipts_dir, asset_id)? {
+            let covers = set
+                .names()
+                .iter()
+                .all(|n| cached.instruments_run.iter().any(|r| r == n));
+            if cached.asset_hash == asset_hash && covers {
+                tracing::debug!(asset_id, "perception cache hit");
+                return Ok(cached);
+            }
         }
     }
 
@@ -594,13 +600,15 @@ fn run_instruments_with_owner(
     // recreate it here: project.delete may remove the project while a sidecar
     // is still finishing, and a late create_dir_all would resurrect a deleted
     // .cutproj with only stale analysis files inside it.
-    require_live_receipts_dir(receipts_dir)?;
-    let path = receipts_dir.join(format!("{asset_id}.perception.json"));
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&report).map_err(CutError::from)?,
-    )?;
-    tracing::info!(asset_id, path = %path.display(), "perception report written");
+    if persist {
+        require_live_receipts_dir(receipts_dir)?;
+        let path = receipts_dir.join(format!("{asset_id}.perception.json"));
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).map_err(CutError::from)?,
+        )?;
+        tracing::info!(asset_id, path = %path.display(), "perception report written");
+    }
     Ok(report)
 }
 

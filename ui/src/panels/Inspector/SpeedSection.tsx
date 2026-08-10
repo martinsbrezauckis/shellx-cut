@@ -3,6 +3,8 @@ import { callVerb, type VerbResult } from '../../lib/client'
 import InspectorSection from '../../components/inspector/InspectorSection'
 import PropertyRow from '../../components/inspector/PropertyRow'
 import { SPEED_FACTOR_MAX, SPEED_FACTOR_MIN, SPEED_FACTOR_STEP } from '../Timeline/speedFactor'
+import SpeedRampCurveEditor from './SpeedRampCurveEditor'
+import type { InspectorSpeedRamp } from './model'
 
 /** edit.speed_ramp PRESET curves (variable-speed "speed ramp"). Each builds a
  *  piecewise-linear speed curve over the clip's SOURCE window [0, D] (D = source
@@ -38,7 +40,7 @@ export interface SpeedSectionProps {
   speed: number
   reverse: boolean
   frozen: boolean
-  speedRampApplied: boolean
+  speedRamp: InspectorSpeedRamp | null | undefined
   srcDurMs: number
 }
 
@@ -51,10 +53,12 @@ export default function SpeedSection({
   speed,
   reverse,
   frozen,
-  speedRampApplied,
+  speedRamp,
   srcDurMs,
 }: SpeedSectionProps) {
   const [rampPreset, setRampPreset] = useState<RampPreset>('slow_fast_slow')
+  const [customOpen, setCustomOpen] = useState(false)
+  const speedRampApplied = Boolean(speedRamp)
   const rampBlocked = speed !== 1 || reverse || frozen
   const rampTooShort = srcDurMs < RAMP_MIN_DUR_MS
   const applyRamp = () => {
@@ -78,13 +82,19 @@ export default function SpeedSection({
       defaultCollapsed
       summary={activeTiming.length > 0 ? activeTiming.join(' · ') : '1× · forward'}
       summaryTone={activeTiming.length > 0 ? 'active' : 'neutral'}
-      bypassed={speed === 1 && !reverse && !frozen}
+      bypassed={speed === 1 && !reverse && !frozen && !speedRampApplied}
       onToggleBypass={() => {
         applyVisual(callVerb('edit.speed', { clip: clipId, factor: 1, rationale: 'inspector: clear speed' }))
         if (reverse) applyVisual(callVerb('edit.reverse', { clip: clipId, enabled: false, rationale: 'inspector: clear reverse' }))
         if (frozen) applyVisual(callVerb('edit.freeze', { clip: clipId, enabled: false, rationale: 'inspector: clear freeze' }))
+        if (speedRampApplied) clearRamp()
       }}
-      onReset={() => applyVisual(callVerb('edit.speed', { clip: clipId, factor: 1, rationale: 'inspector: reset speed' }))}
+      onReset={() => {
+        applyVisual(callVerb('edit.speed', { clip: clipId, factor: 1, rationale: 'inspector: reset speed' }))
+        if (reverse) applyVisual(callVerb('edit.reverse', { clip: clipId, enabled: false, rationale: 'inspector: reset reverse' }))
+        if (frozen) applyVisual(callVerb('edit.freeze', { clip: clipId, enabled: false, rationale: 'inspector: reset freeze' }))
+        if (speedRampApplied) clearRamp()
+      }}
     >
       <PropertyRow
         label="Speed" propKey="speed" unit="×"
@@ -121,30 +131,53 @@ export default function SpeedSection({
       ) : rampTooShort ? (
         <p className="insp__hint" data-cut-speed-ramp-blocked>Clip is too short to ramp.</p>
       ) : (
-        <div className="insp__row" data-cut-speed-ramp>
-          <select
-            className="insp__select"
-            data-cut-speed-ramp-preset
-            value={rampPreset}
-            title="Variable-speed curve to apply over this clip"
-            onChange={(e) => setRampPreset(rampPresetFromInput(e.target.value, rampPreset))}
-          >
-            {RAMP_PRESETS.map(({ key, label }) => (<option key={key} value={key}>{label}</option>))}
-          </select>
+        <div className="insp__group" data-cut-speed-ramp>
+          <div className="insp__row">
+            <select
+              className="insp__select"
+              data-cut-speed-ramp-preset
+              value={rampPreset}
+              title="Variable-speed curve to apply over this clip"
+              onChange={(e) => setRampPreset(rampPresetFromInput(e.target.value, rampPreset))}
+            >
+              {RAMP_PRESETS.map(({ key, label }) => (<option key={key} value={key}>{label}</option>))}
+            </select>
+            <button
+              type="button"
+              className="insp__btn"
+              data-cut-action="speed-ramp"
+              title="Apply a variable-speed curve so the clip speeds up and slows down over its length"
+              onClick={applyRamp}
+            >Apply ramp</button>
+            <button
+              type="button"
+              className="insp__btn"
+              data-cut-action="speed-ramp-clear"
+              disabled={!speedRampApplied}
+              title="Remove the speed ramp (back to constant speed)"
+              onClick={clearRamp}
+            >Clear</button>
+          </div>
           <button
             type="button"
-            className="insp__btn"
-            data-cut-action="speed-ramp"
-            title="Apply a variable-speed curve so the clip speeds up and slows down over its length"
-            onClick={applyRamp}
-          >Apply ramp</button>
-          <button
-            type="button"
-            className="insp__btn"
-            data-cut-action="speed-ramp-clear"
-            title="Remove the speed ramp (back to constant speed)"
-            onClick={clearRamp}
-          >Clear</button>
+            className="insp__btn speed-ramp-editor__toggle"
+            data-cut-action="speed-ramp-custom"
+            aria-expanded={customOpen}
+            onClick={() => setCustomOpen((open) => !open)}
+          >{customOpen ? 'Hide custom curve' : 'Custom curve…'}</button>
+          {customOpen ? (
+            <SpeedRampCurveEditor
+              key={`${clipId}:${JSON.stringify(speedRamp ?? null)}`}
+              srcDurMs={srcDurMs}
+              stored={speedRamp}
+              onApply={(points, segments) => applyVisual(callVerb('edit.speed_ramp', {
+                clip: clipId,
+                points,
+                segments,
+                rationale: 'inspector: custom speed ramp',
+              }))}
+            />
+          ) : null}
         </div>
       )}
     </InspectorSection>

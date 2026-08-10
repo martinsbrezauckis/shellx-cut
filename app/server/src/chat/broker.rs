@@ -8,10 +8,25 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
 
+#[path = "broker/antigravity.rs"]
+mod antigravity;
+pub(crate) use antigravity::{
+    args as antigravity_args, project_config as antigravity_project_config,
+    supported_on_this_platform as antigravity_supported_on_this_platform,
+    verify_capability_contract as verify_antigravity_capability_contract,
+};
 #[path = "broker/codex.rs"]
 mod codex;
 pub(crate) use codex::args as codex_args;
-
+#[path = "broker/grok.rs"]
+mod grok;
+pub(crate) use grok::{
+    args as grok_args, isolated_environment as isolated_grok_environment,
+    project_config as grok_project_config,
+    verify_capability_contract as verify_grok_capability_contract,
+};
+#[path = "broker/verify.rs"]
+mod verify;
 pub const SUPPORTED_CLAUDE_VERSION: &str = "2.1.224";
 
 const REQUIRED_HELP_TOKENS: &[&str] = &[
@@ -168,26 +183,21 @@ pub fn native_environment(proxy_addr: &str, proxy_actor: &str) -> LaunchEnvironm
     }
 }
 
-/// Providers with an implemented local Agent Chat route. This is a wiring
-/// statement, not a claim that every provider shares Claude's containment.
+/// Providers with an implemented local Agent Chat route.
 pub fn supported_headless_agent(agent: &str) -> bool {
-    matches!(agent, "claude" | "codex")
-}
-
-pub fn unavailable_reason(agent: &str) -> Option<&'static str> {
-    match agent {
-        "grok" => {
-            Some("Grok Agent Chat is not enabled in this release. Use Claude or Codex instead.")
-        }
-        _ => None,
-    }
+    matches!(agent, "claude" | "codex" | "grok")
+        || (agent == "antigravity" && antigravity_supported_on_this_platform())
 }
 
 pub fn security_posture(agent: &str) -> Option<&'static str> {
     match agent {
         "claude" => Some("contained: pinned Claude Code 2.1.224"),
         "codex" => Some("native CLI: uses your Codex settings and permissions"),
-        "grok" => Some("disabled: planned for the next release"),
+        "grok" => Some("isolated turn: only Cut MCP, existing Grok login"),
+        "antigravity" if antigravity_supported_on_this_platform() => {
+            Some("native CLI: uses your Antigravity sandbox and permissions")
+        }
+        "antigravity" => Some("disabled: Antigravity sandbox unavailable on Windows"),
         _ => None,
     }
 }
@@ -267,79 +277,13 @@ pub fn verify_codex_capability_contract(version: &str, exec_help: &str) -> Resul
     Ok(())
 }
 
-async fn probe(
-    agent: &str,
-    executable: &Path,
-    arguments: &[&str],
-    environment: &LaunchEnvironment,
-    workspace: &Path,
-) -> Result<String, String> {
-    let args = arguments
-        .iter()
-        .map(|argument| (*argument).to_string())
-        .collect::<Vec<_>>();
-    let mut command = crate::gen::agent_tokio_command(executable, &args)
-        .map_err(|error| format!("cannot probe {agent} CLI: {error}"))?;
-    environment.apply(&mut command);
-    command.current_dir(workspace);
-    let output = crate::jobs::run_owned(
-        &mut command,
-        None,
-        &crate::jobs::ProcessControl::for_operation(std::time::Duration::from_secs(10)),
-    )
-    .await
-    .map_err(|error| match error.termination() {
-        Some(crate::jobs::ProcessTermination::DeadlineExceeded) => {
-            format!("{agent} capability probe {} timed out", arguments.join(" "))
-        }
-        _ => format!(
-            "{agent} capability probe {} failed: {error}",
-            arguments.join(" ")
-        ),
-    })?;
-    if !output.status.success() {
-        return Err(format!(
-            "{agent} capability probe {} exited {}",
-            arguments.join(" "),
-            output.status.code().unwrap_or(-1)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-pub async fn verify_installed_claude(
-    executable: &Path,
-    environment: &LaunchEnvironment,
-    workspace: &Path,
-) -> Result<(), String> {
-    let version = probe("Claude", executable, &["--version"], environment, workspace).await?;
-    let help = probe("Claude", executable, &["--help"], environment, workspace).await?;
-    verify_claude_capability_contract(&version, &help)
-}
-
 pub async fn verify_installed_agent(
     agent: &str,
     executable: &Path,
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<(), String> {
-    match agent {
-        "claude" => verify_installed_claude(executable, environment, workspace).await,
-        "codex" => {
-            let version =
-                probe("Codex", executable, &["--version"], environment, workspace).await?;
-            let help = probe(
-                "Codex",
-                executable,
-                &["exec", "--help"],
-                environment,
-                workspace,
-            )
-            .await?;
-            verify_codex_capability_contract(&version, &help)
-        }
-        _ => Err(format!("agent '{agent}' has no Agent Chat launch contract")),
-    }
+    verify::installed_agent(agent, executable, environment, workspace).await
 }
 
 #[cfg(test)]

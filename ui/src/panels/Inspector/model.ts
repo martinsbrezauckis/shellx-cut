@@ -97,13 +97,19 @@ export interface ShapeSelectionClip {
   shape_color?: string
 }
 
+export interface InspectorSpeedRamp {
+  points?: Array<{ at_ms: number; factor: number }>
+  segments?: number
+  preferred_segments?: number | null
+}
+
 /** Inspector-only projection of render state already returned by project.state.
  * Keep these optional additions outside the shared legacy client-model backlog. */
 export type InspectorMediaClip = Extract<Clip, { asset: string }> & {
   matte?: Record<string, unknown> | null
   mask?: Record<string, unknown> | null
   stabilize?: Record<string, unknown> | null
-  speed_ramp?: Record<string, unknown> | null
+  speed_ramp?: InspectorSpeedRamp | null
 }
 export interface InspectorMediaSelection {
   clip: InspectorMediaClip

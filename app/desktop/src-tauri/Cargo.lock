@@ -3270,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "shellx-cut"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "base64 0.22.1",
  "minisign-verify",

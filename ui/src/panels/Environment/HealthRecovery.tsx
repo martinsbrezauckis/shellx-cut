@@ -81,6 +81,7 @@ export default function HealthRecovery({
   const [toolchain, setToolchain] = useState<DoctorReport | null>(null)
   const [toolchainScanFailed, setToolchainScanFailed] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [settledRequest, setSettledRequest] = useState(0)
   const request = useRef(0)
   // Environment receives an App callback whose identity can change as a
   // project delta arrives. Keep the latest action without turning ordinary
@@ -149,7 +150,10 @@ export default function HealthRecovery({
     } else if (recoveryRead.ok && recoveryRead.value) {
       setCaptureRecovery(recoveryRead.value)
     }
-    if (id === request.current) setRefreshing(false)
+    if (id === request.current) {
+      setSettledRequest(id)
+      setRefreshing(false)
+    }
   }, [hasProject])
 
   // `projectSession` increments only at a confirmed project switch/close. Do
@@ -192,7 +196,14 @@ export default function HealthRecovery({
         </button>
         <span data-cut-health-scope>{hasProject ? 'Project checks are read in this check; journal and media pages are revision-bound.' : 'Open a project for journal, media, and capture checks.'}</span>
       </div>
-      <div className="settings-health-list" data-cut-health-list>
+      <div
+        className="settings-health-list"
+        data-cut-health-list
+        data-cut-health-refresh-id={settledRequest}
+        data-cut-health-settled={refreshing ? 'false' : 'true'}
+        data-cut-health-capture-complete={hasProject ? String(captureRecovery?.complete === true) : 'not-applicable'}
+        data-cut-health-capture-count={captureRecovery?.captures.length ?? 0}
+      >
         {rows.map((row) => {
           const label = actionLabel(row.action)
           return (

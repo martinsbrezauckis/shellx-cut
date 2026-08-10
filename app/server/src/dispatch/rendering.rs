@@ -3129,9 +3129,18 @@ pub(super) async fn render_queue(
                     results.push(json!({"idx": idx, "ok": false, "error": rr.error}));
                     continue;
                 };
+                st.jobs.set_waiting_on(
+                    &jid,
+                    Some(crate::jobs::JobDependencyInfo {
+                        job_id: render_job.clone(),
+                        kind: "render".into(),
+                    }),
+                );
                 // Poll this render to a terminal state — the NEXT delivery starts only
                 // after this returns (the sequential guarantee). 30-min cap per entry.
-                match poll_sub_job(&st, &render_job, 1_800_000).await {
+                let child_result = poll_sub_job(&st, &render_job, 1_800_000).await;
+                st.jobs.set_waiting_on(&jid, None);
+                match child_result {
                     Ok(jr) => {
                         let res = jr.result.clone().unwrap_or(Value::Null);
                         let output = res.get("path").cloned().unwrap_or(Value::Null);

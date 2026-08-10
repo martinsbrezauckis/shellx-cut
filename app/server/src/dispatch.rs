@@ -437,6 +437,7 @@ async fn dispatch_validated(
         DispatchTarget::RenderDirect => render_direct(state, args, actor).await.into(),
         DispatchTarget::RenderQc => render_qc(state, args, actor).await.into(),
         DispatchTarget::VerifyChecks => verify_checks(state, args).await.into(),
+        DispatchTarget::VerifyRerun => verify_rerun(state, args).await.into(),
         DispatchTarget::VerifyPacing => verify_pacing(state).await.into(),
         DispatchTarget::VerifyCaptions => verify_captions(state, args).await.into(),
         DispatchTarget::VerifyDelivery => verify_delivery(state, args).await.into(),
@@ -583,6 +584,11 @@ async fn dispatch_validated(
         DispatchTarget::ScreenRecordDoctor => crate::screen_record::screen_record_doctor(args)
             .await
             .into(),
+        DispatchTarget::ScreenRecordSystemAudioProbe => {
+            crate::screen_record::system_audio_capture::probe_handler(args)
+                .await
+                .into()
+        }
         DispatchTarget::ScreenRecordStart => crate::screen_record::screen_record_start(state, args)
             .await
             .into(),
@@ -713,7 +719,7 @@ where
 
 /// Read the deprecated `{include_inverse:true}` compatibility option.
 ///
-/// v0.6.107 continues to validate this public REST/CLI/MCP argument so old
+/// v0.6.108 continues to validate this public REST/CLI/MCP argument so old
 /// callers do not break, but fresh records use recompute-by-replay and have no
 /// inverse payload to return. It can only affect serialization of an already
 /// historic snapshot-era record supplied to `op_for_result`.
@@ -1285,7 +1291,7 @@ mod verify_handlers;
 use verify_handlers::attach_judge_to_receipt;
 use verify_handlers::{
     resolve_receipt_path, verify_brand, verify_captions, verify_checks, verify_delivery,
-    verify_judge, verify_loudness, verify_pacing, verify_pregate, verify_scopes,
+    verify_judge, verify_loudness, verify_pacing, verify_pregate, verify_rerun, verify_scopes,
 };
 
 pub(crate) fn configured_judge_adapter() -> Option<PathBuf> {

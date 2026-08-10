@@ -53,7 +53,7 @@ authentication boundary:
 - Shared/multi-user machines, untrusted local apps/services, containers sharing
   host networking, and exposed ports are outside the supported default. Native
   per-caller/per-user capability authentication is future hardening; it is not
-  in v0.6.107. Under this documented deployment assumption, its absence is
+  in v0.6.108. Under this documented deployment assumption, its absence is
   **NOT A DEFECT**.
 
 `cutd mcp` is a stdio transport that proxies the running server; it has no
@@ -109,8 +109,20 @@ When the journal is current, the first page returns the opaque
 previous `next_cursor`. Each response checks at most 128 registered assets in
 stable asset-id order and contains only path-free source/proxy/filmstrip state
 and page counts. A client must aggregate every revision-bound page before
-claiming a whole-project healthy result. The verb never repairs, relinks,
-deletes, promotes, or follows an unregistered derived path. Job-record
+claiming a whole-project healthy result. The first page also includes a bounded,
+path-free `editing_cache` inventory for only rebuildable `proxies/` and
+`filmstrip/` thumbnail files. It reports apparent bytes, file counts, recognized
+outputs no longer referenced by current asset metadata, and the latest
+cache-file change time; it does not mean "last used." Only the product's flat
+proxy/base-strip/window-strip filename forms are counted. Symlinks and
+unexpected directories are never followed, foreign files make the scan partial,
+and exports, captures, receipts, and source media are excluded. Reclaimable
+counts are informational only. A nested `cleanup_preview` separates files that
+have not changed for at least 24 hours from newer unreferenced files, and blocks
+when the bounded scan is partial. File-change age is not last-use evidence and
+does not prove that a producer is inactive; a future cleanup must revalidate the
+same project revision and active jobs. This verb never repairs, relinks, deletes,
+promotes, purges cache files, or follows an unregistered derived path. Job-record
 persistence notices remain on `jobs.list`; capture-recovery inventory is
 separately exposed by `screen_record.recovery_status`. Settings → Health &
 Recovery reads that inventory independently of `screen_record.doctor`, using
@@ -124,7 +136,7 @@ repair action.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 262 schemas once at startup and applies the selected schema at the shared
+all 264 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -220,6 +232,16 @@ caller to wait and retry. A project switch uses the same fail-closed boundary:
 the next project is not attached while an old worker is alive. File-writing
 verbs are fenced to the project/export directories (schema the output-fencing contract).
 `JobRecord.state` remains compatible (`queued`, `running`, `done`, `failed`).
+Active records also retain the latest optional human-readable `message` reported
+by the worker, so `jobs.status`/`jobs.list` can restore a current phase after a
+reload without waiting for another event. Older queued or persisted records may
+omit it. A limited queued job also carries
+`queue:{resource,max_running}` while it waits for shared local capacity. A job
+orchestrating another active job may also carry `waiting_on:{job_id,kind}` only
+for the child it currently awaits; this is relationship evidence, not a retry
+promise. `queue` clears when its slot is acquired, `waiting_on` clears when the
+child returns, and both clear when the owning job becomes terminal. Clients can
+explain a wait without guessing from a zero progress value.
 New terminal records also report `outcome` and `outcome_reason`: a user cancel,
 project-switch cancel, restart interruption, supersession, and true failure
 stay distinct even though non-success outcomes retain `state:"failed"` for
@@ -417,6 +439,28 @@ Recording permission and `system_audio:true` uses the separate Audio Capture
 permission declared by the app bundle. The first request can show either system
 prompt; restart Cut after granting it, then retry the capture. A successful
 `screen_record.stop` reports `system.wav` through `raw_streams.system`.
+Doctor exposes that optional audio path as a separate `system_audio` card. It
+stays `unknown` for a compiled backend because Doctor never starts a live
+loopback/tap stream; on macOS this also guarantees Doctor cannot trigger the
+Audio Capture prompt. The optional card does not change `ready` or
+`start_allowed` for an ordinary screen-only recording. Packet delivery is
+proved only by a user-started recording and its finalized timing/artifact.
+For a short, explicit delivery check instead of a full recording, use
+`screen_record.system_audio_probe{max_ms?}` or the **Test system audio** button in
+Record. The caller should play a sound during the 0.5–5 second window. This
+consenting action can trigger the separate macOS Audio Capture prompt, returns
+`live:true` only after a real packet, and separately sets `signal_detected:true`
+only when that stream is not all-silent. Green UI readiness requires both facts.
+It returns no audio bytes or path. Its
+temporary Linux/Windows WAV is removed before the response; macOS samples never
+leave memory.
+
+```bash
+curl -sS http://127.0.0.1:6161/api/verb/screen_record.system_audio_probe \
+  -H 'content-type: application/json' \
+  -d '{"max_ms":2500}'
+```
+
 `raw_has_system` describes the optional combined `raw_path` only, so it becomes
 true only when `mux_raw:true` successfully muxes that system stream into the raw
 output. On Windows, the WAV's sibling `system-audio.json` records the
@@ -535,13 +579,16 @@ The server validates every ID against the open project, rejects duplicates, and
 caps each turn at eight attachments. The response echoes the validated IDs in
 `result.attachments` on both the success and structured no-edit paths.
 
-Headless editing supports installed Claude Code and Codex CLIs. Claude uses the
+Headless editing supports installed Claude Code, Codex, Grok, and Antigravity CLIs. Claude uses the
 pinned 2.1.224 contained contract: Cut verifies its version and policy flags,
 uses a disposable cwd and sanitized environment, and disables native CLI tools.
 Codex keeps the user's normal configuration, native sandbox, and permissions;
 Cut adds the live project's MCP server and does not copy or rewrite Codex login
-files. `agent:"grok"` returns an actionable `result.error:"not_available"`
-response until the next release. See [SECURITY.md](../../SECURITY.md).
+files. Grok receives a disposable config/home with native tools disabled and
+only the live Cut MCP server; its existing auth file remains in place and is
+never copied or rewritten. Antigravity keeps its normal settings, native
+sandbox, permissions, and login while Cut adds a workspace-local MCP entry;
+that route currently requires macOS or Linux. See [SECURITY.md](../../SECURITY.md).
 
 Every launched turn also returns a review contract:
 
@@ -617,6 +664,13 @@ result includes the structured `verification_error`, and affected receipt rows
 carry `details.status:"unmeasured"` plus `details.measured:false`. The legacy
 `checks_skipped` summary remains for older clients. Unmeasured checks never
 produce `fix_actions`.
+
+`verify.rerun {render_id}` is the narrow historic-artifact recheck path. It
+returns a cancellable job handle, selects the exact persisted RenderReceipt,
+re-fences and full-hashes its output around one owned sidecar/probe run, and
+atomically publishes a separate `verify_rerun_<job_id>.json` receipt. It never
+calls `render.final`, rewrites the source `render_*.json`, or claims checks that
+depend on source words, captions, edit boundaries, or the current timeline.
 
 ## MCP setup
 
@@ -697,7 +751,7 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
 (`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
-read-only check proves protocol negotiation, ping, all 262 tools, and that the
+read-only check proves protocol negotiation, ping, all 264 tools, and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use

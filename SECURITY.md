@@ -28,7 +28,7 @@ reproduction. Reports are acknowledged and assessed on a best-effort basis.
 ShellX Cut's supported default is **one personal workstation / one trusted
 interactive environment**. The trust boundary is the **whole local machine**,
 not an OS user account or an individual process. This is an intentional
-v0.6.107 deployment contract, not an omitted same-user security feature.
+v0.6.108 deployment contract, not an omitted same-user security feature.
 
 - `cutd` exposes its editing API, WebSocket events, and MCP proxy on loopback.
   It refuses non-loopback binds by default and rejects browser requests with
@@ -49,7 +49,7 @@ v0.6.107 deployment contract, not an omitted same-user security feature.
 - Shared or multi-user machines, untrusted local apps/services, containers
   sharing host networking, and exposed ports are outside this default trust
   boundary. Per-caller or per-user capability authentication is future
-  hardening, not present in v0.6.107. Under the stated deployment assumption,
+  hardening, not present in v0.6.108. Under the stated deployment assumption,
   lack of that token is **NOT A DEFECT**.
 - See [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
   for assets, abuse paths, mitigations, and residual risk.

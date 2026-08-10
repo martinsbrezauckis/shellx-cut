@@ -32,10 +32,13 @@ pub enum JobOutcomeReason {
 
 pub(super) fn restart_interrupted(record: &mut JobRecord) {
     record.state = JobState::Failed;
+    record.queue = None;
+    record.waiting_on = None;
     record.completion = None;
     record.progress = 1.0;
     record.outcome = Some(JobOutcome::Interrupted);
     record.outcome_reason = Some(JobOutcomeReason::RestartInterrupted);
+    record.message = Some("interrupted by restart".into());
     record.error = Some(CutError::new(
         "job_failed",
         format!("job '{}' was interrupted", record.job_id),
@@ -164,10 +167,13 @@ impl JobManager {
     ) {
         let kind = self.update(job_id, |record| {
             record.state = JobState::Done;
+            record.queue = None;
+            record.waiting_on = None;
             record.completion = Some(completion);
             record.progress = 1.0;
             record.outcome = Some(JobOutcome::Succeeded);
             record.outcome_reason = Some(reason);
+            record.message = Some(message.to_string());
             record.result = Some(result);
         });
         self.publish_terminal_progress(job_id, kind, message);
@@ -183,10 +189,13 @@ impl JobManager {
     ) {
         let kind = self.update(job_id, |record| {
             record.state = JobState::Failed;
+            record.queue = None;
+            record.waiting_on = None;
             record.completion = None;
             record.progress = 1.0;
             record.outcome = Some(outcome);
             record.outcome_reason = Some(reason);
+            record.message = Some(message.to_string());
             record.error = Some(error);
         });
         self.publish_terminal_progress(job_id, kind, message);

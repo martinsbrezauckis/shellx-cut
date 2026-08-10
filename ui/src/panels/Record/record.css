@@ -71,11 +71,12 @@
 .rec__toggle--mic { grid-column: 1; grid-row: 2; }
 .rec__toggle--system { grid-column: 2; grid-row: 2; }
 .rec__mic-warm { grid-column: 1 / -1; grid-row: 3; }
-.rec__field--length { grid-column: 1; grid-row: 4; }
-.rec__field--fps { grid-column: 2; grid-row: 4; }
-.rec__toggle--keys { grid-column: 1; grid-row: 5; }
-.rec__toggle--polish { grid-column: 2; grid-row: 5; }
-.rec__field--output { grid-column: 1 / -1; grid-row: 6; }
+.rec__audio-probe { grid-column: 1 / -1; grid-row: 4; }
+.rec__field--length { grid-column: 1; grid-row: 5; }
+.rec__field--fps { grid-column: 2; grid-row: 5; }
+.rec__toggle--keys { grid-column: 1; grid-row: 6; }
+.rec__toggle--polish { grid-column: 2; grid-row: 6; }
+.rec__field--output { grid-column: 1 / -1; grid-row: 7; }
 .rec__field { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
 /* Monitor PICKER <select> (multi-monitor source choice). Matches the segmented
    control's surface so it reads as one Source control, not a stray form element. */
@@ -150,6 +151,11 @@
 .rec__mic-warm[data-cut-rec-mic-warm="ready"] { color: #7ee0b0; }
 .rec__mic-warm[data-cut-rec-mic-warm="pending"] { color: var(--cut-soft, #93b4ff); }
 .rec__mic-warm[data-cut-rec-mic-warm="none"] { color: var(--ink-4, #6b7280); }
+
+.rec__audio-probe { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rec__audio-probe-status { color: var(--ink-4, #6b7280); font: var(--fs-ui-xs, 11px)/1.4 var(--sans); }
+.rec__audio-probe[data-cut-rec-system-audio-probe="ready"] .rec__audio-probe-status { color: #7ee0b0; }
+.rec__audio-probe[data-cut-rec-system-audio-probe="error"] .rec__audio-probe-status { color: #ff9a9a; }
 
 /* screen_record.export — "give me the finished clip as a file" (shown on done). */
 .rec__export { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }

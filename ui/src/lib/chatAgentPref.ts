@@ -1,8 +1,7 @@
 // lib/chatAgentPref.ts — persisted agent-selection for the AgentChat panel.
 //
 // The chat panel lets the user choose WHICH coding-agent CLI drives `agent.chat`
-// (claude / codex / grok). Claude and Codex are launchable with their truthful
-// per-provider posture; Grok stays visible as planned for the next release.
+// (claude / codex / grok / antigravity), each with its truthful posture.
 //
 // localStorage-backed so the choice survives reloads; falls back to claude if
 // storage is unavailable (private mode / quota) or holds an unknown value.

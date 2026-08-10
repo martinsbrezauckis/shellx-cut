@@ -33,6 +33,7 @@ import { isTauri, onRecordHotkey, pickExportOutput } from '../../lib/tauri'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import { StudioControls } from './StudioControls'
 import { StudioPreview } from './StudioPreview'
+import { SystemAudioProbeControl } from './SystemAudioProbeControl'
 import { useRecordingExport } from './useRecordingExport'
 import {
   defaultStudioState,
@@ -75,6 +76,7 @@ interface RecordCard { name: string; status: string; detail: string }
 const RECORD_CARD_LABELS: Record<string, string> = {
   ffmpeg: 'Media tools',
   screen_capture: 'Screen capture',
+  system_audio: 'System audio',
   input_hook: 'Pointer and keys',
   gstreamer: 'Linux capture',
   wayland_input: 'Linux input',
@@ -145,6 +147,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Defaults OFF for safety: desktop audio capture should be an explicit opt-in.
   // Linux uses the PulseAudio-compatible monitor source.
   const [systemAudio, setSystemAudio] = useState(false)
+  const [audioProbeRunning, setAudioProbeRunning] = useState(false)
   const [keys, setKeys] = useState(false)
   // When ON (default), stop → auto-polish (auto-zoom, cursor, framing) — the
   // slower re-render. When OFF, stop → a FAST stream-copy (raw:true) so the clip lands
@@ -487,6 +490,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // window focused) toggles once, not twice. No-op while finalizing, or when a
   // project isn't open / capture cannot start (matches the button's disabled state).
   const toggle = useCallback(() => {
+    if (audioProbeRunning) return
     const now = Date.now()
     if (now - lastToggleRef.current < 400) return // de-dupe the global+in-page double-fire
     lastToggleRef.current = now
@@ -495,7 +499,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     } else if (phase === 'idle' || phase === 'done' || phase === 'error') {
       if (startAllowed !== false) void start() // start() auto-creates a project if none is open
     }
-  }, [phase, project, startAllowed, start, stop])
+  }, [audioProbeRunning, phase, project, startAllowed, start, stop])
 
   // A SINGLE key (F9) toggles Start ⇄ Stop — no 3-key chord.
   //
@@ -532,7 +536,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Clean up the tick on unmount.
   useEffect(() => () => { clearTick() }, [])
 
-  const busy = phase === 'recording' || phase === 'finalizing'
+  const busy = phase === 'recording' || phase === 'finalizing' || audioProbeRunning
 
   // Staleness guard: the user's open windows change while the Record tab sits open
   // (they alt-tab, open Chrome, close an app), but the picker only probed on mount —
@@ -786,6 +790,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
             <label className="rec__toggle rec__toggle--system" data-cut-rec-system-audio-toggle title="Capture the desktop/app sound (e.g. a game) onto its OWN audio track, separate from the mic">
               <input type="checkbox" data-cut-rec-system-audio-toggle-input checked={systemAudio} disabled={busy} onChange={(e) => setSystemAudio(e.target.checked)} /> Capture system / desktop audio (game sound)
             </label>
+            <SystemAudioProbeControl disabled={busy} onRunningChange={setAudioProbeRunning} />
             {/* Key-cast + auto-polish are POLISH-pass features (a burned-in overlay / a
                 zoom-cursor-framing re-render). RAW capture skips polish entirely, so
                 these controls are hidden in raw mode rather than left as dead toggles. */}

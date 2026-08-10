@@ -2,9 +2,9 @@
 // Left→right: connection dot+label · live job pills (orange dot, name, %) ·
 // spacer · last-receipt chip (PASS green / FAIL red — receipts are first-class
 // citizens, never toasts) · playhead/selection readout · build id.
-// Self-subscribes to the shared events singleton for connection state and
-// job_progress (keeps App.tsx wiring minimal — the bar owns its own jobs map);
-// receipts/playhead/selection arrive as props since App already folds them.
+// Connection state comes from the shared event singleton. Active jobs use the
+// same jobs.list-seeded tracker as the topbar, so reloading mid-render keeps the
+// cancellation controls visible instead of waiting for a future progress event.
 // Callers: App.tsx. Dependencies: lib/events, lib/client types, statusbar.css.
 
 import { useEffect, useState } from 'react'
@@ -13,8 +13,10 @@ import { callVerb, type Project, type RenderReceipt } from '../lib/client'
 import { envHealthLevel, type DoctorReport } from '../lib/doctor'
 import { events, type ConnectionState } from '../lib/events'
 import { folderTail, getStoredOutputDir } from '../lib/exportDestination'
+import { activeJobLabel, activeJobProgress } from '../lib/jobPresentation'
 import { useTimeDisplay } from '../lib/timedisplay'
 import { formatClock } from '../panels/Timeline/layout'
+import { useTopbarJobs } from '../topbar/useTopbarJobs'
 import '../panels/Environment/environment.css'
 import './statusbar.css'
 
@@ -29,12 +31,6 @@ export interface StatusBarProps {
   doctor: DoctorReport | null
   /** Open the Settings>Environment drawer (the chip's click). */
   onOpenEnvironment: (category?: 'overview' | 'general') => void
-}
-
-interface JobView {
-  job_id: string
-  kind: string
-  progress: number
 }
 
 /** Build identity: vite mode + package version baked at build time. The
@@ -63,18 +59,21 @@ function envHealth(doctor: DoctorReport | null): { cls: string; label: string } 
 
 export default function StatusBar({ project, receipts, playheadMs, selectedClipIds, opsCount, clipboardNotice, doctor, onOpenEnvironment }: StatusBarProps) {
   const [connection, setConnection] = useState<ConnectionState>('connecting')
-  const [jobs, setJobs] = useState<Record<string, JobView>>({})
   const [jobCancelErrors, setJobCancelErrors] = useState<Record<string, string>>({})
+  const [jobCancelPending, setJobCancelPending] = useState<Record<string, true>>({})
   const [outputDir, setOutputDir] = useState<string | null>(() => getStoredOutputDir())
+  const { jobList, removeJob } = useTopbarJobs()
   const timeMode = useTimeDisplay() // keep the bar's readout in lockstep with the timeline toggle
   const fps = project?.settings.fps ?? 30
 
   const cancelJob = async (jobId: string) => {
+    if (jobCancelPending[jobId]) return
     setJobCancelErrors((previous) => {
       const next = { ...previous }
       delete next[jobId]
       return next
     })
+    setJobCancelPending((previous) => ({ ...previous, [jobId]: true }))
     try {
       const r = await callVerb('jobs.cancel', { job_id: jobId })
       if (!r.ok) {
@@ -84,39 +83,26 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
         }))
         return
       }
-      setJobs((previous) => {
-        const next = { ...previous }
-        delete next[jobId]
-        return next
-      })
+      removeJob(jobId)
     } catch {
       setJobCancelErrors((previous) => ({
         ...previous,
         [jobId]: 'Server unreachable. Click to retry cancellation.',
       }))
+    } finally {
+      setJobCancelPending((previous) => {
+        const next = { ...previous }
+        delete next[jobId]
+        return next
+      })
     }
   }
 
-  // Track connection + running jobs straight off the WS singleton.
+  // Connection state remains local; active jobs are seeded and folded by the
+  // shared tracker above so an already-running job survives a UI reload.
   useEffect(() => {
     const offStatus = events.onStatus(setConnection)
-    const offEvents = events.subscribe((ev) => {
-      if (ev.type === 'job_progress') {
-        setJobs((prev) => {
-          const next = { ...prev }
-          if (ev.progress >= 1) delete next[ev.job_id] // done → pill disappears
-          else next[ev.job_id] = { job_id: ev.job_id, kind: ev.kind, progress: ev.progress }
-          return next
-        })
-      } else if (ev.type === 'render_done') {
-        setJobs((prev) => {
-          const next = { ...prev }
-          delete next[ev.job_id]
-          return next
-        })
-      }
-    })
-    return () => { offStatus(); offEvents() }
+    return offStatus
   }, [])
 
   useEffect(() => {
@@ -168,24 +154,31 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
         <span className="sb-output-path">{outputDir ? folderTail(outputDir) : 'project exports'}</span>
       </button>
 
-      {Object.values(jobs).map((j) => (
-        <span key={j.job_id} className="sb-job" data-cut-job={j.job_id} title={j.job_id}>
-          <span className="sb-job-dot" />
-          {j.kind}
-          <span className="sb-job-pct">{Math.round(j.progress * 100)}%</span>
-          <button
-            type="button"
-            className={`sb-job-cancel${jobCancelErrors[j.job_id] ? ' sb-job-cancel--error' : ''}`}
-            data-cut-job-cancel={j.job_id}
-            data-cut-job-cancel-error={jobCancelErrors[j.job_id] || undefined}
-            title={jobCancelErrors[j.job_id] || `Cancel ${j.kind}`}
-            aria-label={jobCancelErrors[j.job_id] ? `Retry cancelling ${j.kind} job` : `Cancel ${j.kind} job`}
-            onClick={() => void cancelJob(j.job_id)}
-          >
-            ×
-          </button>
-        </span>
-      ))}
+      {jobList.map((j) => {
+        const label = activeJobLabel(j.kind)
+        const cancelPending = Boolean(jobCancelPending[j.job_id])
+        const progress = cancelPending ? 'stopping safely…' : activeJobProgress(j)
+        return (
+          <span key={j.job_id} className="sb-job" data-cut-job={j.job_id} title={`${label} · ${progress} · ${j.job_id}`}>
+            <span className="sb-job-dot" />
+            {label}
+            <span className="sb-job-pct">{progress}</span>
+            <button
+              type="button"
+              className={`sb-job-cancel${jobCancelErrors[j.job_id] ? ' sb-job-cancel--error' : ''}`}
+              data-cut-job-cancel={j.job_id}
+              data-cut-job-cancel-error={jobCancelErrors[j.job_id] || undefined}
+              data-cut-job-cancel-pending={cancelPending ? 'true' : undefined}
+              disabled={cancelPending}
+              title={cancelPending ? `Stopping ${label.toLowerCase()} safely` : jobCancelErrors[j.job_id] || `Cancel ${label.toLowerCase()}`}
+              aria-label={cancelPending ? `Stopping ${label.toLowerCase()}` : jobCancelErrors[j.job_id] ? `Retry cancelling ${label.toLowerCase()}` : `Cancel ${label.toLowerCase()}`}
+              onClick={() => void cancelJob(j.job_id)}
+            >
+              ×
+            </button>
+          </span>
+        )
+      })}
 
       <span className="sb-spacer" />
 

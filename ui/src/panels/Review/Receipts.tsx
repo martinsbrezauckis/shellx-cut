@@ -17,6 +17,7 @@ import { exportUrl as sharedExportUrl } from '../../lib/client'
 import type { CheckResult, JudgeEnvelope, JudgeIssue, RenderReceipt } from '../../lib/client'
 import { Icon } from '../../icons'
 import { fmtDur, fmtTc } from './shared'
+import ReceiptRerunControl from './ReceiptRerunControl'
 
 /** Map a render's output path to its download URL. Delegates to the shared
  *  cross-platform mapper (lib/clientUrls), like panels/Clips.
@@ -180,6 +181,7 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
           </a>
         )}
       </div>
+      <ReceiptRerunControl receipt={receipt} />
       {profileEntry && <ProfileRow entry={profileEntry} />}
       <div className="rr-rc__checks">
         {gatingChecks(receipt).map((c) => {

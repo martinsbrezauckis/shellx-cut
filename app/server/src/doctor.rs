@@ -926,12 +926,17 @@ fn chat_auth_state(agent: &str, resolved: Option<&Path>) -> (&'static str, Strin
                 )
             }
         }
+        "antigravity" => auth_file_fallback(
+            "antigravity",
+            &[".gemini/antigravity-cli/antigravity-oauth-token"],
+            &[],
+        ),
         _ => ("unknown", "no auth probe for this agent.".into()),
     }
 }
 
 /// The chat-agent state block for a judge card's `details`, or `Value::Null` for a
-/// judge rung that is NOT a chat agent (antigravity). 3-level: installed (resolved)
+/// judge rung that is not a chat agent. 3-level: installed (resolved)
 /// → authenticated (best-effort) → ready, plus the provider's launch posture.
 fn chat_agent_block(
     provider: &str,
@@ -1047,7 +1052,7 @@ fn judge_cards() -> Vec<Card> {
                     // The agent-chat dropdown state (3-level: absent / present-but-
                     // unauthenticated / ready) + the security-posture badge — folded
                     // here for the chat agents (claude/codex/grok); null for the
-                    // antigravity judge rung, which is not a chat backend.
+                    // provider-specific chat wiring is attached below when available.
                     "chat": chat,
                 }),
             }
@@ -1691,7 +1696,7 @@ mod tests {
     fn judge_cards_carry_chat_agent_state_and_posture() {
         // The agent-dropdown reads the 3-level chat state folded into the judge
         // cards: installed / wired / authenticated (yes|no|unknown) / ready + the
-        // launch posture — for the three detectable chat-agent CLIs only.
+        // launch posture — for each detectable chat-agent CLI.
         let cards = judge_cards();
         for (id, posture, wired) in [
             (
@@ -1701,8 +1706,17 @@ mod tests {
             ),
             (
                 "judge.grok",
-                "disabled: planned for the next release",
-                false,
+                "isolated turn: only Cut MCP, existing Grok login",
+                true,
+            ),
+            (
+                "judge.antigravity",
+                if cfg!(windows) {
+                    "disabled: Antigravity sandbox unavailable on Windows"
+                } else {
+                    "native CLI: uses your Antigravity sandbox and permissions"
+                },
+                !cfg!(windows),
             ),
         ] {
             let c = cards.iter().find(|c| c.id == id).expect("chat-agent card");
@@ -1741,11 +1755,12 @@ mod tests {
                 assert_eq!(chat["posture"], "disabled: unsupported Claude Code version");
             }
         }
-        // antigravity is a judge rung but NOT a chat agent → no chat block.
+        // Antigravity becomes a chat agent only on platforms with its native sandbox.
         let agy = cards.iter().find(|c| c.id == "judge.antigravity").unwrap();
-        assert!(
-            agy.details["chat"].is_null(),
-            "antigravity is not a chat backend; its chat block must be null"
+        assert!(agy.details["chat"].is_object());
+        assert_eq!(
+            agy.details["chat"]["wired"],
+            serde_json::json!(!cfg!(windows))
         );
     }
 

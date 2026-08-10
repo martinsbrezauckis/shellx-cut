@@ -8,7 +8,7 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-> **STATUS — 0.6.107 release line.** The public contract is 262 verbs across 32
+> **STATUS — 0.6.108 release line.** The public contract is 264 verbs across 32
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -25,19 +25,24 @@ AI output as an opaque final file.
 
 ![ShellX Cut Recording Studio with source selection and capture controls](docs/public/site/manual/assets/cut/cut-recording-studio-current.png)
 
-Agent Chat supports the user's installed Claude Code or Codex CLI. Claude uses
-Cut's pinned contained route. Codex uses the user's normal Codex configuration,
-native sandbox, and permissions; Cut does not copy or rewrite its login files.
-Both receive a filtered Cut MCP surface for inspecting the open project and
-making reversible in-project edits. Grok remains planned for the next release.
-Review every resulting edit, especially when selecting a local CLI that retains
-its own native tools and integrations.
+Agent Chat supports the user's installed Claude Code, Codex, Grok, or
+Antigravity CLI. Antigravity Agent Chat currently requires macOS or Linux.
+Claude uses Cut's pinned contained route. Codex uses the user's normal Codex
+configuration, native sandbox, and permissions. Grok runs from a disposable
+config and home with native tools disabled and only Cut's MCP route available.
+Antigravity keeps the user's normal settings, sandbox, and permissions while
+Cut adds a workspace-local MCP entry. Cut does not copy or rewrite provider
+login files. Each route can inspect the
+open project and make reversible in-project edits. Review every resulting edit,
+especially when selecting a local CLI that retains its own native tools and
+integrations.
 
 ## Quickstart
 
-> **Installing 0.6.107:** download and run the installer or package from the
-> GitHub release. Updating to 0.6.107 from an earlier version through the
-> in-app updater is not supported; this release requires a manual install.
+> **Installing 0.6.108:** download and run the installer or package from the
+> GitHub release. Users already on 0.6.107 can use the in-app update when it is
+> offered. Versions older than 0.6.107 must install 0.6.107 manually before
+> using the in-app update, or install 0.6.108 directly.
 
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
@@ -113,7 +118,7 @@ Cut. See
 [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
 for the supported deployment and residual risk.
 
-## Verb API (262 verbs, 32 domains — `schema/verbs.json` is the contract)
+## Verb API (264 verbs, 32 domains — `schema/verbs.json` is the contract)
 
 Envelope: `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}`.
 Every mutating verb takes optional `rationale`. Long tasks return `{job_id}`.
@@ -122,7 +127,7 @@ Every verb also advertises shared optional `request_id` and
 reject stale revisions atomically, and return the original durable response for
 an identical lost-response retry; changed payloads conflict.
 Representative verbs per domain below — `skill/shellx-cut/reference.md` is the
-full 262-verb table.
+full 264-verb table.
 
 | Domain | Verbs | Notes |
 |---|---|---|
@@ -148,8 +153,8 @@ full 262-verb table.
 | **assemble** | repurpose · shorts · from_script · broll | human-visible Assemble workflows for highlight selection, short planning, script-to-footage matching, and b-roll placement; every applied result remains normal timeline ops |
 | **autopilot** | **run** | workflow: render → verify → MECHANICALLY self-fix from the receipt's fix_actions → re-verify, capped, under one auto-checkpoint (one-step revert). policy:preview (plan only) \| auto_low_risk (apply). Never fakes a pass; no-progress guard |
 | **recipe** | **list · describe · run** | declarative pipeline MANIFESTS — named, gated WORKFLOWS over the existing verbs (built-ins in `schema/recipes.json`: a guided first edit; preview-first **Edit for clarity** with intensity; podcast/talking-head/screen-demo/phone cleanup; social bundle; privacy mask; captions; YouTube and TikTok export). list/describe are pure reads; **run is a PURE ORCHESTRATOR** (like autopilot.run/audio.cleanup_voice): no op of its own, ONE auto-checkpoint (one-step revert), dispatches each stage through the normal verb path, polls sub-jobs, evaluates a per-stage gate (receipt checks and/or render-free state facts), and STOPS + reports on the first failed verb or gate. policy:dry_run returns the resolved PLAN without dispatching (pre-render-gate seam) |
-| **screen_record** | doctor · start · stop · **recovery_status · studio_event** · autoedit · polish · export | Recording Studio: screen capture with microphone/system audio, raw stream preservation, timed background/marker metadata, auto-edit plan generation, and content-addressed polish onto the timeline. Stop-to-autoedit preserves the finalized capture FPS, while the planned MP4 exporter validates and mixes captured mic/system audio at its measured system-packet offset. Doctor health stays strict; Linux exposes a separate `start_allowed` only for the deliberate prompt-deferred XDG portal state, so Start can open its user-owned source picker without declaring capture verified. `recovery_status` is the read-only, process-free, project-scoped paginated recovery source for Settings → Health & Recovery: it returns safe capture ids and receipt/loss state, never cache paths or repair side effects. The page reads a complete lexical inventory before showing green and otherwise keeps the result as attention; it only offers the existing Record navigation. Live camera capture is explicitly unavailable in this release; the downstream auto-edit/compositor can still use an existing project-local camera file supplied by an agent. |
-| **verify** | checks · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); judge = pluggable watch+listen reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only QC receipts |
+| **screen_record** | doctor · **system_audio_probe** · start · stop · **recovery_status · studio_event** · autoedit · polish · export | Recording Studio: screen capture with microphone/system audio, raw stream preservation, timed background/marker metadata, auto-edit plan generation, and content-addressed polish onto the timeline. Stop-to-autoedit preserves the finalized capture FPS, while the planned MP4 exporter validates and mixes captured mic/system audio at its measured system-packet offset. Doctor health stays strict and passive; the visible, user-triggered `system_audio_probe` is the short consenting test that opens only the native audio path, reports packet delivery separately from a detected signal, and discards its temporary samples. Silent delivery remains a routing warning instead of a green result. Linux exposes a separate `start_allowed` only for the deliberate prompt-deferred XDG portal state, so Start can open its user-owned source picker without declaring capture verified. `recovery_status` is the read-only, process-free, project-scoped paginated recovery source for Settings → Health & Recovery: it returns safe capture ids and receipt/loss state, never cache paths or repair side effects. The page reads a complete lexical inventory before showing green and otherwise keeps the result as attention; when a sealed receipt contains measured system-audio packet timing, Health reports that historical project evidence without treating it as current permission. It only offers the existing Record navigation. Live camera capture is explicitly unavailable in this release; the downstream auto-edit/compositor can still use an existing project-local camera file supplied by an agent. |
+| **verify** | checks · **rerun** · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); **rerun rechecks the exact immutable rendered bytes from a selected receipt, re-fencing and re-hashing the output before and after its owned sidecar/probe, then writes a separate verification receipt without re-rendering or replacing the source receipt; it intentionally excludes source-, caption-, word-cut-, and current-timeline checks**; judge = pluggable watch+listen reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only QC receipts |
 | **export** | xml (fcpxml/premiere/resolve) · srt · vtt · chapters · transcript · frame · range · **audio** · **gif** · **publish** | file-writing paths are FENCED (the output-fencing contract); users can set a default export folder or use per-export Save As, default-name collisions auto-suffix, and confirmed Save As targets can replace existing export media/sidecar files; frame/range extract a still / a timeline window AS reusable assets; **audio = timeline mix as mp3/m4a/wav/flac/opus; publish = one-click platform export (youtube/tiktok/reels/x/…) using platform geometry and bitrate presets through render.final** |
 | **import** | otio | hash-bound OTIO preflight and one-operation timeline replacement; the desktop UI owns the native picker/confirmation while agents pass an explicit path |
 | **comment** | add · list · draft · apply · resolve | review-to-change loop: timecoded notes → agent drafts verb changes → apply (auto-checkpointed) |
@@ -239,7 +244,12 @@ metadata): same input + EDL ⇒ same output hash.
 6. `render.final` auto-runs `verify.checks` — deterministic Rust checks over
    EDL × facts × output (cut_on_word, lufs, caption_presence, black/frozen
    frames, silence_at_edges, duration_matches_edl) → **RenderReceipt**.
-7. `verify.judge` adds the perceptual layer: the bundled access ladder drives
+7. `verify.rerun {render_id}` rechecks only facts available from that exact
+   persisted output: it re-fences and hashes the bytes, runs loudness,
+   black/frozen, border, edge-silence, and receipt-duration checks under one
+   cancellable job, then writes a separate immutable verification receipt. It
+   never re-renders or substitutes the current timeline for historic evidence.
+8. `verify.judge` adds the perceptual layer: the bundled access ladder drives
    the user's subscription CLI — Claude → Codex → Antigravity → Grok — as a
    subprocess that reviews sampled frames with deterministic instrument facts
    (LUFS, silences, word timings) as the measured ground truth — a VISUAL judge

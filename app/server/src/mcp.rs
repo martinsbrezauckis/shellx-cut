@@ -24,6 +24,7 @@ pub(crate) use self_test::run as self_test;
 
 /// Protocol version we advertise (matches the office-suite implementation era).
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const MAX_TOOLS_LIST_BYTES: usize = 384 * 1024;
 
 /// How tools/call executes a verb (the public single-state-holder contract: one state holder).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,7 +249,7 @@ where
             let mut tool = json!({
                 "name": VerbRegistry::mcp_tool_name(&v.name),
                 "description": format!("{} Returns: {}", concise(&v.description, 400), concise(&v.result, 200)),
-                "inputSchema": trim_schema_descriptions(&v.args, 160),
+                "inputSchema": trim_schema_descriptions(&v.args, 140),
             });
             // Forward the machine-readable result contract as MCP outputSchema
             // when the verb declares one, but only if it is self-contained.
@@ -337,6 +338,17 @@ mod tests {
     }
 
     #[test]
+    fn tools_list_reply_stays_within_the_supported_client_budget() {
+        let state = AppState::new();
+        let reply = rpc_result(json!(3), json!({"tools": list_tools(&state)}));
+        let bytes = reply.to_string().len();
+        assert!(
+            bytes <= MAX_TOOLS_LIST_BYTES,
+            "MCP tools/list reply is {bytes} bytes; supported client budget is {MAX_TOOLS_LIST_BYTES}"
+        );
+    }
+
+    #[test]
     fn deprecated_legacy_inverse_option_survives_mcp_schema_projection() {
         let state = AppState::new();
         let tool = list_tools(&state)
@@ -387,10 +399,11 @@ mod tests {
     }
 
     #[test]
-    fn recovery_status_is_listed_for_mcp_but_denied_to_agent_chat() {
+    fn recorder_readiness_tools_are_listed_for_mcp_but_denied_to_agent_chat() {
         let state = AppState::new();
-        let recovery = list_tools(&state)
-            .into_iter()
+        let tools = list_tools(&state);
+        let recovery = tools
+            .iter()
             .find(|tool| tool["name"] == json!("screen_record_recovery_status"))
             .expect("generated recovery-status tool must be MCP-visible");
         assert_eq!(
@@ -402,6 +415,20 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == json!("screen_record_recovery_status")),
             "read-only recovery receipts are deliberately not agent-chat capabilities"
+        );
+        let audio = tools
+            .iter()
+            .find(|tool| tool["name"] == json!("screen_record_system_audio_probe"))
+            .expect("generated system-audio probe must be MCP-visible");
+        assert_eq!(
+            audio["inputSchema"]["properties"]["max_ms"]["maximum"],
+            5000
+        );
+        assert!(
+            !list_agent_chat_tools(&state)
+                .iter()
+                .any(|tool| tool["name"] == json!("screen_record_system_audio_probe")),
+            "Agent Chat cannot open an audio stream or permission prompt"
         );
     }
 

@@ -13,7 +13,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 [package]
 name = "shellx-cut"
-version = "0.6.107"
+version = "0.6.108"
 default-run = "shellx-cut"
 edition = "2021"
 description = "ShellX Cut — agent-first video editor, wrapped as a native Tauri 2 desktop app. The shell spawns the bundled cutd engine on loopback and points the webview at it."

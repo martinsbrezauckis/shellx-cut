@@ -391,7 +391,7 @@
     {
       "name": "project.health",
       "domain": "project",
-      "description": "Read a bounded, path-free Health & Recovery report for the open project. It first strictly revalidates the journal identity. A live external-change or identity failure is disclosed as journal attention/unavailable and deliberately returns no asset membership until the project is closed and reopened. When the journal is current, each page checks at most 128 registered assets for source, proxy and filmstrip availability. The first page returns an opaque project_revision; every cursor continuation must send that exact revision so pages cannot mix project membership across an edit. This read never repairs, deletes, promotes, or follows an unregistered derived path. Job persistence notices are intentionally reported by jobs.list and capture-recovery inventory by screen_record.recovery_status.",
+      "description": "Read a bounded, path-free Health & Recovery report for the open project. It first strictly revalidates the journal identity. A live external-change or identity failure is disclosed as journal attention/unavailable and deliberately returns no asset membership until the project is closed and reopened. When the journal is current, each page checks at most 128 registered assets for source, proxy and filmstrip availability. The first page also reports a bounded apparent-byte inventory of only recognized flat rebuildable proxy and thumbnail outputs, including how much is no longer referenced by the project. Its read-only cleanup preview divides those unreferenced outputs by a 24-hour file-change safety window; this is not last-use evidence or permission to delete, and active producers must be rechecked before any future removal. It never follows symlinks or descends into unexpected directories and excludes exports, captures, receipts, source media, and foreign files. The first page returns an opaque project_revision; every cursor continuation must send that exact revision so pages cannot mix project membership across an edit. This read never repairs, deletes, promotes, or follows an unregistered derived path. Job persistence notices are intentionally reported by jobs.list and capture-recovery inventory by screen_record.recovery_status.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -413,7 +413,7 @@
           }
         }
       },
-      "result": "{schema:'shellx-cut/project-health/1',project_revision?,journal:{status:'verified'|'recovered'|'attention'|'unavailable',log_records?,cache:'matched'|'rebuilt',snapshot:{status:'not_present'|'verified'|'rejected',prefix_ops?},notices:[{code,message,discarded_bytes?,discarded_start?,discarded_end?}]},media:{status:'ready'|'unavailable',asset_count,checked_count,page:{offline,proxy_available,proxy_missing,proxy_not_recorded,proxy_not_applicable,filmstrip_available,filmstrip_missing,filmstrip_not_recorded,filmstrip_not_applicable},assets:[{asset,source:'available'|'offline',proxy:'available'|'missing'|'not_recorded'|'not_applicable',filmstrip:'available'|'missing'|'not_recorded'|'not_applicable'}],limit,cursor?,next_cursor?,has_more}}. `next_cursor` is present only while `has_more` is true. Page counters describe only returned assets; aggregate every revision-bound page before claiming whole-project healthy. No paths are returned.",
+      "result": "{schema:'shellx-cut/project-health/1',project_revision?,journal:{status:'verified'|'recovered'|'attention'|'unavailable',log_records?,cache:'matched'|'rebuilt',snapshot:{status:'not_present'|'verified'|'rejected',prefix_ops?},notices:[{code,message,discarded_bytes?,discarded_start?,discarded_end?}]},editing_cache?:{status:'ready'|'partial',bytes,files,reclaimable_bytes,reclaimable_files,cleanup_preview:{status:'ready'|'blocked',minimum_age_ms,aged_unreferenced_bytes,aged_unreferenced_files,recent_unreferenced_bytes,recent_unreferenced_files},latest_modified_ms?,categories:[{kind:'proxies'|'thumbnails',status:'ready'|'partial',bytes,files,reclaimable_bytes,reclaimable_files,scanned_entries,skipped_entries,truncated,entry_limit,latest_modified_ms?}]},media:{status:'ready'|'unavailable',asset_count,checked_count,page:{offline,proxy_available,proxy_missing,proxy_not_recorded,proxy_not_applicable,filmstrip_available,filmstrip_missing,filmstrip_not_recorded,filmstrip_not_applicable},assets:[{asset,source:'available'|'offline',proxy:'available'|'missing'|'not_recorded'|'not_applicable',filmstrip:'available'|'missing'|'not_recorded'|'not_applicable'}],limit,cursor?,next_cursor?,has_more}}. `editing_cache` is first-page-only, path-free, bounded apparent usage for recognized flat rebuildable proxies/thumbnails. `reclaimable_*` counts recognized outputs not referenced by current asset metadata. `cleanup_preview` divides those facts by a 24-hour minimum file-change age and blocks on an incomplete scan; it is informational, does not prove last use or inactive producers, and is not a delete authorization. Symlinks, unexpected directories/files, exports, captures, receipts, and source media are excluded and make the scan partial when encountered. `next_cursor` is present only while `has_more` is true. Page counters describe only returned assets; aggregate every revision-bound page before claiming whole-project healthy. No paths are returned and no delete runs.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -2955,7 +2955,7 @@
           }
         }
       },
-      "result": "JobRecord {job_id, kind, state: queued|running|done|failed, completion?: success|done_with_warnings, outcome?: succeeded|failed|cancelled|interrupted|superseded, outcome_reason?: completed|completed_with_warnings|true_failure|user_cancelled|project_switch_cancelled|restart_interrupted|superseded, progress 0..1, error?, result?}. state remains backward-compatible; outcome/outcome_reason explain terminal cause and are absent on legacy persisted records. completion is present on newly completed jobs; done_with_warnings means the result is usable but partial and its result.warnings must be inspected.",
+      "result": "JobRecord {job_id, kind, state: queued|running|done|failed, completion?: success|done_with_warnings, outcome?: succeeded|failed|cancelled|interrupted|superseded, outcome_reason?: completed|completed_with_warnings|true_failure|user_cancelled|project_switch_cancelled|restart_interrupted|superseded, progress 0..1, message?, queue?:{resource,max_running}, waiting_on?:{job_id,kind}, error?, result?}. message is the latest durable human-readable progress or terminal phase; it is absent on queued/legacy records until a worker reports one. queue is present only while a limited job waits for the named shared local resource and states its concurrency capacity; it clears when the slot is acquired or the job becomes terminal. waiting_on is present only while an orchestrator awaits the named active child and is relationship evidence, not a retry promise. state remains backward-compatible; outcome/outcome_reason explain terminal cause and are absent on legacy persisted records. completion is present on newly completed jobs; done_with_warnings means the result is usable but partial and its result.warnings must be inspected.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -2978,7 +2978,7 @@
     {
       "name": "jobs.list",
       "domain": "jobs",
-      "description": "All job records of this server run, newest first (status bar + agent overview).",
+      "description": "All job records of this server run, newest first (status bar + agent overview). Active records retain their latest human-readable message so a reconnect can restore the current phase without waiting for another progress event.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -6115,7 +6115,7 @@
     {
       "name": "agent.chat",
       "domain": "agent",
-      "description": "Natural-language timeline editing through the user's installed Claude Code or Codex CLI. Claude uses Cut's pinned contained contract; Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Cut adds a filtered MCP server connected to THIS running serve without copying CLI credentials. That Cut MCP surface permits inspection of the already-open project and reversible in-project edits while denying project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat. A Codex installation may retain its own native tools and integrations according to the user's Codex configuration. Grok is detected but returns not_available until the next release. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
+      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's pinned contained contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; this route requires the CLI sandbox and is disabled on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. The filtered Cut MCP surface permits inspection of the already-open project and reversible in-project edits while denying project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
       "args": {
         "type": "object",
         "required": [
@@ -6142,9 +6142,10 @@
             "enum": [
               "claude",
               "codex",
-              "grok"
+              "grok",
+              "antigravity"
             ],
-            "description": "Which local subscription CLI to drive. Claude and Codex are wired; Grok is reserved for the next release. Omit = the first installed + chat-wired agent, preferring Claude. An unavailable explicit pick degrades honestly."
+            "description": "Which local subscription CLI to drive. Claude, Codex, Grok, and Antigravity are wired with provider-specific launch boundaries; Antigravity requires its native sandbox and is disabled on Windows. Omit = the first installed + chat-wired agent, preferring Claude. An unavailable explicit pick degrades honestly."
           },
           "model": {
             "type": "string",
@@ -11512,6 +11513,47 @@
       }
     },
     {
+      "name": "verify.rerun",
+      "domain": "verify",
+      "description": "Re-run output-only checks against the exact existing render artifact named by render_id. This job fences the receipt output, verifies its full SHA-256 before the sidecar, before ffprobe, and before its separate result receipt, and shares one cancellation/deadline/process-tree owner across the sidecar and ffprobe. It never re-encodes, changes the timeline, or overwrites the source RenderReceipt. The result includes lufs, black_or_frozen_frames, uniform_border, silence_at_edges, and duration_matches_receipt only; timeline/source checks remain on the original receipt.",
+      "args": {
+        "type": "object",
+        "required": ["render_id"],
+        "additionalProperties": false,
+        "properties": {
+          "render_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+            "description": "Persisted render receipt id whose authorized output will be checked again."
+          }
+        }
+      },
+      "result": "OutputCheckRerunHandle {job_id, render_id, output_hash}; jobs.status.result becomes the separately persisted OutputCheckRerun {source_receipt_id, verification_receipt, scope:'rendered_output', profile, checks, pass, checked_at}. The source render receipt is immutable.",
+      "result_schema": {
+        "$ref": "shellx-cut://receipts.schema.json#/$defs/OutputCheckRerunHandle"
+      },
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_rerun",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
       "name": "verify.pacing",
       "domain": "verify",
       "description": "On-demand pacing report for the CURRENT timeline (in-editor retention/pacing critique). Pure structural analysis of the base video track's shots — no render, no model. Advisory, not pass/fail.",
@@ -13919,7 +13961,7 @@
     {
       "name": "screen_record.doctor",
       "domain": "screen_record",
-      "description": "Report the SCREEN RECORDER's capability cards (the recorder analog of system.doctor). IN-PROCESS: probes record_capture::doctor() directly — no sidecar binary, no spawn — and returns each capability as a card {name, status, detail}. A screen_capture `ok` means one bounded, discarded frame reached Cut; `unknown` means a backend was found but a non-disruptive proof would risk opening an OS picker or permission prompt, and is never ready. `degraded`/`missing` are evidenced failures. The probe stores no image content and stops before returning. `ready` requires ffmpeg, screen_capture, and input_hook, plus platform-required cards when present (Linux gstreamer/pipewiresrc and the session input path). `start_allowed` is deliberately narrower: it is true only when `screen_record.start` may proceed; on Linux that includes the exact prompt-deferred XDG ScreenCast portal observation so the user-initiated action can show its source picker, while Doctor stays unknown/non-green. Any missing, degraded, or other unknown required card keeps it false. Camera capture is reported unavailable until a real backend is implemented and does not gate screen recording. Also returns `monitors` (the displays for the in-app picker; empty on Linux/headless), `windows` (the app windows for the in-app WINDOW picker — record one app, not the whole screen; Windows-only), and, when `warm_mic:true`, `mic_warm` (the microphone pre-warm). No project required. A build/OS with no live-capture backend reports honestly, never panics.",
+      "description": "Report the SCREEN RECORDER's capability cards (the recorder analog of system.doctor). IN-PROCESS: probes record_capture::doctor() directly — no sidecar binary, no spawn — and returns each capability as a card {name, status, detail}. A screen_capture `ok` means one bounded, discarded frame reached Cut; `unknown` means a backend was found but a non-disruptive proof would require an OS picker, permission prompt, or live stream, and is never ready. `degraded`/`missing` are evidenced failures. The probe stores no image or audio content and stops before returning. `ready` requires ffmpeg, screen_capture, and input_hook, plus platform-required cards when present (Linux gstreamer/pipewiresrc and the session input path). The separate optional `system_audio` card is deliberately `unknown` when its platform backend is compiled: Doctor never opens a loopback/tap stream, and on macOS therefore never triggers the separate Audio Capture prompt. This optional card does not gate ordinary screen recording. `start_allowed` is deliberately narrower: it is true only when `screen_record.start` may proceed; on Linux that includes the exact prompt-deferred XDG ScreenCast portal observation so the user-initiated action can show its source picker, while Doctor stays unknown/non-green. Any missing, degraded, or other unknown required card keeps it false. Camera capture is reported unavailable until a real backend is implemented and does not gate screen recording. Also returns `monitors` (the displays for the in-app picker; empty on Linux/headless), `windows` (the app windows for the in-app WINDOW picker — record one app, not the whole screen; Windows-only), and, when `warm_mic:true`, `mic_warm` (the microphone pre-warm). No project required. A build/OS with no live-capture backend reports honestly, never panics.",
       "args": {
         "type": "object",
         "required": [],
@@ -13931,7 +13973,7 @@
           }
         }
       },
-      "result": "{cards:[{name, status:\"ok\"|\"missing\"|\"degraded\"|\"unknown\", detail}], ready, start_allowed, monitors:[{index,name,width,height,primary}], windows:[{id,title,app}], mic_warm?:{live,device,supported}} — screen_capture is ok only after a real discarded frame reached Cut; unknown never makes ready true and explains that doctor avoided a prompt-prone proof. ready iff the core capture cards and any platform-required cards are ok. start_allowed is the action-specific screen_record.start admission: it is false for missing, degraded, or arbitrary unknown required cards, and true on Linux only for the exact prompt-deferred XDG ScreenCast portal card so the user may choose a source. monitors + windows are empty on Linux/headless (the OS portal owns source choice) and populated on Windows (windows feeds the in-app app-window picker for screen_record.start{window}); mic_warm present only when warm_mic:true. not_found if no capture backend is compiled for this build/OS.",
+      "result": "{cards:[{name, status:\"ok\"|\"missing\"|\"degraded\"|\"unknown\", detail}], ready, start_allowed, monitors:[{index,name,width,height,primary}], windows:[{id,title,app}], mic_warm?:{live,device,supported}} — screen_capture is ok only after a real discarded frame reached Cut; unknown never makes required readiness green and explains that doctor avoided a prompt- or stream-prone proof. The optional system_audio card stays unknown for a compiled backend until an actual recording proves packets and does not gate ordinary screen recording. ready iff the core capture cards and any platform-required cards are ok. start_allowed is the action-specific screen_record.start admission: it is false for missing, degraded, or arbitrary unknown required cards, and true on Linux only for the exact prompt-deferred XDG ScreenCast portal card so the user may choose a source. monitors + windows are empty on Linux/headless (the OS portal owns source choice) and populated on Windows (windows feeds the in-app app-window picker for screen_record.start{window}); mic_warm present only when warm_mic:true. not_found if no capture backend is compiled for this build/OS.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -13941,6 +13983,43 @@
           "ui": true
         },
         "dispatch": "screen_record_doctor",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.system_audio_probe",
+      "domain": "screen_record",
+      "description": "Run one explicit, bounded native system-audio delivery and signal test without starting screen capture or creating a project. This is the consenting counterpart to passive screen_record.doctor: it opens the platform loopback/process-tap path for 0.5–5 seconds, so macOS may show the separate Audio Capture permission prompt. The caller should play a sound during the window. Captured samples are held only long enough to distinguish packet delivery from an all-silent route; Linux/Windows use an exclusively-created private temporary WAV that is removed before return, macOS keeps samples in memory, and no audio bytes or path are returned. No project required.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "max_ms": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 5000,
+            "description": "Native audio test window in milliseconds (default 2500). This bounds capture after platform activation; the action also has a fail-closed 17-second total worker timeout."
+          }
+        }
+      },
+      "result": "{supported, live, signal_detected, backend, window_ms, first_packet_offset_ms, sample_frames, detail} — live is true only when the native backend delivered a real nonempty packet during the bounded window; signal_detected is separately true only when captured samples cross the conservative -60 dBFS signal threshold. first_packet_offset_ms is measured from probe start. No captured audio or temporary path is returned or retained. An unavailable/permission-denied backend returns an actionable error or supported:false; no packet or an all-silent route returns a retry instruction and never shows green readiness.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "screen_record_system_audio_probe",
         "project_state": "none",
         "idempotency": "none",
         "replayability": "not_applicable",

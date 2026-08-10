@@ -21,6 +21,7 @@ pub mod doctor;
 mod doctor_portal;
 mod doctor_probe;
 mod doctor_process;
+mod doctor_system_audio;
 mod replay;
 #[cfg(any(
     test,
@@ -53,6 +54,7 @@ mod macos_system_audio;
 mod mic;
 #[cfg(feature = "mic")]
 mod mic_timing;
+mod system_audio_probe;
 #[cfg(feature = "mic")]
 mod system_audio_timing;
 
@@ -107,6 +109,9 @@ pub use capture_clock::CaptureClock;
 pub use doctor::{doctor, Card};
 pub use doctor_portal::{is_linux_portal_prompt_deferred, LINUX_PORTAL_PROMPT_DEFERRED_DETAIL};
 pub use replay::ReplayCapture;
+pub use system_audio_probe::{
+    probe_system_audio, reserve_system_audio, SystemAudioLease, SystemAudioProbe, DEFAULT_WINDOW_MS,
+};
 
 /// One physical display the user can pick as the capture target.
 ///

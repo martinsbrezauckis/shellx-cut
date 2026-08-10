@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn schema_classifies_every_registry_verb_and_preserves_the_safe_94_168_split() {
+fn schema_classifies_every_registry_verb_and_preserves_the_safe_94_170_split() {
     let registry = crate::registry::VerbRegistry::load();
     let mut allowed = 0;
     let mut denied = 0;
@@ -12,7 +12,7 @@ fn schema_classifies_every_registry_verb_and_preserves_the_safe_94_168_split() {
         }
     }
     assert_eq!(allowed, 94, "schema-derived safe capability count");
-    assert_eq!(denied, 168, "schema-derived denied capability count");
+    assert_eq!(denied, 170, "schema-derived denied capability count");
     assert_eq!(allowed + denied, registry.verbs.len());
 }
 

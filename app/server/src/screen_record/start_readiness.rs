@@ -120,4 +120,16 @@ mod tests {
         assert!(!start_allowed_for_platform(&cards, true));
         assert!(ensure_start_ready_for_platform(&cards, true).is_err());
     }
+
+    #[test]
+    fn optional_system_audio_unknown_does_not_gate_screen_only_start() {
+        let mut cards = linux_cards("ok", RecordStartAdmission::Strict);
+        cards.push(card(
+            "system_audio",
+            "unknown",
+            RecordStartAdmission::Strict,
+        ));
+        assert!(super::super::ready_rollup(&cards));
+        assert!(start_allowed_for_platform(&cards, true));
+    }
 }

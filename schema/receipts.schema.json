@@ -63,6 +63,34 @@
       },
       "additionalProperties": false
     },
+    "OutputCheckRerunHandle": {
+      "type": "object",
+      "description": "Immediate handle returned by verify.rerun. Poll jobs.status for the separate OutputCheckRerun receipt.",
+      "required": ["job_id", "render_id", "output_hash"],
+      "properties": {
+        "job_id": { "type": "string" },
+        "render_id": { "type": "string" },
+        "output_hash": { "type": "string", "description": "The source RenderReceipt hash verified before the job was allocated." }
+      },
+      "additionalProperties": false
+    },
+    "OutputCheckRerun": {
+      "type": "object",
+      "description": "Independent persisted output-only recheck receipt. It links to, and never replaces, the RenderReceipt produced by render.final.",
+      "required": ["render_id", "source_receipt_id", "verification_receipt", "output_hash", "checked_at", "scope", "profile", "checks", "pass"],
+      "properties": {
+        "render_id": { "type": "string" },
+        "source_receipt_id": { "type": "string", "description": "The immutable RenderReceipt.render_id whose output was checked." },
+        "verification_receipt": { "type": "string", "pattern": "^receipts/verify_rerun_job_[0-9]+\\.json$", "description": "Server-generated project-relative path of this separate receipt." },
+        "output_hash": { "type": "string" },
+        "checked_at": { "type": "string" },
+        "scope": { "const": "rendered_output" },
+        "profile": { "type": "string", "enum": ["talking_head", "silent_screen_demo"] },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/CheckResult" } },
+        "pass": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "DiffSummary": {
       "type": "object",
       "description": "Result of project.diff — the structural delta between two op-log pointers.",

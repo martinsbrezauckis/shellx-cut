@@ -3,6 +3,7 @@ import type { Track } from '../../lib/client'
 import type { LaidItem } from './layout'
 import type { AssetPickMode, ClipMenuState } from './ClipContextMenu'
 import {
+  isFiniteTimelineContextPoint,
   resolveTimelineContextTarget,
   type TimelineSurfaceMenuState,
 } from './TimelineSurfaceMenuModel'
@@ -29,6 +30,10 @@ export function useTimelineContextMenus({
   const [assetPick, setAssetPick] = useState<AssetPickMode | null>(null)
 
   const onTimelineContextMenu = useCallback((event: MouseEvent) => {
+    if (!isFiniteTimelineContextPoint(event.clientX, event.clientY)) {
+      event.preventDefault()
+      return
+    }
     const target = event.target instanceof HTMLElement ? event.target : null
     if (!target) return
     // A trim handle deliberately overhangs a neighbouring gap by a few pixels.

@@ -42,6 +42,68 @@
   line-height: 1.45;
 }
 
+.env-keymap-profile { margin-top: 10px; }
+.env-keymap-profile__preset {
+  display: flex;
+  align-items: end;
+  gap: 6px;
+  max-width: 430px;
+}
+.env-keymap-profile__preset label { display: grid; flex: 1; gap: 5px; }
+.env-keymap-profile__preset label > span {
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.env-keymap-profile__preset select {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 8px);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: 500 12px/1.2 var(--sans);
+}
+.env-keymap-profile__description {
+  max-width: 70ch;
+  margin: 6px 0 8px;
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.env-keymap-profile__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.env-keymap-profile__import {
+  display: grid;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 9px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 8px);
+  background: var(--surface-2);
+}
+.env-keymap-profile__import > label {
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+}
+.env-keymap-profile__import textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: 6px;
+  background: var(--bg-deep);
+  color: var(--ink);
+  font: 10px/1.45 var(--mono);
+}
+.env-keymap-profile__import > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.env-keymap-profile__import > div > span { color: var(--ink-3); font-size: 10px; line-height: 1.35; }
+.env-keymap-profile__import .env-btn { flex: none; }
+
 .env-keymap-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(130px, 0.45fr);
@@ -69,6 +131,8 @@
 }
 .env-keymap-field input:focus-visible,
 .env-keymap-field select:focus-visible,
+.env-keymap-profile__preset select:focus-visible,
+.env-keymap-profile textarea:focus-visible,
 .env-keymap-filters button:focus-visible,
 .env-keymap-key:focus-visible,
 .env-keymap-clear:focus-visible {

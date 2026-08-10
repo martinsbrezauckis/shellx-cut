@@ -1,22 +1,22 @@
 //! jobs.rs — background job system (server contract "Job system").
 //!
-//! Role: long tasks (transcribe, perception, render) run as tokio tasks with
-//! progress events; JSON job state is persisted in the project dir
-//! (`<proj>/jobs/<id>.json`) so a crashed cutd can report what was running
-//! (crash-recoverable). Dependencies: tokio, events.rs, cut-core.
-//! Primary callers: dispatch.rs (media.import/transcribe/perception,
-//! render.final), jobs.status / jobs.list verbs (the background-job contract).
+//! Long tasks publish progress and persist `<proj>/jobs/<id>.json`, keeping status
+//! observable across crashes. Callers are dispatch plus jobs.status/list/cancel.
 
+mod dependency;
 mod outcome;
 mod persistence;
 mod process;
+mod queue;
 mod runtime;
 
 use crate::events::EventBus;
 use cut_core::CutError;
+pub use dependency::JobDependencyInfo;
 pub(crate) use outcome::{JobOutcome, JobOutcomeReason};
 use persistence::{persist, recover, JobPersistenceNotice};
 pub(crate) use process::{run_owned, ProcessControl, ProcessTermination};
+pub use queue::JobQueueInfo;
 use runtime::JobTaskControl;
 pub(crate) use runtime::{
     begin_current_blocking_worker, begin_current_process_worker, current_job_cancellation,
@@ -75,6 +75,16 @@ pub struct JobRecord {
     pub outcome_reason: Option<JobOutcomeReason>,
     /// 0.0..=1.0.
     pub progress: f32,
+    /// Latest human-readable active/terminal phase. Optional so persisted
+    /// records written before phase tracking remain readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Present only while a limited job is waiting for its execution slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<JobQueueInfo>,
+    /// Active child job this orchestrator is currently awaiting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<JobDependencyInfo>,
     /// RFC3339 created/updated stamps.
     pub created_ts: String,
     pub updated_ts: String,
@@ -257,6 +267,9 @@ impl JobManager {
             outcome: None,
             outcome_reason: None,
             progress: 0.0,
+            message: None,
+            queue: None,
+            waiting_on: None,
             created_ts: now.clone(),
             updated_ts: now,
             result: None,
@@ -292,19 +305,6 @@ impl JobManager {
         if let Some(old) = old {
             old.request_cancel(JobCancellationReason::Superseded);
         }
-    }
-
-    /// Spawn a job behind a per-key concurrency limiter. The job stays Queued
-    /// until its task acquires a slot and reports progress.
-    pub fn spawn_limited<F>(&self, job_id: &str, key: &str, max_running: usize, future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let limiter = self.limiter(key, max_running);
-        self.spawn(job_id, async move {
-            let _permit = limiter.acquire_owned().await.expect("job limiter closed");
-            future.await;
-        });
     }
 
     /// Run non-job async work behind the same keyed limiter used by
@@ -375,9 +375,14 @@ impl JobManager {
 
     /// Update progress (also flips Queued→Running) + publish job_progress.
     pub fn progress(&self, job_id: &str, progress: f32, message: Option<String>) {
+        let persisted_message = message.clone();
         let kind = self.update(job_id, |r| {
             r.state = JobState::Running;
+            r.queue = None;
             r.progress = progress.clamp(0.0, 1.0);
+            if persisted_message.is_some() {
+                r.message = persisted_message;
+            }
         });
         if let Some(kind) = kind {
             self.events.publish(crate::events::Event::JobProgress {
@@ -489,6 +494,9 @@ mod tests {
             outcome: Some(JobOutcome::Succeeded),
             outcome_reason: Some(JobOutcomeReason::Completed),
             progress: 1.0,
+            message: Some("done".into()),
+            queue: None,
+            waiting_on: None,
             created_ts: "2026-06-16T00:00:00.000Z".into(),
             updated_ts: "2026-06-16T00:00:00.000Z".into(),
             result: None,
@@ -540,6 +548,32 @@ mod tests {
         assert_eq!(rec.kind, "render");
         assert_eq!(rec.state, JobState::Queued);
         assert_eq!(rec.completion, None);
+    }
+
+    #[test]
+    fn progress_persists_the_latest_human_phase_across_record_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = JobManager::new(EventBus::new());
+        mgr.attach_project(dir.path()).unwrap();
+        let job = mgr.create("render_queue");
+
+        mgr.progress(&job.job_id, 0.25, Some("rendering delivery 2/8".into()));
+        mgr.progress(&job.job_id, 0.5, None);
+
+        let active = mgr.get(&job.job_id).unwrap();
+        assert_eq!(active.progress, 0.5);
+        assert_eq!(active.message.as_deref(), Some("rendering delivery 2/8"));
+        let persisted: JobRecord = serde_json::from_slice(
+            &std::fs::read(dir.path().join("jobs").join("job_001.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted.message, active.message);
+
+        mgr.finish(&job.job_id, serde_json::json!({"ok": true}));
+        assert_eq!(
+            mgr.get(&job.job_id).unwrap().message.as_deref(),
+            Some("done")
+        );
     }
 
     #[tokio::test]
@@ -936,6 +970,19 @@ mod tests {
             .await
             .expect("first limited job should start");
         sleep(Duration::from_millis(50)).await;
+        let first_record = mgr.get(&first.job_id).unwrap();
+        assert_eq!(first_record.state, JobState::Running);
+        assert_eq!(first_record.queue, None);
+        let second_record = mgr.get(&second.job_id).unwrap();
+        assert_eq!(second_record.state, JobState::Queued);
+        assert_eq!(
+            second_record.queue,
+            Some(JobQueueInfo {
+                resource: "enrich".into(),
+                max_running: 1,
+            }),
+            "the durable queued record names the constrained resource and capacity"
+        );
         assert!(
             !second_started.load(Ordering::SeqCst),
             "second job must stay queued while the first holds the enrich slot"
@@ -946,6 +993,7 @@ mod tests {
             .await
             .expect("second limited job should start after first finishes");
         assert_eq!(max_running.load(Ordering::SeqCst), 1);
+        assert_eq!(mgr.get(&second.job_id).unwrap().queue, None);
     }
 
     #[tokio::test]

@@ -230,9 +230,8 @@ export function hasMatteSetupAction(card: DoctorCard): boolean {
 // Chat-agent state — the agent.chat multi-agent selection dropdown
 // ---------------------------------------------------------------------------
 
-/** The coding-agent CLIs that Doctor reports for `agent.chat`. Claude and Codex
- *  are launchable; Grok remains listed as a planned provider. */
-export const CHAT_AGENTS = ['claude', 'codex', 'grok'] as const
+/** The coding-agent CLIs that Doctor reports for `agent.chat`. */
+export const CHAT_AGENTS = ['claude', 'codex', 'grok', 'antigravity'] as const
 export type ChatAgentName = (typeof CHAT_AGENTS)[number]
 
 /** Per-agent chat readiness, folded onto the `judge.<provider>` card by the
@@ -242,8 +241,8 @@ export type ChatAgentName = (typeof CHAT_AGENTS)[number]
  *  `authenticated` is BEST-EFFORT: 'yes' = a confirmed session, 'no' = no
  *  credentials, 'unknown' = a creds FILE exists but its session can't be
  *  verified headlessly — deliberately NOT counted as ready, so the dropdown
- *  never shows a false green. `posture` truthfully reports whether Cut contains
- *  the route or uses the local CLI's normal user-configured permissions. */
+ *  never shows a false green. `posture` truthfully reports each provider's
+ *  launch boundary. */
 export interface ChatAgentState {
   installed: boolean
   resolved: string | null
@@ -263,7 +262,7 @@ export interface ChatAgentOption {
   state: ChatAgentState | null
 }
 
-/** Extract the three chat agents (claude/codex/grok) from a doctor report, in
+/** Extract the chat agents from a doctor report, in
  *  preference order, reading each `judge.<provider>` card's `details.chat`.
  *  Populates the AgentChat selector. A report missing a card or its chat block
  *  yields `state:null` (the agent shows as not installed). */
@@ -305,7 +304,8 @@ export function chatAgentBadge(name: ChatAgentName, state: ChatAgentState | null
   // "needs login" is worse than letting the CLI's own auth prompt fire on first
   // call, which is exactly what happens during a first-run scan.
   if (state.authenticated === 'no') {
-    return { kind: 'login', label: 'Needs login', hint: `run \`${name} login\`` }
+    const login = name === 'antigravity' ? 'agy' : `${name} login`
+    return { kind: 'login', label: 'Needs login', hint: `run \`${login}\`` }
   }
   // 'yes' = confirmed session → Ready; 'unknown' = present but unverifiable →
   // Available (the CLI signs in on first call if the session has lapsed).

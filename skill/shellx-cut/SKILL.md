@@ -5,10 +5,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-> **Engine v0.6.107.** Synced to the contract (`schema/verbs.json` — the single
+> **Engine v0.6.108.** Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **262 verbs across 32 domains** under the public verb contract.
-> **`reference.md` is the full 262-verb table —
+> the file): **264 verbs across 32 domains** under the public verb contract.
+> **`reference.md` is the full 264-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -29,11 +29,14 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   service). `transcript.translate` / `captions.translate` are TEXT-only
 >   translation (CLI-primary, local Opus-MT/MADLAD fallback — no dubbing).
 > - **Agent chat (natural-language editing)** — `agent.chat` launches the user's
->   installed Claude Code or Codex CLI. Claude uses Cut's pinned `2.1.224`
+>   installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's pinned `2.1.224`
 >   contained contract. Codex keeps the user's normal configuration, native
 >   sandbox, and permissions; Cut adds its filtered MCP server without copying or
->   rewriting Codex login files. Grok is planned for the next release. Every Cut
->   verb applied by either route is a normal reversible op.
+>   rewriting Codex login files. Grok receives a disposable config/home with
+>   native tools disabled and only Cut's MCP route, while retaining its existing
+>   login file in place. Antigravity keeps its normal settings, sandbox, and
+>   permissions with a workspace-local Cut MCP entry on macOS and Linux. Every Cut verb applied by these routes is a normal
+>   reversible op.
 >   `attachments` can carry up to eight registered project asset IDs as references;
 >   the server validates them against the open project and exposes no arbitrary
 >   source-path input. Each launched turn returns `plan` plus a `review` artifact
@@ -164,7 +167,7 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `run` is a pure orchestrator — one auto-checkpoint,
 >   per-stage gates, stops + reports on the first failed verb or gate.
 > - **Recording Studio** — the `screen_record.*` domain wires the integrated
->   Cut recorder crates in process: `doctor` / `start` / `stop` /
+>   Cut recorder crates in process: `doctor` / `system_audio_probe` / `start` / `stop` /
 >   `recovery_status` / `studio_event` / `autoedit` / `polish` / `export` (live screen/audio
 >   capture, raw streams, auto-edit plan, content-addressed bake). Live camera
 >   capture is unavailable in this release; camera composition accepts an
@@ -173,6 +176,17 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   deliberate prompt-deferred XDG ScreenCast portal card may enter the
 >   user-initiated source picker; it does not make `ready` true, and missing,
 >   degraded, or other unknown required cards still refuse `start`.
+>   Doctor reports `system_audio` separately as an optional passive card. A
+>   compiled backend remains `unknown` until a real user-started recording
+>   proves packets; Doctor opens no loopback/tap stream and cannot trigger the
+>   separate macOS Audio Capture prompt. This card does not gate screen-only
+>   recording.
+>   When the user deliberately chooses **Test system audio**, call
+>   `system_audio_probe{max_ms?:500..5000}` while a short sound is playing. This
+>   is the bounded consenting path: it may open the macOS Audio Capture prompt,
+>   reports real packet delivery and separately whether the samples contain a
+>   signal, retains no audio, and does not start a screen recording or require a
+>   project. Do not call an all-silent delivered stream ready.
 >   `recovery_status{after?,limit?}` is read-only and process-free: page only
 >   with an emitted `next_cursor`, treat an unknown cursor as rejected, and use
 >   its path-safe receipt/loss facts for Settings → Health & Recovery rather than
@@ -229,6 +243,14 @@ description: Use when editing video with ShellX Cut or its cutd server — video
   the composed picture and can render scope images, and `verify.pregate`
   predicts timeline risks before rendering. Report their numbers like any
   receipt.
+- **Recheck historic rendered bytes without changing their evidence.** In
+  Review → Receipts, `verify.rerun {render_id}` queues one cancellable,
+  output-only job for the selected immutable render. Cut validates the stored
+  receipt identity, re-fences and fully re-hashes the output before work,
+  before the sidecar/probe, and before publishing a separate
+  `receipts/verify_rerun_<job_id>.json`. Read `jobs.status.result`; do not claim
+  that this rerun checked source words, captions, edit boundaries, or the
+  current timeline, and do not replace the original RenderReceipt with it.
 - **Measure → fix loops.** Each actionable check now has a dedicated fix verb,
   so you can close the loop instead of hand-editing: `lufs` ← measure with
   `verify.loudness {asset}` (integrated LUFS / true-peak / LRA + the exact
@@ -325,7 +347,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 262 tools, and same-engine
+the final proof of protocol negotiation, ping, all 264 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -701,6 +723,13 @@ A missing/unmeasured check is **not a pass and not a content failure**; affected
 rows carry `details.status:"unmeasured"` and `details.measured:false`, preserve
 the runtime cause, and never produce `fix_actions`. Verify independently or
 repair the instrumentation.
+
+Use `verify.rerun {render_id}` only when you need fresh output-only evidence for
+the exact persisted artifact. It returns `{job_id, render_id, output_hash}`;
+poll `jobs.status` or cancel with `jobs.cancel`. The terminal result is bound to
+the source receipt id, full output hash, footage profile, exact five-check set,
+and its own verification-receipt path. It does **not** run `render.final`, alter
+the source RenderReceipt, or infer source/caption/word-cut/current-timeline facts.
 
 | Check | What it proves | How to read it |
 |---|---|---|

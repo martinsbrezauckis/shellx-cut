@@ -18,10 +18,10 @@
 //! spawn (with a timeout) lives in dispatch.rs `agent_chat`. Honest degradation:
 //! no CLI / an un-wired agent → `ok:false` with a clear reason, never a fake reply.
 //!
-//! Claude keeps its pinned contained capability contract. Codex is also wired,
-//! using the user's normal Codex config and native sandbox/permission policy;
-//! Cut only adds the live project's filtered MCP server. Grok remains visible
-//! but is deferred to the next release.
+//! Claude keeps its pinned contained capability contract. Codex uses the user's
+//! normal native policy. Grok receives an isolated disposable config/home with
+//! only the live project's filtered MCP server while retaining its login file in
+//! place.
 
 #[path = "chat/broker.rs"]
 pub(crate) mod broker;
@@ -30,17 +30,32 @@ pub(crate) mod capabilities;
 
 /// The agents the chat box can route to, in preference order. Detection (is the
 /// CLI on PATH) is shared with the gen.rs / doctor providers.
-pub const CHAT_AGENTS: &[&str] = &["claude", "codex", "grok"];
+pub const CHAT_AGENTS: &[&str] = &["claude", "codex", "grok", "antigravity"];
 
-/// Is `agent`'s CLI installed anywhere we can launch it? (binary name == agent
-/// name for all three.) Uses the full resolution ladder (process PATH first, then
+fn executable_name(agent: &str) -> &str {
+    if agent == "antigravity" {
+        "agy"
+    } else {
+        agent
+    }
+}
+
+/// Is `agent`'s CLI installed anywhere we can launch it? Antigravity maps to
+/// `agy`; other provider names match their binaries. Uses the full resolution ladder (process PATH first, then
 /// the explicit install dirs incl. grok's off-PATH ~/.grok/bin) — NOT a process-PATH
 /// scan — so an off-PATH grok or a Finder-stripped-PATH .app still detects.
 pub fn detect(agent: &str) -> bool {
     if !CHAT_AGENTS.contains(&agent) {
         return false;
     }
-    crate::gen::resolve_agent(agent).is_some()
+    crate::gen::resolve_agent(executable_name(agent)).is_some()
+}
+
+pub fn resolve_executable(agent: &str) -> Option<std::path::PathBuf> {
+    CHAT_AGENTS
+        .contains(&agent)
+        .then(|| crate::gen::resolve_agent(executable_name(agent)))
+        .flatten()
 }
 
 /// Is the chat turn implemented for this provider?
@@ -84,14 +99,15 @@ pub fn mcp_config(cutd_exe: &str) -> serde_json::Value {
 pub struct ChatCommand {
     pub cmd: String,
     pub args: Vec<String>,
-    /// Claude and Codex receive the prompt on STDIN.
+    /// Claude and Codex receive the prompt on STDIN; other providers use a
+    /// provider-specific placeholder that dispatch resolves after prompt build.
     pub via_stdin: bool,
-    /// Reserved for a future provider with a workspace-local config file.
+    /// Optional provider-specific workspace-local config file.
     pub config_file: Option<(String, String)>,
 }
 
 /// Build the chat-CLI invocation for `agent`.
-/// Returns the provider's local CLI invocation. Grok remains deferred.
+/// Returns the provider's local CLI invocation.
 pub fn build_command(
     agent: &str,
     agent_path: &str,
@@ -114,6 +130,32 @@ pub fn build_command(
             via_stdin: true,
             config_file: None,
         }),
+        "grok" => {
+            let workspace = std::path::Path::new(mcp_config_path).parent()?;
+            let workspace = workspace.to_string_lossy().into_owned();
+            Some(ChatCommand {
+                cmd: agent_path.into(),
+                args: broker::grok_args(&workspace, model),
+                via_stdin: false,
+                config_file: Some((
+                    ".grok/config.toml".into(),
+                    broker::grok_project_config(cutd_exe, proxy_addr, proxy_actor),
+                )),
+            })
+        }
+        "antigravity" if broker::antigravity_supported_on_this_platform() => {
+            let workspace = std::path::Path::new(mcp_config_path).parent()?;
+            let workspace = workspace.to_string_lossy().into_owned();
+            Some(ChatCommand {
+                cmd: agent_path.into(),
+                args: broker::antigravity_args(&workspace, model),
+                via_stdin: false,
+                config_file: Some((
+                    ".agents/mcp_config.json".into(),
+                    broker::antigravity_project_config(cutd_exe, proxy_addr, proxy_actor),
+                )),
+            })
+        }
         _ => None,
     }
 }
@@ -224,6 +266,7 @@ pub fn classify_failure(
         "claude" => "claude auth login",
         "codex" => "codex login",
         "grok" => "grok login",
+        "antigravity" => "agy",
         _ => "the agent's login command",
     };
     // 1. MCP tool call blocked/cancelled by the CLI's approval boundary.
@@ -301,6 +344,7 @@ pub fn classify_failure(
         "run `claude login`",
         "run `codex login`",
         "run `grok login`",
+        "run `agy`",
     ];
     if AUTH_MARKERS.iter().any(|m| hay.contains(m)) {
         return (
@@ -417,11 +461,16 @@ pub fn parse_result(stdout: &str) -> ChatResult {
                 // some shapes carry the text under a different key
                 v.get("text")
                     .and_then(|x| x.as_str())
+                    .or_else(|| v.get("response").and_then(|x| x.as_str()))
                     .unwrap_or("")
                     .to_string()
             });
+        let status_error = v
+            .get("status")
+            .and_then(|value| value.as_str())
+            .is_some_and(|status| !status.eq_ignore_ascii_case("success"));
         return ChatResult {
-            ok: !is_error,
+            ok: !is_error && !status_error,
             reply: if reply.is_empty() {
                 "(the agent returned no message)".into()
             } else {
@@ -448,11 +497,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_and_codex_are_wired() {
-        // Wiring is deterministic (PATH-independent). Grok remains deferred.
+    fn chat_providers_are_wired_on_supported_platforms() {
+        // Wiring is deterministic (PATH-independent).
         assert!(is_wired("claude"));
         assert!(is_wired("codex"));
-        assert!(!is_wired("grok"));
+        assert!(is_wired("grok"));
+        assert_eq!(is_wired("antigravity"), !cfg!(windows));
         assert!(!is_wired("nope"));
         // An explicit unknown agent never resolves, regardless of PATH.
         assert_eq!(pick_agent(Some("nope")), None);
@@ -606,19 +656,72 @@ mod tests {
     }
 
     #[test]
-    fn deferred_provider_commands_are_disabled() {
-        for agent in ["grok", "dalle"] {
-            assert!(build_command(
-                agent,
-                agent,
-                "/home/u/mcp.json",
-                "/cutd",
-                "127.0.0.1:6161",
-                "agent:chat-test:agent.chat",
-                None,
-            )
-            .is_none());
-        }
+    fn grok_command_uses_disposable_project_config_and_prompt_file() {
+        let command = build_command(
+            "grok",
+            "/usr/local/bin/grok",
+            "/tmp/cut-chat/mcp.json",
+            "/opt/shellx/cutd",
+            "127.0.0.1:6161",
+            "agent:chat-test:agent.chat",
+            Some("grok-code-fast-1"),
+        )
+        .unwrap();
+        assert_eq!(command.cmd, "/usr/local/bin/grok");
+        assert!(!command.via_stdin);
+        assert!(command
+            .args
+            .windows(2)
+            .any(|w| w == ["--prompt-file", "__PROMPT_FILE__"]));
+        assert!(command
+            .args
+            .windows(2)
+            .any(|w| w == ["--model", "grok-code-fast-1"]));
+        let (path, contents) = command.config_file.unwrap();
+        assert_eq!(path, ".grok/config.toml");
+        assert!(contents.contains("[mcp_servers.cutd]"));
+        assert!(contents.contains("command = \"/opt/shellx/cutd\""));
+        assert!(contents.contains("CUTD_PROXY_ACTOR = \"agent:chat-test:agent.chat\""));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn antigravity_command_uses_workspace_mcp_and_native_sandbox() {
+        let command = build_command(
+            "antigravity",
+            "/usr/local/bin/agy",
+            "/tmp/cut-chat/mcp.json",
+            "/opt/shellx/cutd",
+            "127.0.0.1:6161",
+            "agent:chat-test:agent.chat",
+            Some("Gemini 3.5 Flash"),
+        )
+        .unwrap();
+        assert_eq!(command.cmd, "/usr/local/bin/agy");
+        assert!(!command.via_stdin);
+        assert!(command.args.contains(&"--sandbox".into()));
+        assert_eq!(
+            &command.args[command.args.len() - 2..],
+            ["--print", "__PROMPT_TEXT__"]
+        );
+        let (path, contents) = command.config_file.unwrap();
+        assert_eq!(path, ".agents/mcp_config.json");
+        assert!(contents.contains("\"cutd\""));
+        assert!(contents.contains("agent:chat-test:agent.chat"));
+    }
+
+    #[test]
+    fn unknown_provider_command_is_disabled() {
+        assert!(build_command(
+            "dalle",
+            "dalle",
+            "/home/u/mcp.json",
+            "/cutd",
+            "127.0.0.1:6161",
+            "agent:chat-test:agent.chat",
+            None,
+        )
+        .is_none());
     }
 
     #[test]
@@ -694,6 +797,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_grok_json_text_reply() {
+        let result = parse_result(r#"{"text":"Trimmed the selected clip."}"#);
+        assert!(result.ok);
+        assert_eq!(result.reply, "Trimmed the selected clip.");
+    }
+
+    #[test]
+    fn parses_antigravity_json_response() {
+        let result =
+            parse_result(r#"{"status":"SUCCESS","response":"Added the marker.\n","num_turns":1}"#);
+        assert!(result.ok);
+        assert_eq!(result.reply, "Added the marker.\n");
+        let failed = parse_result(r#"{"status":"ERROR","response":"permission denied"}"#);
+        assert!(!failed.ok);
+        assert_eq!(failed.reply, "permission denied");
+    }
+
+    #[test]
     fn parses_non_json_as_best_effort() {
         let r = parse_result("plain text reply, no json");
         assert!(r.ok);
@@ -710,11 +831,19 @@ mod tests {
         );
         assert_eq!(
             security_posture("grok"),
-            Some("disabled: planned for the next release")
+            Some("isolated turn: only Cut MCP, existing Grok login")
         );
         assert_eq!(
             security_posture("codex"),
             Some("native CLI: uses your Codex settings and permissions")
+        );
+        assert_eq!(
+            security_posture("antigravity"),
+            Some(if cfg!(windows) {
+                "disabled: Antigravity sandbox unavailable on Windows"
+            } else {
+                "native CLI: uses your Antigravity sandbox and permissions"
+            })
         );
         // A non-chat agent (the antigravity judge rung, or anything unknown) has none.
         assert_eq!(security_posture("agy"), None);

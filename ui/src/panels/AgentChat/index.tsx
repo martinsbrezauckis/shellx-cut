@@ -3,7 +3,9 @@
 // `agent.chat` launches the selected local CLI wired to cutd's MCP server, so
 // its Cut tool calls are editing verbs on the live project. Claude uses Cut's
 // contained route; Codex keeps the user's normal Codex settings and permissions.
-// Grok remains visible as planned for the next release.
+// Grok runs from a disposable config/home with only Cut's MCP route while its
+// existing login file remains in place. Antigravity uses its normal settings,
+// native sandbox, and permissions with a workspace-local Cut MCP entry.
 // Request/response per turn (no token streaming): a "working…"
 // state, then one agent bubble with the reply, the ops it applied (each a normal,
 // undoable op — pairs with Ctrl+Z / project.undo), the agent name + an

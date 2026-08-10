@@ -17,6 +17,12 @@ const hidden = (reason: string): ContextMenuActionState => ({ visibility: 'hidde
 const disabled = (reason: string): ContextMenuActionState => ({ visibility: 'visible', enabled: false, reason })
 const enabled = (reason: string): ContextMenuActionState => ({ visibility: 'visible', enabled: true, reason })
 
+/** Browser and automation context-menu events must provide finite viewport
+ * coordinates before they reach DOM hit-testing or timeline conversion. */
+export function isFiniteTimelineContextPoint(x: number, y: number): boolean {
+  return Number.isFinite(x) && Number.isFinite(y)
+}
+
 /** Resolve the DOM ids into one authoritative target. A locked track wins over
  * a contained gap/clip so this menu can never route an edit while locked. */
 export function resolveTimelineContextTarget(args: {

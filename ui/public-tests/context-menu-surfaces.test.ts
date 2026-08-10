@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   gapFillState,
+  isFiniteTimelineContextPoint,
   removeTrackState,
   resolveTimelineContextTarget,
 } from '../src/panels/Timeline/TimelineSurfaceMenuModel'
@@ -38,6 +39,14 @@ const media = item('video-1', 'video', 'v1', 0, 1000)
 const gap = item('gap-v1-1000', 'gap', 'v1', 1000, 1000)
 const lockedMedia = item('locked-video', 'video', 'locked-v', 0, 1000)
 const items = [media, gap, lockedMedia]
+
+// Malformed automation/browser coordinates fail closed before DOM hit-testing;
+// they must never reach elementsFromPoint or timeline arithmetic.
+{
+  assert.equal(isFiniteTimelineContextPoint(20, 30), true)
+  assert.equal(isFiniteTimelineContextPoint(Number.NaN, 30), false)
+  assert.equal(isFiniteTimelineContextPoint(20, Number.POSITIVE_INFINITY), false)
+}
 
 // Target resolution is mutually exclusive. Locked wins, and a stale/mismatched
 // DOM claim is refused instead of falling back to a track or unrelated clip.
@@ -127,5 +136,6 @@ assert.match(read('src/panels/Timeline/CustomSpeedMenuEditor.tsx'), /step="any"/
 assert.match(read('src/components/ContextMenuFrame.tsx'), /event\.key (?:!==|===) 'Escape'/, 'new menus preserve keyboard dismissal')
 assert.match(read('src/components/ContextMenuFrame.tsx'), /tabIndex=\{-1\}/, 'new menus take keyboard focus for menu navigation')
 assert.match(read('src/panels/Timeline/useTimelineContextMenus.ts'), /document\.elementsFromPoint/, 'gap ownership survives an overlapping trim affordance')
+assert.match(read('src/panels/Timeline/useTimelineContextMenus.ts'), /isFiniteTimelineContextPoint\(event\.clientX, event\.clientY\)/, 'non-finite coordinates are refused before DOM hit-testing')
 
 console.log('PASS context-menu surfaces: exact targets, locked/gap refusal, and engine-speed bounds')

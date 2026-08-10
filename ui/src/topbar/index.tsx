@@ -20,6 +20,7 @@ import type { WorkspaceMode } from '../layout/useLayout'
 import { FPS_PRESETS, RES_PRESETS, resKey } from '../lib/formatPresets'
 import { applyExportOutputDir, folderTail, getStoredOutputDir, setStoredOutputDir, withAuthorizedOutputPath } from '../lib/exportDestination'
 import { openCutManual } from '../lib/manual'
+import { activeJobLabel, activeJobProgress } from '../lib/jobPresentation'
 import {
   openVideoToolsGuide,
   openVideoToolsSettings,
@@ -138,7 +139,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
   const jobsChipTitle = jobList.length === 0
     ? 'no running jobs'
     : [
-        ...jobList.slice(0, 4).map((j) => `${j.kind} ${Math.round(j.progress * 100)}% (${j.job_id})`),
+        ...jobList.slice(0, 4).map((j) => `${activeJobLabel(j.kind)} · ${activeJobProgress(j)} (${j.job_id})`),
         ...(jobList.length > 4 ? [`+${jobList.length - 4} more running jobs`] : []),
       ].join('\n')
   const [note, setNote] = useState<string | null>(null) // transient verb feedback
@@ -641,7 +642,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         {jobList.length === 0
           ? 'idle'
           : jobList.length === 1
-            ? `${jobList[0].kind} ${Math.round(jobList[0].progress * 100)}%`
+            ? `${activeJobLabel(jobList[0].kind)} · ${activeJobProgress(jobList[0])}`
             : `${jobList.length} jobs ${Math.round((jobList.reduce((s, j) => s + j.progress, 0) / jobList.length) * 100)}%`}
       </span>
 

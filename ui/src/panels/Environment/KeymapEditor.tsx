@@ -21,6 +21,7 @@ import {
   type ShortcutFilter,
   type ShortcutGroup,
 } from './keymapSettingsModel'
+import KeymapProfileTransfer from './KeymapProfileTransfer'
 import './keymap-editor.css'
 
 interface KeymapNotice {
@@ -182,6 +183,12 @@ export default function KeymapEditor() {
               </button>
             )}
           </div>
+
+          <KeymapProfileTransfer
+            onInfo={(text) => setNotice({ tone: 'info', text })}
+            onWarning={(text) => setNotice({ tone: 'warning', text })}
+            onBegin={cancelCapture}
+          />
 
           <div className="env-keymap-toolbar">
             <label className="env-keymap-field">

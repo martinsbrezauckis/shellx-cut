@@ -646,10 +646,11 @@ async fn agent_chat_turn_review(
 
 /// agent.chat{message, attachments?, agent?, model?, timeout_ms?} — natural-language timeline
 /// editing (the headline agent-chat feature). Claude uses its pinned contained
-/// contract; Codex uses the user's normal native CLI configuration and sandbox.
-/// Both run from a fresh disposable cwd with Cut's MCP server connected to THIS
-/// running serve (the same open project the UI shows). Grok remains detectable
-/// but returns `not_available` until the next release. The op-log is the receipt
+/// contract; Codex uses the user's normal native CLI configuration and sandbox;
+/// Grok uses a disposable home/config with only Cut's MCP route and its existing
+/// login file retained in place. Antigravity uses its native sandbox and user
+/// permission policy with a workspace-local Cut MCP entry. All run from a fresh disposable cwd connected
+/// to THIS running serve (the same open project the UI shows). The op-log is the receipt
 /// for every reversible Cut verb the selected agent applies.
 /// NO model is hosted; the CLI's logged-in subscription does the reasoning. The
 /// handler holds NO project lock during the spawn (the agent's verbs acquire it per
@@ -737,20 +738,6 @@ pub(in crate::dispatch) async fn agent_chat(
         })))
     };
     // Do not quietly fall through from an explicitly requested provider whose
-    // Agent Chat route is not enabled in this release.
-    if let Some(requested) = a.agent.as_deref() {
-        if let Some(reason) = crate::chat::broker::unavailable_reason(requested) {
-            return fail(
-                "not_available",
-                reason.into(),
-                Some(requested.into()),
-                vec![],
-                None,
-                None,
-                None,
-            );
-        }
-    }
     // Pick the first installed provider with an implemented Agent Chat route.
     let Some(agent) = crate::chat::pick_agent(a.agent.as_deref()) else {
         // Detection is resolve_agent-based (process PATH first, THEN the explicit
@@ -770,17 +757,17 @@ pub(in crate::dispatch) async fn agent_chat(
                 )
             } else {
                 format!(
-                    "'{req}' is not a supported Agent Chat provider — choose Claude or Codex. \
+                    "'{req}' is not a supported Agent Chat provider — choose Claude, Codex, Grok, or Antigravity. \
                      Detected agents: {installed:?}."
                 )
             }
         } else if installed.is_empty() {
             "no supported coding-agent CLI was found (looked beyond PATH too: ~/.local/bin, \
-             Homebrew, ~/.grok/bin). Install Claude Code or Codex and sign in to use Agent Chat."
+             Homebrew, ~/.grok/bin). Install Claude Code, Codex, Grok, or Antigravity and sign in to use Agent Chat."
                 .into()
         } else {
             format!(
-                "no ready Claude or Codex Agent Chat route is available. Detected CLIs: \
+                "no ready Claude, Codex, Grok, or Antigravity Agent Chat route is available. Detected CLIs: \
                  {installed:?}."
             )
         };
@@ -849,6 +836,23 @@ pub(in crate::dispatch) async fn agent_chat(
             }
         },
         "codex" => crate::chat::broker::native_environment(&proxy_addr, &proxy_actor),
+        "antigravity" => crate::chat::broker::native_environment(&proxy_addr, &proxy_actor),
+        "grok" => {
+            match crate::chat::broker::isolated_grok_environment(&ws, &proxy_addr, &proxy_actor) {
+                Ok(environment) => environment,
+                Err(reason) => {
+                    return fail(
+                        "not_available",
+                        reason,
+                        Some(agent.into()),
+                        vec![],
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
         _ => {
             return fail(
                 "not_available",
@@ -877,7 +881,7 @@ pub(in crate::dispatch) async fn agent_chat(
     // install-dir ladder). A resolved absolute CLI path is spawned directly.
     // pick_agent already proved detection, so resolution is Some here; fall back to
     // the bare name defensively rather than aborting the turn.
-    let agent_path = crate::gen::resolve_agent(agent)
+    let agent_path = crate::chat::resolve_executable(agent)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| agent.to_string());
     if let Err(reason) = crate::chat::broker::verify_installed_agent(
@@ -918,7 +922,7 @@ pub(in crate::dispatch) async fn agent_chat(
             None,
         );
     };
-    // A future provider may declare an additional workspace-local config file.
+    // Providers may declare an additional workspace-local config file.
     if let Some((rel, contents)) = &cmd.config_file {
         let cfg_path = ws.join(rel);
         if let Some(parent) = cfg_path.parent() {
@@ -936,26 +940,31 @@ pub(in crate::dispatch) async fn agent_chat(
     let prompt = crate::chat::build_prompt(&msg, &attachments);
     let timeout =
         std::time::Duration::from_millis(a.timeout_ms.unwrap_or(180_000).clamp(10_000, 600_000));
-    // Claude and Codex receive the prompt on stdin. The placeholder branch is
-    // retained for a future provider that needs a prompt file.
+    // Claude and Codex receive the prompt on stdin. Grok reads a prompt file;
+    // Antigravity's current CLI requires the prompt as the final --print value.
     let resolved_args: Vec<String> = if cmd.via_stdin {
         cmd.args.clone()
     } else {
-        let pf = ws.join("prompt.txt");
-        if let Err(e) = std::fs::write(&pf, &prompt) {
-            let _ = std::fs::remove_dir_all(&ws);
-            return Err(CutError::new(
-                error_codes::IO,
-                "write prompt file",
-                e.to_string(),
-            ));
+        let needs_file = cmd.args.iter().any(|arg| arg == "__PROMPT_FILE__");
+        let prompt_file = needs_file.then(|| ws.join("prompt.txt"));
+        if let Some(path) = &prompt_file {
+            if let Err(e) = std::fs::write(path, &prompt) {
+                let _ = std::fs::remove_dir_all(&ws);
+                return Err(CutError::new(
+                    error_codes::IO,
+                    "write prompt file",
+                    e.to_string(),
+                ));
+            }
         }
-        let pfs = pf.to_string_lossy().into_owned();
+        let pfs = prompt_file.map(|path| path.to_string_lossy().into_owned());
         cmd.args
             .iter()
             .map(|x| {
                 if x == "__PROMPT_FILE__" {
-                    pfs.clone()
+                    pfs.clone().unwrap_or_default()
+                } else if x == "__PROMPT_TEXT__" {
+                    prompt.clone()
                 } else {
                     x.clone()
                 }

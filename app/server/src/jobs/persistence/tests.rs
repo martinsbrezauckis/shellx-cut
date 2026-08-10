@@ -14,6 +14,9 @@ fn record(job_id: &str, state: JobState) -> JobRecord {
         } else {
             0.0
         },
+        message: None,
+        queue: None,
+        waiting_on: None,
         created_ts: "2026-08-08T00:00:00.000Z".into(),
         updated_ts: "2026-08-08T00:00:00.000Z".into(),
         result: None,
@@ -97,6 +100,7 @@ fn interrupted_records_are_recovered_with_an_atomic_terminal_write() {
         serde_json::from_slice(&std::fs::read(jobs.join("job_002.json")).unwrap()).unwrap();
 
     assert_eq!(restored.state, JobState::Failed);
+    assert_eq!(restored.message.as_deref(), Some("interrupted by restart"));
     assert_eq!(restored.outcome, Some(JobOutcome::Interrupted));
     assert_eq!(
         restored.outcome_reason,

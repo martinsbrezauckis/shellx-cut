@@ -108,6 +108,78 @@ async fn pages_media_by_revision_without_paths_or_global_counts() {
 }
 
 #[tokio::test]
+async fn first_page_reports_only_rebuildable_cache_bytes() {
+    let (_root, state) = state_with_project().await;
+    {
+        let mut project = state.project.write().await;
+        let store = project.as_mut().unwrap();
+        let source = store.dir.join("source.mp4");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(store.proxies_dir().join("a1.mp4"), b"proxy").unwrap();
+        std::fs::write(store.dir.join("filmstrip/a1.jpg"), b"thumb").unwrap();
+        std::fs::write(store.proxies_dir().join("a2.mp4"), b"orphan").unwrap();
+        std::fs::create_dir_all(store.dir.join("exports")).unwrap();
+        std::fs::write(store.dir.join("exports/final.mp4"), b"not cache").unwrap();
+        store.project.assets.insert(
+            "a1".into(),
+            asset(
+                &source,
+                "video",
+                Some("proxies/a1.mp4"),
+                Some("filmstrip/a1.jpg"),
+            ),
+        );
+    }
+
+    let first = crate::dispatch::dispatch(
+        &state,
+        "project.health",
+        json!({"limit": 1}),
+        cut_core::Actor::system(),
+    )
+    .await
+    .result
+    .unwrap();
+    assert_eq!(first["editing_cache"]["status"], "ready");
+    assert_eq!(first["editing_cache"]["bytes"], 16);
+    assert_eq!(first["editing_cache"]["files"], 3);
+    assert_eq!(first["editing_cache"]["reclaimable_bytes"], 6);
+    assert_eq!(first["editing_cache"]["reclaimable_files"], 1);
+    assert_eq!(first["editing_cache"]["cleanup_preview"]["status"], "ready");
+    assert_eq!(
+        first["editing_cache"]["cleanup_preview"]["minimum_age_ms"],
+        86_400_000
+    );
+    assert_eq!(
+        first["editing_cache"]["cleanup_preview"]["aged_unreferenced_files"],
+        0
+    );
+    assert_eq!(
+        first["editing_cache"]["cleanup_preview"]["recent_unreferenced_bytes"],
+        6
+    );
+    assert_eq!(first["editing_cache"]["categories"][0]["kind"], "proxies");
+    assert_eq!(
+        first["editing_cache"]["categories"][1]["kind"],
+        "thumbnails"
+    );
+    assert!(first["editing_cache"].get("latest_modified_ms").is_some());
+    assert!(!first.to_string().contains("final.mp4"));
+
+    let revision = first["project_revision"].as_str().unwrap();
+    let continuation = crate::dispatch::dispatch(
+        &state,
+        "project.health",
+        json!({"limit": 1, "cursor": "a1", "revision": revision}),
+        cut_core::Actor::system(),
+    )
+    .await
+    .result
+    .unwrap();
+    assert!(continuation.get("editing_cache").is_none());
+}
+
+#[tokio::test]
 async fn identity_drift_is_journal_attention_and_refuses_asset_membership() {
     let (_root, state) = state_with_project().await;
     let journal = {

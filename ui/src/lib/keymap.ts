@@ -81,14 +81,60 @@ function readOverrides(): Record<string, string> {
   }
 }
 
-function writeOverrides(map: Record<string, string>) {
+function writeOverrides(map: Record<string, string>): boolean {
+  let written = false
   try {
     if (Object.keys(map).length === 0) localStorage.removeItem(STORE_KEY)
     else localStorage.setItem(STORE_KEY, JSON.stringify(map))
+    written = true
   } catch {
     /* storage unavailable — remaps just don't persist */
   }
   document.dispatchEvent(new CustomEvent('cut:keymap-changed'))
+  return written
+}
+
+export interface KeymapReplacementResult {
+  ok: boolean
+  changed: number
+  reason: string | null
+}
+
+/** Accept only the normalized, single-stroke bindings this module emits. */
+export function isSupportedBinding(binding: string): boolean {
+  if (!binding || binding.length > 64 || /[\r\n\t]/.test(binding)) return false
+  const parts = binding.split('+')
+  const key = parts.at(-1) ?? ''
+  const modifiers = parts.slice(0, -1)
+  const expected = ['Ctrl', 'Alt', 'Shift'].filter((modifier) => modifiers.includes(modifier))
+  if (modifiers.length !== expected.length || modifiers.some((modifier, index) => modifier !== expected[index])) return false
+  if (!key || ['Control', 'Ctrl', 'Alt', 'Shift', 'Meta', 'Escape', 'Tab', 'Enter'].includes(key)) return false
+  if (key.length === 1) return key === key.toUpperCase()
+  return /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(key)
+}
+
+/** Replace the complete editable profile atomically. Missing actions return to
+ * defaults; unknown actions must be filtered by the portable-profile parser. */
+export function replaceKeymapBindings(bindings: Record<string, string>): KeymapReplacementResult {
+  const owners = new Map<string, string>()
+  for (const action of FIXED_KEY_ACTIONS) owners.set(action.binding, action.label)
+  const overrides: Record<string, string> = {}
+  for (const action of KEY_ACTIONS) {
+    const binding = Object.hasOwn(bindings, action.id) ? bindings[action.id] : action.def
+    if (typeof binding !== 'string' || !isSupportedBinding(binding)) {
+      return { ok: false, changed: 0, reason: `${action.label} has an unsupported shortcut.` }
+    }
+    const owner = owners.get(binding)
+    if (owner) {
+      return { ok: false, changed: 0, reason: `${displayBinding(binding)} is assigned to both ${owner} and ${action.label}.` }
+    }
+    owners.set(binding, action.label)
+    if (binding !== action.def) overrides[action.id] = binding
+  }
+  if (!writeOverrides(overrides)) {
+    return { ok: false, changed: 0, reason: 'Shortcut storage is unavailable.' }
+  }
+  return { ok: true, changed: Object.keys(overrides).length, reason: null }
 }
 
 /** The live binding for an action (override ?? default). */
@@ -101,12 +147,12 @@ export function getBinding(id: string): string {
 /** Set (or clear with null) one action's binding. */
 export function setBinding(id: string, binding: string | null): boolean {
   if (!KEY_ACTIONS.some((action) => action.id === id)) return false
+  if (binding !== null && !isSupportedBinding(binding)) return false
   if (binding !== null && conflictsFor(binding, id).length > 0) return false
   const map = readOverrides()
   if (binding === null) delete map[id]
   else map[id] = binding
-  writeOverrides(map)
-  return true
+  return writeOverrides(map)
 }
 
 /** Drop every override (back to defaults). */

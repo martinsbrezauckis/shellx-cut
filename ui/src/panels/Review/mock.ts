@@ -139,13 +139,13 @@ const OPS: OpRecord[] = [
   op({ ts: iso(-3620), actor: agent, verb: 'media.import', args: { path: 'testdata/talking_head.mp4' }, rationale: 'source footage', effects: [] }),
   op({
     ts: iso(-1700), actor: agent, verb: 'transcript.cut_words',
-    args: { asset: 'a1', word_range: [2, 2] }, rationale: "filler 'um' (word 2)",
-    effects: [{ track: 'v1', removed_ms: [wms(2), wend(2)] }, { track: 'a1t', removed_ms: [wms(2), wend(2)] }],
+    args: { asset: 'a1', word_range: [2, 2] }, rationale: 'Remove filler words',
+    effects: [{ track: 'v1', removed_ms: [wms(2), wend(2)], group_id: 'mock-filler-cleanup' }, { track: 'a1t', removed_ms: [wms(2), wend(2)] }],
   }),
   op({
     ts: iso(-1640), actor: agent, verb: 'transcript.cut_words',
-    args: { asset: 'a1', word_range: [17, 19] }, rationale: "filler run 'um you know' (words 17–19)",
-    effects: [{ track: 'v1', removed_ms: [wms(17), wend(19)] }, { track: 'a1t', removed_ms: [wms(17), wend(19)] }],
+    args: { asset: 'a1', word_range: [17, 19] }, rationale: 'Remove filler words',
+    effects: [{ track: 'v1', removed_ms: [wms(17), wend(19)], group_id: 'mock-filler-cleanup' }, { track: 'a1t', removed_ms: [wms(17), wend(19)] }],
   }),
   op({
     ts: iso(-1400), actor: agent, verb: 'transcript.remove_silences',
@@ -488,6 +488,20 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
         result: {
           ready: true,
           cards: [{ name: 'screen', status: 'ok', detail: 'Mock screen capture is ready.' }],
+        },
+      }
+    case 'screen_record.system_audio_probe':
+      return {
+        ok: true,
+        result: {
+          supported: true,
+          live: true,
+          backend: 'Mock system audio',
+          window_ms: 2500,
+          first_packet_offset_ms: 18,
+          sample_frames: 120000,
+          signal_detected: true,
+          detail: 'Mock system audio delivered packets.',
         },
       }
     case 'screen_record.recovery_status':

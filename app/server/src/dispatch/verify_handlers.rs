@@ -3,6 +3,8 @@ use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 
 #[path = "verify_handlers/adapter_result.rs"]
 mod adapter_result;
+mod rerun;
+pub(super) use rerun::verify_rerun;
 
 /// Resolve `receipts/<render_id>.json` — the explicit id, or the LATEST
 /// render receipt when omitted (zero-padded render_NNN names → lexical max =

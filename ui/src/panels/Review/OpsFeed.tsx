@@ -17,6 +17,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpRecord } from '../../lib/client'
 import { Icon } from '../../icons'
 import { mutatesTimeline } from '../../lib/ops'
+import {
+  groupOperations,
+  operationGroupHeading,
+  type IndexedOperation,
+} from './opGroupModel'
 import { effectsSummary, highlightOpTargets, opSeekMs, timeAgo, type Reviewed } from './shared'
 
 export interface OpsFeedProps {
@@ -55,6 +60,7 @@ export default function OpsFeed({
   const pinnedRef = useRef(true) // auto-follow while the user stays at bottom
   const [, setTick] = useState(0)
   const lastOpId = ops.length > 0 ? ops[ops.length - 1].op_id : ''
+  const groups = useMemo(() => groupOperations(ops), [ops])
 
   // Re-render every 30s so the `time ago` column stays honest.
   useEffect(() => {
@@ -70,7 +76,10 @@ export default function OpsFeed({
   // Keyboard cursor stays visible while skimming.
   useEffect(() => {
     if (cursor < 0) return
-    listRef.current?.querySelector(`[data-cut-op-row="${cursor}"]`)?.scrollIntoView({ block: 'nearest' })
+    const row = listRef.current?.querySelector(`[data-cut-op-row="${cursor}"]`)
+    const group = row?.closest('details')
+    if (group instanceof HTMLDetailsElement) group.open = true
+    row?.scrollIntoView({ block: 'nearest' })
   }, [cursor])
 
   // When a selective undo is refused, the named dependents are highlighted;
@@ -80,6 +89,8 @@ export default function OpsFeed({
     if (highlightedDeps.size === 0) return
     const first = [...highlightedDeps][0]
     const el = listRef.current?.querySelector(`[data-cut-op="${CSS.escape(first)}"]`)
+    const group = el?.closest('details')
+    if (group instanceof HTMLDetailsElement) group.open = true
     el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [highlightedDeps])
 
@@ -92,36 +103,51 @@ export default function OpsFeed({
     return <div className="rr__empty">No edits yet — timeline changes and automated actions appear here.</div>
   }
 
+  const renderRow = ({ op, index }: IndexedOperation) => {
+    const isRejected = restored.has(op.op_id)
+    const canRebase =
+      op.status === 'applied' &&
+      op.verb !== 'edit.restore' &&
+      mutatesTimeline(op.verb) &&
+      op.op_id !== tipOpId &&
+      !isRejected
+    return (
+      <OpRow
+        key={op.op_id}
+        op={op}
+        idx={index}
+        focused={index === cursor}
+        verdict={isRejected ? 'rejected' : reviewed[op.op_id]}
+        canRebase={canRebase}
+        isDependent={highlightedDeps.has(op.op_id)}
+        isKept={keptOps.has(op.op_id)}
+        onCursor={onCursor}
+        onAccept={onAccept}
+        onReject={onReject}
+        onRebaseReject={onRebaseReject}
+        onSeek={onSeek}
+      />
+    )
+  }
+
   return (
     <div className="rr-ops" ref={listRef} onScroll={onScroll} data-cut-ops-feed="">
-      {ops.map((op, i) => {
-        const isRejected = restored.has(op.op_id)
-        // The rebase affordance shows on an applied, mutating, not-yet-rejected
-        // op that is NOT the tip (the tip uses the plain reject — rebase there
-        // is redundant). The engine has the final say (it refuses dependents);
-        // this is the gate that surfaces the action where it can help.
-        const canRebase =
-          op.status === 'applied' &&
-          op.verb !== 'edit.restore' &&
-          mutatesTimeline(op.verb) &&
-          op.op_id !== tipOpId &&
-          !isRejected
+      {groups.map((group) => {
+        if (!group.groupId || group.entries.length < 2) return renderRow(group.entries[0])
+        const first = group.entries[0].op
+        const last = group.entries[group.entries.length - 1].op
         return (
-          <OpRow
-            key={op.op_id}
-            op={op}
-            idx={i}
-            focused={i === cursor}
-            verdict={isRejected ? 'rejected' : reviewed[op.op_id]}
-            canRebase={canRebase}
-            isDependent={highlightedDeps.has(op.op_id)}
-            isKept={keptOps.has(op.op_id)}
-            onCursor={onCursor}
-            onAccept={onAccept}
-            onReject={onReject}
-            onRebaseReject={onRebaseReject}
-            onSeek={onSeek}
-          />
+          <details className="rr-op-group" key={group.key} data-cut-op-group={first.op_id}>
+            <summary data-cut-action="op-group-toggle" data-cut-op-group-toggle={first.op_id}>
+              <span className={`rr-badge rr-badge--${first.actor?.kind ?? 'system'}`}>
+                {(first.actor?.kind ?? 'system').toUpperCase()}
+              </span>
+              <span className="rr-op-group__heading">{operationGroupHeading(group)}</span>
+              <span className="rr-op-group__count">{group.entries.length} ops</span>
+              <span className="rr-op-group__age">{timeAgo(last.ts)}</span>
+            </summary>
+            <div className="rr-op-group__rows">{group.entries.map(renderRow)}</div>
+          </details>
         )
       })}
     </div>

@@ -49,7 +49,7 @@ mod raw_mux;
 pub(crate) mod recovery;
 mod start_readiness;
 pub(crate) mod system_audio;
-mod system_audio_capture;
+pub(crate) mod system_audio_capture;
 mod windows_path;
 pub(crate) use autoedit_args::for_capture as autoedit_args_for_capture;
 pub(crate) use capture_artifacts::resolve_stop_artifacts;
@@ -358,7 +358,7 @@ pub struct WindowInfo {
 ///
 /// `ready` is true iff the
 /// three capabilities a recording NEEDS (`ffmpeg`, `screen_capture`, `input_hook`)
-/// are all `ok`. Optional cards (`webcam`, …) don't gate `ready`.
+/// are all `ok`. Optional cards (`system_audio`, `webcam`, …) don't gate `ready`.
 ///
 /// `monitors` lists the displays the user can pick from for the in-app monitor
 /// PICKER. It is populated on Windows and macOS, and empty on Linux because the
@@ -710,6 +710,7 @@ pub fn start_capture(
         }),
         clock: Some(record_capture::CaptureClock::new()),
     };
+    let system_audio_lease = system_audio_capture::reserve(system_audio)?;
     let stop = Arc::new(AtomicBool::new(false));
     let reservation = reserve_capture(capture_id.clone(), stop.clone())?;
     let stop_for_thread = stop.clone();
@@ -717,10 +718,9 @@ pub fn start_capture(
         .name(format!("cut-capture-{capture_id}"))
         .spawn(move || {
             let _reservation = reservation;
-            // Linux/Windows capture system audio beside the screen backend. The
-            // orchestrator owns and joins this worker before project.json signals
-            // completion; macOS owns its Core Audio tap inside the native capture
-            // backend so it can stop exactly with the ScreenCaptureKit boundary.
+            let _system_audio_lease = system_audio_lease;
+            // Linux/Windows capture system audio beside the screen backend and
+            // join it before completion; macOS owns its tap inside native capture.
             let system_audio_worker = if system_audio && !cfg!(target_os = "macos") {
                 let sys_out = out_dir.join("system.wav");
                 let sys_log = log_path.clone();

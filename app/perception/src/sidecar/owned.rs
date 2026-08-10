@@ -49,6 +49,32 @@ pub fn run_instruments_owned_progress(
         model,
         progress,
         Some(control),
+        true,
+    )
+}
+
+/// Run a caller-owned instrument pass without reading or writing the normal
+/// project perception cache. Historic render verification publishes its own
+/// immutable receipt and must not create a predictable temporary cache leaf.
+pub fn run_instruments_owned_ephemeral(
+    media_path: &Path,
+    receipts_dir: &Path,
+    asset_id: &str,
+    asset_hash: &str,
+    set: InstrumentSet,
+    model: Option<&str>,
+    control: &cut_media::ffmpeg::OwnedProcessControl,
+) -> Result<PerceptionReport, CutError> {
+    run_instruments_with_owner(
+        media_path,
+        receipts_dir,
+        asset_id,
+        asset_hash,
+        set,
+        model,
+        None,
+        Some(control),
+        false,
     )
 }
 

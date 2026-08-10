@@ -133,7 +133,7 @@ pub struct ProfileProposal {
 /// in details (`waived_by_profile`, `waiver_reason`, `measured_pass`).
 /// Unconditional by design: under the profile the check is non-gating
 /// whatever it measured — predictable contract, zero hidden branches.
-fn waive(mut check: CheckResult, profile: FootageProfile, reason: &str) -> CheckResult {
+pub(crate) fn waive(mut check: CheckResult, profile: FootageProfile, reason: &str) -> CheckResult {
     let measured_pass = check.pass;
     // details is always a JSON object for our checks; wrap defensively if not.
     if !check.details.is_object() {
@@ -2039,45 +2039,32 @@ pub fn run_all_with_profile(
 ) -> Vec<CheckResult> {
     let active = profile.unwrap_or(FootageProfile::TalkingHead);
     let proposal = propose_profile(transcripts, facts);
-    // uniform_border is NOT profile-dependent: a baked-in margin is a
-    // defect on talking-head AND silent-screen-demo footage. It is deliberately
-    // kept OUT of the SilentScreenDemo waive() list — screen demos are exactly
-    // where the OBS canvas/window-mismatch margin appears, so waiving it there
-    // would blind the receipt to the defect (see the
-    // uniform_border fn header). Same gating check in both arms.
-    let mut checks = match active {
-        FootageProfile::TalkingHead => vec![
-            cut_on_word(edl, transcripts),
-            lufs(facts, -16.0, 2.0),
+    let output = crate::output_checks_with_profile(facts, active);
+    let captions = match active {
+        FootageProfile::TalkingHead => caption_presence(project, edl),
+        FootageProfile::SilentScreenDemo => waive(
             caption_presence(project, edl),
-            black_or_frozen_frames(facts),
-            uniform_border(facts),
-            silence_at_edges(facts, 500),
-            duration_matches_edl(edl, facts, project.settings.fps, project.settings.audio_rate),
-        ],
-        FootageProfile::SilentScreenDemo => vec![
-            cut_on_word(edl, transcripts),
-            waive(
-                lufs(facts, -16.0, 2.0),
-                active,
-                "silent-by-design footage — the spoken-content loudness target does not apply; measured values remain in evidence",
-            ),
-            waive(
-                caption_presence(project, edl),
-                active,
-                "no speech — caption absence is correct for a silent screen demo",
-            ),
-            black_or_frozen_frames_screen_demo(facts),
-            // NOT waived (see above): a margin is a defect on a screen demo too.
-            uniform_border(facts),
-            waive(
-                silence_at_edges(facts, 500),
-                active,
-                "fully silent footage — every edge is silent by design, the padding budget is meaningless",
-            ),
-            duration_matches_edl(edl, facts, project.settings.fps, project.settings.audio_rate),
-        ],
+            active,
+            "no speech — caption absence is correct for a silent screen demo",
+        ),
     };
+    // Keep the long-standing canonical receipt order. Only the four
+    // rendered-output checks are delegated, so timeline-dependent checks keep
+    // their original snapshot inputs here.
+    let mut checks = vec![
+        cut_on_word(edl, transcripts),
+        output.lufs,
+        captions,
+        output.black_or_frozen_frames,
+        output.uniform_border,
+        output.silence_at_edges,
+        duration_matches_edl(
+            edl,
+            facts,
+            project.settings.fps,
+            project.settings.audio_rate,
+        ),
+    ];
     // cut_on_beat: a measurement receipt appended ONLY when a placed asset
     // carries a beat grid (a music-driven edit) — talking-head footage has no
     // music, so it never clutters the common receipt. Inserted before the

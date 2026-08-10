@@ -5,7 +5,7 @@
 // compatibility re-exports.
 
 import type {
-  BrandKit, CutError,
+  BrandKit, CheckResult, CutError,
   JobRecord,
   OpRecord,
   Project,
@@ -73,6 +73,26 @@ export interface RestoreResult {
   op_ids: string[]
   mode?: 'rebase'
   rebased_over?: string[]
+}
+
+/** Immediate verify.rerun handle. The independently persisted result arrives
+ * in jobs.status and never replaces the source RenderReceipt. */
+export interface OutputCheckRerunHandle {
+  job_id: string
+  render_id: string
+  output_hash: string
+}
+
+export interface OutputCheckRerun {
+  render_id: string
+  source_receipt_id: string
+  verification_receipt: string
+  output_hash: string
+  checked_at: string
+  scope: 'rendered_output'
+  profile: 'talking_head' | 'silent_screen_demo'
+  checks: CheckResult[]
+  pass: boolean
 }
 
 /** render.storyboard result — a contact-sheet JPEG of the composed timeline:
@@ -1008,6 +1028,38 @@ export interface ProjectHealthPageCounts {
   filmstrip_not_applicable: number
 }
 
+export interface ProjectEditingCacheCategory {
+  kind: 'proxies' | 'thumbnails'
+  status: 'ready' | 'partial'
+  bytes: number
+  files: number
+  reclaimable_bytes: number
+  reclaimable_files: number
+  scanned_entries: number
+  skipped_entries: number
+  truncated: boolean
+  entry_limit: number
+  latest_modified_ms?: number
+}
+
+export interface ProjectEditingCache {
+  status: 'ready' | 'partial'
+  bytes: number
+  files: number
+  reclaimable_bytes: number
+  reclaimable_files: number
+  cleanup_preview: {
+    status: 'ready' | 'blocked'
+    minimum_age_ms: number
+    aged_unreferenced_bytes: number
+    aged_unreferenced_files: number
+    recent_unreferenced_bytes: number
+    recent_unreferenced_files: number
+  }
+  latest_modified_ms?: number
+  categories: ProjectEditingCacheCategory[]
+}
+
 export interface ProjectHealthResult {
   schema: 'shellx-cut/project-health/1'
   project_revision?: string
@@ -1018,6 +1070,8 @@ export interface ProjectHealthResult {
     snapshot: { status: 'not_present' | 'verified' | 'rejected'; prefix_ops?: number }
     notices: ProjectHealthNotice[]
   }
+  /** First-page-only, path-free inventory of rebuildable proxies/thumbnails. */
+  editing_cache?: ProjectEditingCache
   media: {
     status: 'ready' | 'unavailable'
     asset_count: number
@@ -1075,6 +1129,17 @@ export interface CaptureRecoveryItem {
 export interface ScreenRecordRecoveryStatusResult {
   captures: CaptureRecoveryItem[]
   next_cursor: string | null
+}
+
+export interface ScreenRecordSystemAudioProbeResult {
+  supported: boolean
+  live: boolean
+  backend: string
+  window_ms: number
+  first_packet_offset_ms: number | null
+  sample_frames: number
+  signal_detected: boolean
+  detail: string
 }
 
 export interface McpSelfTestResult {
@@ -1275,6 +1340,7 @@ export interface VerbResults {
   'media.waveform': Waveform
   'media.check': MediaCheckResult
   'project.health': ProjectHealthResult
+  'screen_record.system_audio_probe': ScreenRecordSystemAudioProbeResult
   'screen_record.recovery_status': ScreenRecordRecoveryStatusResult
   'media.relink': {
     asset: string
@@ -1425,6 +1491,7 @@ export interface VerbResults {
     note?: string
   }
   'verify.checks': RenderReceipt
+  'verify.rerun': OutputCheckRerunHandle
   'verify.pregate': PregateReport
   'edit.restore': RestoreResult
   'render.storyboard': StoryboardResult

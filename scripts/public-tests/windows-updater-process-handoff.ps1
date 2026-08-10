@@ -1,12 +1,19 @@
 $ErrorActionPreference = "Stop"
 
-$probeRoot = Join-Path ([IO.Path]::GetTempPath()) ("shellx-cut-updater-handoff-" + [guid]::NewGuid().ToString("N"))
+$qualificationRoot = if ($env:SHELLX_CUT_WINDOWS_TEST_ROOT) {
+    [IO.Path]::GetFullPath($env:SHELLX_CUT_WINDOWS_TEST_ROOT)
+} else {
+    "C:\CutQ\shellx-cut"
+}
+$runsRoot = Join-Path $qualificationRoot "runs"
+$probeRoot = Join-Path $runsRoot ("updater-handoff-" + [guid]::NewGuid().ToString("N"))
 $installDir = Join-Path $probeRoot "installed"
 $decoyDir = Join-Path $probeRoot "other"
 $ownedProcess = $null
 $decoyProcess = $null
 
 try {
+    New-Item -ItemType Directory -Path $runsRoot -Force | Out-Null
     New-Item -ItemType Directory -Path $installDir, $decoyDir | Out-Null
     $systemPing = Join-Path $env:WINDIR "System32\ping.exe"
     $ownedExe = Join-Path $installDir "cutd.exe"

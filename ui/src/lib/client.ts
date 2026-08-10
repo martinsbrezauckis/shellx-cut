@@ -651,6 +651,7 @@ export interface VerbArgs {
   // Integrated Cut recorder (doctor + autoedit + the polish orchestrator
   // + a fenced file export). config (autoedit) is accepted but currently ignored.
   'screen_record.doctor': { warm_mic?: boolean }
+  'screen_record.system_audio_probe': { max_ms?: number }
   'screen_record.recovery_status': { after?: string; limit?: number }
   // Live duration-bounded capture. `start` launches an in-process
   // recorder thread and returns a capture_id; `stop` polls for the
@@ -691,7 +692,7 @@ export interface VerbArgs {
     rationale?: string
   }
   'assets.generated_list': { kind?: 'image' | 'video'; limit?: number }
-  'agent.chat': { message: string; attachments?: string[]; agent?: 'claude' | 'codex' | 'grok'; model?: string; timeout_ms?: number }
+  'agent.chat': { message: string; attachments?: string[]; agent?: 'claude' | 'codex' | 'grok' | 'antigravity'; model?: string; timeout_ms?: number }
   'plugins.list': Record<string, never>
   'plugins.enable': { name: string; enabled?: boolean; rationale?: string }
   'plugins.call': { plugin: string; verb: string; args?: Record<string, unknown>; rationale?: string }
@@ -730,6 +731,7 @@ export interface VerbArgs {
   'render.qc': { reframe_id: string; preset?: 'talking_head' | 'sports' | 'pets' | 'cars' | 'general'; rationale?: string }
 
   'verify.checks': { render_id?: string }
+  'verify.rerun': { render_id: string }
   // backend selects a rung of the judge access ladder. "auto" (default; "cli"
   // is a backward-compatible alias) walks claude→codex→antigravity→grok and
   // runs the first detected subscription CLI; a named rung forces it (honest

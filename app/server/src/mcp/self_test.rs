@@ -1,13 +1,12 @@
 //! Read-only installed MCP proxy self-test used by Settings > Agent control.
 
+use super::MAX_TOOLS_LIST_BYTES;
 use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
 use serde_json::{json, Value};
 use std::time::Duration;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
-const MAX_TOOLS_LIST_BYTES: usize = 384 * 1024;
-
 /// Exercise the exact current executable's MCP stdio proxy against this served
 /// engine. Matching the doctor report's bound address proves that the child
 /// reached this state holder rather than opening an independent runtime.

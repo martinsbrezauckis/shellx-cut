@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(reg.schema, "shellx-cut/verbs/1");
         assert_eq!(
             reg.verbs.len(),
-            262,
+            264,
             "verb count is a deliberate-contract tripwire: bump this AND README + \
              skill/shellx-cut/reference.md when verbs.json changes"
         );

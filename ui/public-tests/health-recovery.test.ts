@@ -2,9 +2,15 @@ import { readFileSync } from 'node:fs'
 import { strict as assert } from 'node:assert'
 import {
   healthRecoveryRows,
+  journalReplaySummary,
   mergeProjectHealthPage,
   type AggregatedProjectHealth,
 } from '../src/panels/Environment/healthRecoveryModel'
+import {
+  editingCacheRow,
+  formatCacheBytes,
+  formatCacheChange,
+} from '../src/panels/Environment/cacheHealthModel'
 import type { CaptureRecoveryItem, ProjectHealthResult } from '../src/lib/clientResults'
 import {
   loadCaptureRecovery,
@@ -16,6 +22,14 @@ function page(overrides: Partial<ProjectHealthResult> = {}): ProjectHealthResult
     schema: 'shellx-cut/project-health/1',
     project_revision: 'op_000001',
     journal: { status: 'verified', log_records: 1, cache: 'matched', snapshot: { status: 'not_present' }, notices: [] },
+    editing_cache: {
+      status: 'ready', bytes: 1536, files: 2, reclaimable_bytes: 512, reclaimable_files: 1, latest_modified_ms: 1_000,
+      cleanup_preview: { status: 'ready', minimum_age_ms: 86_400_000, aged_unreferenced_bytes: 512, aged_unreferenced_files: 1, recent_unreferenced_bytes: 0, recent_unreferenced_files: 0 },
+      categories: [
+        { kind: 'proxies', status: 'ready', bytes: 1024, files: 1, reclaimable_bytes: 0, reclaimable_files: 0, scanned_entries: 1, skipped_entries: 0, truncated: false, entry_limit: 20_000, latest_modified_ms: 1_000 },
+        { kind: 'thumbnails', status: 'ready', bytes: 512, files: 1, reclaimable_bytes: 512, reclaimable_files: 1, scanned_entries: 1, skipped_entries: 0, truncated: false, entry_limit: 20_000, latest_modified_ms: 1_000 },
+      ],
+    },
     media: {
       status: 'ready', asset_count: 4, checked_count: 2,
       page: {
@@ -70,7 +84,7 @@ const first = mergeProjectHealthPage(null, page())
 assert.equal(first.complete, false, 'partial revision-bound page stays incomplete')
 assert.equal(rows(first).find((row) => row.id === 'media')?.state, 'checking', 'partial media can never be green')
 
-const final = mergeProjectHealthPage(first, page({
+const continuation = page({
   media: {
     ...page().media,
     checked_count: 2,
@@ -82,11 +96,47 @@ const final = mergeProjectHealthPage(first, page({
       { asset: 'a4', source: 'available', proxy: 'available', filmstrip: 'available' },
     ],
   },
-}))
+})
+delete continuation.editing_cache
+const final = mergeProjectHealthPage(first, continuation)
 assert.equal(final.complete, true, 'final page completes the aggregate')
 assert.equal(final.media.checked_count, 4, 'aggregate preserves all checked assets')
 assert.equal(final.media.page.offline, 1, 'aggregate keeps page counts')
+assert.deepEqual(final.editing_cache, first.editing_cache, 'first-page cache inventory survives continuation pages')
 assert.equal(rows(final).find((row) => row.id === 'media')?.state, 'recoverable', 'offline source is an explicit recovery state')
+
+assert.equal(formatCacheBytes(1536), '1.5 KB', 'cache bytes use a compact binary-unit summary')
+assert.equal(formatCacheChange(1_000, 3_601_000), 'Latest cache change was 1 hour ago.', 'cache freshness is named as a file-change fact, not last use')
+const cacheRow = editingCacheRow(first.editing_cache, true, false, 3_601_000)
+assert.equal(cacheRow.state, 'healthy', 'a complete bounded cache inventory is healthy')
+assert.equal(cacheRow.summary, '1.5 KB of rebuildable proxies and thumbnails.', 'cache summary names only the rebuildable classes')
+assert.match(cacheRow.detail ?? '', /2 cached files\. 512 B across 1 file appears unreferenced and rebuildable\. 512 B across 1 file has not changed for at least 24 hours\. Active work must still be rechecked before any future removal\. Latest cache change was 1 hour ago\. Nothing is removed from this page\./, 'cache detail discloses the aged preview, freshness, and the read-only boundary')
+assert.equal(editingCacheRow({ ...first.editing_cache!, status: 'partial' }, true, false, 3_601_000).state, 'attention', 'a skipped or truncated cache scan never becomes green')
+assert.match(editingCacheRow({ ...first.editing_cache!, status: 'partial' }, true, false, 3_601_000).summary, /^At least /, 'a partial scan never presents its bytes as complete')
+assert.match(editingCacheRow({ ...first.editing_cache!, status: 'partial', cleanup_preview: { ...first.editing_cache!.cleanup_preview, status: 'blocked' } }, true, false).detail ?? '', /Cleanup preview is blocked/, 'a partial inventory blocks cleanup preview')
+assert.equal(editingCacheRow({ ...first.editing_cache!, bytes: 0, files: 0, reclaimable_bytes: 0, reclaimable_files: 0, cleanup_preview: { ...first.editing_cache!.cleanup_preview, aged_unreferenced_bytes: 0, aged_unreferenced_files: 0 } }, true, false).summary, 'No rebuildable proxies or thumbnails are stored.', 'an empty complete inventory stays explicit')
+
+assert.equal(
+  journalReplaySummary({
+    ...final,
+    journal: { ...final.journal, log_records: 120, snapshot: { status: 'verified', prefix_ops: 100 } },
+  }),
+  'The project cache matches durable history. A verified snapshot covers 100 records; 20 newer records will replay on reopen.',
+  'journal health explains the bounded replay tail rather than exposing only an opaque snapshot status',
+)
+assert.equal(
+  journalReplaySummary({
+    ...final,
+    journal: { ...final.journal, cache: 'rebuilt', log_records: 3, snapshot: { status: 'rejected' } },
+  }),
+  'The project cache was rebuilt from durable history. The prior snapshot was rejected, so all 3 durable records will replay on reopen.',
+  'rejected snapshots and cache rebuilds remain explicit without claiming data loss',
+)
+assert.match(
+  rows(final).find((row) => row.id === 'journal')?.detail ?? '',
+  /No replay snapshot is stored, so all 1 durable record will replay on reopen/,
+  'Health and Recovery surfaces replay cost in the existing journal row',
+)
 
 assert.throws(
   () => mergeProjectHealthPage(first, page({ project_revision: 'op_000002' })),
@@ -113,6 +163,23 @@ assert.equal(
   'project-switch cancellation is never called a true failure',
 )
 assert.equal(rows(final).find((row) => row.id === 'capture')?.state, 'healthy', 'an empty completed capture inventory is healthy only after a successful read')
+assert.equal(rows(final).find((row) => row.id === 'capture')?.detail, undefined, 'absence of an audio receipt never becomes a system-audio claim')
+
+const audioEvidence = captureInventory(['complete'])
+audioEvidence.captures[0]!.receipt!.audio_first_packet_offset_ms = 209
+const audioEvidenceRow = healthRecoveryRows({
+  hasProject: true,
+  projectHealth: final,
+  jobs: null,
+  captureDoctor: {
+    ready: true,
+    cards: [{ name: 'system_audio', status: 'unknown', detail: 'Doctor did not open a live stream.' }],
+  },
+  captureRecovery: audioEvidence,
+  toolchain: null,
+}).find((row) => row.id === 'capture')
+assert.equal(audioEvidenceRow?.state, 'healthy', 'durable audio packet evidence does not change capture recovery health')
+assert.match(audioEvidenceRow?.detail ?? '', /System audio timing was recorded for 1 capture/, 'Health reports sealed packet-timing evidence without changing passive Doctor readiness')
 
 function capture(capture_id: string, state: 'complete' | 'recovered' | 'quarantined' | 'interrupted' | 'owner_ambiguous' | 'torn_journal' | 'corrupt' = 'complete', source?: string | null): CaptureRecoveryItem {
   const receipt = state === 'owner_ambiguous' || state === 'torn_journal' || state === 'corrupt'
@@ -339,6 +406,21 @@ assert.equal(
 )
 assert.equal(
   healthRecoveryRows({
+    hasProject: true,
+    projectHealth: final,
+    jobs: null,
+    captureDoctor: {
+      ready: true,
+      cards: [{ name: 'system_audio', status: 'unknown', detail: 'A recording has not proved audio delivery yet.' }],
+    },
+    captureRecovery: captureInventory(),
+    toolchain: null,
+  }).find((row) => row.id === 'capture')?.state,
+  'healthy',
+  'the optional passive system-audio card does not override verified screen readiness',
+)
+assert.equal(
+  healthRecoveryRows({
     hasProject: false,
     projectHealth: null,
     jobs: null,
@@ -367,6 +449,9 @@ const surface = readFileSync(new URL('../src/panels/Environment/HealthRecovery.t
 for (const selector of ['data-cut-health-refresh', 'data-cut-health-row', 'data-cut-health-capture', 'data-cut-health-open-assets', 'data-cut-health-open-recording', 'data-cut-health-open-toolchain']) {
   assert.ok(surface.includes(selector), `Health & Recovery has stable ${selector}`)
 }
+for (const evidence of ['data-cut-health-refresh-id', 'data-cut-health-settled', 'data-cut-health-capture-complete', 'data-cut-health-capture-count']) {
+  assert.ok(surface.includes(evidence), `Health & Recovery exposes settled model evidence through ${evidence}`)
+}
 assert.ok(!surface.includes('media.relink'), 'Health & Recovery cannot relink media without an owning confirmed workflow')
 assert.ok(surface.includes('const doctorRefresh = useRef(onRefreshDoctor)'), 'ordinary App refresh callbacks are held in a ref')
 assert.ok(surface.includes('}, [projectSession, refresh])'), 'health loading does not rerun for ordinary project object updates')
@@ -374,5 +459,8 @@ assert.ok(surface.includes('setProjectHealthScanFailed(true)'), 'failed or revis
 assert.ok(surface.includes("loadCaptureRecovery((args) => callVerb('screen_record.recovery_status', args))"), 'capture recovery reads the recorder inventory rather than Doctor recovery fields')
 assert.ok(surface.includes('attempt(doctorRefresh.current())'), 'the system Doctor result is awaited inside the same request generation')
 assert.ok(surface.includes('setToolchainScanFailed(true)'), 'a failed system Doctor request cannot render the shared stale report as healthy')
+
+const recordSurface = readFileSync(new URL('../src/panels/Record/index.tsx', import.meta.url), 'utf8')
+assert.ok(recordSurface.includes("system_audio: 'System audio'"), 'Record gives the passive system-audio card a human label')
 
 console.log('health-recovery.test.ts passed')

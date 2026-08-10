@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "cut-core"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "chrono",
  "serde",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "cut-export"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "roxmltree 0.20.0",
  "serde",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "cut-media"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "cut-core",
  "fontdb",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "cut-perception"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "cut-core",
  "cut-media",
@@ -2466,7 +2466,7 @@ dependencies = [
 
 [[package]]
 name = "record-capture"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "ashpd",
  "cc",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "record-core"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "serde",
  "serde_json",
@@ -2501,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "record-engine"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "record-core",
  "serde",
@@ -2509,7 +2509,7 @@ dependencies = [
 
 [[package]]
 name = "record-recovery"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "cut-media",
  "getrandom 0.2.17",
@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "record-render"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "libc",
  "record-core",
@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.6.107"
+version = "0.6.108"
 dependencies = [
  "anyhow",
  "axum",

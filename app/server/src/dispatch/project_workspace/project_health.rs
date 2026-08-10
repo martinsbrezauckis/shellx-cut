@@ -7,7 +7,9 @@
 
 use super::*;
 
+mod cache_storage;
 mod media_page;
+use cache_storage::editing_cache_report;
 use media_page::{checked_media_page, unavailable_media_page};
 
 pub(super) const DEFAULT_HEALTH_LIMIT: usize = 64;
@@ -58,6 +60,9 @@ pub(super) async fn project_health(state: &AppState, args: Value) -> Result<Verb
         "journal".into(),
         journal_report(store, "verified", Some(record_count), None),
     );
+    if args.cursor.is_none() {
+        result.insert("editing_cache".into(), editing_cache_report(store));
+    }
     result.insert("media".into(), media);
     Ok(VerbResult::ok(Value::Object(result)))
 }

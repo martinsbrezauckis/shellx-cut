@@ -125,9 +125,8 @@ fn workspace_starts_empty_and_supported_providers_are_explicit() {
         .is_none());
     assert!(supported_headless_agent("claude"));
     assert!(supported_headless_agent("codex"));
-    assert!(!supported_headless_agent("grok"));
-    assert_eq!(unavailable_reason("codex"), None);
-    assert!(unavailable_reason("grok").unwrap().contains("not enabled"));
+    assert!(supported_headless_agent("grok"));
+    assert_eq!(supported_headless_agent("antigravity"), !cfg!(windows));
 }
 
 #[test]

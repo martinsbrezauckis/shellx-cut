@@ -54,7 +54,10 @@ route to the same surface registry.
   handoff.
 - Timeline editing: split, trim, ripple delete, move, insert, paste, add track,
   restore, markers (with labels and colors), speed, fades, crossfades,
-  transforms, crops, and undoable operation replay.
+  transforms, crops, and undoable operation replay. The selected-clip Inspector
+  offers both quick speed-ramp presets and a compact custom curve editor with
+  ordered, millisecond-accurate source-time points from 0.25× to 4×; invalid
+  or out-of-range curves stay unapplied with a concrete inline reason.
 - Imported picture and sound are linked by default. Moving or trimming either
   half moves or trims its exact counterpart atomically; deliberate split edits
   can opt out with `linked:false`.
@@ -97,8 +100,12 @@ route to the same surface registry.
 - Viewing aids: fullscreen preview (`f`), rule-of-thirds and title/action safe
   guides (`g`).
 - Keyboard remapping: a central keymap with a Settings editor
-  (press-to-rebind, conflict detection, reset), and the `?` overlay derived
-  from the live bindings.
+  (press-to-rebind, conflict detection, reset), a versioned portable JSON
+  profile with atomic validation and forward-compatible unknown-key handling,
+  familiar Cut/Premiere-style/Resolve-style/Final Cut-style presets scoped to
+  commands Cut actually supports, and the `?` overlay derived from the live
+  bindings. Shortcut profiles contain only command IDs and keys—never project
+  or media data.
 - Transcript editing: word-level cuts, non-destructive Ignore for words that
   should be skipped by captions/reels, silence removal, filler removal, search,
   and transcript-based assembly.
@@ -199,14 +206,17 @@ route to the same surface registry.
   revert rather than risking rollback of someone else's work. A categorized
   prompt library pre-fills eight common Polish, Repurpose, Speech, and Review
   outcomes without sending or spending an agent turn until the user presses Send.
-  Agent Chat launches the user's installed Claude Code or Codex CLI. Claude uses
+  Agent Chat launches the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses
   Cut's pinned 2.1.224 contained route in a disposable cwd with native CLI tools
   disabled. Codex keeps the user's normal configuration, native sandbox, and
-  permissions; Cut neither copies nor rewrites its login files. Both routes add
-  a filtered Cut MCP surface for inspecting the open project and applying
-  reversible in-project edits. Grok remains visible in Doctor but is disabled
-  until the next release. Review every resulting edit, especially when using a
-  local CLI that retains its own native tools and integrations.
+  permissions; Cut neither copies nor rewrites its login files. Grok receives a
+  disposable config/home with native tools disabled and only Cut's filtered MCP
+  route, while its existing login file remains in place. Antigravity keeps its
+  normal settings, sandbox, and permissions while Cut adds a workspace-local MCP
+  entry; that route currently requires macOS or Linux. Each route can inspect
+  the open project and apply reversible in-project edits. Review every resulting
+  edit, especially when using a local CLI that retains its own native tools and
+  integrations.
 
 ## Generate
 
@@ -320,8 +330,32 @@ route to the same surface registry.
   storyboard/contact sheets, and subject-aware reframe. Social bundles include
   an atomic hashed manifest and an honest ready/needs-review/blocked package
   verdict across platform QC, caption writes, thumbnails, and brand checks.
+  Active background work stays visible after a UI reload through the durable job
+  list, with plain-language task names, the worker's latest durable phase,
+  queued/running progress, and a direct cancellation control in the status bar.
+  Cancellation shows its bounded stopping phase and prevents duplicate requests
+  while Cut drains the task's owned worker and child processes. Limited queued
+  work names its stable position among jobs waiting for the same local capacity
+  and that resource's slot count; the durable list is refreshed even when a
+  progress event was missed. A running batch also names the exact active render
+  job it is currently waiting on; Cut does not imply that every job is retryable.
+- Settings > Health & Recovery explains whether the disposable project cache
+  matched or was rebuilt from durable history, whether a replay snapshot was
+  accepted, and how many newer journal records still replay on reopen. It is a
+  read-only projection of the existing revision-bound health check. The same
+  page reports the bounded apparent size and latest file-change time of only
+  recognized flat rebuildable proxies and thumbnails, including the portion no
+  longer referenced by current project assets. Its cleanup preview shows which
+  unreferenced files have crossed a 24-hour file-change safety window, keeps
+  newer files visibly inside that window, and blocks on a partial scan. It does
+  not call file-change time "last used" or infer that active work has stopped,
+  does not follow symlinks or unexpected directories, excludes foreign files,
+  exports, captures, receipts, and source media, and offers no purge action.
 - Verification receipts: deterministic checks, judge review, pregate, pacing,
   captions, delivery, brand, loudness, video scopes, and related fix loops.
+  Review can re-run the output-only checks for one exact persisted render; Cut
+  revalidates its receipt/hash/profile, never re-renders, and writes a separate
+  immutable verification receipt without replacing the original evidence.
 - `verify.judge` ships with its access-ladder adapter instead of requiring a
   hidden external script. It samples the rendered output and drives the first
   working local subscription CLI in the order Claude, Codex, Antigravity, then
@@ -345,6 +379,9 @@ route to the same surface registry.
 - Review loop: clip-anchored comments, draft suggested verb changes, apply
   drafted changes under an auto-checkpoint, resolve review comments, export an
   offline render-bound review page, and atomically import its timecoded feedback.
+  Adjacent edits from one durable compound action appear in the OPS feed as one
+  collapsible, human-labelled unit; expanding it keeps every individual edit and
+  its existing review or undo action available.
 - Export: NLE XML, OTIO, EDL, SRT, VTT, chapters, transcript, frame, range,
   audio, GIF, and platform publish presets. Desktop OTIO import is opened from
   Assets, runs a read-only track/media preflight, confirms a source hash, then
@@ -358,9 +395,20 @@ route to the same surface registry.
 - Live camera capture is parked for this release. The UI says so directly and
   does not show unusable enable/position/size controls; screen, microphone and
   supported system-audio recording remain available.
-- Screen recorder doctor, start, stop, studio-event, autoedit, polish, and
+- Screen recorder doctor, system-audio probe, start, stop, studio-event, autoedit, polish, and
   export verbs. `screen_record.autoedit` is the plan step reached through the
   Stop/auto-edit workflow and agent API; it is not a separate visible button.
+- Doctor reports system audio as a separate optional card. A compiled backend
+  remains `unknown` until an actual recording proves packets; Doctor never opens
+  a loopback/tap stream or triggers macOS Audio Capture consent, and this
+  passive card does not block ordinary screen recording.
+- Record includes an explicit **Test system audio** action. It opens only the
+  native loopback/process-tap path for 0.5–5 seconds, may show macOS Audio
+  Capture consent, and reports green only after a real packet arrives with a
+  detected signal; silent packets remain a routing warning. Play a short sound
+  during the test. Temporary Linux/Windows WAV data is held in an
+  exclusive private directory and removed before return; macOS samples stay in
+  memory. The action never starts screen capture or creates a project.
 - Stop/auto-edit preserves the finalized capture frame rate in its plan. MP4
   recorder export normalizes sparse or variable-rate source timestamps to that
   planned rate, so a high nominal codec rate cannot lengthen the finished clip;
@@ -389,6 +437,10 @@ route to the same surface registry.
   as evidence reported in that check, and exposes only the existing Open Record route.
   Its cursor must be an emitted capture id, and both its capture and nested receipt
   states use lowercase snake case.
+- When a sealed capture receipt contains a measured system-audio first-packet
+  offset, Health & Recovery reports that historical packet-timing evidence for
+  the project. It does not reinterpret the evidence as a current machine-level
+  permission grant, and it never opens an audio stream while checking.
 - Microphone and system-audio samples stream to same-directory partial
   WAV files with bounded memory; Cut publishes each raw stream only after its
   header finalizes, and ends the shared capture before classic WAV capacity can

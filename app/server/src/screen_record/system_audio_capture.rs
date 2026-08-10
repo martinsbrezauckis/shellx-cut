@@ -1,9 +1,11 @@
 //! Platform system-audio capture routed through the shared recorder clock.
 
+use crate::dispatch::parse_args;
 #[cfg(all(not(windows), not(target_os = "linux")))]
 use cut_core::error_codes;
-use cut_core::CutError;
+use cut_core::{CutError, VerbResult};
 use record_core::RecordError;
+use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 #[cfg(all(not(windows), not(target_os = "linux")))]
@@ -21,6 +23,49 @@ pub(crate) const SYSTEM_AUDIO_FINALIZE_GRACE: Duration = Duration::from_secs(2);
 /// forever.
 #[cfg(all(not(windows), not(target_os = "linux")))]
 const SYSTEM_AUDIO_MAX_RUNTIME: Duration = Duration::from_secs(24 * 60 * 60);
+const PROBE_WORKER_TIMEOUT: Duration = Duration::from_secs(17);
+
+pub(crate) fn reserve(enabled: bool) -> Result<Option<record_capture::SystemAudioLease>, CutError> {
+    enabled
+        .then(record_capture::reserve_system_audio)
+        .transpose()
+        .map_err(super::record_err)
+}
+
+/// Explicit short audio-delivery test. Unlike passive Doctor, this user action
+/// may open an OS permission prompt, but it creates no project or screen stream.
+pub(crate) async fn probe_handler(args: Value) -> Result<VerbResult, CutError> {
+    #[derive(serde::Deserialize, Default)]
+    struct Args {
+        max_ms: Option<u64>,
+    }
+
+    let args: Args = parse_args(args)?;
+    let max_ms = args.max_ms.unwrap_or(record_capture::DEFAULT_WINDOW_MS);
+    let worker = tokio::task::spawn_blocking(move || record_capture::probe_system_audio(max_ms));
+    let probe = match tokio::time::timeout(PROBE_WORKER_TIMEOUT, worker).await {
+        Ok(Ok(Ok(probe))) => probe,
+        Ok(Ok(Err(error))) => return Err(super::record_err(error)),
+        Ok(Err(error)) => {
+            return Err(CutError::new(
+                cut_core::error_codes::JOB_FAILED,
+                "system audio test worker failed",
+                error.to_string(),
+            ));
+        }
+        Err(_) => {
+            return Err(CutError::new(
+                cut_core::error_codes::SIDECAR,
+                "system audio test timed out",
+                "the bounded native audio worker did not return within 17 seconds",
+            )
+            .with_suggested_action(
+                "check the OS audio-capture permission, restart Cut if permission was just granted, then test again",
+            ));
+        }
+    };
+    Ok(VerbResult::ok(json!(probe)))
+}
 
 /// Poll a system-audio worker without consuming it so a caller can join only after
 /// completion is already known. This avoids an unbounded `JoinHandle::join` on a
@@ -161,10 +206,16 @@ pub(crate) fn capture_system_audio_until(
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_worker, worker_finished_within};
+    use super::{finalize_worker, worker_finished_within, PROBE_WORKER_TIMEOUT};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn probe_timeout_covers_activation_plus_the_largest_window() {
+        assert_eq!(PROBE_WORKER_TIMEOUT.as_secs(), 17);
+        assert!(PROBE_WORKER_TIMEOUT.as_millis() > 10_000 + 5_000);
+    }
 
     #[test]
     fn bounded_worker_wait_does_not_block_a_stalled_native_shutdown() {

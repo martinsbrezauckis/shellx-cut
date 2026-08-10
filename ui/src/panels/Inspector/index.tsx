@@ -335,7 +335,7 @@ export default function Inspector({ project, selectedClipId, playheadMs = 0, doc
                   speed={typeof sel.clip.speed === 'number' ? sel.clip.speed : 1}
                   reverse={!!sel.clip.reverse}
                   frozen={!!sel.clip.freeze}
-                  speedRampApplied={Boolean(sel.clip.speed_ramp)}
+                  speedRamp={sel.clip.speed_ramp}
                   srcDurMs={sel.clip.src_out_ms - sel.clip.src_in_ms}
                 />
                 <VideoInspectorTools
