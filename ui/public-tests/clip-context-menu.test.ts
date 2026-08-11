@@ -37,14 +37,9 @@
 
 import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
-import { registerHooks } from 'node:module'
+import { register } from 'node:module'
 
-registerHooks({
-  load(url, context, nextLoad) {
-    if (url.endsWith('.css')) return { format: 'module', source: 'export default {}', shortCircuit: true }
-    return nextLoad(url, context)
-  },
-})
+register('./lib/css-module-loader.mjs', import.meta.url)
 
 const { createElement } = await import('react')
 const { renderToStaticMarkup } = await import('react-dom/server')

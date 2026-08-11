@@ -1,9 +1,9 @@
 {
   "schemaVersion": "release-studio.public-export-identity.v2",
   "project": "shellx-cut",
-  "sourceCommit": "fcb1881d4507d4f30d6ef171f8abe90d6b5ab7ec",
-  "sourceTree": "475af6427f45bb2520765fb2ee67e9d8b10196c8",
-  "payloadSha256": "2ad0dd082c66c3ee755138d9164c82c37ffe8d5b008aa310db0079fafb9f75de",
-  "payloadFileCount": 868,
-  "payloadBytes": 15865280
+  "sourceCommit": "e615aa53a81859c6fabf56008a275c0e13ede841",
+  "sourceTree": "d4296662a122998a40c99656ef613fa1258ca14b",
+  "payloadSha256": "f0981289e4833ab5523e8b60e6511e79f9e342ef79422e57eb98aaf36d79f55b",
+  "payloadFileCount": 869,
+  "payloadBytes": 15865251
 }
