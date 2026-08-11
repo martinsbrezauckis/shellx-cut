@@ -320,9 +320,13 @@ mod tests {
         .unwrap();
         assert!(environment.clear_inherited);
         let vars: BTreeMap<_, _> = environment.vars.into_iter().collect();
+        let expected_auth_path = std::path::Path::new("/home/editor")
+            .join(".grok")
+            .join("auth.json")
+            .into_os_string();
         assert_eq!(
             vars.get(&OsString::from("GROK_AUTH_PATH")),
-            Some(&OsString::from("/home/editor/.grok/auth.json"))
+            Some(&expected_auth_path)
         );
         assert_eq!(
             vars.get(&OsString::from("GROK_CLAUDE_SKILLS_ENABLED")),
