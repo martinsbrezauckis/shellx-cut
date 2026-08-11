@@ -134,6 +134,14 @@ where
     if let Some(profile) = user_profile {
         vars.insert(OsString::from("USERPROFILE"), profile);
     }
+    // Windows CSPRNG initialization reaches system libraries through SystemRoot.
+    // A fully cleared environment without this OS-owned path makes Node-based CLIs
+    // abort before their own capability probe runs. Preserve only that runtime
+    // locator; credentials and caller-controlled integration variables stay absent.
+    #[cfg(windows)]
+    if let Some(system_root) = named(entries.clone(), "SystemRoot") {
+        vars.insert(OsString::from("SystemRoot"), system_root);
+    }
     for locale in ["LANG", "LC_ALL"] {
         if let Some(value) = named(entries.clone(), locale) {
             vars.insert(OsString::from(locale), value);

@@ -54,6 +54,35 @@ pub fn publish_new_synced(part: &Path, path: &Path) -> io::Result<()> {
     sync_parent(path)
 }
 
+/// Durably replace one existing local regular file with a finalized local stage.
+/// This is the file-sized counterpart to [`replace_synced`]: callers that build
+/// media in a private stage can atomically install it without loading the whole
+/// artifact into memory or exposing a truncate-in-place window.
+pub fn replace_file_synced(part: &Path, path: &Path) -> io::Result<()> {
+    ensure_plain_dir(part.parent())?;
+    ensure_plain_dir(path.parent())?;
+    let staged = open_regular_nofollow(part).map_err(|source| {
+        io::Error::new(
+            source.kind(),
+            format!("validate replacement staging file: {source}"),
+        )
+    })?;
+    staged.sync_all().map_err(|source| {
+        io::Error::new(
+            source.kind(),
+            format!("sync replacement staging file: {source}"),
+        )
+    })?;
+    drop(staged);
+    // Refuse to replace a link/reparse point or non-regular destination. The
+    // caller owns this exact file, but the validation keeps the primitive safe
+    // if an external actor races the surrounding capture directory.
+    drop(open_regular_nofollow(path)?);
+    replace(part, path)?;
+    open_regular_nofollow(path)?.sync_all()?;
+    sync_parent(path)
+}
+
 fn ensure_plain_dir(path: Option<&Path>) -> io::Result<()> {
     let Some(path) = path else {
         return Err(io::Error::new(

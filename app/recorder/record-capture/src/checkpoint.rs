@@ -2,9 +2,11 @@
 //! an `.open.mp4` path, closes that encoder, then atomically publishes the segment.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 use record_core::{error_codes, RecordError, Result};
-use record_recovery::{CheckpointFacts, ManifestOwner};
+use record_recovery::{CheckpointFacts, ManifestOwner, MediaFacts, PrivateStaging};
 
 use crate::CheckpointConfig;
 
@@ -80,6 +82,17 @@ impl Checkpoints {
     ) -> Result<()> {
         let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
+        self.publish_with_tools(sequence, staging, facts, &ffmpeg, &ffprobe)
+    }
+
+    fn publish_with_tools(
+        &mut self,
+        sequence: u64,
+        staging: &Path,
+        facts: CheckpointFacts,
+        ffmpeg: &str,
+        ffprobe: &str,
+    ) -> Result<()> {
         // A closed encoder file is still not a checkpoint until both the container
         // facts and a full decode succeed. The manifest never names an open or merely
         // non-empty MP4.
@@ -88,8 +101,9 @@ impl Checkpoints {
                 "native checkpoint result is not a local regular file",
             ));
         }
-        let media = record_recovery::verify_media(&ffmpeg, &ffprobe, staging)
+        let media = record_recovery::verify_media(ffmpeg, ffprobe, staging)
             .map_err(|e| error(&e.to_string()))?;
+        let media = normalize_video_only_checkpoint(staging, media, ffmpeg, ffprobe)?;
         self.owner
             .publish(sequence, staging, facts, media)
             .map_err(|e| error(&e.to_string()))?;
@@ -106,6 +120,58 @@ impl Checkpoints {
         )
         .map_err(|e| error(&e.to_string()))
     }
+}
+
+/// `windows-capture` 2.x always describes an audio stream to Media Foundation,
+/// even when its audio source is disabled. The resulting checkpoint therefore
+/// can carry a non-authoritative AAC stream. Checkpoints are deliberately video-only because
+/// microphone and system audio have independent capture clocks. Strip any native
+/// encoder audio into a private stage, verify the video facts, then atomically
+/// replace only the still-owned open checkpoint before immutable publication.
+fn normalize_video_only_checkpoint(
+    staging: &Path,
+    media: MediaFacts,
+    ffmpeg: &str,
+    ffprobe: &str,
+) -> Result<MediaFacts> {
+    if !media.has_audio {
+        return Ok(media);
+    }
+    let parent = staging
+        .parent()
+        .ok_or_else(|| error("checkpoint staging path has no parent"))?;
+    // Use the compact WGC reservation shape here as well: project paths can
+    // legitimately sit close to the upstream WinRT path limit.
+    let normalized = PrivateStaging::create_windows_wgc(parent)
+        .map_err(|cause| error(&format!("reserve video-only checkpoint: {cause}")))?;
+    let control =
+        cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(60), || false);
+    let output = cut_media::ffmpeg::run_owned_command(
+        Command::new(ffmpeg)
+            .args(["-v", "error", "-n", "-i"])
+            .arg(staging)
+            .args(["-map", "0:v:0", "-an", "-c:v", "copy"])
+            .arg(normalized.path()),
+        &control,
+        "strip native checkpoint audio",
+    )
+    .map_err(|cause| error(&cause.to_string()))?;
+    if !output.status.success() {
+        return Err(error("ffmpeg could not strip native checkpoint audio"));
+    }
+    let video_only = record_recovery::verify_media(ffmpeg, ffprobe, normalized.path())
+        .map_err(|cause| error(&cause.to_string()))?;
+    if video_only.has_audio
+        || video_only.decoded_video_frames != media.decoded_video_frames
+        || video_only.duration_ms.abs_diff(media.duration_ms) > 20
+    {
+        return Err(error(
+            "video-only checkpoint does not preserve decoded frames and duration",
+        ));
+    }
+    record_recovery::replace_file_synced(normalized.path(), staging)
+        .map_err(|cause| error(&format!("install video-only checkpoint: {cause}")))?;
+    Ok(video_only)
 }
 
 fn error(cause: &str) -> RecordError {
@@ -152,5 +218,59 @@ mod tests {
             )
             .is_err());
         assert_eq!(fs::read(target).unwrap(), b"outside remains untouched");
+    }
+
+    #[test]
+    fn checkpoint_strips_native_encoder_audio_before_publication() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        drop(ManifestOwner::begin(root.path(), CaptureStart::new("capture", 100)).unwrap());
+        let config = CheckpointConfig {
+            manifest_dir: root.path().display().to_string(),
+            interval_ms: 100,
+        };
+        let mut checkpoints = Checkpoints::open(Some(&config)).unwrap().unwrap();
+        let (sequence, staging) = checkpoints.begin_windows_wgc(0).unwrap();
+        fs::write(&staging, b"native-with-audio").unwrap();
+
+        let ffmpeg = root.path().join("fake-ffmpeg");
+        let ffprobe = root.path().join("fake-ffprobe");
+        fs::write(
+            &ffmpeg,
+            "#!/bin/sh\nlast=\nfor arg in \"$@\"; do last=\"$arg\"; done\n[ \"$last\" = - ] && exit 0\nprintf video-only > \"$last\"\n",
+        )
+        .unwrap();
+        fs::write(
+            &ffprobe,
+            "#!/bin/sh\nlast=\nfor arg in \"$@\"; do last=\"$arg\"; done\nif grep -q video-only \"$last\"; then audio=; else audio=',{\"codec_type\":\"audio\",\"nb_read_frames\":\"1\"}'; fi\nprintf '{\"format\":{\"duration\":\"0.100\"},\"streams\":[{\"codec_type\":\"video\",\"nb_read_frames\":\"3\"}%s]}' \"$audio\"\n",
+        )
+        .unwrap();
+        for tool in [&ffmpeg, &ffprobe] {
+            fs::set_permissions(tool, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        checkpoints
+            .publish_with_tools(
+                sequence,
+                &staging,
+                record_recovery::CheckpointFacts {
+                    start_ms: 1,
+                    end_ms: 101,
+                    event_offset_ms: 1,
+                    audio_offset_ms: None,
+                },
+                ffmpeg.to_str().unwrap(),
+                ffprobe.to_str().unwrap(),
+            )
+            .unwrap();
+
+        let checkpoint = &checkpoints.owner.manifest().checkpoints[0];
+        assert!(!checkpoint.media.as_ref().unwrap().has_audio);
+        assert_eq!(checkpoint.media.as_ref().unwrap().decoded_video_frames, 3);
+        assert_eq!(
+            fs::read(root.path().join("checkpoints/segment-000000.mp4")).unwrap(),
+            b"video-only"
+        );
     }
 }

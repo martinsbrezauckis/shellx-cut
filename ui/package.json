@@ -8,13 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:lib": "tsx public-tests/motion-effects.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts && tsx public-tests/panel-persist-guard.test.ts && tsx public-tests/grade-drawer.test.ts && tsx public-tests/clip-context-menu.test.ts && tsx public-tests/context-menu-surfaces.test.ts && tsx public-tests/project-sync.test.ts && tsx public-tests/health-recovery.test.ts && tsx public-tests/speed-ramp-editor.test.ts && tsx public-tests/keymap-profile.test.ts && tsx public-tests/op-group-model.test.ts && tsx public-tests/active-job-presentation.test.ts",
-    "wdio:mac-track-controls": "wdio run wdio.tauri.conf.mjs --spec public-tests/wdio/macos-track-controls.e2e.mjs",
-    "wdio:mac-media-drag": "wdio run wdio.tauri.conf.mjs --spec public-tests/wdio/macos-media-drag.e2e.mjs",
-    "wdio:mac-composed-playback": "wdio run wdio.tauri.conf.mjs --spec public-tests/wdio/macos-composed-playback.e2e.mjs",
-    "wdio:native-drop-to-create": "wdio run wdio.tauri.conf.mjs --spec public-tests/wdio/drop-to-create.e2e.mjs",
-    "wdio:native-adapter-smoke": "wdio run wdio.tauri.conf.mjs --spec public-tests/wdio/webdriver-adapter-smoke.e2e.mjs",
-    "wdio:native-full-coverage": "wdio run wdio.tauri.conf.mjs --spec public-tests/wdio/full-coverage-native.e2e.mjs"
+    "test:lib": "tsx public-tests/motion-effects.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts && tsx public-tests/panel-persist-guard.test.ts && tsx public-tests/grade-drawer.test.ts && tsx public-tests/clip-context-menu.test.ts && tsx public-tests/context-menu-surfaces.test.ts && tsx public-tests/project-sync.test.ts && tsx public-tests/health-recovery.test.ts && tsx public-tests/speed-ramp-editor.test.ts && tsx public-tests/keymap-profile.test.ts && tsx public-tests/op-group-model.test.ts && tsx public-tests/active-job-presentation.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

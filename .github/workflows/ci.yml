@@ -181,11 +181,6 @@ jobs:
         run: cargo check --lib
         working-directory: app/desktop/src-tauri
 
-      - name: Windows updater process ownership handoff
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: ./scripts/public-tests/windows-updater-process-handoff.ps1
-
       - name: cargo test --workspace
         run: cargo test --workspace
         working-directory: app

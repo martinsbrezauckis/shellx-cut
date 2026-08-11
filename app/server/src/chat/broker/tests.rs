@@ -67,6 +67,31 @@ fn sanitized_environment_drops_hostile_parent_values() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn sanitized_environment_preserves_windows_runtime_root() {
+    let env = sanitized_environment_from(
+        [
+            (
+                OsString::from("Path"),
+                OsString::from(r"C:\Windows\System32"),
+            ),
+            (
+                OsString::from("USERPROFILE"),
+                OsString::from(r"C:\Users\fixture"),
+            ),
+            (OsString::from("SystemRoot"), OsString::from(r"C:\Windows")),
+        ],
+        "127.0.0.1:6161",
+        "agent:test:agent.chat",
+    )
+    .unwrap();
+    let names = env.names();
+    assert!(names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case("SystemRoot")));
+}
+
 #[test]
 fn native_codex_environment_keeps_inheritance_and_adds_only_cut_routing() {
     let env = native_environment("127.0.0.1:6161", "agent:test:agent.chat");

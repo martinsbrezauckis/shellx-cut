@@ -33,7 +33,7 @@ mod stitch_tests;
 #[cfg(test)]
 mod tests;
 
-pub use atomic::{publish_new_synced, replace_synced};
+pub use atomic::{publish_new_synced, replace_file_synced, replace_synced};
 pub use containment::CaptureRoot;
 pub use contract::{
     CaptureManifest, CaptureStart, Checkpoint, CheckpointFacts, ManifestError, MediaFacts,
