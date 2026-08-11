@@ -1,5 +1,7 @@
 # ShellX Cut
 
+![ShellX Cut — the local-first video editor you and your agent share](docs/public/assets/github/shellx-cut-hero.png)
+
 **Agent-first video editor.** An agent and a human co-edit one timeline through
 the same verb API. Every change, human or agent, is an operation in an
 append-only log with a rationale. AI passes are reviewable, scoped, reversible
@@ -21,9 +23,11 @@ AI output as an opaque final file.
 
 ## See ShellX Cut in action
 
-![ShellX Cut editing workspace with a project asset, preview, and editable timeline](docs/public/site/manual/assets/cut/cut-main-editor-current.png)
+![ShellX Cut editing a Nordic road-film project with populated assets, preview, markers, and timeline](docs/public/assets/github/shellx-cut-editor.png)
 
-![ShellX Cut Recording Studio with source selection and capture controls](docs/public/site/manual/assets/cut/cut-recording-studio-current.png)
+| Edit the live timeline with Codex in plain language | Connect any MCP-capable coding agent |
+| --- | --- |
+| ![ShellX Cut Agent Chat with Codex ready beside the Nordic road-film edit](docs/public/assets/github/shellx-cut-agent-chat.png) | ![ShellX Cut Agent Control settings for its local Debug API and MCP proxy](docs/public/assets/github/shellx-cut-agent-control.png) |
 
 Agent Chat supports the user's installed Claude Code, Codex, Grok, or
 Antigravity CLI. Antigravity Agent Chat currently requires macOS or Linux.
