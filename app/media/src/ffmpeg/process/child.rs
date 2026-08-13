@@ -71,18 +71,29 @@ impl ManagedChild {
     }
 
     pub(super) fn try_wait(&mut self, context: &str) -> Result<Option<ExitStatus>, CutError> {
+        if !self
+            .tree
+            .exit_ready(&mut self.child)
+            .map_err(|error| spawn_error(context, error))?
+        {
+            return Ok(None);
+        }
+        self.tree
+            .close_after_exit()
+            .map_err(|error| spawn_error("close ffmpeg process tree", error))?;
+        self.tree_closed = true;
         let status = self
             .child
             .try_wait()
-            .map_err(|error| spawn_error(context, error))?;
-        if status.is_some() {
-            self.reaped = true;
-            match self.tree.hard_stop() {
-                Ok(()) => self.tree_closed = true,
-                Err(error) => return Err(spawn_error("close ffmpeg process tree", error)),
-            }
-        }
-        Ok(status)
+            .map_err(|error| spawn_error(context, error))?
+            .ok_or_else(|| {
+                spawn_error(
+                    context,
+                    io::Error::other("exited ffmpeg child was unavailable for reap"),
+                )
+            })?;
+        self.reaped = true;
+        Ok(Some(status))
     }
 
     pub(super) fn wait(&mut self, context: &str) -> Result<ExitStatus, CutError> {
@@ -103,10 +114,19 @@ impl ManagedChild {
 
     pub(super) fn stop_and_reap(&mut self, context: &str) -> io::Result<()> {
         let _ = self.child.stdin.take();
-        let _ = self.wait_for_grace();
-        let soft = self.tree.soft_stop().err();
-        let _ = self.wait_for_grace();
-        let hard = self.tree.hard_stop().err();
+        let exited_before_soft_stop = self.wait_for_grace().unwrap_or(false);
+        let soft = if exited_before_soft_stop {
+            None
+        } else {
+            self.tree.soft_stop().err()
+        };
+        let exited_after_soft_stop =
+            exited_before_soft_stop || self.wait_for_grace().unwrap_or(false);
+        let hard = if exited_after_soft_stop {
+            self.tree.close_after_exit().err()
+        } else {
+            self.tree.hard_stop().err()
+        };
         self.tree_closed = hard.is_none();
         let kill = self
             .child
@@ -118,16 +138,15 @@ impl ManagedChild {
         combine_cleanup(context, soft, hard, kill, wait)
     }
 
-    fn wait_for_grace(&mut self) -> io::Result<()> {
+    fn wait_for_grace(&mut self) -> io::Result<bool> {
         let until = Instant::now() + STOP_GRACE;
         while Instant::now() < until {
-            if self.child.try_wait()?.is_some() {
-                self.reaped = true;
-                return Ok(());
+            if self.tree.exit_ready(&mut self.child)? {
+                return Ok(true);
             }
             thread::sleep(PROCESS_POLL);
         }
-        Ok(())
+        Ok(false)
     }
 }
 

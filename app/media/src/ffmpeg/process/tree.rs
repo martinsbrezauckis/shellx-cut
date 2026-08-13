@@ -53,12 +53,55 @@ impl ProcessTree {
         Ok(Self { pgid })
     }
 
+    pub(super) fn exit_ready(&self, child: &mut Child) -> io::Result<bool> {
+        let pid = i32::try_from(child.id())
+            .map_err(|_| io::Error::other("render worker process id exceeds i32"))?;
+        if pid != self.pgid {
+            return Err(io::Error::other(
+                "render worker process group identity drifted",
+            ));
+        }
+
+        // Child::try_wait reaps an exited Unix leader. Reaping would release
+        // its numeric PID/PGID before descendants are closed, allowing an
+        // unrelated process group to reuse the number. Observe the exit with
+        // WNOWAIT so the zombie leader remains our kernel-backed ownership
+        // token until hard_stop has closed the group.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { info.si_pid() } != 0)
+        }
+    }
+
     pub(super) fn soft_stop(&mut self) -> io::Result<()> {
         signal_group(self.pgid, libc::SIGTERM)
     }
 
     pub(super) fn hard_stop(&mut self) -> io::Result<()> {
         signal_group(self.pgid, libc::SIGKILL)
+    }
+
+    pub(super) fn close_after_exit(&mut self) -> io::Result<()> {
+        match self.hard_stop() {
+            Ok(()) => Ok(()),
+            // Darwin returns EPERM when the reserved group contains only its
+            // unreaped zombie leader. The preceding WNOWAIT observation keeps
+            // the PGID from being reused; a live same-UID descendant makes the
+            // group signal succeed and is therefore still forcibly closed.
+            #[cfg(target_os = "macos")]
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -86,7 +129,9 @@ fn validate_process_group(pgid: i32) -> io::Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{signal_group, validate_process_group};
+    use super::{configure, signal_group, validate_process_group, ProcessTree};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn unsafe_process_group_ids_fail_before_signalling() {
@@ -100,6 +145,23 @@ mod tests {
                 std::io::ErrorKind::InvalidInput
             );
         }
+    }
+
+    #[test]
+    fn exited_group_leader_is_not_reaped_before_tree_close() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 0"]);
+        configure(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        let mut tree = ProcessTree::establish(&child).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !tree.exit_ready(&mut child).unwrap() {
+            assert!(Instant::now() < deadline, "child did not exit in time");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        tree.close_after_exit().unwrap();
+        assert!(child.wait().unwrap().success());
     }
 }
 
@@ -169,6 +231,10 @@ impl ProcessTree {
         }
     }
 
+    pub(super) fn exit_ready(&self, child: &mut Child) -> io::Result<bool> {
+        child.try_wait().map(|status| status.is_some())
+    }
+
     pub(super) fn soft_stop(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -184,6 +250,10 @@ impl ProcessTree {
                 unsafe { GetLastError() } as i32
             ))
         }
+    }
+
+    pub(super) fn close_after_exit(&mut self) -> io::Result<()> {
+        self.hard_stop()
     }
 }
 
