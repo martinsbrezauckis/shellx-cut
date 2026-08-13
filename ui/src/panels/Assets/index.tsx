@@ -15,7 +15,7 @@
 // via the user's own codex/grok CLI). Both land the result here in the tray.
 // Callers: panels/LeftPanel. Dependencies: lib/client (verbs + types), icons.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { callVerb, type Project } from '../../lib/client'
 import { placeLinkedAV, planAssetInsertAtPlayhead } from '../../lib/placement'
@@ -180,8 +180,30 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
   const [note, setNote] = useState<string | null>(null)
   const [sourceMonitorId, setSourceMonitorId] = useState<string | null>(null)
   const [sourceMonitorAtMs, setSourceMonitorAtMs] = useState(0)
+  const sourceMonitorOpenTimer = useRef<number | null>(null)
   const [assetMenu, setAssetMenu] = useState<AssetContextMenuState | null>(null)
-  const closeSourceMonitor = useCallback(() => setSourceMonitorId(null), [])
+  const openSourceMonitor = useCallback((assetId: string, atMs = 0) => {
+    if (sourceMonitorOpenTimer.current !== null) window.clearTimeout(sourceMonitorOpenTimer.current)
+    // Linux/Wayland can deliver the tail of a process-bound native click after
+    // the React click handler has returned. Keep the new blocking backdrop out
+    // of that input sequence; otherwise the same human click can dismiss the
+    // Source Monitor immediately after opening it.
+    sourceMonitorOpenTimer.current = window.setTimeout(() => {
+      sourceMonitorOpenTimer.current = null
+      setSourceMonitorAtMs(atMs)
+      setSourceMonitorId(assetId)
+    }, 120)
+  }, [])
+  const closeSourceMonitor = useCallback(() => {
+    if (sourceMonitorOpenTimer.current !== null) {
+      window.clearTimeout(sourceMonitorOpenTimer.current)
+      sourceMonitorOpenTimer.current = null
+    }
+    setSourceMonitorId(null)
+  }, [])
+  useEffect(() => () => {
+    if (sourceMonitorOpenTimer.current !== null) window.clearTimeout(sourceMonitorOpenTimer.current)
+  }, [])
   // "Generate proxies" toggle (persisted) — off = heavy files import instantly.
   const [proxiesOn, setProxiesOn] = useState<boolean>(getGenerateProxies())
   const dropAsset = useCallback((item: AssetCardDragItem, clientX: number, clientY: number, alt: boolean) => {
@@ -235,12 +257,11 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
         setNote(`Cannot open "${mediaBasename(row.path)}": source file is offline`)
         return
       }
-      setSourceMonitorAtMs(request.atMs)
-      setSourceMonitorId(row.id)
+      openSourceMonitor(row.id, request.atMs)
     }
     document.addEventListener('cut:open-source-monitor', openFromSearch)
     return () => document.removeEventListener('cut:open-source-monitor', openFromSearch)
-  }, [assetRows, offline])
+  }, [assetRows, offline, openSourceMonitor])
 
   // assetId → number of timeline clips referencing it (re-use indicator).
   const usage = useMemo(() => {
@@ -890,7 +911,7 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
                       data-cut-action="open-source-monitor"
                       data-cut-source-monitor-open={id}
                       onPointerDown={(e) => e.stopPropagation()}
-                      onClick={() => { setSourceMonitorAtMs(0); setSourceMonitorId(id) }}
+                      onClick={() => openSourceMonitor(id)}
                       title="Open in Source monitor"
                       aria-label={`Open ${mediaBasename(path)} in Source monitor`}
                     >
@@ -961,7 +982,7 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
           used: assetMenuUsed,
         }}
         busy={busy !== null || relinkingAssetId === assetMenuRow?.id}
-        onOpenSource={(assetId) => { setSourceMonitorAtMs(0); setSourceMonitorId(assetId) }}
+        onOpenSource={(assetId) => openSourceMonitor(assetId)}
         onAddAtPlayhead={(assetId) => {
           const asset = assetRows.find((candidate) => candidate.id === assetId)
           if (asset) void insertAtPlayhead(asset.id, asset.probe)

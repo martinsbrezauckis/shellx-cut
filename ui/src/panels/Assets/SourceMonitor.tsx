@@ -33,6 +33,7 @@ function formatTime(ms: number): string {
 
 export default function SourceMonitor({ asset, project, playheadMs, initialMs = 0, onClose }: SourceMonitorProps) {
   const mediaRef = useRef<HTMLMediaElement | null>(null)
+  const backdropArmedAt = useRef(Date.now() + 500)
   const overlay = useBlockingOverlay<HTMLElement>(onClose)
   const initialSeekApplied = useRef(false)
   const [durationMs, setDurationMs] = useState(Math.max(0, asset.durationMs))
@@ -127,7 +128,21 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
   }
 
   return createPortal(
-    <div className="source-monitor__backdrop" data-cut-source-monitor-backdrop onMouseDown={overlay.onScrimMouseDown}>
+    <div
+      className="source-monitor__backdrop"
+      data-cut-source-monitor-backdrop
+      onMouseDown={(event) => {
+        // A process-bound native menu click can finish after this portal mounts
+        // on Linux/Wayland. Ignore only that short opening tail so one click
+        // cannot both open and dismiss the monitor; ordinary click-away works
+        // immediately afterward and Escape/Close remain active throughout.
+        if (event.target === event.currentTarget && Date.now() < backdropArmedAt.current) {
+          event.preventDefault()
+          return
+        }
+        overlay.onScrimMouseDown(event)
+      }}
+    >
       <section
         ref={overlay.dialogRef}
         className="source-monitor"

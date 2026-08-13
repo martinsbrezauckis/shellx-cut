@@ -49,7 +49,14 @@ export default function AssetContextMenu({ menu, asset, busy, onOpenSource, onAd
     : 'Remove this asset from the project after confirmation; its source file stays on disk'
   return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-asset-menu" backdropId="data-cut-asset-ctx-backdrop" onClose={onClose}>
     <span className="tl-ctx__label" aria-hidden="true">Asset · {asset.name}</span>
-    {supportsSource && <Item action="asset-open-source" disabled={asset.offline || busy} title={asset.offline ? 'Relink this source before opening it in Source Monitor' : 'Open this exact asset in Source Monitor'} onClick={() => { onOpenSource(asset.id); onClose() }}><Icon name="screenPlay" size={14} /> Open in Source Monitor</Item>}
+    {supportsSource && <Item action="asset-open-source" disabled={asset.offline || busy} title={asset.offline ? 'Relink this source before opening it in Source Monitor' : 'Open this exact asset in Source Monitor'} onClick={() => {
+      // `onOpenSource` centrally delays the modal mount until this native click
+      // has settled. Schedule that guarded open before retiring this menu; a
+      // requestAnimationFrame owned by the unmounting menu is not reliable in
+      // every desktop WebView.
+      onOpenSource(asset.id)
+      onClose()
+    }}><Icon name="screenPlay" size={14} /> Open in Source Monitor</Item>}
     <Item action="asset-add-playhead" disabled={asset.offline || busy} title={addReason} onClick={() => { onAddAtPlayhead(asset.id); onClose() }}><Icon name="plus" size={14} /> Add at playhead</Item>
     {asset.offline && <Item action="asset-relink" disabled={busy} title="Relink this exact missing source without changing its asset identity" onClick={() => { onRelink(asset.id); onClose() }}><Icon name="link" size={14} /> Relink source…</Item>}
     <span className="tl-ctx__sep" aria-hidden="true" />

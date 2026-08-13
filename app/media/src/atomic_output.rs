@@ -68,7 +68,12 @@ fn ensure_plain_output_dir(path: &Path) -> Result<(), CutError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        let mut metadata = metadata;
 
+        if metadata.mode() & 0o022 != 0 {
+            harden_owned_project_output_dir(path, &metadata)?;
+            metadata = fs::symlink_metadata(path)?;
+        }
         if metadata.mode() & 0o022 != 0 {
             return Err(CutError::new(
                 error_codes::IO,
@@ -81,6 +86,78 @@ fn ensure_plain_output_dir(path: &Path) -> Result<(), CutError> {
         }
     }
 
+    Ok(())
+}
+
+/// Cut project output/cache directories are private working state, but a
+/// cooperative shell umask commonly creates them as 0775. Tighten only an
+/// output directory owned by this process and lexically contained in a
+/// `.cutproj` package. User-selected shared output folders stay untouched and
+/// are still refused by `ensure_plain_output_dir`.
+///
+/// Open the directory itself with `O_NOFOLLOW` and chmod that descriptor so a
+/// concurrent path replacement cannot redirect the permission change. The
+/// identity comparison also makes a rename between open and verification fail
+/// closed before any temporary output is reserved.
+#[cfg(unix)]
+fn harden_owned_project_output_dir(path: &Path, expected: &fs::Metadata) -> Result<(), CutError> {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let in_project = path.ancestors().any(|ancestor| {
+        ancestor
+            .extension()
+            .is_some_and(|extension| extension == "cutproj")
+    });
+    if !in_project || expected.uid() != unsafe { libc::geteuid() } {
+        return Ok(());
+    }
+
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let opened = directory.metadata()?;
+    if !is_plain_directory(&opened)
+        || opened.uid() != expected.uid()
+        || opened.dev() != expected.dev()
+        || opened.ino() != expected.ino()
+    {
+        return Err(CutError::new(
+            error_codes::IO,
+            format!(
+                "project output directory changed while being secured: {}",
+                path.display()
+            ),
+            "ffmpeg output staging refuses a concurrently replaced directory",
+        ));
+    }
+
+    let hardened_mode = (opened.mode() & 0o7777) & !0o022;
+    // SAFETY: `directory` is a live descriptor opened with O_DIRECTORY and
+    // O_NOFOLLOW. `fchmod` changes that inode rather than resolving `path`
+    // again, and the descriptor remains alive through the verification below.
+    if unsafe { libc::fchmod(directory.as_raw_fd(), hardened_mode as libc::mode_t) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let hardened = directory.metadata()?;
+    let current = fs::symlink_metadata(path)?;
+    if hardened.mode() & 0o022 != 0
+        || !is_plain_directory(&current)
+        || current.dev() != hardened.dev()
+        || current.ino() != hardened.ino()
+    {
+        return Err(CutError::new(
+            error_codes::IO,
+            format!(
+                "project output directory could not be secured: {}",
+                path.display()
+            ),
+            "ffmpeg output staging requires a stable directory protected from external replacement",
+        ));
+    }
     Ok(())
 }
 

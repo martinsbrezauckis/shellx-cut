@@ -69,8 +69,14 @@ export default function PreviewContextMenu({ monitorRef, video, hasProject, play
       <span className="tl-ctx__label" aria-hidden="true">Preview · {menu.atMs}ms</span>
       <Item action="preview-open-source" disabled={!menu.video} title={sourceTitle} onClick={() => {
         if (!menu.video) return
-        document.dispatchEvent(new CustomEvent('cut:open-source-monitor', { detail: { asset: menu.video.assetId, at_ms: menu.video.srcMs } }))
+        const source = menu.video
         setMenu(null)
+        // Let the native menu click finish after its backdrop unmounts. Mounting
+        // the blocking Source Monitor in the same pointer dispatch can turn the
+        // release into a click-through dismissal on desktop WebViews.
+        requestAnimationFrame(() => {
+          document.dispatchEvent(new CustomEvent('cut:open-source-monitor', { detail: { asset: source.assetId, at_ms: source.srcMs } }))
+        })
       }}><Icon name="screenPlay" size={14} /> Open base source</Item>
       <Item action="preview-seek-clip-start" disabled={!menu.video} title={menu.video ? 'Seek to the exact base clip start' : 'No base clip is under the playhead'} onClick={() => {
         if (!menu.video) return
