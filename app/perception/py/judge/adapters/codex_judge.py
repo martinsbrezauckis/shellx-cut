@@ -124,14 +124,13 @@ def build_codex_prompts(mode: str, perception: dict, duration_s: float,
 
 
 def detect() -> dict:
-    """Is the codex CLI present and (best-effort) logged in?
+    """Is the codex CLI present?
 
-    Detection only — no model call. `found` gates the ladder;
-    `logged_in` is a best-effort read of ~/.codex/auth.json (auth_mode +
-    presence of OAuth tokens, NEVER the token values). A present-but-logged-out
-    codex still reports found=true; the ladder treats login failures at
-    invoke time as not_run (honest), so detection stays cheap and side-effect
-    free.
+    Detection is limited to binary resolution and its version — never a model,
+    login, or authentication-file call. Codex owns its canonical auth state, so
+    this adapter leaves `logged_in` unknown. A present-but-logged-out binary
+    still reports found=true; a missing binary becomes not_run at invoke time
+    and an attempted invocation reports its real failure.
     """
     path = shutil.which("codex")
     entry: dict = {"provider": "codex", "binary": "codex",
@@ -144,16 +143,9 @@ def detect() -> dict:
             entry["version"] = cp.stdout.strip() or cp.stderr.strip()
         except (subprocess.TimeoutExpired, OSError) as e:
             entry["version_error"] = str(e)
-        # Best-effort, READ-ONLY login signal (never echo token material).
-        auth_path = os.path.expanduser("~/.codex/auth.json")
-        try:
-            with open(auth_path) as f:
-                auth = json.load(f)
-            entry["logged_in"] = bool(auth.get("tokens")) or bool(
-                auth.get("OPENAI_API_KEY"))
-            entry["auth_mode"] = auth.get("auth_mode")
-        except (OSError, json.JSONDecodeError):
-            entry["logged_in"] = None  # unknown — invoke decides honestly
+        # Authentication remains provider-owned. Do not inspect canonical Codex
+        # credentials here; a real invocation supplies the honest outcome.
+        entry["logged_in"] = None
     return entry
 
 

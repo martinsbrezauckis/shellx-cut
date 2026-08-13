@@ -41,9 +41,26 @@ pub fn render_video_audio_with_control(
     audio: Option<&str>,
     control: &ffmpeg::ProcessControl,
 ) -> Result<u64> {
+    render_video_audio_with_control_progress(source_path, plan, out_path, audio, control, |_, _| {})
+}
+
+/// Cancellable render with a callback for confirmed compositor frame flow.
+///
+/// The callback runs after the compositor produced a frame and immediately
+/// before it is written to the owned ffmpeg encoder pipe. It deliberately
+/// exposes only frame counts, never source paths or ffmpeg output.
+pub fn render_video_audio_with_control_progress(
+    source_path: &str,
+    plan: &EditPlan,
+    out_path: &str,
+    audio: Option<&str>,
+    control: &ffmpeg::ProcessControl,
+    mut on_frame: impl FnMut(u64, u64),
+) -> Result<u64> {
     plan.validate()?;
     let (out_w, out_h) = output_size(plan);
     let fps = plan.fps as f64;
+    let expected_frames = ((plan.duration_ms as f64 * fps / 1000.0).ceil() as u64).max(1);
     let p = ffmpeg::probe_with_control(source_path, control)?;
     let size = IntSize::from_wh(p.w, p.h).ok_or_else(|| {
         RecordError::new(
@@ -81,6 +98,7 @@ pub fn render_video_audio_with_control(
     let audio_input = audio.unwrap_or(source_path);
     // Normalize loudness only when an explicit audio track (e.g. mic) is muxed.
     let normalize = audio.is_some();
+    let mut rendered_frames = 0_u64;
     ffmpeg::render_pipe_with_control(
         source_path,
         out_path,
@@ -100,7 +118,10 @@ pub fn render_video_audio_with_control(
                 let s = IntSize::from_wh(*bp, *bp)?;
                 Pixmap::from_vec(frames[idx].clone(), s)
             });
-            comp.frame_webcam(&src, cam.as_ref(), t_ms).data().to_vec()
+            let frame = comp.frame_webcam(&src, cam.as_ref(), t_ms).data().to_vec();
+            rendered_frames += 1;
+            on_frame(rendered_frames, expected_frames);
+            frame
         },
     )
 }

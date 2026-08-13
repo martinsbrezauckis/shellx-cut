@@ -74,7 +74,7 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     id: 'agent-control',
     label: 'Agent control',
     description: 'Local Debug API and MCP access through the same Cut verbs.',
-    keywords: ['agent', 'cali', 'debug api', 'api', 'mcp', 'stdio', 'cutd', 'control'],
+    keywords: ['agent', 'client', 'debug api', 'api', 'mcp', 'stdio', 'cutd', 'control'],
   },
   {
     id: 'storage-privacy',

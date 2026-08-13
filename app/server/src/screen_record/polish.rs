@@ -346,15 +346,31 @@ pub fn render_with_control(
     audio: Option<&Path>,
     control: &record_render::ffmpeg::ProcessControl,
 ) -> Result<u64, CutError> {
+    render_with_control_progress(source, plan_path, out, audio, control, |_, _| {})
+}
+
+/// Like [`render_with_control`], while reporting confirmed compositor frame flow
+/// to a tracked caller. The recorder export job turns that into durable
+/// `jobs.status` phase/progress evidence; foreground polish callers keep the
+/// no-op observer above.
+pub fn render_with_control_progress(
+    source: &Path,
+    plan_path: &Path,
+    out: &Path,
+    audio: Option<&Path>,
+    control: &record_render::ffmpeg::ProcessControl,
+    on_frame: impl FnMut(u64, u64),
+) -> Result<u64, CutError> {
     align_ffmpeg_env();
     let plan = load_plan(plan_path)?;
     let audio_s = audio.map(|p| p.to_string_lossy().into_owned());
-    record_render::render_video_audio_with_control(
+    record_render::render_video_audio_with_control_progress(
         &source.to_string_lossy(),
         &plan,
         &out.to_string_lossy(),
         audio_s.as_deref(),
         control,
+        on_frame,
     )
     .map_err(record_err)
 }

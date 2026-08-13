@@ -225,6 +225,8 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
     let a: Args = parse_args(args)?;
     let _transition = state.project_transition.lock().await;
     let store = ProjectStore::open(Path::new(&a.path))?;
+    let ops = store.log.read_all()?;
+    super::edit_tools::validate_split_metadata_projection(&ops)?;
     let recovery_scan = crate::screen_record::recovery::scan_recovery_for_project(&store.dir)?;
     // Touch (or register, if externally-created) this project in the global index,
     // refreshing its recency + timeline summary for the recent-projects list.
@@ -452,8 +454,9 @@ pub(super) async fn project_save(state: &AppState) -> Result<VerbResult, CutErro
 }
 
 /// project.state{} — the full materialized project.json.
-/// Build clip_id → CURRENT editable text for every title clip created by
-/// `title.add` (folding any later `title.update` text edits, in op order).
+/// Build clip_id → CURRENT editable text for every `title.add` clip and its
+/// `edit.split` descendants (folding any later `title.update` text edits, in
+/// op order).
 /// Kinetic-caption titles are intentionally excluded — their text is the
 /// transcript, not a single editable field. One forward pass over the op-log;
 /// used by `project_state` to seed the Inspector's in-place title editor.
@@ -491,6 +494,14 @@ fn title_clip_texts(ops: &[OpRecord]) -> std::collections::BTreeMap<String, Stri
                     }
                 }
             }
+            "edit.split" => {
+                super::edit_tools::inherit_split_metadata(&mut texts, op);
+                if let Some((left, right)) = super::edit_tools::split_effect_ids(op) {
+                    if kinetic.contains(left) {
+                        kinetic.insert(right.to_string());
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -501,12 +512,13 @@ fn title_clip_texts(ops: &[OpRecord]) -> std::collections::BTreeMap<String, Stri
 }
 
 /// Build clip_id → CURRENT merged `edit.add_shape` args for every SHAPE overlay
-/// clip created by `edit.add_shape` (folding any later `shape.update` overrides,
-/// in op order — `apply_shape_overrides` reuses the same fold the verb uses, so
-/// the annotation matches exactly what a re-render would produce). The merged
-/// value is in edit.add_shape's arg shape (`shape`, `text`, `fill`/`stroke`/
-/// `color`, …); `project_state` derives the Inspector seeds (`shape_kind`,
-/// `shape_label`, `shape_color`) from it. One forward pass over the op-log.
+/// clip created by `edit.add_shape` and its `edit.split` descendants (folding
+/// any later `shape.update` overrides, in op order — `apply_shape_overrides`
+/// reuses the same fold the verb uses, so the annotation matches exactly what a
+/// re-render would produce). The merged value is in edit.add_shape's arg shape
+/// (`shape`, `text`, `fill`/`stroke`/`color`, …); `project_state` derives the
+/// Inspector seeds (`shape_kind`, `shape_label`, `shape_color`) from it. One
+/// forward pass over the op-log.
 /// Shapes and titles BOTH live on `title*` tracks, so this is the marker that
 /// lets the Inspector route a shape clip to the shape editor (`shape.update`)
 /// and a title clip to the title editor (`title.update`) — a clip created by
@@ -534,6 +546,9 @@ fn shape_clip_props(ops: &[OpRecord]) -> std::collections::BTreeMap<String, Valu
                         super::edit_tools::apply_shape_overrides(base, &op.args);
                     }
                 }
+            }
+            "edit.split" => {
+                super::edit_tools::inherit_split_metadata(&mut merged, op);
             }
             _ => {}
         }
@@ -567,62 +582,54 @@ pub(super) fn full_project_state(store: &ProjectStore, sync: Value) -> Result<Va
         .iter()
         .any(|t| t.id.starts_with("title") && !t.clips.is_empty());
     if has_titles {
-        if let Ok(ops) = store.log.read_all() {
-            let texts = title_clip_texts(&ops);
-            // Shape clips share the `title*` tracks; annotate each with its
-            // current editable props (shape_kind / shape_label / shape_color) so
-            // the Inspector seeds the in-place shape editor (shape.update) and can
-            // tell a shape clip apart from a title clip (a title carries title_text;
-            // a shape carries shape_kind — never both).
-            let shapes = shape_clip_props(&ops);
-            if !texts.is_empty() || !shapes.is_empty() {
-                if let Some(tracks) = v.get_mut("tracks").and_then(|t| t.as_array_mut()) {
-                    for tr in tracks.iter_mut() {
-                        let is_title = tr
-                            .get("id")
-                            .and_then(|i| i.as_str())
-                            .map(|i| i.starts_with("title"))
-                            .unwrap_or(false);
-                        if !is_title {
-                            continue;
-                        }
-                        if let Some(clips) = tr.get_mut("clips").and_then(|c| c.as_array_mut()) {
-                            for cl in clips.iter_mut() {
-                                let id =
-                                    cl.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
-                                if let Some(id) = id {
-                                    if let Some(t) = texts.get(&id) {
-                                        if let Some(obj) = cl.as_object_mut() {
+        let ops = store.log.read_all()?;
+        super::edit_tools::validate_split_metadata_projection(&ops)?;
+        let texts = title_clip_texts(&ops);
+        // Shape clips share the `title*` tracks; annotate each with its
+        // current editable props (shape_kind / shape_label / shape_color) so
+        // the Inspector seeds the in-place shape editor (shape.update) and can
+        // tell a shape clip apart from a title clip (a title carries title_text;
+        // a shape carries shape_kind — never both).
+        let shapes = shape_clip_props(&ops);
+        if !texts.is_empty() || !shapes.is_empty() {
+            if let Some(tracks) = v.get_mut("tracks").and_then(|t| t.as_array_mut()) {
+                for tr in tracks.iter_mut() {
+                    let is_title = tr
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .map(|i| i.starts_with("title"))
+                        .unwrap_or(false);
+                    if !is_title {
+                        continue;
+                    }
+                    if let Some(clips) = tr.get_mut("clips").and_then(|c| c.as_array_mut()) {
+                        for cl in clips.iter_mut() {
+                            let id = cl.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
+                            if let Some(id) = id {
+                                if let Some(t) = texts.get(&id) {
+                                    if let Some(obj) = cl.as_object_mut() {
+                                        obj.insert("title_text".into(), Value::String(t.clone()));
+                                    }
+                                }
+                                if let Some(m) = shapes.get(&id) {
+                                    if let Some(obj) = cl.as_object_mut() {
+                                        let kind = m
+                                            .get("shape")
+                                            .and_then(|x| x.as_str())
+                                            .unwrap_or("rect");
+                                        obj.insert(
+                                            "shape_kind".into(),
+                                            Value::String(kind.to_string()),
+                                        );
+                                        if let Some(label) = m.get("text").and_then(|x| x.as_str())
+                                        {
                                             obj.insert(
-                                                "title_text".into(),
-                                                Value::String(t.clone()),
+                                                "shape_label".into(),
+                                                Value::String(label.to_string()),
                                             );
                                         }
-                                    }
-                                    if let Some(m) = shapes.get(&id) {
-                                        if let Some(obj) = cl.as_object_mut() {
-                                            let kind = m
-                                                .get("shape")
-                                                .and_then(|x| x.as_str())
-                                                .unwrap_or("rect");
-                                            obj.insert(
-                                                "shape_kind".into(),
-                                                Value::String(kind.to_string()),
-                                            );
-                                            if let Some(label) =
-                                                m.get("text").and_then(|x| x.as_str())
-                                            {
-                                                obj.insert(
-                                                    "shape_label".into(),
-                                                    Value::String(label.to_string()),
-                                                );
-                                            }
-                                            if let Some(color) = shape_display_color(m) {
-                                                obj.insert(
-                                                    "shape_color".into(),
-                                                    Value::String(color),
-                                                );
-                                            }
+                                        if let Some(color) = shape_display_color(m) {
+                                            obj.insert("shape_color".into(), Value::String(color));
                                         }
                                     }
                                 }
@@ -1736,4 +1743,163 @@ pub(super) async fn project_diff(state: &AppState, args: Value) -> Result<VerbRe
         cut_core::diff(&store.project, &ops, &a.from, &a.to)
     })?;
     Ok(VerbResult::ok(serde_json::to_value(&summary)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oversized_overlay_store() -> (tempfile::TempDir, ProjectStore) {
+        let root = tempfile::tempdir().expect("temporary project root");
+        let mut store = ProjectStore::create(root.path(), "oversized-overlay", None)
+            .expect("create project store");
+        let (asset_id, _) = store
+            .record_import(
+                Some("a1".into()),
+                cut_core::Asset {
+                    path: "/testdata/title.mov".into(),
+                    hash: "sha256:title".into(),
+                    probe: Some(json!({"duration_ms": 100})),
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                Actor::system(),
+                None,
+            )
+            .expect("record title asset");
+        store
+            .apply_lowered(
+                "title.add",
+                json!({
+                    "text": "x".repeat(16 * 1024 + 1),
+                    "range_ms": [0, 100],
+                }),
+                Actor::system(),
+                None,
+                vec![
+                    InverseOp {
+                        verb: "edit.add_track".into(),
+                        args: json!({"kind": "video", "id": "title1"}),
+                    },
+                    InverseOp {
+                        verb: "edit.insert".into(),
+                        args: json!({
+                            "asset": asset_id,
+                            "track": "title1",
+                            "at_ms": 0,
+                            "src_range_ms": [0, 100],
+                            "ripple": false,
+                        }),
+                    },
+                ],
+                vec![],
+            )
+            .expect("record oversized title metadata");
+        (root, store)
+    }
+
+    fn effect(detail: Value) -> OpEffect {
+        OpEffect {
+            track: Some("title1".into()),
+            detail: detail.as_object().expect("effect object").clone(),
+        }
+    }
+
+    fn op(verb: &str, args: Value, effects: Vec<OpEffect>) -> OpRecord {
+        OpRecord {
+            op_id: format!("op_{verb}"),
+            ts: OpRecord::now_ts(),
+            actor: Actor::system(),
+            verb: verb.into(),
+            args,
+            rationale: None,
+            effects,
+            inverse: None,
+            status: cut_core::OpStatus::Applied,
+        }
+    }
+
+    #[test]
+    fn split_projects_title_and_shape_metadata_to_independent_right_halves() {
+        let ops = vec![
+            op(
+                "title.add",
+                json!({"text":"ORIGINAL TITLE","range_ms":[0,1000]}),
+                vec![effect(json!({"added_clip":"title-left"}))],
+            ),
+            op(
+                "edit.add_shape",
+                json!({"shape":"rect","text":"ORIGINAL SHAPE","fill":"#FF0000","range_ms":[0,1000]}),
+                vec![effect(json!({"added_clip":"shape-left"}))],
+            ),
+            op(
+                "edit.split",
+                json!({"track":"title1","at_ms":500}),
+                vec![effect(json!({"left":"title-left","right":"title-right"}))],
+            ),
+            op(
+                "edit.split",
+                json!({"track":"title2","at_ms":500}),
+                vec![effect(json!({"left":"shape-left","right":"shape-right"}))],
+            ),
+            op(
+                "title.update",
+                json!({"clip":"title-right","text":"RIGHT TITLE"}),
+                vec![],
+            ),
+            op(
+                "shape.update",
+                json!({"clip":"shape-right","label":"RIGHT SHAPE","fill":"#00FF00"}),
+                vec![],
+            ),
+        ];
+
+        let titles = title_clip_texts(&ops);
+        assert_eq!(
+            titles.get("title-left").map(String::as_str),
+            Some("ORIGINAL TITLE")
+        );
+        assert_eq!(
+            titles.get("title-right").map(String::as_str),
+            Some("RIGHT TITLE")
+        );
+
+        let shapes = shape_clip_props(&ops);
+        assert_eq!(shapes["shape-left"]["text"], "ORIGINAL SHAPE");
+        assert_eq!(shapes["shape-left"]["fill"], "#FF0000");
+        assert_eq!(shapes["shape-right"]["text"], "RIGHT SHAPE");
+        assert_eq!(shapes["shape-right"]["fill"], "#00FF00");
+    }
+
+    #[tokio::test]
+    async fn project_open_and_state_reject_oversized_overlay_metadata() {
+        let (_root, store) = oversized_overlay_store();
+        let path = store.dir.clone();
+
+        let state = AppState::new();
+        let open_error = project_open(&state, json!({"path": path}))
+            .await
+            .expect_err("project.open must reject oversized imported overlay metadata");
+        assert_eq!(open_error.code, error_codes::INVALID_ARGS);
+        assert!(
+            open_error.message.contains("metadata exceeds"),
+            "{open_error:?}"
+        );
+        assert!(
+            state.project.read().await.is_none(),
+            "failed open must not activate"
+        );
+
+        *state.project.write().await = Some(store);
+        let state_error = project_state(&state, json!({}))
+            .await
+            .expect_err("project.state must reject oversized overlay metadata");
+        assert_eq!(state_error.code, error_codes::INVALID_ARGS);
+        assert!(
+            state_error.message.contains("metadata exceeds"),
+            "{state_error:?}"
+        );
+    }
 }

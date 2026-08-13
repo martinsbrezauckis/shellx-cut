@@ -210,6 +210,21 @@
   cursor: pointer;
 }
 .assets__source-monitor:hover { color: var(--ink); background: var(--surface-3); border-color: var(--cut); }
+.assets__menu {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.assets__menu:hover,
+.assets__menu:focus-visible { color: var(--ink); background: var(--surface-3); border-color: var(--hairline-2); outline: none; }
 
 /* Remove-from-project (🗑) — quiet by default, turns red on hover so the
    destructive action reads clearly. Sits right of Insert. */

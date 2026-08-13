@@ -80,8 +80,17 @@ export function LibraryRow({
       tabIndex={keyboardTabIndex}
       role="group"
       aria-label={`${item.name} Library media`}
+      aria-keyshortcuts="Shift+F10 ContextMenu"
       onFocus={() => onKeyboardFocus(item.id)}
-      onKeyDown={(event) => onKeyboardKeyDown(item.id, event)}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+          event.preventDefault()
+          const rect = event.currentTarget.getBoundingClientRect()
+          onOpenMenu(rect.left + Math.min(24, rect.width / 2), rect.top + Math.min(24, rect.height / 2), item.id)
+          return
+        }
+        onKeyboardKeyDown(item.id, event)
+      }}
       onContextMenu={(event) => { event.preventDefault(); onOpenMenu(event.clientX, event.clientY, item.id) }}
       onDragStart={(event) => event.preventDefault()}
       title={item.media_ok === false ? undefined : 'Use Insert at playhead or Add to project'}
@@ -149,6 +158,7 @@ export function LibraryRow({
             onRelink={onRelink}
             onMakePortable={onMakePortable}
             onRemove={onRemove}
+            onOpenMenu={onOpenMenu}
           />
         )}
       </div>

@@ -28,9 +28,9 @@
       </a>
       <nav class="manual-topnav" aria-label="Docs products">
         <a href="./">Cut</a>
-        <a href="../canvas/">Design Studio</a>
-        <a href="../drive/">Drive</a>
-        <a href="../vault/">Vault</a>
+        <a href="https://docs.theshellx.com/manual/canvas/">Design Studio</a>
+        <a href="https://docs.theshellx.com/manual/drive/">Drive</a>
+        <a href="https://docs.theshellx.com/manual/vault/">Vault</a>
         <span class="manual-muted">Browser</span>
       </nav>
     </header>
@@ -43,7 +43,7 @@
                automated release check.
                Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
                visible text on this span whenever the manual is updated for a release. -->
-          <span class="manual-version" data-app-version="0.6.108">0.6.108</span>
+          <span class="manual-version" data-app-version="0.6.109">0.6.109</span>
         </div>
         <input
           class="manual-search"
@@ -299,7 +299,7 @@
           <h2>Click a feature to see where it lives.</h2>
           <div class="manual-surface" aria-label="ShellX Cut interface map">
             <img
-              src="../assets/cut/cut-main-editor-current.png?v=6e3a3f65-editor"
+              src="../assets/cut/cut-main-editor-current.png?v=edc5c37d-editor"
               alt="ShellX Cut editor with the Assets tab, editing-readiness summary, preview, and timeline tracks visible"
             />
             <div class="manual-highlight" data-manual-highlight data-label="Assets"></div>
@@ -336,8 +336,8 @@
           <h2>Record your screen, and keep the raw streams.</h2>
           <div class="manual-surface" aria-label="ShellX Cut Recording Studio surface">
             <img
-              src="../assets/cut/cut-recording-studio-current.png?v=b230b293-record"
-              alt="ShellX Cut Record workspace with Studio preview, a direct camera-unavailable notice, source and audio settings, raw-stream controls, and an enabled Start recording control"
+              src="../assets/cut/cut-recording-studio-current.png?v=73b4fd9f-record"
+              alt="ShellX Cut Record workspace with an explicit desktop-session readiness notice, source and audio settings, raw-stream controls, and a safely disabled Start recording control"
             />
           </div>
           <div class="manual-grid">
@@ -455,7 +455,7 @@
             </article>
             <article class="manual-card">
               <h3>Record and polish</h3>
-              <p>Open Record, choose screen, mic, system audio, and optional camera overlay settings, then stop to keep raw streams and build a polished clip on the timeline.</p>
+              <p>Open Record, choose screen, mic, and system audio, then stop to keep raw streams and build a polished clip on the timeline.</p>
             </article>
             <article class="manual-card">
               <h3>Review and export</h3>
@@ -506,8 +506,8 @@
               </tr>
               <tr>
                 <td>Frame inspection</td>
-                <td><code>GET /api/frame?at_ms=</code></td>
-                <td>Inspect the composed timeline frame at a specific time.</td>
+                <td><code>GET /api/frame?at_ms=[&amp;h=][&amp;compose=1]</code></td>
+                <td>Inspect a bounded composed/scrub timeline frame at a specific time (default h=540, maximum 2160; use export.frame for a full-resolution still).</td>
               </tr>
               <tr>
                 <td>Installed agent docs</td>

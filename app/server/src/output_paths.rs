@@ -151,7 +151,17 @@ pub(crate) fn authorized_export_read_roots(project_dir: &Path) -> Vec<PathBuf> {
             }
         }
     };
-    push(project_dir.join("exports"));
+    // A project is untrusted data. Its literal exports component must be a
+    // plain local directory, not a link/reparse point that canonicalization
+    // would turn into standing read authority elsewhere on the host. The
+    // record-recovery helper carries the Windows reparse-point check as well
+    // as the cross-platform symlink check.
+    if let Ok(project) = project_dir.canonicalize() {
+        let exports = project.join("exports");
+        if record_recovery::is_plain_dir(&exports).unwrap_or(false) {
+            push(exports);
+        }
+    }
     if let Ok(d) = std::env::var("CUTD_OUTPUTS_DIR") {
         if !d.is_empty() {
             push(PathBuf::from(d));
@@ -190,14 +200,13 @@ pub(crate) fn fence_output_path(
     policy: OutputPathPolicy,
 ) -> Result<OutputPath, CutError> {
     let fence = make_fence(project_dir)?;
-    let (mut candidate, create_parent) = match requested {
+    let (mut candidate, create_project_parent) = match requested {
         Some(p) => {
             let pb = PathBuf::from(p);
             reject_relative_output_traversal(&pb)?;
             let parent = pb
                 .is_relative()
-                .then(|| project_dir.join(&pb))
-                .and_then(|path| path.parent().map(Path::to_path_buf));
+                .then(|| pb.parent().unwrap_or_else(|| Path::new("")).to_path_buf());
             (pb, parent)
         }
         None => match session_output_dir() {
@@ -209,8 +218,11 @@ pub(crate) fn fence_output_path(
             }
             None => {
                 let p = project_dir.join(default_rel);
-                let parent = p.parent().map(Path::to_path_buf);
-                (p, parent)
+                let parent = Path::new(default_rel)
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .to_path_buf();
+                (p, Some(parent))
             }
         },
     };
@@ -218,12 +230,14 @@ pub(crate) fn fence_output_path(
     // directory. The path fence below still owns canonicalization, traversal,
     // symlink and root checks.
     policy.validate(&candidate)?;
-    if let Some(parent) = create_parent {
+    if let Some(parent) = create_project_parent {
         // A relative requested path resolves INSIDE the project (the fence
         // rejects escapes). Create its parent — e.g. exports/ — so an explicit
         // "exports/_monitor_a.mp3" works on a fresh project, matching default
-        // project exports.
-        std::fs::create_dir_all(parent)?;
+        // project exports. Each literal component is checked before creation,
+        // so a static link or Windows reparse point cannot redirect this
+        // mutation before PathFence gets its canonical membership check.
+        ensure_plain_project_relative_dir(fence.project_dir(), &parent)?;
     }
     if requested.is_some() {
         let path = fence.fence_output_path(&candidate)?;
@@ -272,12 +286,14 @@ pub(crate) fn fence_project_output_path(
     if requested.is_some() {
         return fence_output_path(project_dir, requested, default_rel, policy);
     }
-    let path = project_dir.join(default_rel);
-    policy.validate(&path)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let fence = make_fence(project_dir)?;
+    let relative = Path::new(default_rel);
+    let path = fence.project_dir().join(relative);
+    policy.validate(&path)?;
+    ensure_plain_project_relative_dir(
+        fence.project_dir(),
+        relative.parent().unwrap_or_else(|| Path::new("")),
+    )?;
     let (path, reservation) = reserve_next_available_output_path(&fence, &path)?;
     Ok(OutputPath::reserved(path, reservation))
 }
@@ -291,14 +307,85 @@ pub(crate) fn fence_project_directory_path(
     project_dir: &Path,
     relative: &str,
 ) -> Result<PathBuf, CutError> {
-    let path = project_dir.join(relative);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let fence = make_fence(project_dir)?;
+    let relative = Path::new(relative);
+    let path = fence.project_dir().join(relative);
+    ensure_plain_project_relative_dir(
+        fence.project_dir(),
+        relative.parent().unwrap_or_else(|| Path::new("")),
+    )?;
     let (path, reservation) = reserve_next_available_output_path(&fence, &path)?;
     drop(reservation);
     Ok(path)
+}
+
+/// Create a project-local directory chain only through literal, plain
+/// directories. Unlike `create_dir_all`, this refuses a static symlink or a
+/// Windows reparse point before it can redirect creation outside the canonical
+/// project root. It intentionally does not claim to resist a concurrent local
+/// path swap; that actor is outside Cut's project-input threat boundary.
+fn ensure_plain_project_relative_dir(
+    project_dir: &Path,
+    relative: &Path,
+) -> Result<PathBuf, CutError> {
+    let mut current = project_dir.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            if matches!(component, Component::CurDir) {
+                continue;
+            }
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                format!(
+                    "project output directory {} is not relative",
+                    relative.display()
+                ),
+                "project output directories must use literal child components",
+            ));
+        };
+        let child = current.join(component);
+        match std::fs::symlink_metadata(&child) {
+            Ok(_) => require_plain_project_dir(&child)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                require_plain_project_dir(&current)?;
+                match std::fs::create_dir(&child) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(output_directory_error(&child, error)),
+                }
+                require_plain_project_dir(&child)?;
+            }
+            Err(error) => return Err(output_directory_error(&child, error)),
+        }
+        current = child;
+    }
+    Ok(current)
+}
+
+fn require_plain_project_dir(path: &Path) -> Result<(), CutError> {
+    match record_recovery::is_plain_dir(path) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!(
+                "project output directory {} is not a plain directory",
+                path.display()
+            ),
+            "project output components cannot be symlinks or Windows reparse points",
+        )),
+        Err(error) => Err(output_directory_error(path, error)),
+    }
+}
+
+fn output_directory_error(path: &Path, error: impl std::fmt::Display) -> CutError {
+    CutError::new(
+        error_codes::IO,
+        format!(
+            "could not inspect or create project output directory {}",
+            path.display()
+        ),
+        error.to_string(),
+    )
 }
 
 fn atomic_write_tmp_path(path: &Path) -> PathBuf {
@@ -790,6 +877,11 @@ pub(crate) async fn project_set_output_dir(args: Value) -> Result<VerbResult, Cu
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn symlink_dir(original: &Path, link: &Path) {
+        std::os::unix::fs::symlink(original, link).expect("create project link");
+    }
+
     #[cfg(windows)]
     #[test]
     fn live_reservation_artifacts_are_hidden_on_windows() {
@@ -1088,6 +1180,115 @@ mod tests {
             .join("exports/nested/out.mp4");
         assert_eq!(nested.as_ref(), canonical_nested);
         assert!(proj.join("exports/nested").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_export_link_never_becomes_an_authorized_read_root() {
+        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_session_output_dir(None);
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let private_export_like_file = outside.join("private.json");
+        std::fs::write(&private_export_like_file, b"private host data").unwrap();
+        symlink_dir(&outside, &proj.join("exports"));
+
+        assert!(
+            fenced_existing_export_read(&proj, &private_export_like_file, "export", "x").is_err(),
+            "a static project exports link must not grant read authority outside the project"
+        );
+        assert!(
+            authorized_export_read_roots(&proj).is_empty(),
+            "a linked project exports directory must not be retained as a read root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_project_components_never_create_outside_directories() {
+        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_session_output_dir(None);
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink_dir(&outside, &proj.join("exports"));
+
+        assert!(
+            fence_output_path(
+                &proj,
+                Some("exports/explicit/nested.mp4"),
+                "exports/default.mp4",
+                OutputPathPolicy::MP4,
+            )
+            .is_err(),
+            "the canonical fence must refuse the redirected explicit output"
+        );
+        assert!(
+            fence_project_output_path(
+                &proj,
+                None,
+                "exports/default/nested.mp4",
+                OutputPathPolicy::MP4,
+            )
+            .is_err(),
+            "the canonical fence must refuse the redirected default output"
+        );
+        assert!(
+            !outside.join("explicit").exists() && !outside.join("default").exists(),
+            "a rejected output must not create directories through a project link"
+        );
+
+        let motion_outside = dir.path().join("motion-outside");
+        std::fs::create_dir_all(&motion_outside).unwrap();
+        symlink_dir(&motion_outside, &proj.join("motion-sources"));
+        assert!(
+            fence_project_directory_path(&proj, "motion-sources/clip/run").is_err(),
+            "the canonical fence must refuse the redirected internal package path"
+        );
+        assert!(
+            !motion_outside.join("clip").exists(),
+            "a rejected package path must not create directories through a project link"
+        );
+    }
+
+    #[test]
+    fn plain_project_components_remain_creatable_and_readable() {
+        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set_session_output_dir(None);
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("p.cutproj");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let output = fence_project_output_path(
+            &proj,
+            None,
+            "exports/bundle/clip.mp4",
+            OutputPathPolicy::MP4,
+        )
+        .expect("ordinary project export directories remain supported");
+        assert!(output.starts_with(proj.canonicalize().unwrap()));
+        assert!(proj.join("exports/bundle").is_dir());
+
+        let package = fence_project_directory_path(&proj, "motion-sources/clip/run")
+            .expect("ordinary project package directories remain supported");
+        assert!(package.starts_with(proj.canonicalize().unwrap()));
+        assert!(proj.join("motion-sources/clip").is_dir());
+
+        let readable = proj.join("exports/bundle/receipt.json");
+        std::fs::write(&readable, b"{}").unwrap();
+        assert!(fenced_existing_export_read(&proj, &readable, "export", "x").is_ok());
+        set_session_output_dir(None);
     }
 
     /// comment.export with a default export folder chosen: `render.final`

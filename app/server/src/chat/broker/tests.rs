@@ -62,7 +62,13 @@ fn sanitized_environment_drops_hostile_parent_values() {
             .iter()
             .any(|name| name.eq_ignore_ascii_case(forbidden)));
     }
-    for required in ["PATH", "HOME", "CUTD_PROXY_ADDR", "CUTD_PROXY_ACTOR"] {
+    for required in [
+        "PATH",
+        "HOME",
+        "CUTD_PROXY_ADDR",
+        "CUTD_PROXY_ACTOR",
+        crate::chat::capabilities::RESTRICTED_MCP_MARKER,
+    ] {
         assert!(names.iter().any(|name| name.eq_ignore_ascii_case(required)));
     }
 }
@@ -93,10 +99,17 @@ fn sanitized_environment_preserves_windows_runtime_root() {
 }
 
 #[test]
-fn native_codex_environment_keeps_inheritance_and_adds_only_cut_routing() {
+fn native_environment_keeps_inheritance_and_adds_restricted_cut_routing() {
     let env = native_environment("127.0.0.1:6161", "agent:test:agent.chat");
     assert!(!env.clear_inherited);
-    assert_eq!(env.names(), ["CUTD_PROXY_ADDR", "CUTD_PROXY_ACTOR"]);
+    assert_eq!(
+        env.names(),
+        [
+            "CUTD_PROXY_ADDR",
+            "CUTD_PROXY_ACTOR",
+            crate::chat::capabilities::RESTRICTED_MCP_MARKER,
+        ]
+    );
 }
 
 #[test]
@@ -151,7 +164,7 @@ fn workspace_starts_empty_and_supported_providers_are_explicit() {
     assert!(supported_headless_agent("claude"));
     assert!(supported_headless_agent("codex"));
     assert!(supported_headless_agent("grok"));
-    assert_eq!(supported_headless_agent("antigravity"), !cfg!(windows));
+    assert!(supported_headless_agent("antigravity"));
 }
 
 #[test]
@@ -175,6 +188,7 @@ fn codex_args_keep_native_policy_and_add_cut_mcp() {
     assert!(args.iter().any(|arg| {
         arg.contains("CUTD_PROXY_ADDR=\"127.0.0.1:6161\"")
             && arg.contains("CUTD_PROXY_ACTOR=\"agent:turn:agent.chat\"")
+            && arg.contains("SHELLX_CUT_AGENT_CONTAINED=\"1\"")
     }));
     assert!(args
         .windows(2)
@@ -187,4 +201,38 @@ fn codex_args_keep_native_policy_and_add_cut_mcp() {
     ] {
         assert!(!args.iter().any(|arg| arg == forbidden));
     }
+}
+
+#[test]
+fn every_agent_chat_provider_forwards_the_restricted_mcp_marker() {
+    let marker = crate::chat::capabilities::RESTRICTED_MCP_MARKER;
+    let value = crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE;
+    let claude = sanitized_environment_from(
+        [
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+            (OsString::from("HOME"), OsString::from("/safe/home")),
+        ],
+        "127.0.0.1:6161",
+        "agent:turn:agent.chat",
+    )
+    .unwrap();
+    assert!(claude.names().iter().any(|name| name == marker));
+    assert!(
+        codex_args("cutd", "127.0.0.1:6161", "agent:turn:agent.chat", None)
+            .iter()
+            .any(|arg| arg.contains(marker) && arg.contains("\"1\""))
+    );
+    assert!(
+        grok_project_config("cutd", "127.0.0.1:6161", "agent:turn:agent.chat")
+            .contains(&format!("{marker} = \"{value}\""))
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&antigravity_project_config(
+            "cutd",
+            "127.0.0.1:6161",
+            "agent:turn:agent.chat",
+        ))
+        .unwrap()["mcpServers"]["cutd"]["env"][marker],
+        value
+    );
 }

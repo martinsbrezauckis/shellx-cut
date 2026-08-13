@@ -83,8 +83,9 @@ pub fn build_router(state: AppState, ui_dist: Option<std::path::PathBuf>) -> Rou
     // via a CORS "simple request" (the body reaches dispatch even though the
     // browser blocks the response read), and a DNS-rebound hostname could defeat
     // even that. This guard rejects browser requests whose Origin (if present)
-    // or Host authority is not loopback; native callers can omit/forge headers
-    // and therefore remain inside the intentionally machine-wide trust scope.
+    // or Host authority is not loopback, plus a no-Origin Fetch-Metadata
+    // `cross-site` request; native callers can omit/forge headers and therefore
+    // remain inside the intentionally machine-wide trust scope.
     router
         .with_state(state)
         // Content-Security-Policy for the served UI. The desktop
@@ -203,6 +204,15 @@ async fn guard_local_origin(req: axum::extract::Request, next: axum::middleware:
         if !authority_is_loopback(origin) {
             return forbidden_non_local("cross-origin request rejected (Origin is not loopback)");
         }
+    } else if headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|site| site.eq_ignore_ascii_case("cross-site"))
+    {
+        // WebKit can deliver a cross-site no-CORS image request without Origin.
+        // Fetch Metadata supplies the browser-only signal that Origin cannot in
+        // that case; native clients normally omit both headers and still work.
+        return forbidden_non_local("cross-site browser request rejected (no Origin)");
     }
     // Host belt-and-braces: a rebound hostname resolving to 127.0.0.1 carries a
     // non-loopback Host even on a no-Origin request.
@@ -354,18 +364,22 @@ mod tests {
         assert!(!authority_is_loopback("127.0.0.1.evil.com."));
     }
 
-    /// N1 end-to-end: a real bound cutd rejects a cross-origin request and
-    /// serves a same-machine one. (ureq sets Host from the URL = loopback, so
-    /// this exercises the Origin defense — the primary cross-origin/CSRF gate.)
+    /// N1 end-to-end: a real bound cutd rejects cross-origin browser requests
+    /// and serves legitimate local callers. (ureq sets Host from the URL =
+    /// loopback, so this exercises the browser-request guards.)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn guard_rejects_cross_origin_allows_loopback() {
+    async fn guard_rejects_cross_origin_and_no_origin_cross_site_requests() {
         let server = spawn_test_server(build_router(AppState::new(), None)).await;
         let url = format!("{}/api/verbs", server.base_url);
+        let frame_url = format!("{}/api/frame?at_ms={}&h=4096", server.base_url, u64::MAX);
 
-        fn status(url: &str, origin: Option<&str>) -> u16 {
+        fn status(url: &str, origin: Option<&str>, fetch_site: Option<&str>) -> u16 {
             let mut req = ureq::get(url);
             if let Some(o) = origin {
                 req = req.header("Origin", o);
+            }
+            if let Some(site) = fetch_site {
+                req = req.header("Sec-Fetch-Site", site);
             }
             match req.call() {
                 Ok(resp) => resp.status().as_u16(),
@@ -375,7 +389,7 @@ mod tests {
         }
 
         let u = url.clone();
-        let no_origin = tokio::task::spawn_blocking(move || status(&u, None))
+        let no_origin = tokio::task::spawn_blocking(move || status(&u, None, None))
             .await
             .unwrap();
         assert_eq!(
@@ -384,16 +398,37 @@ mod tests {
         );
 
         let u = url.clone();
-        let loopback = tokio::task::spawn_blocking(move || status(&u, Some("http://127.0.0.1")))
-            .await
-            .unwrap();
+        let local_browser =
+            tokio::task::spawn_blocking(move || status(&u, None, Some("same-origin")))
+                .await
+                .unwrap();
+        assert_eq!(
+            local_browser, 200,
+            "same-origin browser requests without Origin must be served"
+        );
+
+        let u = url.clone();
+        let loopback =
+            tokio::task::spawn_blocking(move || status(&u, Some("http://127.0.0.1"), None))
+                .await
+                .unwrap();
         assert_eq!(loopback, 200, "loopback Origin must be served");
 
         let u = url.clone();
-        let cross = tokio::task::spawn_blocking(move || status(&u, Some("http://evil.com")))
+        let cross = tokio::task::spawn_blocking(move || status(&u, Some("http://evil.com"), None))
             .await
             .unwrap();
         assert_eq!(cross, 403, "cross-origin Origin must be rejected");
+
+        let u = frame_url;
+        let cross_site_no_origin =
+            tokio::task::spawn_blocking(move || status(&u, None, Some("cross-site")))
+                .await
+                .unwrap();
+        assert_eq!(
+            cross_site_no_origin, 403,
+            "cross-site Fetch Metadata must reject a no-Origin image load before /api/frame work"
+        );
     }
 
     /// media-route regression: project proxies/frames are served from the open
@@ -821,6 +856,36 @@ mod tests {
         crate::output_paths::set_session_output_dir(None);
     }
 
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn export_routes_refuse_a_linked_project_exports_directory() {
+        let _guard = OUTPUT_DIR_TEST_LOCK.lock().await;
+        crate::output_paths::set_session_output_dir(None);
+        let tmp = tempfile::tempdir().unwrap();
+        let proj = tmp.path().join("p.cutproj");
+        let state = open_project(&proj).await;
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let private_export_like_file = outside.join("private.json");
+        std::fs::write(&private_export_like_file, b"private host data").unwrap();
+        std::os::unix::fs::symlink(&outside, proj.join("exports")).unwrap();
+
+        let server = spawn_test_server(build_router(state, None)).await;
+        let base = server.base_url.clone();
+        let (status, _) = get_off_thread(format!("{base}/api/export/private.json")).await;
+        assert_eq!(
+            status, 403,
+            "the project-relative route must not serve through a project exports link"
+        );
+        let absolute = urlencoding_path(&private_export_like_file.display().to_string());
+        let (status, _) = get_off_thread(format!("{base}/api/export-file?path={absolute}")).await;
+        assert_eq!(
+            status, 403,
+            "the absolute route must not retain a linked project exports target as a root"
+        );
+        crate::output_paths::set_session_output_dir(None);
+    }
+
     /// With an output folder configured, a BASENAME request may match different
     /// files inside and outside the project. Two different files, one name →
     /// refuse (409) and say so; never
@@ -1036,11 +1101,19 @@ async fn serve_export_path(
             None => return (StatusCode::NOT_FOUND, "no project open").into_response(),
         }
     };
+    let roots = crate::output_paths::authorized_export_read_roots(&project_dir);
     let dir = project_dir.join("exports");
     let (canon_dir, canon_path) = match (dir.canonicalize(), dir.join(&path).canonicalize()) {
         (Ok(d), Ok(p)) => (d, p),
         _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
+    if !roots.iter().any(|root| root == &canon_dir) {
+        return (
+            StatusCode::FORBIDDEN,
+            "project exports directory is not an authorized plain local directory",
+        )
+            .into_response();
+    }
     // Defence in depth on top of the `..` check — the canonical target must
     // stay inside the canonical exports dir (rejects symlink escapes too).
     if !canon_path.starts_with(&canon_dir) {
@@ -1050,7 +1123,7 @@ async fn serve_export_path(
     // file under another authorized export root? `starts_with` on the candidate
     // keeps a symlink that escapes its root from counting as a rival (it is not
     // authorized, so it must not turn a good request into a refusal either).
-    for root in crate::output_paths::authorized_export_read_roots(&project_dir) {
+    for root in roots {
         if root == canon_dir {
             continue;
         }
@@ -1864,10 +1937,10 @@ async fn get_frame(
             .into_response(),
         Err(e) => {
             // Map error class to a transport status; body is the envelope.
-            let status = if e.code == "unimplemented" {
-                axum::http::StatusCode::NOT_IMPLEMENTED
-            } else {
-                axum::http::StatusCode::UNPROCESSABLE_ENTITY
+            let status = match e.code.as_str() {
+                "unimplemented" => axum::http::StatusCode::NOT_IMPLEMENTED,
+                error_codes::GUARDRAIL => axum::http::StatusCode::TOO_MANY_REQUESTS,
+                _ => axum::http::StatusCode::UNPROCESSABLE_ENTITY,
             };
             (status, Json(serde_json::json!({"ok": false, "error": e}))).into_response()
         }

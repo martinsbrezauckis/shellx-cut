@@ -98,8 +98,7 @@ import TimelineEmptyState from './TimelineEmptyState'
 import TimelineGestureHud, { type TimelineGestureHudState } from './TimelineGestureHud'
 import TimelineGuides from './TimelineGuides'
 import TimelineTrackRow from './TimelineTrackRow'
-import ClipContextMenu from './ClipContextMenu'
-import TimelineSurfaceContextMenu from './TimelineSurfaceContextMenu'
+import TimelineContextMenuLayer from './TimelineContextMenuLayer'
 import { useTimelineContextMenus } from './useTimelineContextMenus'
 import { useTimelineClipActions } from './useTimelineClipActions'
 import { useWindowedThumbnails } from './useWindowedThumbnails'
@@ -127,10 +126,11 @@ export interface TimelineProps {
   onCopyClip: (clipId: string) => boolean
   /** Cut a clip (copy + ripple-delete it + its linked sibling audio). */
   onCutClip: (clipId: string) => void
-  /** Paste the clipboard's clip at the playhead on the active/selected track. */
-  onPasteClip: () => void
+  /** Paste at an explicit context target, or at the playhead for Ctrl/Cmd+V. */
+  onPasteClip: (target?: { atMs: number; trackId: string }) => void
   /** Whether the clipboard holds a clip (drives the Paste-disabled state). */
   clipboardHasContent: boolean
+  clipboardKind: 'video' | 'audio' | null
   clipboardClipId: string | null
 }
 
@@ -197,7 +197,8 @@ interface Ghost {
 // The panel
 // ---------------------------------------------------------------------------
 
-export default function Timeline({ project, playheadMs, selectedClipIds, headOpId, onSeek, onSelect, exportRange, onExportRange, onCopyClip, onCutClip, onPasteClip, clipboardHasContent, clipboardClipId }: TimelineProps) {
+export default function Timeline(props: TimelineProps) {
+  const { project, playheadMs, selectedClipIds, headOpId, onSeek, onSelect, exportRange, onExportRange, clipboardClipId } = props
   const scrollRef = useRef<HTMLDivElement>(null)
   const playheadRef = useRef<HTMLDivElement>(null)
 
@@ -313,37 +314,21 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
   const cfg = useRef({ zoom, durationMs, allItems, markers, playheadMs, fps, selectedClipIds, onSeek, onSelect, minZoom, rows, snapEnabled, razorMode, trimTool, exportRange, onExportRange })
   cfg.current = { zoom, durationMs, allItems, markers, playheadMs, fps, selectedClipIds, onSeek, onSelect, minZoom, rows, snapEnabled, razorMode, trimTool, exportRange, onExportRange }
   const { savingRange, savingGif, saveNote, onSaveRange, onSaveGif } = useTimelineRangeSaves(cfg)
+  const clipActions = useTimelineClipActions({ cfg, setActiveSeam })
   const {
     syncNote,
     showVerbFailure,
     addTrack,
     rippleTrimAtPlayhead,
     deleteSelection,
-    removeItemById,
-    removeTrackById,
     splitItemAt,
     splitAtPlayhead,
-    fadeItem,
-    trimItemTo,
-    reverseItem,
-    freezeItem,
-    stabilizeItem,
-    speedItem,
-    crossfadeAdjacent,
-    muteItem,
-    cleanVoiceItem,
-    blurFacesItem,
     syncByAudio,
-    detachAudioItem,
-    splitEditItem,
-    replaceClipSource,
-    fitToFillAdjacent,
-    nestSelection,
     cutToBeat,
     multicamSwitch,
     applySpeed,
     applyCrossfade,
-  } = useTimelineClipActions({ cfg, setActiveSeam })
+  } = clipActions
 
   // --- measure viewport + initial fit-zoom ---------------------------------
   useEffect(() => {
@@ -1158,15 +1143,7 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
 
   // Event delegation keeps clip rows memoized. The resolver owns the mutually
   // exclusive target contract: locked > gap > clip > empty timeline.
-  const {
-    clipMenu,
-    setClipMenu,
-    surfaceMenu,
-    setSurfaceMenu,
-    assetPick,
-    setAssetPick,
-    onTimelineContextMenu,
-  } = useTimelineContextMenus({
+  const contextMenus = useTimelineContextMenus({
     allItems,
     tracks: project?.tracks ?? [],
     selectedClipIds,
@@ -1554,7 +1531,7 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
         data-cut-razor={razorMode || undefined}
         data-cut-trimtool={trimTool !== 'select' ? trimTool : undefined}
         onClick={onLaneClick}
-        onContextMenu={onTimelineContextMenu}
+        onContextMenu={contextMenus.onTimelineContextMenu}
       >
         <div className="tl-inner" style={{ width: innerW, minHeight: '100%' }}>
           <TimelineOverlays
@@ -1607,6 +1584,10 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
                 onLaneDown={onLaneDown}
                 onClipDown={onClipDown}
                 onSeamDown={onSeamDown}
+                onOpenTrackMenu={(trackId, x, y) => {
+                  contextMenus.setClipMenu(null)
+                  contextMenus.setSurfaceMenu({ kind: 'track', trackId, x, y })
+                }}
               />
             )
           })}
@@ -1651,60 +1632,15 @@ export default function Timeline({ project, playheadMs, selectedClipIds, headOpI
 
       <TimelineGestureHud hud={hud} />
 
-      {/* Clip context menu (right-click): render-only component; state/actions stay here. */}
-      {clipMenu && (
-        <ClipContextMenu
-          menu={clipMenu}
-          project={project}
-          allItems={allItems}
-          selectedClipIds={selectedClipIds}
-          assetPick={assetPick}
-          setAssetPick={setAssetPick}
-          clipboardHasContent={clipboardHasContent}
-          onPasteAttributes={openPasteAttributes}
-          onOpenTrim={openTrimPopover}
-          onClose={() => setClipMenu(null)}
-          onCopyClip={onCopyClip}
-          onCutClip={onCutClip}
-          onPasteClip={onPasteClip}
-          onSelect={(clipIds) => cfg.current.onSelect(clipIds)}
-          onSeek={(atMs) => cfg.current.onSeek(atMs)}
-          removeItemById={removeItemById}
-          removeTrackById={removeTrackById}
-          splitItemAt={splitItemAt}
-          fadeItem={fadeItem}
-          trimItemTo={trimItemTo}
-          reverseItem={reverseItem}
-          freezeItem={freezeItem}
-          stabilizeItem={stabilizeItem}
-          speedItem={speedItem}
-          crossfadeAdjacent={crossfadeAdjacent}
-          muteItem={muteItem}
-          cleanVoiceItem={cleanVoiceItem}
-          blurFacesItem={blurFacesItem}
-          detachAudioItem={detachAudioItem}
-          splitEditItem={splitEditItem}
-          replaceClipSource={replaceClipSource}
-          fitToFillAdjacent={fitToFillAdjacent}
-          nestSelection={nestSelection}
-        />
-      )}
-
-      {surfaceMenu && (
-        <TimelineSurfaceContextMenu
-          menu={surfaceMenu}
-          project={project}
-          allItems={allItems}
-          clipboardClipId={clipboardClipId}
-          durationMs={durationMs}
-          onSeek={onSeek}
-          onExportRange={onExportRange}
-          onAddTrack={addTrack}
-          onSelect={onSelect}
-          onRemoveTrack={removeTrackById}
-          onClose={() => setSurfaceMenu(null)}
-        />
-      )}
+      <TimelineContextMenuLayer
+        timeline={props}
+        allItems={allItems}
+        durationMs={durationMs}
+        menus={contextMenus}
+        actions={clipActions}
+        onPasteAttributes={openPasteAttributes}
+        onOpenTrim={openTrimPopover}
+      />
 
       {/* Paste-attributes dialog */}
       {pasteAttr && (

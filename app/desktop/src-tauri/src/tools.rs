@@ -89,7 +89,11 @@ fn appdata_sidecar_dir() -> Option<PathBuf> {
 fn manual_override_ffmpeg() -> Option<PathBuf> {
     let file = std::env::var_os("SHELLX_CUT_HOME")
         .filter(|v| !v.is_empty())
-        .map(|home| PathBuf::from(home).join("preferences").join("ffmpeg-override"))
+        .map(|home| {
+            PathBuf::from(home)
+                .join("preferences")
+                .join("ffmpeg-override")
+        })
         .or_else(|| {
             appdata_tools_dir()
                 .and_then(|tools| tools.parent().map(|root| root.join("ffmpeg-override")))
@@ -534,7 +538,10 @@ mod tests {
         std::env::set_var("LOCALAPPDATA", tmp.join("data"));
 
         let r = ToolResolution::detect(&tmp.join("empty"));
-        assert!(r.ffmpeg_ok, "persisted manual choice must satisfy detection");
+        assert!(
+            r.ffmpeg_ok,
+            "persisted manual choice must satisfy detection"
+        );
         assert_eq!(r.ffmpeg_source, "manual-override");
         assert!(
             r.ffmpeg_dir.is_none(),
@@ -549,7 +556,10 @@ mod tests {
     fn missing_hint_names_searched_locations() {
         let hint = ffmpeg_missing_hint();
         assert!(hint.contains("Searched:"), "hint must list searched rungs");
-        assert!(hint.contains("SHELLX_CUT_FFMPEG"), "hint must name the env overrides");
+        assert!(
+            hint.contains("SHELLX_CUT_FFMPEG"),
+            "hint must name the env overrides"
+        );
         assert!(hint.contains("PATH"), "hint must name the PATH rung");
     }
 
@@ -559,8 +569,13 @@ mod tests {
     #[test]
     fn shell_ladder_mirrors_engine_toolpath() {
         let engine = include_str!("../../../media/src/toolpath.rs");
-        assert!(engine.contains(&format!("pub const ENV_FFMPEG: &str = \"{}\";", ENV_FFMPEG_EXE)));
-        assert!(engine.contains(&format!("pub const ENV_FFMPEG_DIR: &str = \"{ENV_FFMPEG_DIR}\";")));
+        assert!(engine.contains(&format!(
+            "pub const ENV_FFMPEG: &str = \"{}\";",
+            ENV_FFMPEG_EXE
+        )));
+        assert!(engine.contains(&format!(
+            "pub const ENV_FFMPEG_DIR: &str = \"{ENV_FFMPEG_DIR}\";"
+        )));
         // rung 3b system dirs (macOS) — mirrored by macos_system_tool_dirs().
         assert!(engine.contains("/opt/homebrew/bin"));
         assert!(engine.contains("/usr/local/bin"));

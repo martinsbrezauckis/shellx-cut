@@ -53,13 +53,14 @@ authentication boundary:
 - Shared/multi-user machines, untrusted local apps/services, containers sharing
   host networking, and exposed ports are outside the supported default. Native
   per-caller/per-user capability authentication is future hardening; it is not
-  in v0.6.108. Under this documented deployment assumption, its absence is
+  in v0.6.109. Under this documented deployment assumption, its absence is
   **NOT A DEFECT**.
 
 `cutd mcp` is a stdio transport that proxies the running server; it has no
 additional caller authentication and inherits this machine-wide boundary. The
-contained Claude `agent.chat` broker separately limits that provider's native
-tools and allowed Cut verbs; it does not make REST/MCP per-user authenticated.
+brokered `agent.chat` routes separately limit their allowed Cut verbs; this does
+not make REST/MCP per-user authenticated or restrict a normal user-configured
+MCP server.
 See the [local-machine threat model](shellx-cut-threat-model.md) for the
 repository-grounded assets, abuse paths, and residual risk.
 
@@ -73,7 +74,7 @@ All verbs go through one route; the rest are read-side support surfaces.
 | `/api/state` | GET | current project/timeline state snapshot |
 | `/api/verbs` | GET | the live verb registry (generated from `schema/verbs.json`) |
 | `/api/events` | GET (WS) | event stream: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated`. `op_applied` carries `revision`, `from_revision`, and `{delta:{kind:"op",count:1}}`; clients repair a missed frame through bounded `project.state{since_revision}` deltas or an explicit snapshot fallback. (`project_changed` refreshes visible clients after REST/CLI/MCP create, open, or close; `doctor_updated` refreshes environment capabilities; agents key on `receipt_ready`) |
-| `/api/frame?at_ms=` | GET | composited frame at a timeline position — the agent's eyes |
+| `/api/frame?at_ms=[&h=][&compose=1]` | GET | bounded composited/scrub JPEG at a timeline position — `h` defaults to 540 and may not exceed 2160; derived width and pixels are capped at 4K UHD. Use `export.frame` for an explicit full-resolution still. |
 | `/api/agent` | GET | `shellx-cut/agent-docs/2`: machine-readable API/docs discovery, exact running executable, MCP proxy/standalone metadata, copyable client config, and self-test contract |
 | `/api/agent-doc/*path` | GET | serves the agent docs (e.g. `skill/shellx-cut/SKILL.md`) over HTTP for installed-app onboarding |
 | `/api/export/*path` | GET | download rendered artifacts by PROJECT-RELATIVE path, resolved against the open project's `exports/` subtree. Refuses (409) when the same relative name also matches a different file in the chosen output folder — an ambiguous request is never answered with a guess |
@@ -209,11 +210,11 @@ metadata, and `edit.color_match` reads registered clips and runs ffmpeg while
 still committing a replay-safe grade.
 
 `agent_chat` is a separate broker capability, not an assertion that a Cut
-handler is pure. It controls whether the contained Claude turn can discover or
+handler is pure. It controls whether a brokered Agent Chat turn can discover or
 call that verb; the broker still limits calls to the open project and registered
 asset IDs. A permitted bounded edit may therefore accurately declare
-`filesystem:true` or `process:true`, while arbitrary provider-native file,
-shell, network, and other MCP access remains denied. The generated core
+`filesystem:true` or `process:true`. The filter governs Cut MCP verbs; native
+file, shell, and network policy remains provider-specific. The generated core
 contract rejects an unknown journal verb instead of guessing that it is an
 undoable timeline edit. The generated dispatcher target is not a caller option;
 it makes the schema name-to-handler route exhaustively checked at build time.
@@ -588,7 +589,8 @@ files. Grok receives a disposable config/home with native tools disabled and
 only the live Cut MCP server; its existing auth file remains in place and is
 never copied or rewritten. Antigravity keeps its normal settings, native
 sandbox, permissions, and login while Cut adds a workspace-local MCP entry;
-that route currently requires macOS or Linux. See [SECURITY.md](../../SECURITY.md).
+the resolved CLI must advertise Cut's required sandbox and non-interactive flags
+before each turn, including on Windows. See [SECURITY.md](../../SECURITY.md).
 
 Every launched turn also returns a review contract:
 

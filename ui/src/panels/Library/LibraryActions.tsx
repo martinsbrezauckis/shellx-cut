@@ -16,6 +16,7 @@ export interface LibraryActionsProps {
   onRelink: ItemAction
   onMakePortable: ItemAction
   onRemove: ItemAction
+  onOpenMenu: (x: number, y: number, id: string) => void
 }
 
 export function LibraryActions({
@@ -30,6 +31,7 @@ export function LibraryActions({
   onRelink,
   onMakePortable,
   onRemove,
+  onOpenMenu,
 }: LibraryActionsProps) {
   return (
     <div className="lb-actions">
@@ -93,6 +95,21 @@ export function LibraryActions({
           <Icon name="copy" size={14} /> <span className="lb-act-label lb-act-label--optional">Keep a copy</span>
         </button>
       )}
+      <button
+        type="button"
+        className="lb-act lb-act--menu"
+        data-cut-library-menu-button={item.id}
+        title={`More actions for ${item.name}`}
+        aria-label={`More actions for ${item.name}`}
+        aria-haspopup="menu"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect()
+          onOpenMenu(rect.right, rect.bottom + 2, item.id)
+        }}
+      >
+        <Icon name="moreH" size={14} />
+      </button>
       <button
         className="lb-act lb-act--danger"
         data-cut-library-remove={item.id}

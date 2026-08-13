@@ -12,7 +12,6 @@ use std::path::Path;
 mod antigravity;
 pub(crate) use antigravity::{
     args as antigravity_args, project_config as antigravity_project_config,
-    supported_on_this_platform as antigravity_supported_on_this_platform,
     verify_capability_contract as verify_antigravity_capability_contract,
 };
 #[path = "broker/codex.rs"]
@@ -156,8 +155,8 @@ where
         OsString::from(proxy_actor),
     );
     vars.insert(
-        OsString::from("SHELLX_CUT_AGENT_CONTAINED"),
-        OsString::from("1"),
+        OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER),
+        OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE),
     );
     Ok(LaunchEnvironment {
         clear_inherited: true,
@@ -173,8 +172,9 @@ pub fn sanitized_environment(
 }
 
 /// Preserve the user's normal CLI environment and auth/config routing for
-/// Codex. Cut only adds the exact live-engine proxy values consumed by its MCP
-/// child; it does not copy, move, or rewrite the CLI's credential files.
+/// native-policy providers. Cut only adds the exact live-engine proxy values
+/// and restricted-MCP marker consumed by its MCP child; it does not copy, move,
+/// or rewrite the CLI's credential files.
 pub fn native_environment(proxy_addr: &str, proxy_actor: &str) -> LaunchEnvironment {
     LaunchEnvironment {
         clear_inherited: false,
@@ -187,14 +187,17 @@ pub fn native_environment(proxy_addr: &str, proxy_actor: &str) -> LaunchEnvironm
                 OsString::from("CUTD_PROXY_ACTOR"),
                 OsString::from(proxy_actor),
             ),
+            (
+                OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER),
+                OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE),
+            ),
         ],
     }
 }
 
 /// Providers with an implemented local Agent Chat route.
 pub fn supported_headless_agent(agent: &str) -> bool {
-    matches!(agent, "claude" | "codex" | "grok")
-        || (agent == "antigravity" && antigravity_supported_on_this_platform())
+    matches!(agent, "claude" | "codex" | "grok" | "antigravity")
 }
 
 pub fn security_posture(agent: &str) -> Option<&'static str> {
@@ -202,10 +205,9 @@ pub fn security_posture(agent: &str) -> Option<&'static str> {
         "claude" => Some("contained: pinned Claude Code 2.1.224"),
         "codex" => Some("native CLI: uses your Codex settings and permissions"),
         "grok" => Some("isolated turn: only Cut MCP, existing Grok login"),
-        "antigravity" if antigravity_supported_on_this_platform() => {
-            Some("native CLI: uses your Antigravity sandbox and permissions")
+        "antigravity" => {
+            Some("native CLI: verifies its sandbox and non-interactive flags before each turn")
         }
-        "antigravity" => Some("disabled: Antigravity sandbox unavailable on Windows"),
         _ => None,
     }
 }

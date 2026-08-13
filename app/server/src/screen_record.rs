@@ -43,6 +43,7 @@ mod capture_files;
 mod containment;
 mod export_audio;
 mod export_job;
+mod export_progress;
 pub(crate) mod finalization_budget;
 mod polish;
 mod raw_mux;
@@ -65,7 +66,7 @@ pub(crate) use export_job::screen_record_export;
 use polish::{autoedit, parse_autoedit_config, read_bounded_json};
 pub(crate) use polish::{
     gif_with_control, mux_raw_with_control, plan_cache_tag, render_with_control,
-    screen_record_autoedit,
+    render_with_control_progress, screen_record_autoedit,
 };
 pub(crate) use raw_mux::mux_raw_sources;
 pub(crate) use recovery::recovery_status_handler;

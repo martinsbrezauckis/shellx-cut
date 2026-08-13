@@ -1,34 +1,130 @@
 //! Atomic final-output publication shared by ffmpeg render entry points.
 
 use cut_core::{error_codes, CutError};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(all(test, unix))]
+use std::sync::atomic::AtomicU64;
+
+/// Retained only to let the regression construct the predictable path used by
+/// the vulnerable implementation. Production reservations never use it.
+#[cfg(all(test, unix))]
 static OUTPUT_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn temporary_output_path(out: &Path) -> PathBuf {
+/// Reserve a random, exclusively-created regular sibling before handing its
+/// path to ffmpeg. `NamedTempFile` creates the leaf with the platform's
+/// create-new operation, so an existing symlink/reparse point cannot be opened
+/// as the output. The handle is closed before ffmpeg starts because ffmpeg
+/// opens and truncates its own output path (including on Windows).
+///
+/// The containing output/cache directory must itself be a local plain
+/// directory. On Unix it also cannot be writable by group or other users, so
+/// another user cannot replace this reservation between its creation and
+/// ffmpeg's later open. The temp remains directly beside the final output,
+/// preserving the same-directory atomic rename contract.
+fn reserve_temporary_output(out: &Path) -> Result<PathBuf, CutError> {
     let parent = out.parent().unwrap_or_else(|| Path::new("."));
-    let stem = out
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("ffmpeg-output");
-    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("tmp");
-    let sequence = OUTPUT_SEQ.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!(
-        ".{stem}.{}.{}.tmp.{ext}",
-        std::process::id(),
-        sequence
-    ))
+    ensure_plain_output_dir(parent)?;
+
+    let extension = out
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tmp");
+    let suffix = format!(".tmp.{extension}");
+    let temporary = tempfile::Builder::new()
+        .prefix(".cut-ffmpeg-")
+        .suffix(&suffix)
+        .tempfile_in(parent)?;
+    let (file, path) = temporary.keep().map_err(|error| error.error)?;
+    drop(file);
+
+    if !is_plain_regular_file(&fs::symlink_metadata(&path)?) {
+        return Err(CutError::new(
+            error_codes::IO,
+            format!(
+                "could not reserve a regular temporary output: {}",
+                path.display()
+            ),
+            "exclusive ffmpeg staging reservation was replaced by an unsafe filesystem entry",
+        ));
+    }
+    Ok(path)
+}
+
+fn ensure_plain_output_dir(path: &Path) -> Result<(), CutError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !is_plain_directory(&metadata) {
+        return Err(CutError::new(
+            error_codes::IO,
+            format!(
+                "output directory is not a local plain directory: {}",
+                path.display()
+            ),
+            "ffmpeg output staging refuses symlinked or reparse-point directories",
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if metadata.mode() & 0o022 != 0 {
+            return Err(CutError::new(
+                error_codes::IO,
+                format!(
+                    "output directory is writable by group or other users: {}",
+                    path.display()
+                ),
+                "ffmpeg output staging requires a directory protected from external replacement",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn is_plain_directory(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_dir() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
+}
+
+fn is_plain_regular_file(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
+}
+
+#[cfg(windows)]
+fn is_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+/// Remove only a known plain regular reservation. An unexpected replacement is
+/// left for inspection instead of unlinking something the renderer did not
+/// create.
+fn remove_reserved_temporary_output(path: &Path) {
+    if fs::symlink_metadata(path)
+        .map(|metadata| is_plain_regular_file(&metadata))
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_file(path);
+    }
 }
 
 /// Remove only a stale zero-byte output; a prior valid render is left intact.
 pub(crate) fn clear_stale_empty_output(out: &Path) -> Result<(), CutError> {
-    if std::fs::metadata(out)
+    if fs::symlink_metadata(out)
         .ok()
-        .is_some_and(|metadata| metadata.is_file() && metadata.len() == 0)
+        .is_some_and(|metadata| is_plain_regular_file(&metadata) && metadata.len() == 0)
     {
-        std::fs::remove_file(out)?;
+        fs::remove_file(out)?;
     }
     Ok(())
 }
@@ -86,8 +182,21 @@ pub(crate) fn run_with_atomic_output<T>(
     out: &Path,
     run: impl FnOnce(&[String]) -> Result<T, CutError>,
 ) -> Result<T, CutError> {
+    run_with_validated_atomic_output(args, out, run, |_| Ok(()))
+}
+
+/// Variant of [`run_with_atomic_output`] that validates the completed temporary
+/// file before it becomes visible at the final path. This is for cache outputs
+/// whose non-zero size alone is not enough to establish that ffmpeg completed
+/// a usable container.
+pub(crate) fn run_with_validated_atomic_output<T>(
+    args: &[String],
+    out: &Path,
+    run: impl FnOnce(&[String]) -> Result<T, CutError>,
+    validate: impl FnOnce(&Path) -> Result<(), CutError>,
+) -> Result<T, CutError> {
     clear_stale_empty_output(out)?;
-    let tmp = temporary_output_path(out);
+    let tmp = reserve_temporary_output(out)?;
     let mut tmp_args = args.to_vec();
     if let Some(last) = tmp_args.last_mut() {
         *last = tmp.display().to_string();
@@ -96,147 +205,39 @@ pub(crate) fn run_with_atomic_output<T>(
     let value = match run(&tmp_args) {
         Ok(value) => value,
         Err(error) => {
-            let _ = std::fs::remove_file(&tmp);
+            remove_reserved_temporary_output(&tmp);
             return Err(error);
         }
     };
-    let temporary_metadata = std::fs::metadata(&tmp)?;
-    if temporary_metadata.is_file() && temporary_metadata.len() == 0 {
-        let _ = std::fs::remove_file(&tmp);
+    let temporary_metadata = fs::symlink_metadata(&tmp)?;
+    if !is_plain_regular_file(&temporary_metadata) {
+        remove_reserved_temporary_output(&tmp);
+        return Err(CutError::new(
+            error_codes::FFMPEG,
+            "ffmpeg output was not a regular local file",
+            "the temporary final-render path became a symlink or reparse point",
+        ));
+    }
+    if temporary_metadata.len() == 0 {
+        remove_reserved_temporary_output(&tmp);
         return Err(CutError::new(
             error_codes::FFMPEG,
             "ffmpeg completed without output bytes",
             "the temporary final-render file was zero bytes",
         ));
     }
+    if let Err(error) = validate(&tmp) {
+        remove_reserved_temporary_output(&tmp);
+        return Err(error);
+    }
     match publish_temporary_output(&tmp, out) {
         Ok(()) => Ok(value),
         Err(error) => {
-            let _ = std::fs::remove_file(&tmp);
+            remove_reserved_temporary_output(&tmp);
             Err(error.into())
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::run_with_atomic_output;
-    use cut_core::{error_codes, CutError};
-
-    fn args_for(out: &std::path::Path) -> Vec<String> {
-        vec!["-i".into(), "input.mov".into(), out.display().to_string()]
-    }
-
-    #[test]
-    fn failed_writer_removes_its_temp_and_a_stale_zero_byte_final_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("final.mp4");
-        std::fs::write(&out, []).unwrap();
-
-        let error = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
-            let tmp = std::path::Path::new(tmp_args.last().unwrap());
-            assert!(
-                !out.exists(),
-                "stale empty final output must be cleared first"
-            );
-            std::fs::write(tmp, []).unwrap();
-            Err::<(), CutError>(CutError::new(
-                error_codes::FFMPEG,
-                "encode failed",
-                "test failure",
-            ))
-        })
-        .unwrap_err();
-
-        assert_eq!(error.code, error_codes::FFMPEG);
-        assert!(
-            !out.exists(),
-            "a failed render cannot leave an empty final file"
-        );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn failed_writer_keeps_an_existing_nonempty_final_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("final.mp4");
-        std::fs::write(&out, b"known-good").unwrap();
-
-        let _ = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
-            std::fs::write(tmp_args.last().unwrap(), b"partial").unwrap();
-            Err::<(), CutError>(CutError::new(
-                error_codes::FFMPEG,
-                "encode failed",
-                "test failure",
-            ))
-        });
-
-        assert_eq!(std::fs::read(&out).unwrap(), b"known-good");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn successful_writer_publishes_its_temp_at_the_final_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("final.mp4");
-
-        let result = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
-            std::fs::write(tmp_args.last().unwrap(), b"complete").unwrap();
-            Ok("finished")
-        })
-        .unwrap();
-
-        assert_eq!(result, "finished");
-        assert_eq!(std::fs::read(&out).unwrap(), b"complete");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn second_successful_writer_replaces_the_prior_final_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("final.mp4");
-        std::fs::write(&out, b"old-render").unwrap();
-
-        run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
-            std::fs::write(tmp_args.last().unwrap(), b"new-render").unwrap();
-            Ok(())
-        })
-        .unwrap();
-
-        assert_eq!(std::fs::read(&out).unwrap(), b"new-render");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn publication_failure_at_an_existing_destination_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("final.mp4");
-        std::fs::create_dir(&out).unwrap();
-
-        let error = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
-            std::fs::write(tmp_args.last().unwrap(), b"new-render").unwrap();
-            Ok(())
-        })
-        .unwrap_err();
-
-        assert_eq!(error.code, error_codes::IO);
-        assert!(out.is_dir());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn zero_byte_success_is_rejected_before_it_can_be_published() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("final.mp4");
-
-        let error = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
-            std::fs::write(tmp_args.last().unwrap(), []).unwrap();
-            Ok(())
-        })
-        .unwrap_err();
-
-        assert_eq!(error.code, error_codes::FFMPEG);
-        assert!(!out.exists());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-}
+mod tests;

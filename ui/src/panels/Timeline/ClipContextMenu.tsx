@@ -1,19 +1,20 @@
-import { useState, type Dispatch, type SetStateAction } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import type { Project } from '../../lib/client'
+import ContextMenuFrame from '../../components/ContextMenuFrame'
 import { Icon } from '../../icons'
 import { linkedSiblings, type LaidItem } from './layout'
 import GeneratedOverlayContextMenu from './GeneratedOverlayContextMenu'
-import CustomSpeedMenuEditor from './CustomSpeedMenuEditor'
 import {
   adjacentGapSlot,
-  assetBasename,
   assetMediaKind,
+  type AssetPickMode,
   clipContextMenuContract,
   isContiguousRun,
 } from './ClipContextMenuModel'
+import { AudioSection, ClipboardSection, SourceSection, SpeedSection, TransitionsSection } from './ClipContextMenuSections'
 
 export type ClipMenuState = { x: number; y: number; itemId: string; atMs: number }
-export type AssetPickMode = 'replace' | 'fit'
+export type { AssetPickMode } from './ClipContextMenuModel'
 
 interface ClipContextMenuProps {
   menu: ClipMenuState
@@ -26,13 +27,11 @@ interface ClipContextMenuProps {
   onClose: () => void
   onCopyClip: (clipId: string) => boolean
   onCutClip: (clipId: string) => void
-  onPasteClip: () => void
   onPasteAttributes: (targetIds: string[]) => void
   onOpenTrim: (itemId: string, x: number, y: number) => void
   onSelect: (clipIds: string[]) => void
   onSeek: (atMs: number) => void
   removeItemById: (itemId: string, ripple: boolean) => void | Promise<void>
-  removeTrackById: (trackId: string) => void | Promise<void>
   splitItemAt: (itemId: string, atMs: number) => void
   fadeItem: (itemId: string, which: 'in' | 'out') => void
   trimItemTo: (itemId: string, edge: 'start' | 'end', atMs: number) => void
@@ -51,15 +50,6 @@ interface ClipContextMenuProps {
   nestSelection: () => void | Promise<void>
 }
 
-function clampMenu(el: HTMLDivElement, x: number, y: number): void {
-  const margin = 8
-  const rect = el.getBoundingClientRect()
-  const left = Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))
-  const top = Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))
-  el.style.left = `${left}px`
-  el.style.top = `${top}px`
-}
-
 export default function ClipContextMenu({
   menu,
   project,
@@ -71,13 +61,11 @@ export default function ClipContextMenu({
   onClose,
   onCopyClip,
   onCutClip,
-  onPasteClip,
   onPasteAttributes,
   onOpenTrim,
   onSelect,
   onSeek,
   removeItemById,
-  removeTrackById,
   splitItemAt,
   fadeItem,
   trimItemTo,
@@ -95,15 +83,10 @@ export default function ClipContextMenu({
   fitToFillAdjacent,
   nestSelection,
 }: ClipContextMenuProps) {
-  const [speedOpen, setSpeedOpen] = useState(false)
   const it = allItems.find((i) => i.id === menu.itemId)
   if (!it) return null
   const contract = clipContextMenuContract(it, project, allItems)
   if (contract.surface === 'none') return null
-  const tid = it.trackId
-  const firstVideo = project?.tracks.find((t) => t.kind === 'video')?.id
-  const firstAudio = project?.tracks.find((t) => t.kind === 'audio')?.id
-  const isOverlayTrack = tid !== firstVideo && tid !== firstAudio
   if (contract.contentClass === 'title' || contract.contentClass === 'shape') {
     return <GeneratedOverlayContextMenu
       item={it}
@@ -111,9 +94,7 @@ export default function ClipContextMenu({
       onClose={onClose}
       onSelect={onSelect}
       removeItemById={removeItemById}
-      removeTrackById={removeTrackById}
       splitItemAt={splitItemAt}
-      isOverlayTrack={isOverlayTrack}
     />
   }
   const isCaption = contract.surface === 'caption'
@@ -153,12 +134,7 @@ export default function ClipContextMenu({
   const canNest = isContiguousRun(nestSel, allItems)
 
   if (isCaption) {
-    return (
-      <>
-        <div className="tl-ctx-backdrop" data-cut-ctx-backdrop onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
-        <div className="tl-ctx" role="menu" data-cut-clip-menu data-cut-clip-kind="caption" style={{ left: menu.x, top: menu.y }}
-          ref={(el) => { if (el) clampMenu(el, menu.x, menu.y) }}
-        >
+    return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-clip-menu" backdropId="data-cut-ctx-backdrop" menuAttributes={{ 'data-cut-clip-kind': 'caption' }} ariaLabel="Caption menu" onClose={onClose}>
           <span className="tl-ctx__label" aria-hidden="true">Caption</span>
           <button className="tl-ctx__item" data-cut-ctx="caption-edit" role="menuitem"
             title="Edit this caption’s text & style in the Inspector"
@@ -175,50 +151,29 @@ export default function ClipContextMenu({
             onClick={() => { void removeItemById(menu.itemId, true); onClose() }}>
             <Icon name="rippleDelete" size={14} /> Remove caption <kbd className="tl-ctx__kbd">Del</kbd>
           </button>
-        </div>
-      </>
-    )
+    </ContextMenuFrame>
   }
 
   return (
-    <>
-      <div className="tl-ctx-backdrop" data-cut-ctx-backdrop onMouseDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
-      {/* Class tag mirrors the caption branch's data-cut-clip-kind so
-          automation and the debug API can identify the rendered menu class. */}
-      <div className="tl-ctx" role="menu" data-cut-clip-menu data-cut-clip-kind={contract.contentClass} style={{ left: menu.x, top: menu.y }}
-        ref={(el) => { if (el) clampMenu(el, menu.x, menu.y) }}
+      <ContextMenuFrame
+        x={menu.x}
+        y={menu.y}
+        menuId="data-cut-clip-menu"
+        backdropId="data-cut-ctx-backdrop"
+        menuAttributes={{ 'data-cut-clip-kind': contract.contentClass }}
+        ariaLabel={`${contract.contentClass} clip menu`}
+        onClose={onClose}
       >
-        <span className="tl-ctx__label" aria-hidden="true">Clipboard</span>
-        <button className="tl-ctx__item" data-cut-ctx="copy" role="menuitem"
-          disabled={!canMedia}
-          title={canMedia ? 'Copy this clip (Ctrl/Cmd+C)' : 'Copy works on a video or audio clip'}
-          onClick={() => { onCopyClip(menu.itemId); onClose() }}>
-          <Icon name="copy" size={14} /> Copy <kbd className="tl-ctx__kbd">⌘C</kbd>
-        </button>
-        <button className="tl-ctx__item" data-cut-ctx="cut" role="menuitem"
-          disabled={!canMedia}
-          title={canMedia ? 'Cut this clip — copy + remove it (Ctrl/Cmd+X)' : 'Cut works on a video or audio clip'}
-          onClick={() => { onCutClip(menu.itemId); onClose() }}>
-          <Icon name="cut" size={14} /> Cut <kbd className="tl-ctx__kbd">⌘X</kbd>
-        </button>
-        <button className="tl-ctx__item" data-cut-ctx="paste" role="menuitem"
-          disabled={!clipboardHasContent}
-          title={clipboardHasContent ? 'Paste the copied clip at the playhead (Ctrl/Cmd+V)' : 'Copy or cut a clip first'}
-          onClick={() => { onPasteClip(); onClose() }}>
-          <Icon name="paste" size={14} /> Paste <kbd className="tl-ctx__kbd">⌘V</kbd>
-        </button>
-        <button className="tl-ctx__item" data-cut-ctx="paste-attributes" role="menuitem"
-          disabled={!clipboardHasContent || !canMedia}
-          title={clipboardHasContent
-            ? 'Paste the copied clip\u2019s grade / transform / speed / volume / effects onto the selected clip(s) (Ctrl/Cmd+Alt+V)'
-            : 'Copy a clip first, then paste its attributes onto others'}
-          onClick={() => {
-            const targets = selectedClipIds.includes(menu.itemId) ? selectedClipIds : [menu.itemId]
-            onPasteAttributes(targets)
-            onClose()
-          }}>
-          <Icon name="paste" size={14} /> Paste attributes… <kbd className="tl-ctx__kbd">⌘⌥V</kbd>
-        </button>
+        <ClipboardSection
+          canMedia={canMedia}
+          clipboardHasContent={clipboardHasContent}
+          itemId={menu.itemId}
+          selectedClipIds={selectedClipIds}
+          onCopyClip={onCopyClip}
+          onCutClip={onCutClip}
+          onPasteAttributes={onPasteAttributes}
+          onClose={onClose}
+        />
 
         <span className="tl-ctx__sep" aria-hidden="true" />
         <span className="tl-ctx__label" aria-hidden="true">Edit</span>
@@ -286,117 +241,32 @@ export default function ClipContextMenu({
           <Icon name="liftDelete" size={14} /> Remove, keep gap <kbd className="tl-ctx__kbd">⌥Del</kbd>
         </button>
 
-        {/* Replace / Fit-to-fill / Nest swap or collapse the clip's SOURCE
-            media — on a title/shape they would sever the title.update /
-            shape.update editing identity (the render is regenerated from the
-            title text, not swappable footage), so the section is
-            class-filtered for title clips. */}
-        {contract.allowsSourceEdits && (
-          <>
-        <span className="tl-ctx__sep" aria-hidden="true" />
-        <span className="tl-ctx__label" aria-hidden="true">Replace</span>
-        <button className="tl-ctx__item" data-cut-ctx="replace" role="menuitem"
-          aria-expanded={assetPick === 'replace'}
-          disabled={!canReplace}
-          title={!canMedia ? 'Replace works on a video or audio clip'
-            : !canReplace ? 'Import another compatible clip first'
-            : 'Swap this clip’s source while keeping its slot, duration, and look'}
-          onClick={() => setAssetPick((p) => (p === 'replace' ? null : 'replace'))}>
-          <Icon name="import" size={14} /> Replace with…
-          <Icon name={assetPick === 'replace' ? 'chevronUp' : 'chevronDown'} size={14} className="tl-ctx__caret" />
-        </button>
-        {assetPick === 'replace' && canReplace && (
-          <div className="tl-ctx__sub" data-cut-ctx-replace-list role="group">
-            {sourceAssets.map(([id, asset]) => (
-              <button key={id} className="tl-ctx__item tl-ctx__item--sub" role="menuitem"
-                data-cut-ctx-replace-asset={id}
-                title={`Replace with ${assetBasename(asset)} (${id})`}
-                onClick={() => { replaceClipSource(menu.itemId, id); onClose() }}>
-                <Icon name={assetMediaKind(asset) === 'audio' ? 'audioClip' : assetMediaKind(asset) === 'image' ? 'image' : 'film'} size={14} /> {assetBasename(asset)}
-              </button>
-            ))}
-          </div>
-        )}
-        <button className="tl-ctx__item" data-cut-ctx="fit-to-fill" role="menuitem"
-          aria-expanded={assetPick === 'fit'}
-          disabled={!canFit}
-          title={!fitSlot ? 'Fit to fill needs an empty gap next to this clip; remove a neighbour to open one'
-            : sourceAssets.length === 0 ? 'Import a clip to place in the gap'
-            : 'Fill the adjacent gap and adjust speed to fit exactly'}
-          onClick={() => setAssetPick((p) => (p === 'fit' ? null : 'fit'))}>
-          <Icon name="fitTimeline" size={14} /> Fit to fill gap…
-          <Icon name={assetPick === 'fit' ? 'chevronUp' : 'chevronDown'} size={14} className="tl-ctx__caret" />
-        </button>
-        {assetPick === 'fit' && canFit && (
-          <div className="tl-ctx__sub" data-cut-ctx-fit-list role="group">
-            {sourceAssets.map(([id, asset]) => (
-              <button key={id} className="tl-ctx__item tl-ctx__item--sub" role="menuitem"
-                data-cut-ctx-fit-asset={id}
-                title={`Fit ${assetBasename(asset)} into the ${fitSlot?.duration_ms ?? 0}ms gap`}
-                onClick={() => { void fitToFillAdjacent(menu.itemId, id); onClose() }}>
-                <Icon name={assetMediaKind(asset) === 'audio' ? 'audioClip' : assetMediaKind(asset) === 'image' ? 'image' : 'film'} size={14} /> {assetBasename(asset)}
-              </button>
-            ))}
-          </div>
-        )}
-        <button className="tl-ctx__item" data-cut-ctx="nest" role="menuitem"
-          disabled={!canNest}
-          title={!canNest ? 'Select two or more adjacent clips on one track first'
-            : `Collapse the ${nestSel.length} selected clips into one nested clip`}
-          onClick={() => { void nestSelection(); onClose() }}>
-          <Icon name="layers" size={14} /> Nest selection{canNest ? ` (${nestSel.length})` : ''}
-        </button>
-          </>
-        )}
+        <SourceSection
+          allowsSourceEdits={contract.allowsSourceEdits}
+          canMedia={canMedia}
+          canReplace={canReplace}
+          canFit={canFit}
+          canNest={canNest}
+          nestCount={nestSel.length}
+          fitDurationMs={fitSlot?.duration_ms ?? null}
+          itemId={menu.itemId}
+          sourceAssets={sourceAssets}
+          assetPick={assetPick}
+          setAssetPick={setAssetPick}
+          onReplace={replaceClipSource}
+          onFit={fitToFillAdjacent}
+          onNest={nestSelection}
+          onClose={onClose}
+        />
 
-        {showSpeed && (
-          <>
-            <span className="tl-ctx__sep" aria-hidden="true" />
-            <button className="tl-ctx__item" data-cut-ctx="speed-time" role="menuitem"
-              aria-expanded={speedOpen}
-              title="Show playback speed, reverse, and freeze controls"
-              onClick={() => setSpeedOpen((open) => !open)}>
-              <Icon name="speed" size={14} /> Speed &amp; time…
-              <Icon name={speedOpen ? 'chevronUp' : 'chevronDown'} size={14} className="tl-ctx__caret" />
-            </button>
-            {speedOpen && (
-              <div className="tl-ctx__sub" data-cut-ctx-speed-list role="group">
-                <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="speed-half" role="menuitem"
-                  title="Slow to half speed"
-                  onClick={() => { speedItem(menu.itemId, 0.5); onClose() }}>
-                  <Icon name="speed" size={14} /> ½× speed
-                </button>
-                <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="speed-normal" role="menuitem"
-                  title="Reset to normal speed"
-                  onClick={() => { speedItem(menu.itemId, 1); onClose() }}>
-                  <Icon name="speed" size={14} /> 1× (normal)
-                </button>
-                <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="speed-double" role="menuitem"
-                  title="Speed up to twice normal speed"
-                  onClick={() => { speedItem(menu.itemId, 2); onClose() }}>
-                  <Icon name="speed" size={14} /> 2× speed
-                </button>
-                <CustomSpeedMenuEditor
-                  current={it.speed ?? 1}
-                  onApply={(factor) => speedItem(menu.itemId, factor)}
-                  onClose={onClose}
-                />
-                <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="reverse" role="menuitem"
-                  title="Play the clip backward"
-                  onClick={() => { reverseItem(menu.itemId); onClose() }}>
-                  <Icon name="flip" size={14} /> Reverse
-                </button>
-                {showFreeze && (
-                  <button className="tl-ctx__item tl-ctx__item--sub" data-cut-ctx="freeze" role="menuitem"
-                    title="Hold the first frame for the whole slot"
-                    onClick={() => { freezeItem(menu.itemId); onClose() }}>
-                    <Icon name="keyframe" size={14} /> Freeze frame
-                  </button>
-                )}
-              </div>
-            )}
-          </>
-        )}
+        {showSpeed && <SpeedSection
+          current={it.speed ?? 1}
+          canFreeze={showFreeze}
+          onSpeed={(factor) => speedItem(menu.itemId, factor)}
+          onReverse={() => reverseItem(menu.itemId)}
+          onFreeze={() => freezeItem(menu.itemId)}
+          onClose={onClose}
+        />}
 
         {showPicture && (
           <>
@@ -431,66 +301,23 @@ export default function ClipContextMenu({
           </>
         )}
 
-        <span className="tl-ctx__sep" aria-hidden="true" />
-        <span className="tl-ctx__label" aria-hidden="true">Transitions &amp; fades</span>
-        <button className="tl-ctx__item" data-cut-ctx="add-transition" role="menuitem"
-          disabled={!contract.addTransition.enabled}
-          title={contract.addTransition.reason}
-          onClick={() => { crossfadeAdjacent(menu.itemId); onClose() }}>
-          <Icon name="crossfade" size={14} /> Add transition
-        </button>
-        <button className="tl-ctx__item" data-cut-ctx="fade-in" role="menuitem"
-          disabled={!canMedia} title={canMedia ? 'Fade in over 0.5 seconds' : 'Fade works on a video or audio clip'}
-          onClick={() => { fadeItem(menu.itemId, 'in'); onClose() }}>
-          <Icon name="effect" size={14} /> Fade in (0.5s)
-        </button>
-        <button className="tl-ctx__item" data-cut-ctx="fade-out" role="menuitem"
-          disabled={!canMedia} title={canMedia ? 'Fade out over 0.5 seconds' : 'Fade works on a video or audio clip'}
-          onClick={() => { fadeItem(menu.itemId, 'out'); onClose() }}>
-          <Icon name="effect" size={14} /> Fade out (0.5s)
-        </button>
+        <TransitionsSection
+          transition={contract.addTransition}
+          canMedia={canMedia}
+          onTransition={() => crossfadeAdjacent(menu.itemId)}
+          onFade={(which) => fadeItem(menu.itemId, which)}
+          onClose={onClose}
+        />
+        {showAudioGrp && <AudioSection
+          hasTimelineAudio={contract.hasTimelineAudio}
+          detachAudio={contract.detachAudio}
+          onDetach={() => detachAudioItem(menu.itemId)}
+          onGain={() => { onSelect([menu.itemId]); document.dispatchEvent(new CustomEvent('cut:open-drawer', { detail: 'mixer' })) }}
+          onMute={() => muteItem(menu.itemId)}
+          onCleanVoice={() => cleanVoiceItem(menu.itemId)}
+          onClose={onClose}
+        />}
 
-        {showAudioGrp && (
-          <>
-            <span className="tl-ctx__sep" aria-hidden="true" />
-            <span className="tl-ctx__label" aria-hidden="true">Audio</span>
-            {contract.detachAudio.visibility === 'visible' && (
-              <button className="tl-ctx__item" data-cut-ctx="detach-audio" role="menuitem"
-                title="Move this clip's audio onto its own editable track"
-                onClick={() => { void detachAudioItem(menu.itemId); onClose() }}>
-                <Icon name="waveform" size={14} /> Detach audio
-              </button>
-            )}
-            {contract.hasTimelineAudio && <>
-            <button className="tl-ctx__item" data-cut-ctx="gain" role="menuitem"
-              title="Open the Audio mixer to change this clip's level"
-              onClick={() => { onSelect([menu.itemId]); document.dispatchEvent(new CustomEvent('cut:open-drawer', { detail: 'mixer' })); onClose() }}>
-              <Icon name="mixer" size={14} /> Gain…
-            </button>
-            <button className="tl-ctx__item" data-cut-ctx="mute" role="menuitem"
-              title="Silence this clip"
-              onClick={() => { muteItem(menu.itemId); onClose() }}>
-              <Icon name="mute" size={14} /> Mute
-            </button>
-            <button className="tl-ctx__item" data-cut-ctx="clean-voice" role="menuitem"
-              title="Clean voice with noise reduction, gating, compression, and EQ"
-              onClick={() => { cleanVoiceItem(menu.itemId); onClose() }}>
-              <Icon name="waveform" size={14} /> Clean voice / EQ
-            </button>
-            </>}
-          </>
-        )}
-
-        {isOverlayTrack && tid && (
-          <>
-            <span className="tl-ctx__sep" aria-hidden="true" />
-            <button className="tl-ctx__item tl-ctx__item--danger" data-cut-ctx="remove-track" role="menuitem"
-              onClick={() => { void removeTrackById(tid); onClose() }}>
-              <Icon name="trash" size={14} /> Remove track “{tid}”
-            </button>
-          </>
-        )}
-      </div>
-    </>
+      </ContextMenuFrame>
   )
 }

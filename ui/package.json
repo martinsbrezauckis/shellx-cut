@@ -1,14 +1,14 @@
 {
   "name": "shellx-cut-ui",
   "private": true,
-  "version": "0.6.108",
+  "version": "0.6.109",
   "type": "module",
   "description": "ShellX Cut UI — Vite + React + TS app shell (UI contract). The UI is an API client, nothing more: all state via verbs/WS, zero local mutation.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:lib": "tsx public-tests/motion-effects.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts && tsx public-tests/panel-persist-guard.test.ts && tsx public-tests/grade-drawer.test.ts && tsx public-tests/clip-context-menu.test.ts && tsx public-tests/context-menu-surfaces.test.ts && tsx public-tests/project-sync.test.ts && tsx public-tests/health-recovery.test.ts && tsx public-tests/speed-ramp-editor.test.ts && tsx public-tests/keymap-profile.test.ts && tsx public-tests/op-group-model.test.ts && tsx public-tests/active-job-presentation.test.ts"
+    "test:lib": "tsx public-tests/motion-effects.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts && tsx public-tests/panel-persist-guard.test.ts && tsx public-tests/grade-drawer.test.ts && tsx public-tests/clip-context-menu.test.ts && tsx public-tests/context-menu-surfaces.test.ts && tsx public-tests/project-sync.test.ts && tsx public-tests/health-recovery.test.ts && tsx public-tests/speed-ramp-editor.test.ts && tsx public-tests/keymap-profile.test.ts && tsx public-tests/op-group-model.test.ts && tsx public-tests/active-job-presentation.test.ts && tsx public-tests/media-time.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
@@ -19,6 +19,7 @@
     "react-dom": "^19.2.8"
   },
   "overrides": {
+    "@puppeteer/browsers": "3.0.4",
     "@wdio/native-utils": "2.5.0",
     "js-yaml": "4.3.1",
     "postcss": "8.5.24",

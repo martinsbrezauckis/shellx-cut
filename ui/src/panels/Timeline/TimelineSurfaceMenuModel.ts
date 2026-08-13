@@ -6,6 +6,7 @@ import { SPEED_FACTOR_MAX, SPEED_FACTOR_MIN } from './speedFactor'
 export type TimelineSurfaceMenuState =
   | { kind: 'empty'; x: number; y: number; atMs: number; trackId: string | null }
   | { kind: 'gap'; x: number; y: number; itemId: string }
+  | { kind: 'track'; x: number; y: number; trackId: string }
   | { kind: 'locked'; x: number; y: number; trackId: string; itemId: string | null; atMs: number }
 
 export type TimelineContextTarget =
@@ -23,12 +24,14 @@ export function isFiniteTimelineContextPoint(x: number, y: number): boolean {
   return Number.isFinite(x) && Number.isFinite(y)
 }
 
-/** Resolve the DOM ids into one authoritative target. A locked track wins over
- * a contained gap/clip so this menu can never route an edit while locked. */
+/** Resolve the DOM ids into one authoritative target. A track header owns its
+ * own commands; elsewhere a locked track wins over a contained gap/clip so an
+ * edit can never route while locked. */
 export function resolveTimelineContextTarget(args: {
   itemId: string | null
   gapId: string | null
   trackId: string | null
+  headerTrackId?: string | null
   x: number
   y: number
   atMs: number
@@ -43,6 +46,10 @@ export function resolveTimelineContextTarget(args: {
   if (itemId && !item) return { kind: 'none' }
   if (item && args.trackId && item.trackId !== args.trackId) return { kind: 'none' }
   if (!item && args.trackId && !args.tracks.some((candidate) => candidate.id === args.trackId)) return { kind: 'none' }
+  if (args.headerTrackId) {
+    if (args.headerTrackId !== args.trackId || !args.tracks.some((candidate) => candidate.id === args.headerTrackId)) return { kind: 'none' }
+    return { kind: 'track', x: args.x, y: args.y, trackId: args.headerTrackId }
+  }
   const trackId = item?.trackId ?? args.trackId
   const track = trackId ? args.tracks.find((candidate) => candidate.id === trackId) ?? null : null
   if (track?.locked) return { kind: 'locked', x: args.x, y: args.y, trackId: track.id, itemId: item?.kind === 'gap' ? null : item?.id ?? null, atMs: args.atMs }

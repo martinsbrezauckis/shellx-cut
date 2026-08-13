@@ -5,7 +5,7 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-> **Engine v0.6.108.** Synced to the contract (`schema/verbs.json` — the single
+> **Engine v0.6.109.** Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
 > the file): **264 verbs across 32 domains** under the public verb contract.
 > **`reference.md` is the full 264-verb table —
@@ -35,7 +35,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   rewriting Codex login files. Grok receives a disposable config/home with
 >   native tools disabled and only Cut's MCP route, while retaining its existing
 >   login file in place. Antigravity keeps its normal settings, sandbox, and
->   permissions with a workspace-local Cut MCP entry on macOS and Linux. Every Cut verb applied by these routes is a normal
+>   permissions with a workspace-local Cut MCP entry and verifies the resolved
+>   CLI's sandbox and non-interactive flags before each turn on every supported
+>   platform. Every Cut verb applied by these routes is a normal
 >   reversible op.
 >   `attachments` can carry up to eight registered project asset IDs as references;
 >   the server validates them against the open project and exposes no arbitrary
@@ -320,8 +322,8 @@ make Cut authenticate a remote caller. Remote use is supported only through an
 independently authenticated and authorized SSH/VPN/ShellX broker or equivalent
 transport; without it, refuse remote access. Do not use shared/multi-user
 machines, untrusted local services, host-network containers, or exposed ports
-for this mode. The contained Claude `agent.chat` route narrows that provider's
-tools; it does not change local REST/MCP authentication. Read
+for this mode. The brokered `agent.chat` routes narrow their Cut tool surface;
+they do not change local REST/MCP authentication. Read
 `docs/public/shellx-cut-threat-model.md` before altering deployment.
 
 Register that same proxy with the exact packaged executable reported by
@@ -822,7 +824,7 @@ exporter (add a layer over a span → render it → save the clip).
 - `render.frame {at_ms}` — JPEG of the timeline frame: your eyes on the
   *content*, no UI needed (add `inline: true` for base64 over MCP). **Fast
   scrub:** by default this serves a low-latency proxy-seek frame, scaled to height `h`
-  (default 540). It omits captions/overlays. When you need the EXACT composed
+  (default 540; maximum 2160 and a 4K-UHD derived-pixel budget). It omits captions/overlays. When you need the EXACT composed
   frame for verification (captions burned in, PiP composited, project geometry),
   pass `compose: true`. Raw bytes also at `GET /api/frame?at_ms=[&h=][&compose=1]`
   (the `X-Cut-Frame-Fast` header says which path served it).

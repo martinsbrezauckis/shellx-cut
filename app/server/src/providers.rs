@@ -1039,21 +1039,25 @@ fn empty_query() -> CutError {
 // Download (openverse fetch)
 // ---------------------------------------------------------------------------
 
-/// Extract the lowercased host from an http(s) URL (drops scheme, userinfo, port,
-/// path). Coarse but sufficient for the SSRF host check.
+/// Extract the lowercased host from a URL parsed by the same `http` crate ureq
+/// uses. This correctly handles bracketed IPv6 authorities.
+#[cfg(test)]
 fn url_host(url: &str) -> Option<String> {
-    let after = url.split("://").nth(1)?;
-    let authority = after.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit('@').next()?; // drop userinfo
-    let host = host.split(':').next().unwrap_or(host); // drop port
-    Some(host.trim_matches(['[', ']']).to_lowercase())
+    let uri: ureq::http::Uri = url.parse().ok()?;
+    Some(
+        uri.authority()?
+            .host()
+            .trim_matches(['[', ']'])
+            .to_ascii_lowercase(),
+    )
 }
 
-/// True for an IP we refuse to fetch from (loopback / private / link-local /
-/// CGNAT / ULA / unspecified). H2 fix: an IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is
-/// UNWRAPPED and re-checked as v4 — the old code only tested v6 loopback/ULA and
-/// let every mapped internal v4 through (127/8, 10/8, 192.168/16, and the cloud
-/// metadata 169.254.169.254).
+/// True for an address outside the public-unicast destination policy.
+///
+/// `IpAddr::is_global` is still unstable on the supported toolchain. Keep this
+/// stable predicate in sync with Rust 1.94's special-use tables, and additionally
+/// reject multicast plus the well-known NAT64 prefix: neither is a public-unicast
+/// origin for provider media.
 fn ip_is_internal(ip: std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
@@ -1064,16 +1068,51 @@ fn ip_is_internal(ip: std::net::IpAddr) -> bool {
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || o[0] == 0
-                || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64/10 CGNAT
+                || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64/10 shared
+                // IETF protocol assignment. .9 and .10 are explicitly globally
+                // reachable and remain public-unicast controls.
+                || (o[0] == 192
+                    && o[1] == 0
+                    && o[2] == 0
+                    && o[3] != 9
+                    && o[3] != 10)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 2) // documentation
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // benchmarking
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100) // documentation
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113) // documentation
+                || o[0] >= 224 // multicast, reserved, and limited broadcast
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return ip_is_internal(IpAddr::V4(v4));
+            if v6.to_ipv4_mapped().is_some() {
+                // IPv4-mapped IPv6 is special-use even where its mapped IPv4
+                // value would otherwise be public; provider DNS must return a
+                // native public-unicast destination.
+                return true;
             }
+            let s = v6.segments();
             v6.is_loopback()
                 || v6.is_unspecified()
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
+                || v6.is_multicast()
+                // IPv4-compatible IPv6 is deprecated special-use space.
+                || matches!(s, [0, 0, 0, 0, 0, 0, _, _])
+                // IPv4/IPv6 translation prefixes.
+                || matches!(s, [0x64, 0xff9b, 0, 0, 0, 0, _, _])
+                || matches!(s, [0x64, 0xff9b, 1, _, _, _, _, _])
+                || matches!(s, [0x100, 0, 0, 0, _, _, _, _]) // discard-only
+                // IETF protocol assignments (2001::/23), except the ranges
+                // Rust 1.94 marks globally reachable.
+                || (matches!(s, [0x2001, b, _, _, _, _, _, _] if b < 0x200)
+                    && !(matches!(s, [0x2001, 1, 0, 0, 0, 0, 0, 1 | 2])
+                        || matches!(s, [0x2001, 3, _, _, _, _, _, _])
+                        || matches!(s, [0x2001, 4, 0x112, _, _, _, _, _])
+                        || matches!(s, [0x2001, b, _, _, _, _, _, _] if (0x20..=0x3f).contains(&b))))
+                || matches!(s, [0x2002, _, _, _, _, _, _, _]) // 6to4
+                || matches!(s, [0x2001, 0x0db8, _, _, _, _, _, _]) // documentation
+                || matches!(s, [0x3fff, b, _, _, _, _, _, _] if (b & 0xf000) == 0) // documentation
+                || matches!(s, [0x5f00, _, _, _, _, _, _, _]) // SRv6 SID
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || (s[0] & 0xffc0) == 0xfec0 // deprecated site-local
         }
     }
 }
@@ -1129,78 +1168,170 @@ fn canonical_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
     Some(std::net::Ipv4Addr::from(addr))
 }
 
-/// True for a host we refuse to fetch from (SSRF guard): localhost / internal
-/// TLDs, or any host that IS or RESOLVES TO an internal address. Layers:
-/// (1) string suffixes, (2) a plain IP literal, (3) an obfuscated IPv4 literal
-/// (decimal/hex/octal/short — H2), (4) DNS resolution of a real hostname with
-/// every resolved address range-checked (catches internal-resolving names);
-/// an unresolvable host fails CLOSED (we won't fetch what we can't vet — and a
-/// host that can't resolve wouldn't download anyway).
-fn host_is_internal(host: &str) -> bool {
+fn non_public_download_url() -> CutError {
+    CutError::new(
+        error_codes::INVALID_ARGS,
+        "refusing to download from an internal/private host",
+        "the provider returned a non-public download URL",
+    )
+}
+
+/// Resolve one provider host once, reject every non-public-unicast answer, and
+/// retain the exact accepted socket addresses for the subsequent connection.
+fn vetted_socket_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, CutError> {
     if host.is_empty()
         || host == "localhost"
         || host.ends_with(".localhost")
         || host.ends_with(".local")
         || host.ends_with(".internal")
     {
-        return true;
+        return Err(non_public_download_url());
     }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return ip_is_internal(ip);
+
+    let addrs = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        vec![std::net::SocketAddr::new(ip, port)]
+    } else if let Some(v4) = canonical_ipv4(host) {
+        vec![std::net::SocketAddr::new(std::net::IpAddr::V4(v4), port)]
+    } else {
+        use std::net::ToSocketAddrs;
+        (host, port)
+            .to_socket_addrs()
+            .map_err(|_| non_public_download_url())?
+            .collect()
+    };
+
+    if addrs.is_empty() || addrs.iter().any(|addr| ip_is_internal(addr.ip())) {
+        return Err(non_public_download_url());
     }
-    if let Some(v4) = canonical_ipv4(host) {
-        return ip_is_internal(std::net::IpAddr::V4(v4));
+
+    // ureq's `ResolvedSocketAddrs` holds at most 16 addresses. Every DNS result
+    // above was vetted before limiting the list it will be permitted to connect.
+    Ok(addrs.into_iter().take(16).collect())
+}
+
+/// Test-only host guard; production downloads use `vetted_download_target` to
+/// retain accepted addresses rather than resolving again in ureq.
+#[cfg(test)]
+fn host_is_internal(host: &str) -> bool {
+    vetted_socket_addrs(host, 80).is_err()
+}
+
+#[derive(Debug)]
+struct PinnedResolver {
+    host: String,
+    port: u16,
+    addrs: Vec<std::net::SocketAddr>,
+}
+
+impl PinnedResolver {
+    fn new(host: String, port: u16, addrs: Vec<std::net::SocketAddr>) -> Self {
+        Self { host, port, addrs }
     }
-    // A genuine hostname → resolve and range-check EVERY address (port arbitrary).
-    use std::net::ToSocketAddrs;
-    match (host, 80u16).to_socket_addrs() {
-        Ok(addrs) => {
-            let mut any = false;
-            for a in addrs {
-                any = true;
-                if ip_is_internal(a.ip()) {
-                    return true;
-                }
-            }
-            !any // resolved to nothing → fail closed
+
+    fn matches_uri(&self, uri: &ureq::http::Uri) -> bool {
+        let Some(authority) = uri.authority() else {
+            return false;
+        };
+        let port = authority.port_u16().or_else(|| match uri.scheme_str() {
+            Some("http") => Some(80),
+            Some("https") => Some(443),
+            _ => None,
+        });
+        authority
+            .host()
+            .trim_matches(['[', ']'])
+            .eq_ignore_ascii_case(&self.host)
+            && port == Some(self.port)
+    }
+
+    fn addresses_for_uri(
+        &self,
+        uri: &ureq::http::Uri,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        if !self.matches_uri(uri) {
+            return Err(ureq::Error::HostNotFound);
         }
-        Err(_) => true, // unresolvable → fail closed
+        let mut out = <Self as ureq::unversioned::resolver::Resolver>::empty(self);
+        for addr in &self.addrs {
+            out.push(*addr);
+        }
+        Ok(out)
     }
 }
 
-/// Download `url` to `dest`, size-capped at [`MAX_FETCH_BYTES`]. Streams the body
-/// so a pathological response can't balloon memory. SSRF-fenced: http(s) only,
-/// internal/private hosts rejected, redirects DISABLED. Returns bytes written.
-pub fn download_to(url: &str, dest: &Path) -> Result<u64, CutError> {
-    // Only http(s) — the provider returns CDN URLs; never a local/file scheme.
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
+impl ureq::unversioned::resolver::Resolver for PinnedResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        _config: &ureq::config::Config,
+        _timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        self.addresses_for_uri(uri)
+    }
+}
+
+#[derive(Debug)]
+struct VettedDownloadTarget {
+    host: String,
+    port: u16,
+    addrs: Vec<std::net::SocketAddr>,
+}
+
+fn vetted_download_target(url: &str) -> Result<VettedDownloadTarget, CutError> {
+    let uri: ureq::http::Uri = url.parse().map_err(|_| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "refusing to download from an unparseable host",
+            "the provider returned a URL without a public host",
+        )
+    })?;
+    let scheme = uri.scheme_str();
+    if !matches!(scheme, Some("http") | Some("https")) {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             "refusing to download a non-http(s) url",
             format!("got '{url}'"),
         ));
     }
-    // SSRF: refuse internal/private hosts (a hostile CC entry's CDN url).
-    let Some(host) = url_host(url) else {
+    let Some(authority) = uri.authority() else {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             "refusing to download from an unparseable host",
             "the provider returned a URL without a public host",
         ));
     };
-    if host_is_internal(&host) {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            "refusing to download from an internal/private host",
-            "the provider returned a non-public download URL",
-        ));
-    }
-    // Redirects DISABLED so the host check can't be bypassed by a 302 to an
-    // internal address; a redirecting CDN simply fails the fetch.
-    let resp = ureq::get(url)
-        .config()
+    let host = authority
+        .host()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    let port = authority
+        .port_u16()
+        .unwrap_or(if scheme == Some("https") { 443 } else { 80 });
+    let addrs = vetted_socket_addrs(&host, port)?;
+    Ok(VettedDownloadTarget { host, port, addrs })
+}
+
+/// Download `url` to `dest`, size-capped at [`MAX_FETCH_BYTES`]. Streams the body
+/// so a pathological response can't balloon memory. SSRF-fenced: http(s) only,
+/// internal/private hosts rejected, redirects DISABLED. Returns bytes written.
+pub fn download_to(url: &str, dest: &Path) -> Result<u64, CutError> {
+    let target = vetted_download_target(url)?;
+    // Connect only to the addresses accepted above. The request URI remains
+    // unchanged, so HTTPS still sends the hostname as SNI and verifies its
+    // certificate against that hostname. Proxies are disabled because a CONNECT
+    // proxy would otherwise resolve the provider hostname independently.
+    let config = ureq::Agent::config_builder()
+        .proxy(None)
         .max_redirects(0)
-        .build()
+        .build();
+    let agent = ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        PinnedResolver::new(target.host, target.port, target.addrs),
+    );
+    // Redirects stay disabled so a redirect cannot introduce a second origin.
+    let resp = agent
+        .get(url)
         .header("User-Agent", &user_agent())
         .call()
         .map_err(|e| CutError::new(error_codes::IO, "asset download failed", e.to_string()))?;
@@ -1535,6 +1666,97 @@ mod tests {
     }
 
     #[test]
+    fn ssrf_classifier_rejects_non_public_special_use_addresses() {
+        // The provider downloader promises a public-unicast destination, not
+        // merely a destination outside the common private ranges.
+        for address in [
+            "192.0.0.8",           // IETF protocol assignment
+            "192.0.2.1",           // documentation
+            "198.18.0.1",          // benchmarking
+            "198.51.100.1",        // documentation
+            "203.0.113.1",         // documentation
+            "224.0.0.1",           // multicast
+            "240.0.0.1",           // reserved
+            "255.255.255.255",     // limited broadcast
+            "64:ff9b::c000:201",   // IPv4/IPv6 translation
+            "64:ff9b:1::c000:201", // IPv4/IPv6 translation
+            "100::1",              // discard-only
+            "2001:2::1",           // IETF protocol assignment
+            "2001:db8::1",         // documentation
+            "3fff::1",             // documentation
+            "5f00::1",             // SRv6 SID
+            "fec0::1",             // deprecated site-local
+            "ff00::1",             // multicast
+        ] {
+            let ip = address.parse().unwrap();
+            assert!(ip_is_internal(ip), "{address} must not be public-unicast");
+        }
+    }
+
+    #[test]
+    fn ssrf_host_guard_rejects_non_public_special_use_literals() {
+        for host in ["198.18.0.1", "192.0.2.1", "64:ff9b:1::c000:201", "ff00::1"] {
+            assert!(host_is_internal(host), "{host} must be blocked");
+        }
+    }
+
+    #[test]
+    fn ssrf_classifier_keeps_public_unicast_controls() {
+        for address in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "93.184.216.34",
+            "192.0.0.9",
+            "192.0.0.10",
+            "2606:2800:220:1:248:1893:25c8:1946",
+        ] {
+            let ip = address.parse().unwrap();
+            assert!(!ip_is_internal(ip), "{address} must remain public-unicast");
+        }
+        assert_eq!(
+            vetted_socket_addrs("93.184.216.34", 443).unwrap(),
+            vec!["93.184.216.34:443".parse().unwrap()]
+        );
+        let target = vetted_download_target("https://93.184.216.34/media.mp4").unwrap();
+        assert_eq!(target.host, "93.184.216.34");
+        assert_eq!(target.port, 443);
+        assert_eq!(target.addrs, vec!["93.184.216.34:443".parse().unwrap()]);
+
+        let ipv6_target =
+            vetted_download_target("https://[2606:2800:220:1:248:1893:25c8:1946]/media.mp4")
+                .unwrap();
+        assert_eq!(ipv6_target.port, 443);
+        assert_eq!(
+            ipv6_target.addrs,
+            vec!["[2606:2800:220:1:248:1893:25c8:1946]:443".parse().unwrap()]
+        );
+    }
+
+    #[test]
+    fn vetted_download_target_rejects_special_use_literal_before_connecting() {
+        let err = vetted_download_target("https://198.18.0.1/media.mp4").unwrap_err();
+        assert_eq!(err.code, error_codes::INVALID_ARGS);
+    }
+
+    #[test]
+    fn pinned_resolver_returns_only_vetted_addresses_for_original_authority() {
+        let vetted: std::net::SocketAddr = "93.184.216.34:443".parse().unwrap();
+        let resolver = PinnedResolver::new("cdn.example.invalid".to_string(), 443, vec![vetted]);
+        let uri: ureq::http::Uri = "https://cdn.example.invalid/media.mp4".parse().unwrap();
+        let resolved: Vec<_> = resolver
+            .addresses_for_uri(&uri)
+            .unwrap()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(resolved, vec![vetted]);
+
+        let wrong_authority: ureq::http::Uri =
+            "https://other.example.invalid/media.mp4".parse().unwrap();
+        assert!(resolver.addresses_for_uri(&wrong_authority).is_err());
+    }
+
+    #[test]
     fn canonical_ipv4_forms() {
         use std::net::Ipv4Addr;
         let lo = Ipv4Addr::new(127, 0, 0, 1);
@@ -1619,10 +1841,10 @@ mod tests {
     fn ssrf_host_guard() {
         // public hosts pass.
         assert_eq!(
-            url_host("https://cdn.freesound.org/previews/1.mp3").as_deref(),
-            Some("cdn.freesound.org")
+            url_host("https://93.184.216.34/previews/1.mp3").as_deref(),
+            Some("93.184.216.34")
         );
-        assert!(!host_is_internal("cdn.freesound.org"));
+        assert!(!host_is_internal("93.184.216.34"));
         assert!(!host_is_internal("8.8.8.8"));
         // internal / private / loopback / link-local / CGNAT / TLDs → blocked.
         for h in [

@@ -12,7 +12,7 @@
 //! Dependencies: ffmpeg.rs. Primary callers: server media.import job chain,
 //! render::extract_scrub_frame (the fast scrub path).
 
-use cut_core::CutError;
+use cut_core::{error_codes, CutError};
 use std::path::{Path, PathBuf};
 
 /// Proxy geometry — fixed by the current media contract (media-engine contract).
@@ -31,9 +31,9 @@ pub const PROXY_GOP_FRAMES: u32 = 30;
 
 /// Transcode `src` into `<proxies_dir>/<asset_id>.mp4`: 960×540 short-GOP h264
 /// (preset fast, ~1 s keyframe interval) + passthrough-rate AAC audio. Returns
-/// the proxy path. Skips (returns existing path) when the proxy already exists
-/// — callers cache by asset hash, so an existing file is always valid. OLD
-/// Existing long-GOP proxies are NOT regenerated (an existing file wins);
+/// the proxy path. Reuses only an existing, ffprobe-valid 960×540 video proxy;
+/// an interrupted or corrupt cache entry is removed and regenerated. Existing
+/// long-GOP proxies are NOT regenerated (a valid existing file wins);
 /// they still scrub correctly, just with more decode per seek — graceful, never
 /// a crash. Re-importing the asset into a fresh project gets the short-GOP proxy.
 /// Build the ffmpeg args (without global flags) that transcode `src` → the
@@ -86,14 +86,9 @@ fn proxy_ffmpeg_args(src: &Path, out: &Path) -> Vec<String> {
 }
 
 pub fn make_proxy(src: &Path, proxies_dir: &Path, asset_id: &str) -> Result<PathBuf, CutError> {
-    let out = proxies_dir.join(format!("{asset_id}.mp4"));
-    if out.exists() {
-        // Callers cache by asset hash → an existing proxy is always valid.
-        return Ok(out);
-    }
-    require_live_output_dir(proxies_dir)?;
-    crate::ffmpeg::run_ffmpeg(&proxy_ffmpeg_args(src, &out))?;
-    Ok(out)
+    make_proxy_with(src, proxies_dir, asset_id, |args, out| {
+        crate::ffmpeg::run_ffmpeg_validated_atomic_output(args, out, validate_proxy_output)
+    })
 }
 
 /// Progress-reporting [`make_proxy`]: maps the encode against `total_ms` (the
@@ -109,17 +104,71 @@ pub fn make_proxy_with_progress(
     on_progress: &dyn Fn(f32),
 ) -> Result<PathBuf, CutError> {
     let out = proxies_dir.join(format!("{asset_id}.mp4"));
-    if out.exists() {
+    if out.exists() && validate_proxy_output(&out).is_ok() {
         on_progress(1.0);
         return Ok(out);
     }
-    require_live_output_dir(proxies_dir)?;
-    let args = proxy_ffmpeg_args(src, &out);
-    if total_ms > 0 {
-        crate::ffmpeg::run_ffmpeg_with_progress(&args, total_ms, on_progress)?;
-    } else {
-        crate::ffmpeg::run_ffmpeg(&args)?;
+    make_proxy_with(src, proxies_dir, asset_id, |args, out| {
+        if total_ms > 0 {
+            crate::ffmpeg::run_ffmpeg_with_progress_validated_atomic_output(
+                args,
+                out,
+                total_ms,
+                on_progress,
+                validate_proxy_output,
+            )
+        } else {
+            crate::ffmpeg::run_ffmpeg_validated_atomic_output(args, out, validate_proxy_output)
+        }
+    })
+}
+
+/// The proxy cache is only reusable when it is a complete, regular 960×540
+/// video. `ffprobe` rejects interrupted MP4s (including nonempty files missing
+/// their `moov` atom), so they cannot silently become permanent cache hits.
+fn validate_proxy_output(path: &Path) -> Result<(), CutError> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(CutError::new(
+            error_codes::FFMPEG,
+            format!("proxy output is not a regular file: {}", path.display()),
+            "proxy cache entries must be completed regular files",
+        ));
     }
+    let probe = crate::probe(path)?;
+    if probe.kind != crate::probe::kinds::VIDEO
+        || probe.width != Some(PROXY_WIDTH)
+        || probe.height != Some(PROXY_HEIGHT)
+    {
+        return Err(CutError::new(
+            error_codes::FFMPEG,
+            format!("proxy output has unexpected media shape: {}", path.display()),
+            format!(
+                "expected a {PROXY_WIDTH}x{PROXY_HEIGHT} video proxy; ffprobe reported kind={}, width={:?}, height={:?}",
+                probe.kind, probe.width, probe.height
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn make_proxy_with(
+    src: &Path,
+    proxies_dir: &Path,
+    asset_id: &str,
+    encode: impl FnOnce(&[String], &Path) -> Result<(), CutError>,
+) -> Result<PathBuf, CutError> {
+    let out = proxies_dir.join(format!("{asset_id}.mp4"));
+    if out.exists() && validate_proxy_output(&out).is_ok() {
+        return Ok(out);
+    }
+    require_live_output_dir(proxies_dir)?;
+    if out.exists() {
+        // This is a project-local regenerable cache file. Do not let a failed
+        // encode leave a known-invalid final path for later cache lookups.
+        std::fs::remove_file(&out)?;
+    }
+    encode(&proxy_ffmpeg_args(src, &out), &out)?;
     Ok(out)
 }
 
@@ -140,6 +189,7 @@ fn require_live_output_dir(dir: &Path) -> Result<(), CutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cut_core::error_codes;
 
     #[test]
     fn late_proxy_never_recreates_a_deleted_project() {
@@ -152,5 +202,59 @@ mod tests {
 
         assert_eq!(error.code, cut_core::error::codes::IO);
         assert!(!project.exists(), "the deleted project must stay deleted");
+    }
+
+    #[test]
+    fn invalid_cached_proxy_is_not_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let proxies = root.path().join("proxies");
+        std::fs::create_dir(&proxies).unwrap();
+        let out = proxies.join("a1.mp4");
+        std::fs::write(&out, b"nonempty partial MP4 with no moov atom").unwrap();
+
+        let returned = make_proxy_with(Path::new("source.mp4"), &proxies, "a1", |args, out| {
+            crate::atomic_output::run_with_atomic_output(args, out, |tmp_args| {
+                let tmp = Path::new(tmp_args.last().unwrap());
+                assert_ne!(tmp, out, "ffmpeg must write a sibling temp file");
+                assert!(
+                    !out.exists(),
+                    "the invalid cache entry must be removed before regeneration"
+                );
+                std::fs::write(tmp, b"replacement bytes").unwrap();
+                Ok(())
+            })
+        })
+        .expect("a corrupt cache must be regenerated, not reused");
+
+        assert_eq!(returned, out);
+        assert_eq!(std::fs::read(&out).unwrap(), b"replacement bytes");
+        assert_eq!(std::fs::read_dir(&proxies).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn simulated_sigsegv_never_leaves_a_final_proxy() {
+        let root = tempfile::tempdir().unwrap();
+        let proxies = root.path().join("proxies");
+        std::fs::create_dir(&proxies).unwrap();
+        let out = proxies.join("a1.mp4");
+
+        let error = make_proxy_with(Path::new("source.mp4"), &proxies, "a1", |args, out| {
+            crate::atomic_output::run_with_atomic_output(args, out, |tmp_args| {
+                std::fs::write(tmp_args.last().unwrap(), b"partial bytes").unwrap();
+                Err(CutError::new(
+                    error_codes::FFMPEG,
+                    "ffmpeg exited with signal: 11 (SIGSEGV)",
+                    "simulated child crash after writing a partial proxy",
+                ))
+            })
+        })
+        .expect_err("a crashed ffmpeg child must fail the proxy job");
+
+        assert_eq!(error.code, error_codes::FFMPEG);
+        assert!(
+            !out.exists(),
+            "a crashed proxy encode must leave source fallback with no final cache file"
+        );
+        assert_eq!(std::fs::read_dir(&proxies).unwrap().count(), 0);
     }
 }

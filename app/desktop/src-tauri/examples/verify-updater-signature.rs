@@ -1,20 +1,13 @@
 use std::{env, fs, path::PathBuf};
 
 use base64::Engine as _;
-use minisign_verify::{PublicKey, Signature};
+use minisign_verify::PublicKey;
 
 fn required_arg(args: &[String], name: &str) -> Result<String, String> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].clone())
         .ok_or_else(|| format!("missing required argument {name}"))
-}
-
-fn decode_base64_text(value: &str, label: &str) -> Result<String, String> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(value.trim())
-        .map_err(|error| format!("decode {label} base64 failed: {error}"))?;
-    String::from_utf8(bytes).map_err(|error| format!("decode {label} UTF-8 failed: {error}"))
 }
 
 fn run() -> Result<(), String> {
@@ -35,12 +28,17 @@ fn run() -> Result<(), String> {
             signature_path.display()
         )
     })?;
-    let public_key_text = decode_base64_text(&configured_public_key, "configured updater key")?;
-    let signature_text = decode_base64_text(&encoded_signature, "updater signature")?;
+    let public_key_text = base64::engine::general_purpose::STANDARD
+        .decode(configured_public_key.trim())
+        .map_err(|error| format!("decode configured updater key base64 failed: {error}"))?;
+    let public_key_text = String::from_utf8(public_key_text)
+        .map_err(|error| format!("decode configured updater key UTF-8 failed: {error}"))?;
     let public_key = PublicKey::decode(&public_key_text)
         .map_err(|error| format!("parse configured updater public key failed: {error}"))?;
-    let signature = Signature::decode(&signature_text)
-        .map_err(|error| format!("parse updater signature failed: {error}"))?;
+    let signature = shellx_cut_lib::updater_signature::parse_tauri_updater_signature(
+        &encoded_signature,
+        "updater signature",
+    )?;
     public_key
         .verify(&artifact_bytes, &signature, true)
         .map_err(|error| format!("updater signature verification failed: {error}"))?;

@@ -29,6 +29,7 @@ interface AppWorkspaceProps {
   selectedClipIds: string[]
   exportRange: [number, number] | null
   clipboardHasContent: boolean
+  clipboardKind: 'video' | 'audio' | null
   clipboardClipId: string | null
   commentsOpen: boolean
   focusComment: { id: string; n: number } | null
@@ -41,7 +42,7 @@ interface AppWorkspaceProps {
   onExportRange: (range: [number, number] | null) => void
   onCopyClip: (clipId: string) => boolean
   onCutClip: (clipId: string) => void
-  onPasteClip: () => void
+  onPasteClip: (target?: { atMs: number; trackId: string }) => void
   onCollapseComments: () => void
   onReopenProject: () => void
   onLibraryAddedToProject: () => void
@@ -73,6 +74,7 @@ export default function AppWorkspace({
   selectedClipIds,
   exportRange,
   clipboardHasContent,
+  clipboardKind,
   clipboardClipId,
   commentsOpen,
   focusComment,
@@ -209,6 +211,7 @@ export default function AppWorkspace({
                 onCutClip={onCutClip}
                 onPasteClip={onPasteClip}
                 clipboardHasContent={clipboardHasContent}
+                clipboardKind={clipboardKind}
                 clipboardClipId={clipboardClipId}
               />
             </div>

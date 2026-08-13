@@ -1,4 +1,4 @@
-import type { MouseEvent } from 'react'
+import type { KeyboardEvent, MouseEvent } from 'react'
 import type { Comment, Marker, Project } from '../../lib/client'
 import { MARKER_COLOR_SWATCH } from '../../lib/clientModel'
 import { resolveCommentTime } from '../../lib/commentAnchors'
@@ -49,6 +49,17 @@ export default function TimelineRuler({
           const cls = markerClass(m)
           const dragging = markerGhost?.id === m.id
           const draggable = cls === 'plain'
+          const openKeyboardMenu = (event: KeyboardEvent<HTMLDivElement>) => {
+            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+            event.preventDefault()
+            const rect = event.currentTarget.getBoundingClientRect()
+            event.currentTarget.dispatchEvent(new globalThis.MouseEvent('contextmenu', {
+              bubbles: true,
+              cancelable: true,
+              clientX: rect.left + Math.min(8, rect.width / 2),
+              clientY: rect.top + Math.min(8, rect.height / 2),
+            }))
+          }
           return (
             <div
               key={m.id}
@@ -64,8 +75,12 @@ export default function TimelineRuler({
               data-cut-marker={m.id}
               data-cut-marker-class={cls}
               data-cut-marker-color={m.color ?? 'default'}
+              tabIndex={draggable ? 0 : undefined}
+              role={draggable ? 'button' : undefined}
+              aria-label={draggable ? `Marker ${m.label} menu` : undefined}
               onMouseDown={draggable ? (e) => onMarkerDown(e, m) : (e) => e.stopPropagation()}
-              onContextMenu={draggable ? (e) => onMarkerContextMenu(e, m) : undefined}
+              onContextMenu={draggable ? (e) => onMarkerContextMenu(e, m) : (e) => { e.preventDefault(); e.stopPropagation() }}
+              onKeyDown={draggable ? openKeyboardMenu : undefined}
             />
           )
         })}

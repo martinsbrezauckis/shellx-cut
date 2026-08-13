@@ -942,6 +942,162 @@ async fn shape_update_swaps_asset_and_replays() {
     assert_eq!(r.error.as_ref().unwrap().code, error_codes::INVALID_ARGS);
 }
 
+/// Splitting an overlay preserves its declarative metadata on both halves. Each
+/// half can then be edited independently: the right-side edit must never alter
+/// the original left clip's Inspector seed.
+#[tokio::test]
+async fn split_title_and_shape_overlays_keep_independent_editable_metadata() {
+    fn state_clip<'a>(state: &'a Value, id: &str) -> &'a Value {
+        state["tracks"]
+            .as_array()
+            .expect("tracks")
+            .iter()
+            .filter_map(|track| track["clips"].as_array())
+            .flat_map(|clips| clips.iter())
+            .find(|clip| clip["id"].as_str() == Some(id))
+            .expect("clip in project state")
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let r = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"split-overlays","dir":dir.path().join("split-overlays.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    assert!(r.ok, "project.create: {:?}", r.error);
+
+    // Identical time ranges force title + shape onto separate overlay tracks,
+    // letting this test split each actual user-facing overlay independently.
+    let title = dispatch(
+        &state,
+        "title.add",
+        json!({"text":"ORIGINAL TITLE","range_ms":[0u64,1000]}),
+        test_actor(),
+    )
+    .await;
+    assert!(title.ok, "title.add: {:?}", title.error);
+    let title = title.result.unwrap();
+    let title_left = title["clip_id"].as_str().expect("title clip").to_string();
+    let title_track = title["title_track"]
+        .as_str()
+        .expect("title track")
+        .to_string();
+
+    let shape = dispatch(
+        &state,
+        "edit.add_shape",
+        json!({"shape":"rect","text":"ORIGINAL SHAPE","fill":"#FF0000","range_ms":[0u64,1000]}),
+        test_actor(),
+    )
+    .await;
+    assert!(shape.ok, "edit.add_shape: {:?}", shape.error);
+    let shape = shape.result.unwrap();
+    let shape_left = shape["clip_id"].as_str().expect("shape clip").to_string();
+    let shape_track = shape["shape_track"]
+        .as_str()
+        .expect("shape track")
+        .to_string();
+    assert_ne!(title_track, shape_track, "overlapping overlays must stack");
+
+    let split_title = dispatch(
+        &state,
+        "edit.split",
+        json!({"track":title_track,"at_ms":500}),
+        test_actor(),
+    )
+    .await;
+    assert!(split_title.ok, "split title: {:?}", split_title.error);
+    let title_right = split_title.result.unwrap()["clip_ids"][1]
+        .as_str()
+        .expect("right title clip")
+        .to_string();
+
+    let split_shape = dispatch(
+        &state,
+        "edit.split",
+        json!({"track":shape_track,"at_ms":500}),
+        test_actor(),
+    )
+    .await;
+    assert!(split_shape.ok, "split shape: {:?}", split_shape.error);
+    let shape_right = split_shape.result.unwrap()["clip_ids"][1]
+        .as_str()
+        .expect("right shape clip")
+        .to_string();
+
+    let split_state = dispatch(&state, "project.state", json!({}), test_actor())
+        .await
+        .result
+        .expect("project state after split");
+    assert_eq!(
+        state_clip(&split_state, &title_left)["title_text"].as_str(),
+        Some("ORIGINAL TITLE")
+    );
+    assert_eq!(
+        state_clip(&split_state, &title_right)["title_text"].as_str(),
+        Some("ORIGINAL TITLE")
+    );
+    assert_eq!(
+        state_clip(&split_state, &shape_left)["shape_label"].as_str(),
+        Some("ORIGINAL SHAPE")
+    );
+    assert_eq!(
+        state_clip(&split_state, &shape_right)["shape_label"].as_str(),
+        Some("ORIGINAL SHAPE")
+    );
+
+    let r = dispatch(
+        &state,
+        "title.update",
+        json!({"clip":title_right,"text":"RIGHT TITLE"}),
+        test_actor(),
+    )
+    .await;
+    assert!(r.ok, "title.update right half: {:?}", r.error);
+    let r = dispatch(
+        &state,
+        "shape.update",
+        json!({"clip":shape_right,"label":"RIGHT SHAPE","fill":"#00FF00"}),
+        test_actor(),
+    )
+    .await;
+    assert!(r.ok, "shape.update right half: {:?}", r.error);
+
+    let updated = dispatch(&state, "project.state", json!({}), test_actor())
+        .await
+        .result
+        .expect("project state after right-side updates");
+    assert_eq!(
+        state_clip(&updated, &title_left)["title_text"].as_str(),
+        Some("ORIGINAL TITLE"),
+        "right title edit must not leak to the left half"
+    );
+    assert_eq!(
+        state_clip(&updated, &title_right)["title_text"].as_str(),
+        Some("RIGHT TITLE")
+    );
+    assert_eq!(
+        state_clip(&updated, &shape_left)["shape_label"].as_str(),
+        Some("ORIGINAL SHAPE"),
+        "right shape edit must not leak to the left half"
+    );
+    assert_eq!(
+        state_clip(&updated, &shape_right)["shape_label"].as_str(),
+        Some("RIGHT SHAPE")
+    );
+    assert_eq!(
+        state_clip(&updated, &shape_left)["shape_color"].as_str(),
+        Some("#FF0000")
+    );
+    assert_eq!(
+        state_clip(&updated, &shape_right)["shape_color"].as_str(),
+        Some("#00FF00")
+    );
+}
+
 /// audio.cleanup_voice (orchestrator): on a project with one audio clip, the
 /// macro applies eq:voice + the [denoise, gate, compressor] chain (in order)
 /// under ONE auto-checkpoint, returns a composite receipt, and the whole pass
@@ -8244,6 +8400,57 @@ async fn render_frame_result_shape_matches_schema() {
         res["fast"], false,
         "no proxy → composed fallback, fast:false"
     );
+}
+
+/// B3-C1 resource admission: the preview endpoint rejects an attacker-sized
+/// frame before starting ffmpeg, but retains the NLE-correct cached black frame
+/// behavior past the composition end even while the two render slots are busy.
+#[tokio::test]
+async fn frame_preview_limits_and_past_duration_black_cache_are_enforced() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let r = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"t","dir": dir.path().join("t.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    assert!(r.ok, "{:?}", r.error);
+
+    let oversized = scrub_frame_bytes(&state, u64::MAX, 2161, false)
+        .await
+        .expect_err("preview h above 2160 must be rejected");
+    assert_eq!(oversized.code, error_codes::INVALID_ARGS);
+    assert!(oversized.message.contains("2160"));
+
+    // First render creates the documented black frame for an empty/past
+    // timeline. A different attacker-sized timestamp must reuse that same
+    // canonical cache entry rather than starting another ffmpeg process.
+    let (first, first_fast) = scrub_frame_bytes(&state, u64::MAX, 2, false)
+        .await
+        .expect("past-duration black frame");
+    assert!(!first_fast);
+    let _slot_one = state
+        .frame_render_limiter
+        .clone()
+        .try_acquire_owned()
+        .expect("first test slot");
+    let _slot_two = state
+        .frame_render_limiter
+        .clone()
+        .try_acquire_owned()
+        .expect("second test slot");
+    let (cached, cached_fast) = scrub_frame_bytes(&state, u64::MAX - 1, 2, false)
+        .await
+        .expect("canonical black cache must serve despite occupied render slots");
+    assert_eq!(cached, first);
+    assert!(!cached_fast);
+
+    let busy = scrub_frame_bytes(&state, 0, 4, false)
+        .await
+        .expect_err("an uncached third frame must not queue work");
+    assert_eq!(busy.code, error_codes::GUARDRAIL);
 }
 
 /// the output-fencing contract: output paths are fenced — traversal, foreign dirs and

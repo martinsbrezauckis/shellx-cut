@@ -395,9 +395,9 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
     };
     let (project, edl, dir, _at) = snapshot(state).await?;
     // The frame the scopes describe is written here (kept as evidence); scope images
-    // land beside it. Fenced under the project (the output-fencing contract). fence_output_path requires
-    // the parent dir to exist, so create exports/scopes first.
-    std::fs::create_dir_all(dir.join("exports/scopes")).ok();
+    // land beside it. `fence_output_path` creates the literal project-relative
+    // parent after rejecting links/reparse points, so do not pre-create through
+    // an untrusted project component here.
     let frame_path = fence_output_path(
         &dir,
         Some(&format!("exports/scopes/frame_{at_ms}ms.jpg")),
@@ -411,9 +411,6 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
     };
     let frame_for_receipt = frame_path.clone();
     let (scopes, images) = run_blocking("verify.scopes", move || {
-        if let Some(parent) = frame_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
         // 1. Materialize the frame to analyze.
         if let Some(src) = &asset_path {
             // A source asset's frame at at_ms (seek-then-decode one frame).

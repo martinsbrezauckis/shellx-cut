@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn restricted_mcp_marker_requires_the_agent_chat_actor() {
+    let marker = Some(RESTRICTED_MCP_MARKER_VALUE);
+    assert!(restricted_mcp_environment(
+        marker,
+        Some("agent:turn-7:agent.chat")
+    ));
+    assert!(!restricted_mcp_environment(
+        None,
+        Some("agent:turn-7:agent.chat")
+    ));
+    assert!(!restricted_mcp_environment(marker, None));
+    assert!(!restricted_mcp_environment(marker, Some("human:turn-7")));
+    assert!(!restricted_mcp_environment(
+        marker,
+        Some("agent:turn-7:judge")
+    ));
+}
+
+#[test]
 fn schema_classifies_every_registry_verb_and_preserves_the_safe_94_170_split() {
     let registry = crate::registry::VerbRegistry::load();
     let mut allowed = 0;

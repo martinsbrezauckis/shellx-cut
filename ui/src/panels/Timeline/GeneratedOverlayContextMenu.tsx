@@ -1,4 +1,5 @@
 import { Icon } from '../../icons'
+import ContextMenuFrame from '../../components/ContextMenuFrame'
 import type { LaidItem, TimelineContentClass } from './layout'
 
 interface GeneratedOverlayContextMenuProps {
@@ -7,16 +8,7 @@ interface GeneratedOverlayContextMenuProps {
   onClose: () => void
   onSelect: (clipIds: string[]) => void
   removeItemById: (itemId: string, ripple: boolean) => void | Promise<void>
-  removeTrackById: (trackId: string) => void | Promise<void>
   splitItemAt: (itemId: string, atMs: number) => void
-  isOverlayTrack: boolean
-}
-
-function clampMenu(el: HTMLDivElement, x: number, y: number): void {
-  const margin = 8
-  const rect = el.getBoundingClientRect()
-  el.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))}px`
-  el.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))}px`
 }
 
 /**
@@ -33,19 +25,12 @@ export default function GeneratedOverlayContextMenu({
   onClose,
   onSelect,
   removeItemById,
-  removeTrackById,
   splitItemAt,
-  isOverlayTrack,
 }: GeneratedOverlayContextMenuProps) {
   const kind = item.contentClass as Extract<TimelineContentClass, 'title' | 'shape'>
   const label = kind === 'shape' ? 'Shape' : 'Title'
   const editLabel = kind === 'shape' ? 'Edit shape…' : 'Edit title…'
-  return (
-    <>
-      <div className="tl-ctx-backdrop" data-cut-ctx-backdrop onMouseDown={onClose} onContextMenu={(event) => { event.preventDefault(); onClose() }} />
-      <div className="tl-ctx" role="menu" data-cut-clip-menu data-cut-clip-kind={kind} style={{ left: menu.x, top: menu.y }}
-        ref={(el) => { if (el) clampMenu(el, menu.x, menu.y) }}
-      >
+  return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-clip-menu" backdropId="data-cut-ctx-backdrop" menuAttributes={{ 'data-cut-clip-kind': kind }} ariaLabel={`${label} menu`} onClose={onClose}>
         <span className="tl-ctx__label" aria-hidden="true">{label}</span>
         <button className="tl-ctx__item" data-cut-ctx="overlay-edit" role="menuitem"
           title={`Select this ${label.toLowerCase()} and open its Inspector controls`}
@@ -72,13 +57,5 @@ export default function GeneratedOverlayContextMenu({
           onClick={() => { void removeItemById(item.id, true); onClose() }}>
           <Icon name="rippleDelete" size={14} /> Remove <kbd className="tl-ctx__kbd">Del</kbd>
         </button>
-        {isOverlayTrack && (
-          <button className="tl-ctx__item tl-ctx__item--danger" data-cut-ctx="remove-track" role="menuitem"
-            onClick={() => { void removeTrackById(item.trackId); onClose() }}>
-            <Icon name="trash" size={14} /> Remove track “{item.trackId}”
-          </button>
-        )}
-      </div>
-    </>
-  )
+  </ContextMenuFrame>
 }

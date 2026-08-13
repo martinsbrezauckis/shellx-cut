@@ -1711,12 +1711,8 @@ mod tests {
             ),
             (
                 "judge.antigravity",
-                if cfg!(windows) {
-                    "disabled: Antigravity sandbox unavailable on Windows"
-                } else {
-                    "native CLI: uses your Antigravity sandbox and permissions"
-                },
-                !cfg!(windows),
+                "native CLI: verifies its sandbox and non-interactive flags before each turn",
+                true,
             ),
         ] {
             let c = cards.iter().find(|c| c.id == id).expect("chat-agent card");
@@ -1755,13 +1751,11 @@ mod tests {
                 assert_eq!(chat["posture"], "disabled: unsupported Claude Code version");
             }
         }
-        // Antigravity becomes a chat agent only on platforms with its native sandbox.
+        // Antigravity is a chat agent on every platform; each launch verifies
+        // the resolved CLI's advertised sandbox and non-interactive flags.
         let agy = cards.iter().find(|c| c.id == "judge.antigravity").unwrap();
         assert!(agy.details["chat"].is_object());
-        assert_eq!(
-            agy.details["chat"]["wired"],
-            serde_json::json!(!cfg!(windows))
-        );
+        assert_eq!(agy.details["chat"]["wired"], serde_json::json!(true));
     }
 
     #[test]

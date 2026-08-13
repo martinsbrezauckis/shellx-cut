@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::dispatch::{parse_args, run_blocking_cancellable, snapshot};
 use crate::output_paths::{fence_output_path, resolve_existing_project_file, OutputPathPolicy};
+use crate::screen_record::export_progress::ExportProgressReporter;
 use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
 use serde_json::{json, Value};
@@ -103,14 +104,12 @@ pub(crate) async fn screen_record_export(
     state
         .jobs
         .spawn_limited(&job_id, EXPORT_LIMIT_KEY, EXPORT_MAX_RUNNING, async move {
-            jobs.progress(
-                &job_id_for_task,
-                0.0,
-                Some(format!(
-                    "Rendering {} recording…",
-                    format_for_task.name().to_uppercase()
-                )),
+            let progress = ExportProgressReporter::new(
+                jobs.clone(),
+                job_id_for_task.clone(),
+                format_for_task.name(),
             );
+            progress.preparing();
             let started = Instant::now();
             let result = render_export(
                 source,
@@ -120,18 +119,22 @@ pub(crate) async fn screen_record_export(
                 format_for_task,
                 &jobs,
                 &job_id_for_task,
+                progress.clone(),
             )
             .await;
             match result {
-                Ok(frames) => jobs.finish(
-                    &job_id_for_task,
-                    json!({
-                        "path": output_path_for_task,
-                        "format": format_name,
-                        "frames": frames,
-                        "elapsed_ms": started.elapsed().as_millis() as u64,
-                    }),
-                ),
+                Ok(frames) => {
+                    progress.finalizing();
+                    jobs.finish(
+                        &job_id_for_task,
+                        json!({
+                            "path": output_path_for_task,
+                            "format": format_name,
+                            "frames": frames,
+                            "elapsed_ms": started.elapsed().as_millis() as u64,
+                        }),
+                    )
+                }
                 Err(error) => jobs.fail(&job_id_for_task, error),
             }
         });
@@ -152,6 +155,7 @@ async fn render_export(
     format: ExportFormat,
     jobs: &crate::jobs::JobManager,
     job_id: &str,
+    progress: ExportProgressReporter,
 ) -> Result<u64, CutError> {
     let work = run_blocking_cancellable("screen_record.export", move |cancellation| {
         let child_cancellation = cancellation.clone();
@@ -160,16 +164,19 @@ async fn render_export(
         });
         match format {
             ExportFormat::Mp4 => {
+                progress.preparing_audio();
                 let audio = capture_audio.prepare(
                     out.parent().unwrap_or_else(|| std::path::Path::new(".")),
                     &control,
                 )?;
-                crate::screen_record::render_with_control(
+                progress.rendering_started();
+                crate::screen_record::render_with_control_progress(
                     &source,
                     &plan,
                     &out,
                     audio.path(),
                     &control,
+                    |frames, expected_frames| progress.rendering(frames, expected_frames),
                 )
             }
             ExportFormat::Gif { fps, width } => {
@@ -185,13 +192,17 @@ async fn render_export(
                         )
                     })?
                     .into_temp_path();
-                let frames = crate::screen_record::render_with_control(
+                progress.preparing_audio();
+                progress.rendering_started();
+                let frames = crate::screen_record::render_with_control_progress(
                     &source,
                     &plan,
                     tmp.as_ref(),
                     None,
                     &control,
+                    |frames, expected_frames| progress.rendering(frames, expected_frames),
                 )?;
+                progress.finalizing();
                 control
                     .check("convert recording export to GIF")
                     .map_err(crate::screen_record::record_err)?;

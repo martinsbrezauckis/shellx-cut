@@ -565,6 +565,7 @@ pub(in crate::dispatch) async fn title_add(
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
+    overlay_metadata::validate_overlay_metadata_args(&args, "title.add")?;
     let a: TitleArgs = parse_args(args.clone())?;
     if a.range_ms[1] <= a.range_ms[0] {
         return Err(CutError::new(
@@ -660,41 +661,76 @@ fn apply_title_overrides(base: &mut Value, overrides: &Value) {
     }
 }
 
-/// Recover the FULL declarative title args ([`TitleArgs`] shape, as JSON) that a
-/// title clip currently renders from, by replaying the op-log:
-///  1. find the `title.add` op that CREATED this clip (its lowered `edit.insert`
-///     effect recorded `added_clip == clip_id`) → the base args (the original spec);
-///  2. fold every later `title.update {clip}` op's overrides on top, in op order,
-///     so a chain of edits accumulates correctly.
-///
-/// Errors honestly when the clip wasn't created by `title.add`: a `captions.kinetic`
-/// title's text comes from the transcript (not a single editable field), and a
-/// clip with no creating title op can't have its spec reconstructed. This is the
-/// boundary that keeps `title.update` from silently producing a wrong render.
-fn recover_title_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError> {
-    let mut base: Option<Value> = None;
-    let mut created_by_kinetic = false;
-    for op in ops {
-        if op.verb == "title.add" || op.verb == "captions.kinetic" {
-            let added = op
-                .effects
-                .iter()
-                .find_map(|e| e.detail.get("added_clip").and_then(|v| v.as_str()));
-            if added == Some(clip_id) {
-                base = Some(op.args.clone());
-                created_by_kinetic = op.verb == "captions.kinetic";
-            }
+/// Carry op-log metadata from a split's retained left clip to its new right
+/// half. Later mutations address only their named clip, so independent edits
+/// naturally diverge after this one-time copy.
+pub(in crate::dispatch) fn inherit_split_metadata<T: Clone>(
+    metadata: &mut std::collections::BTreeMap<String, T>,
+    op: &OpRecord,
+) {
+    if let Some((left, right)) = split_effect_ids(op) {
+        if let Some(value) = metadata.get(left).cloned() {
+            metadata.insert(right.to_string(), value);
         }
     }
-    let base = base.ok_or_else(|| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            "can't recover this title's spec to edit",
-            "no title.add op created this clip — it may have been generated another way; re-create the title to edit its text",
-        )
-        .with_clip(clip_id)
-    })?;
-    if created_by_kinetic {
+}
+
+/// Recover the FULL declarative title args ([`TitleArgs`] shape, as JSON) that a
+/// title clip currently renders from, by replaying the op-log:
+///  1. seed the title's base args from `title.add`'s lowered `edit.insert`
+///     `added_clip` effect;
+///  2. carry the current spec to a new right half for every `edit.split` effect;
+///  3. fold each `title.update {clip}` onto that exact half in op order.
+///
+/// Errors honestly when the clip has no `title.add` ancestry: a
+/// `captions.kinetic` title's text comes from the transcript (not a single
+/// editable field), and a clip with no title origin can't have its spec
+/// reconstructed. This is the boundary that keeps `title.update` from silently
+/// producing a wrong render.
+fn recover_title_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError> {
+    use std::collections::{BTreeMap, HashSet};
+
+    overlay_metadata::validate_split_metadata_projection(ops)?;
+    let added_clip = |op: &OpRecord| -> Option<String> {
+        op.effects
+            .iter()
+            .find_map(|effect| effect.detail.get("added_clip").and_then(|v| v.as_str()))
+            .map(str::to_string)
+    };
+    let mut specs: BTreeMap<String, Value> = BTreeMap::new();
+    let mut kinetic: HashSet<String> = HashSet::new();
+    for op in ops {
+        match op.verb.as_str() {
+            "title.add" => {
+                if let Some(clip) = added_clip(op) {
+                    specs.insert(clip, op.args.clone());
+                }
+            }
+            "captions.kinetic" => {
+                if let Some(clip) = added_clip(op) {
+                    specs.insert(clip.clone(), op.args.clone());
+                    kinetic.insert(clip);
+                }
+            }
+            "edit.split" => {
+                inherit_split_metadata(&mut specs, op);
+                if let Some((left, right)) = split_effect_ids(op) {
+                    if kinetic.contains(left) {
+                        kinetic.insert(right.to_string());
+                    }
+                }
+            }
+            "title.update" => {
+                if let Some(clip) = op.args.get("clip").and_then(|v| v.as_str()) {
+                    if let Some(spec) = specs.get_mut(clip) {
+                        apply_title_overrides(spec, &op.args);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if kinetic.contains(clip_id) {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             "this title was generated from captions (captions.kinetic)",
@@ -702,17 +738,22 @@ fn recover_title_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError
         )
         .with_clip(clip_id));
     }
-    // Fold any prior edits to THIS clip, in op order, so the recovered spec is
-    // the CURRENT one (chained title.update calls accumulate).
-    let mut merged = base;
-    for op in ops {
-        if op.verb == "title.update"
-            && op.args.get("clip").and_then(|v| v.as_str()) == Some(clip_id)
-        {
-            apply_title_overrides(&mut merged, &op.args);
-        }
-    }
-    Ok(merged)
+    specs.remove(clip_id).ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "can't recover this title's spec to edit",
+            "no title.add op (or split descendant) created this clip — it may have been generated another way; re-create the title to edit its text",
+        )
+        .with_clip(clip_id)
+    })
+}
+
+#[cfg(test)]
+pub(super) fn recover_title_args_for_tests(
+    ops: &[OpRecord],
+    clip_id: &str,
+) -> Result<Value, CutError> {
+    recover_title_args(ops, clip_id)
 }
 
 /// title.update{clip, text?, color?, preset?, font_px?, bg?, x?, y?, align?,
@@ -749,6 +790,7 @@ pub(in crate::dispatch) async fn title_update(
         emphasis: Option<String>,
         rationale: Option<String>,
     }
+    overlay_metadata::validate_overlay_metadata_args(&args, "title.update")?;
     let a: Args = parse_args(args.clone())?;
 
     // 1. The clip must exist AND be a title overlay clip (a clip on a track whose
@@ -1043,6 +1085,7 @@ pub(in crate::dispatch) async fn edit_add_shape(
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
+    overlay_metadata::validate_overlay_metadata_args(&args, "edit.add_shape")?;
     let a: ShapeArgs = parse_args(args.clone())?;
     if a.range_ms[1] <= a.range_ms[0] {
         return Err(CutError::new(
@@ -1138,47 +1181,54 @@ pub(in crate::dispatch) fn apply_shape_overrides(base: &mut Value, overrides: &V
 
 /// Recover the FULL declarative shape args ([`ShapeArgs`] shape, as JSON) that a
 /// shape clip currently renders from, by replaying the op-log:
-///  1. find the `edit.add_shape` op that CREATED this clip (its lowered
-///     `edit.insert` effect recorded `added_clip == clip_id`) → the base args;
-///  2. fold every later `shape.update {clip}` op's overrides on top, in op order,
-///     so a chain of edits accumulates correctly.
+///  1. seed the shape's base args from `edit.add_shape`'s lowered `edit.insert`
+///     `added_clip` effect;
+///  2. carry the current spec to a new right half for every `edit.split` effect;
+///  3. fold each `shape.update {clip}` onto that exact half in op order.
 ///
 /// This is ALSO the shape-vs-title DISTINCTION: titles and shapes both live on
 /// `title*` tracks, but a shape clip has an `edit.add_shape` creating op while a
 /// title clip has a `title.add` one. A title clip (or any non-shape clip) reaches
-/// no base here → a clean, actionable error instead of a wrong render.
+/// no shape ancestry here → a clean, actionable error instead of a wrong render.
 fn recover_shape_args(ops: &[OpRecord], clip_id: &str) -> Result<Value, CutError> {
-    let mut base: Option<Value> = None;
+    use std::collections::BTreeMap;
+
+    overlay_metadata::validate_split_metadata_projection(ops)?;
+    let added_clip = |op: &OpRecord| -> Option<String> {
+        op.effects
+            .iter()
+            .find_map(|effect| effect.detail.get("added_clip").and_then(|v| v.as_str()))
+            .map(str::to_string)
+    };
+    let mut specs: BTreeMap<String, Value> = BTreeMap::new();
     for op in ops {
-        if op.verb == "edit.add_shape" {
-            let added = op
-                .effects
-                .iter()
-                .find_map(|e| e.detail.get("added_clip").and_then(|v| v.as_str()));
-            if added == Some(clip_id) {
-                base = Some(op.args.clone());
+        match op.verb.as_str() {
+            "edit.add_shape" => {
+                if let Some(clip) = added_clip(op) {
+                    specs.insert(clip, op.args.clone());
+                }
             }
+            "edit.split" => {
+                inherit_split_metadata(&mut specs, op);
+            }
+            "shape.update" => {
+                if let Some(clip) = op.args.get("clip").and_then(|v| v.as_str()) {
+                    if let Some(spec) = specs.get_mut(clip) {
+                        apply_shape_overrides(spec, &op.args);
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    let base = base.ok_or_else(|| {
+    specs.remove(clip_id).ok_or_else(|| {
         CutError::new(
             error_codes::INVALID_ARGS,
             "can't recover this shape's spec to edit",
-            "no edit.add_shape op created this clip — select a shape overlay clip (from edit.add_shape); titles use title.update",
+            "no edit.add_shape op (or split descendant) created this clip — select a shape overlay clip (from edit.add_shape); titles use title.update",
         )
         .with_clip(clip_id)
-    })?;
-    // Fold any prior edits to THIS clip, in op order, so the recovered spec is the
-    // CURRENT one (chained shape.update calls accumulate).
-    let mut merged = base;
-    for op in ops {
-        if op.verb == "shape.update"
-            && op.args.get("clip").and_then(|v| v.as_str()) == Some(clip_id)
-        {
-            apply_shape_overrides(&mut merged, &op.args);
-        }
-    }
-    Ok(merged)
+    })
 }
 
 /// shape.update{clip, shape?, label?, color?, fill?, stroke?, stroke_px?,
@@ -1224,6 +1274,7 @@ pub(in crate::dispatch) async fn shape_update(
         y2: Option<f64>,
         rationale: Option<String>,
     }
+    overlay_metadata::validate_overlay_metadata_args(&args, "shape.update")?;
     let a: Args = parse_args(args.clone())?;
 
     // 1. The clip must exist AND be on a `title*` overlay track (shapes share the

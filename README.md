@@ -10,7 +10,7 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-> **STATUS — 0.6.108 release line.** The public contract is 264 verbs across 32
+> **STATUS — 0.6.109 release line.** The public contract is 264 verbs across 32
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -30,7 +30,8 @@ AI output as an opaque final file.
 | ![ShellX Cut Agent Chat with Codex ready beside the Nordic road-film edit](docs/public/assets/github/shellx-cut-agent-chat.png) | ![ShellX Cut Agent Control settings for its local Debug API and MCP proxy](docs/public/assets/github/shellx-cut-agent-control.png) |
 
 Agent Chat supports the user's installed Claude Code, Codex, Grok, or
-Antigravity CLI. Antigravity Agent Chat currently requires macOS or Linux.
+Antigravity CLI. Antigravity is available on every platform when its resolved
+CLI advertises the sandbox and non-interactive flags verified before each turn.
 Claude uses Cut's pinned contained route. Codex uses the user's normal Codex
 configuration, native sandbox, and permissions. Grok runs from a disposable
 config and home with native tools disabled and only Cut's MCP route available.
@@ -43,10 +44,10 @@ integrations.
 
 ## Quickstart
 
-> **Installing 0.6.108:** download and run the installer or package from the
+> **Installing 0.6.109:** download and run the installer or package from the
 > GitHub release. Users already on 0.6.107 can use the in-app update when it is
 > offered. Versions older than 0.6.107 must install 0.6.107 manually before
-> using the in-app update, or install 0.6.108 directly.
+> using the in-app update, or install 0.6.109 directly.
 
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
@@ -205,8 +206,8 @@ in [`docs/public/BUILDING.md`](docs/public/BUILDING.md#official-release-packages
 Read [`SECURITY.md`](SECURITY.md) and the
 [local-machine threat model](docs/public/shellx-cut-threat-model.md) before
 exposing the Debug API beyond loopback or enabling unattended agent control.
-The contained Claude Agent Chat route is distinct from the machine-wide local
-REST/MCP trust boundary; its review and revert controls do not constitute an
+The brokered Agent Chat routes are distinct from the machine-wide local
+REST/MCP trust boundary; their review and revert controls do not constitute an
 operating-system sandbox.
 
 ## Architecture

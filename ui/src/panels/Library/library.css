@@ -517,7 +517,6 @@
 .lb-ctx__item:disabled { opacity: 0.4; cursor: default; }
 .lb-ctx__item--danger { color: var(--danger, #f8716a); }
 .lb-ctx__item--danger:hover { background: color-mix(in srgb, var(--danger, #f8716a) 16%, transparent); }
-
 .lb-flash { color: var(--cut, #4aa3ff); }
 
 /* ── Grid of asset cards ──────────────────────────────────────────────────── */
@@ -640,6 +639,7 @@
 .lb-act:disabled { opacity: 0.45; cursor: default; }
 .lb-act--primary { background: rgba(74, 163, 255, 0.16); border-color: var(--cut, #4aa3ff); color: var(--cut, #4aa3ff); }
 .lb-act--danger:hover:not(:disabled) { border-color: #ff8a8a; color: #ff9a9a; }
+.lb-act--menu { width: 28px; padding-inline: 0; justify-content: center; }
 .lb-move {
   background: var(--surface-2, #1b1e24);
   border: 1px solid var(--line, #2a2e36);

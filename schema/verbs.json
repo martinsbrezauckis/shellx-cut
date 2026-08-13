@@ -6115,7 +6115,7 @@
     {
       "name": "agent.chat",
       "domain": "agent",
-      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's pinned contained contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; this route requires the CLI sandbox and is disabled on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. The filtered Cut MCP surface permits inspection of the already-open project and reversible in-project edits while denying project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
+      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's pinned contained contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
       "args": {
         "type": "object",
         "required": [
@@ -6145,7 +6145,7 @@
               "grok",
               "antigravity"
             ],
-            "description": "Which local subscription CLI to drive. Claude, Codex, Grok, and Antigravity are wired with provider-specific launch boundaries; Antigravity requires its native sandbox and is disabled on Windows. Omit = the first installed + chat-wired agent, preferring Claude. An unavailable explicit pick degrades honestly."
+            "description": "Which local subscription CLI to drive. Claude, Codex, Grok, and Antigravity are wired with provider-specific launch boundaries; Antigravity is available when its resolved CLI advertises Cut's required sandbox and non-interactive flags. Omit = the first installed + chat-wired agent, preferring Claude. An unavailable explicit pick degrades honestly."
           },
           "model": {
             "type": "string",
@@ -11060,7 +11060,7 @@
     {
       "name": "render.frame",
       "domain": "render",
-      "description": "Compose one frame at at_ms — the agent's eyes / the human scrub frame without a full render. Fast scrub path: by default serves a fast proxy-seek frame (no captions/overlay) scaled to height h; compose:true forces the EXACT composed frame (captions + overlays at project geometry — the agent's verify eyes). returns {path, mime}; inline:true adds base64. Raw bytes also at GET /api/frame?at_ms=[&h=][&compose=1] (X-Cut-Frame-Fast header reports the path used).",
+      "description": "Compose one frame at at_ms — the agent's eyes / the human scrub frame without a full render. Fast scrub path: by default serves a fast proxy-seek frame (no captions/overlay) scaled to height h; compose:true forces the EXACT composed frame (captions + overlays at project geometry — the agent's verify eyes). Preview frames are bounded to 4K UHD resource limits; use export.frame for an explicit full-resolution still. returns {path, mime}; inline:true adds base64. Raw bytes also at GET /api/frame?at_ms=[&h=][&compose=1] (X-Cut-Frame-Fast header reports the path used).",
       "args": {
         "type": "object",
         "required": [
@@ -11075,8 +11075,9 @@
           "h": {
             "type": "integer",
             "minimum": 2,
+            "maximum": 2160,
             "default": 540,
-            "description": "scale the frame to this height in px (preview size). Default 540 (the proxy height). width follows the proxy 16:9 box."
+            "description": "scale the frame to this height in px (preview size, up to 2160). Default 540 (the proxy height). Width and total pixels are bounded to a 4K UHD preview budget; use export.frame for an explicit full-resolution still."
           },
           "compose": {
             "type": "boolean",

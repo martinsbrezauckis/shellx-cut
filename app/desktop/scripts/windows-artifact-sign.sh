@@ -19,6 +19,29 @@ case "$artifact" in
     ;;
 esac
 
+record_signed_artifact() {
+  local event_log="${SHELLX_WINDOWS_ARTIFACT_SIGNING_EVENT_LOG:-}"
+  [ -n "$event_log" ] || return 0
+  [ -f "$event_log" ] || {
+    echo "windows-artifact-sign: signing event log does not exist: $event_log" >&2
+    return 1
+  }
+  node - "$event_log" "$artifact" <<'NODE'
+const { appendFileSync, readFileSync } = require('node:fs')
+const { createHash } = require('node:crypto')
+const { basename, resolve } = require('node:path')
+
+const [eventLog, artifact] = process.argv.slice(2)
+const bytes = readFileSync(artifact)
+appendFileSync(eventLog, `${JSON.stringify({
+  artifactPath: resolve(artifact),
+  name: basename(artifact),
+  sha256: createHash('sha256').update(bytes).digest('hex'),
+  signatureStatus: 'Valid',
+})}\n`, { encoding: 'utf8' })
+NODE
+}
+
 if [ "${SHELLX_WINDOWS_SIGNING_REQUIRED:-0}" = "1" ]; then
   helper="${SHELLX_WINDOWS_SIGNING_HELPER:-}"
   if [ -z "$helper" ] || [ ! -x "$helper" ]; then
@@ -29,7 +52,9 @@ if [ "${SHELLX_WINDOWS_SIGNING_REQUIRED:-0}" = "1" ]; then
     echo "windows-artifact-sign: refusing a recursive signing helper" >&2
     exit 1
   fi
-  exec "$helper" "$artifact"
+  "$helper" "$artifact"
+  record_signed_artifact
+  exit 0
 fi
 
 if [ ! -e "$artifact" ]; then

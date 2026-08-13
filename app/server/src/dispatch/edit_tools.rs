@@ -42,10 +42,12 @@ mod speed;
 pub(super) use speed::{edit_speed, edit_speed_ramp};
 
 mod title_shape;
-pub(super) use title_shape::apply_shape_overrides;
 use title_shape::place_title_overlay;
 #[cfg(test)]
 pub(super) use title_shape::resolve_slide;
+pub(super) use title_shape::{apply_shape_overrides, inherit_split_metadata};
+mod overlay_metadata;
+pub(super) use overlay_metadata::{split_effect_ids, validate_split_metadata_projection};
 pub(crate) use title_shape::{build_shape_spec, build_title_spec, ShapeArgs, TitleArgs};
 pub(super) use title_shape::{
     edit_add_shape, edit_slide, shape_update, title_add, title_templates, title_update,

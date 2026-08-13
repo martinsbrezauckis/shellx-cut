@@ -47,6 +47,7 @@ export function isContiguousRun(sel: LaidItem[], items: LaidItem[]): boolean {
 }
 
 export type ContextMenuVisibility = 'visible' | 'hidden'
+export type AssetPickMode = 'replace' | 'fit'
 
 /**
  * One menu action's user-observable state. Class-invalid actions are hidden;

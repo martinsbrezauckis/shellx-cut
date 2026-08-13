@@ -390,6 +390,16 @@ pub fn run_ffmpeg_atomic_output(args: &[String], out: &Path) -> Result<(), CutEr
     crate::atomic_output::run_with_atomic_output(args, out, run_ffmpeg)
 }
 
+/// Like [`run_ffmpeg_atomic_output`], but lets the caller inspect the completed
+/// temporary output before it is atomically published at `out`.
+pub(crate) fn run_ffmpeg_validated_atomic_output(
+    args: &[String],
+    out: &Path,
+    validate: impl FnOnce(&Path) -> Result<(), CutError>,
+) -> Result<(), CutError> {
+    crate::atomic_output::run_with_validated_atomic_output(args, out, run_ffmpeg, validate)
+}
+
 /// Run ffmpeg streaming `-progress` to stdout, mapping `out_time_us` against
 /// `total_ms` into `on_progress(0.0..=1.0)` callbacks (server contract job_progress
 /// events). stderr is collected on a side thread so a chatty encode can never
@@ -420,6 +430,22 @@ pub fn run_ffmpeg_with_progress_atomic_output(
     crate::atomic_output::run_with_atomic_output(args, out, |tmp_args| {
         run_ffmpeg_with_progress(tmp_args, total_ms, on_progress)
     })
+}
+
+/// Progress-reporting atomic output with validation before publication.
+pub(crate) fn run_ffmpeg_with_progress_validated_atomic_output(
+    args: &[String],
+    out: &Path,
+    total_ms: u64,
+    on_progress: &dyn Fn(f32),
+    validate: impl FnOnce(&Path) -> Result<(), CutError>,
+) -> Result<(), CutError> {
+    crate::atomic_output::run_with_validated_atomic_output(
+        args,
+        out,
+        |tmp_args| run_ffmpeg_with_progress(tmp_args, total_ms, on_progress),
+        validate,
+    )
 }
 
 /// Run ONE segmented-render window with an explicit per-window cgroup memory cap

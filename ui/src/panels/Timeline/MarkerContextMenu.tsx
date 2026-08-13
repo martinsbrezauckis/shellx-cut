@@ -8,6 +8,7 @@
 
 import { useState } from 'react'
 import { Icon } from '../../icons'
+import ContextMenuFrame from '../../components/ContextMenuFrame'
 import { MARKER_COLOR_SWATCH, type MarkerColor } from '../../lib/clientModel'
 
 export interface MarkerMenuState {
@@ -28,13 +29,6 @@ interface MarkerContextMenuProps {
   onColor: (id: string, color: MarkerColor | 'none') => void
   onDelete: (id: string, label: string) => void
   onClose: () => void
-}
-
-function clampMenu(el: HTMLDivElement, x: number, y: number): void {
-  const margin = 8
-  const rect = el.getBoundingClientRect()
-  el.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))}px`
-  el.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))}px`
 }
 
 /** Right-click ruler marker menu. The parent owns marker mutations; this
@@ -60,24 +54,14 @@ export default function MarkerContextMenu({
     if (note !== (menu.note ?? '')) onNote(menu.id, note)
     onClose()
   }
-  return (
-    <>
-      <div
-        className="tl-ctx-backdrop"
-        data-cut-marker-ctx-backdrop
-        onMouseDown={onClose}
-        onContextMenu={(e) => {
-          e.preventDefault()
-          onClose()
-        }}
-      />
-      <div
-        className="tl-ctx"
-        role="menu"
-        data-cut-marker-menu
-        style={{ left: menu.x, top: menu.y }}
-        ref={(el) => { if (el) clampMenu(el, menu.x, menu.y) }}
-      >
+  return <ContextMenuFrame
+    x={menu.x}
+    y={menu.y}
+    menuId="data-cut-marker-menu"
+    backdropId="data-cut-marker-ctx-backdrop"
+    ariaLabel={`Marker ${menu.label} menu`}
+    onClose={onClose}
+  >
         {/* Rename — inline input, Enter commits, Escape closes without change. */}
         <div className="tl-ctx__rename" data-cut-marker-ctx="rename">
           <input
@@ -176,7 +160,5 @@ export default function MarkerContextMenu({
         >
           <Icon name="trash" size={14} /> Delete marker
         </button>
-      </div>
-    </>
-  )
+  </ContextMenuFrame>
 }

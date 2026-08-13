@@ -82,6 +82,7 @@ mod update_settings;
 mod update_state;
 #[cfg(desktop)]
 mod updater_key_transition;
+pub mod updater_signature;
 use tools::ToolResolution;
 
 /// The engine's documented default address (mirrors cutd httpc::SERVER_ADDR).
@@ -572,11 +573,11 @@ fn grant_engine_origin_capability(app: &tauri::App, url: &str) -> Result<(), Str
 /// the topbar button / Settings > About, and install runs only on explicit
 /// user request (native confirm → signature-verified download+install →
 /// restart). The plugin verifies the minisign signature against the configured
-/// updater public key, so a forged/unsigned artifact
-/// is rejected; this comparator additionally requires every release URL to name
-/// the manifest version, so a replayed old artifact behind a new version
-/// number is rejected too. Linux packages skip all checks — see the linux-cfg
-/// `run_automatic_checks` in update_state.rs.
+/// updater public key, so a forged/unsigned artifact is rejected. This
+/// comparator separately requires every release URL to name the manifest
+/// version; `update_state.rs` then binds the verified bytes to that version
+/// with a second signed identity before installing. Linux packages skip all
+/// checks — see the linux-cfg `run_automatic_checks` in update_state.rs.
 #[cfg(desktop)]
 fn updater_release_urls_match_version(current: &tauri_plugin_updater::RemoteRelease) -> bool {
     let expected_tag_segment = format!("/v{}/", current.version);

@@ -48,7 +48,10 @@ fn run_shell(args: &[&str]) -> (Option<i32>, String, String) {
 
     let started = Instant::now();
     let status = loop {
-        match child.try_wait().expect("waiting on the shell must not fail") {
+        match child
+            .try_wait()
+            .expect("waiting on the shell must not fail")
+        {
             Some(status) => break status,
             None if started.elapsed() >= VERSION_ANSWER_BUDGET => {
                 let _ = child.kill();

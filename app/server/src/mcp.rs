@@ -103,9 +103,10 @@ pub async fn run_stdio(state: AppState, mode: McpMode) -> anyhow::Result<()> {
                     None => rpc_error(id, -32602, &format!("unknown tool '{tool}'")),
                     Some(spec) => {
                         let verb_name = spec.name.clone();
-                        if crate::chat::capabilities::active_broker_environment()
-                            && !crate::chat::capabilities::allows(spec)
-                        {
+                        if denied_by_restricted_mcp_policy(
+                            spec,
+                            crate::chat::capabilities::active_broker_environment(),
+                        ) {
                             // A contained agent must not regain a dangerous Cut
                             // capability merely by guessing its generated tool
                             // name. Return an ordinary MCP tool error so the
@@ -229,11 +230,22 @@ pub(crate) fn list_agent_chat_tools(state: &AppState) -> Vec<Value> {
 }
 
 fn list_tools_for_agent_environment(state: &AppState) -> Vec<Value> {
-    if crate::chat::capabilities::active_broker_environment() {
+    list_tools_for_mcp_environment(
+        state,
+        crate::chat::capabilities::active_broker_environment(),
+    )
+}
+
+fn list_tools_for_mcp_environment(state: &AppState, restricted_mcp: bool) -> Vec<Value> {
+    if restricted_mcp {
         list_agent_chat_tools(state)
     } else {
         list_tools(state)
     }
+}
+
+fn denied_by_restricted_mcp_policy(spec: &crate::registry::VerbSpec, restricted_mcp: bool) -> bool {
+    restricted_mcp && !crate::chat::capabilities::allows(spec)
 }
 
 fn list_tools_matching<F>(state: &AppState, include: F) -> Vec<Value>
@@ -369,7 +381,12 @@ mod tests {
     #[test]
     fn agent_chat_tools_hide_and_reject_disallowed_cut_verbs() {
         let state = AppState::new();
-        let tools = list_agent_chat_tools(&state);
+        let restricted = crate::chat::capabilities::restricted_mcp_environment(
+            Some(crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE),
+            Some("agent:test:agent.chat"),
+        );
+        assert!(restricted, "the broker marker must activate server policy");
+        let tools = list_tools_for_mcp_environment(&state, restricted);
         let exposed: Vec<_> = tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
@@ -395,6 +412,24 @@ mod tests {
         assert_eq!(
             denied["structuredContent"]["error"]["code"],
             json!("agent_capability_denied")
+        );
+        let project_open = state
+            .registry
+            .get("project.open")
+            .expect("registered denied verb");
+        assert!(
+            denied_by_restricted_mcp_policy(project_open, restricted),
+            "a guessed blocked tool must be denied at tools/call as well as hidden at tools/list"
+        );
+        assert!(
+            !denied_by_restricted_mcp_policy(project_open, false),
+            "an unrestricted user-configured MCP retains the full surface"
+        );
+        assert!(
+            list_tools_for_mcp_environment(&state, false)
+                .iter()
+                .any(|tool| tool["name"] == "project_open"),
+            "the restricted marker must not alter a normal user-configured MCP"
         );
     }
 

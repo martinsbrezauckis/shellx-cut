@@ -16,7 +16,8 @@
 // 2. TITLE/SHAPE COMPACT MENU. layout.ts now distinguishes generated overlays
 //    from footage. Their rendered media must never regain generic source,
 //    clipboard, speed, picture, privacy, audio, transition, or fade actions;
-//    only Inspector edit, Transform, Split, Remove, and Remove track apply.
+//    only Inspector edit, Transform, Split, and Remove apply. Track removal
+//    belongs to the track-header menu, never to a clip.
 //
 // 3. ADD-TRANSITION ADJACENCY IN EDITORIAL TIME. The enable-gate tested LAID
 //    adjacency while the action (crossfadeAdjacent, c68b449c) resolves the
@@ -113,13 +114,11 @@ function renderMenu(allItems: LaidItem[], itemId: string, atMs = 100): string {
     onClose: noop,
     onCopyClip: () => true,
     onCutClip: noop,
-    onPasteClip: noop,
     onPasteAttributes: noop,
     onOpenTrim: noop,
     onSelect: noop,
     onSeek: noop,
     removeItemById: noop,
-    removeTrackById: noop,
     splitItemAt: noop,
     fadeItem: noop,
     trimItemTo: noop,
@@ -184,8 +183,8 @@ const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
   // EXTRACT case: muxed asset, audio NOT on the timeline (plain insert).
   // This is where the verb does its real work — the entry MUST stay.
   const soloMux = [clip('cv', 'video', 'v1', 'muxed', 0, 4000)]
-  assert.ok(present(renderMenu(soloMux, 'cv'), 'detach-audio'),
-    'detach-audio renders for a muxed video whose audio is NOT on the timeline (the extract case)')
+  assert.ok(present(renderMenu(soloMux, 'cv'), 'audio'),
+    'the compact Audio submenu renders for a muxed video whose audio is NOT on the timeline (the extract case)')
 
   // Muxed with the linked sibling already placed: informational no-op, still
   // an audio-bearing clip — entry stays (matches the engine accept).
@@ -193,18 +192,18 @@ const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
     clip('cv', 'video', 'v1', 'muxed', 0, 4000),
     clip('ca', 'audio', 'a1t', 'muxed', 0, 4000),
   ]
-  assert.ok(present(renderMenu(pairedMux, 'cv'), 'detach-audio'),
-    'detach-audio renders for a muxed video with its linked audio placed')
+  assert.ok(present(renderMenu(pairedMux, 'cv'), 'audio'),
+    'the compact Audio submenu renders for a muxed video with its linked audio placed')
 
   // Silent video: probe.has_audio false → the verb can only reject (NoAudio).
   const silent = [clip('cs', 'video', 'v1', 'silent', 0, 4000)]
-  assert.equal(present(renderMenu(silent, 'cs'), 'detach-audio'), false,
-    'detach-audio is absent for a silent video clip (probe.has_audio false)')
+  assert.equal(present(renderMenu(silent, 'cs'), 'audio'), false,
+    'Audio is absent for a silent video clip (probe.has_audio false)')
 
   // Still image: no audio stream at all.
   const still = [clip('ci', 'video', 'v1', 'still', 0, 4000, { isImage: true })]
-  assert.equal(present(renderMenu(still, 'ci'), 'detach-audio'), false,
-    'detach-audio is absent for a still-image clip')
+  assert.equal(present(renderMenu(still, 'ci'), 'audio'), false,
+    'Audio is absent for a still-image clip')
 }
 
 // ---- 1b. Exhaustive class contract: hide invalid, disable valid-but-unready
@@ -274,7 +273,7 @@ const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
   for (const key of ['gain', 'mute', 'clean-voice']) {
     assert.equal(present(trimmedHtml, key), false, `near-match audio action [${key}] is hidden`)
   }
-  assert.ok(present(trimmedHtml, 'detach-audio'), 'the valid detach path remains available for muxed footage')
+  assert.ok(present(trimmedHtml, 'audio'), 'the valid detach path remains reachable under Audio for muxed footage')
 
   const ambiguousItems = [video, exactAudioA, exactAudioB]
   assert.equal(exactTimelineAudioTarget(video, ambiguousItems), null,
@@ -316,15 +315,15 @@ const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
   }
 
   // Only the approved overlay actions remain: select + Inspector, Transform,
-  // Split, Remove, and overlay-track removal.
+  // Split, and Remove. Track removal is owned by its track header.
   const kept = [
-    'overlay-edit', 'transform', 'split', 'remove', 'remove-track',
+    'overlay-edit', 'transform', 'split', 'remove',
   ]
   for (const key of kept) {
     assert.ok(present(html, key), `title menu keeps applicable entry [${key}]`)
   }
 
-  assert.equal((html.match(/data-cut-ctx=/g) ?? []).length, 5, 'title menu contains only its five approved overlay actions')
+  assert.equal((html.match(/data-cut-ctx=/g) ?? []).length, 4, 'title menu contains only its four approved overlay actions')
 
   const shapes = [
     clip('s1', 'video', 'title1', 'titlemov', 0, 2000, { contentClass: 'shape' }),
@@ -338,7 +337,7 @@ const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
   for (const key of kept) {
     assert.ok(present(shapeHtml, key), `shape menu keeps applicable entry [${key}]`)
   }
-  assert.equal((shapeHtml.match(/data-cut-ctx=/g) ?? []).length, 5, 'shape menu contains only its five approved overlay actions')
+  assert.equal((shapeHtml.match(/data-cut-ctx=/g) ?? []).length, 4, 'shape menu contains only its four approved overlay actions')
 }
 
 // ---- 4. add-transition adjacency is EDITORIAL, not laid --------------------
@@ -373,9 +372,13 @@ const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
   assert.equal(/>Privacy</.test(html), false, 'privacy has no detached section')
   assert.ok(present(html, 'speed-time'), 'speed/time is one expandable parent action')
   assert.equal(present(html, 'speed-half'), false, 'speed presets stay collapsed until Speed & time opens')
-  const audioStart = html.indexOf('>Audio<')
-  assert.ok(audioStart >= 0 && html.indexOf('data-cut-ctx="detach-audio"', audioStart) >= 0,
-    'Detach audio is inside the one Audio section')
+  assert.ok(present(html, 'audio'), 'linked-audio controls have one compact Audio submenu owner')
+  assert.equal(present(html, 'detach-audio'), false, 'audio commands stay collapsed until Audio opens')
+  const audioSectionSource = readFileSync(new URL('../src/panels/Timeline/ClipContextMenuSections.tsx', import.meta.url), 'utf8')
+  assert.match(audioSectionSource, /data-cut-ctx="audio"[\s\S]*data-cut-ctx-audio-list[\s\S]*data-cut-ctx="detach-audio"/,
+    'the Audio submenu keeps detach audio reachable from muxed video')
+  assert.match(audioSectionSource, /data-cut-ctx="gain"[\s\S]*data-cut-ctx="mute"[\s\S]*data-cut-ctx="clean-voice"/,
+    'the Audio submenu keeps detached-audio controls together')
 }
 
 // ---- 6. caption and gap preserve their deliberately compact/no-menu routes --

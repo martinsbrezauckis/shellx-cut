@@ -1,0 +1,2 @@
+.lb-ctx__sub { display: flex; flex-direction: column; gap: 1px; max-height: 180px; overflow-y: auto; margin: 1px 0 2px; border-left: 2px solid var(--line, #2a2a28); }
+.lb-ctx__item--sub { padding-left: 26px; font-size: var(--fs-ui-xs, 12px); color: var(--ink-2, #b8b8b4); }

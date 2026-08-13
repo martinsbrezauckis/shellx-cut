@@ -14,12 +14,18 @@ use crate::registry::VerbRegistry;
 use crate::ui_bridge::UiBridge;
 use cut_core::ProjectStore;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 
 /// How many recent scrub frames the in-memory LRU holds. 64 JPEGs
 /// at ≈10–200 KB each is a few MB — cheap insurance against re-encoding a frame
 /// the human just scrubbed past or the agent just looked at.
 const FRAME_CACHE_CAP: usize = 64;
+/// JPEG bytes retained across the frame LRU. A count-only cap is not enough
+/// once callers may request 4K previews.
+const FRAME_CACHE_BYTE_CAP: usize = 32 * 1024 * 1024;
+/// Uncached frames each own an ffmpeg process and decoded image buffers. Keep
+/// interactive scrubbing responsive without admitting an unbounded queue.
+const FRAME_RENDER_CONCURRENCY: usize = 2;
 
 /// Shared server state. Clone = cheap (Arc fields).
 #[derive(Clone)]
@@ -57,6 +63,9 @@ pub struct AppState {
     /// timeline revision, so any edit invalidates the whole timeline's frames
     /// by key change — never serves a stale frame. Derived state.
     pub frame_cache: Arc<FrameCache>,
+    /// Admission slots for uncached frame rendering. Cache hits do not consume
+    /// a slot, while excess misses fail promptly instead of queuing ffmpeg work.
+    pub frame_render_limiter: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -75,7 +84,8 @@ impl AppState {
             ui_bridge: UiBridge::default(),
             doctor: Arc::new(RwLock::new(None)),
             addr: Arc::new(RwLock::new(None)),
-            frame_cache: Arc::new(FrameCache::new(FRAME_CACHE_CAP)),
+            frame_cache: Arc::new(FrameCache::new(FRAME_CACHE_CAP, FRAME_CACHE_BYTE_CAP)),
+            frame_render_limiter: Arc::new(Semaphore::new(FRAME_RENDER_CONCURRENCY)),
         }
     }
 

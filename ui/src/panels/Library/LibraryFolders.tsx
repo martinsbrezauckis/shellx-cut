@@ -59,6 +59,13 @@ export function LibraryFolders({
               data-cut-library-folder={folder}
               onClick={() => onSelectFolder(folder)}
               onContextMenu={(event) => { event.preventDefault(); onOpenMenu(event.clientX, event.clientY, folder) }}
+              onKeyDown={(event) => {
+                if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+                event.preventDefault()
+                const rect = event.currentTarget.getBoundingClientRect()
+                onOpenMenu(rect.left + Math.min(16, rect.width / 2), rect.top + Math.min(16, rect.height / 2), folder)
+              }}
+              aria-keyshortcuts="Shift+F10 ContextMenu"
               title={folder}
             >
               {folder}

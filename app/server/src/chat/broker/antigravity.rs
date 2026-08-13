@@ -10,25 +10,32 @@ const REQUIRED_HELP_TOKENS: &[&str] = &[
     "--model",
 ];
 
-/// Antigravity's terminal sandbox is currently available on macOS and Linux.
-/// The Windows route stays visibly disabled until the CLI offers that boundary.
-pub(crate) fn supported_on_this_platform() -> bool {
-    !cfg!(windows)
-}
-
 /// Add only the live Cut MCP server to this turn's disposable workspace.
 /// Antigravity keeps its normal login, settings, sandbox, and permission policy;
 /// Cut neither copies credentials nor rewrites global MCP configuration.
 pub(crate) fn project_config(cutd_exe: &str, proxy_addr: &str, proxy_actor: &str) -> String {
+    let environment = serde_json::Map::from_iter([
+        (
+            "CUTD_PROXY_ADDR".into(),
+            serde_json::Value::String(proxy_addr.into()),
+        ),
+        (
+            "CUTD_PROXY_ACTOR".into(),
+            serde_json::Value::String(proxy_actor.into()),
+        ),
+        (
+            crate::chat::capabilities::RESTRICTED_MCP_MARKER.into(),
+            serde_json::Value::String(
+                crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE.into(),
+            ),
+        ),
+    ]);
     serde_json::to_string_pretty(&serde_json::json!({
         "mcpServers": {
             "cutd": {
                 "command": cutd_exe,
                 "args": ["mcp"],
-                "env": {
-                    "CUTD_PROXY_ADDR": proxy_addr,
-                    "CUTD_PROXY_ACTOR": proxy_actor,
-                }
+                "env": environment,
             }
         }
     }))
@@ -85,12 +92,6 @@ pub(crate) fn verify_capability_contract(version: &str, help: &str) -> Result<()
             missing.join(", ")
         ));
     }
-    if !supported_on_this_platform() {
-        return Err(
-            "Antigravity Agent Chat requires the CLI terminal sandbox, which is not supported on Windows"
-                .into(),
-        );
-    }
     Ok(())
 }
 
@@ -135,9 +136,7 @@ mod tests {
     #[test]
     fn capability_contract_is_help_based_and_rejects_drift() {
         let help = REQUIRED_HELP_TOKENS.join(" ");
-        if supported_on_this_platform() {
-            assert!(verify_capability_contract("1.1.11", &help).is_ok());
-        }
+        assert!(verify_capability_contract("1.1.9", &help).is_ok());
         assert!(verify_capability_contract("Antigravity unknown", &help).is_err());
         assert!(
             verify_capability_contract("1.1.11", &help.replace("--sandbox", ""))

@@ -3,9 +3,11 @@
 // snapping resolution used by the Timeline panel. Timeline layout uses integer-ms time
 // base, BASE_PPS=50 transform, zoom-invariant 10-screen-px snap threshold,
 // two-ladder ruler intervals with divisibility repair.
-// Callers: panels/Timeline/index.tsx. Dependencies: lib/client types only.
+// Callers: panels/Timeline/index.tsx. Dependencies: lib/client types + source mapping.
 
 import { isIdentityTransform, type Clip, type ClipFade, type ClipGrade, type ClipTransform, type Marker, type MotionClipLink, type Project, type Track, type TrackKind } from '../../lib/client'
+import { sourceAtPlayheadForLayout, sourceTimelineOccurrencesForLayout, type SourceAt, type SourceTimelineOccurrence } from './sourceMapping'
+export type { SourceAt, SourceTimelineOccurrence } from './sourceMapping'
 
 // ---------------------------------------------------------------------------
 // Constants (adjust only with a reason)
@@ -302,84 +304,16 @@ export function layoutTrack(track: Track, imageAssets?: Set<string>): LaidItem[]
   return items
 }
 
-/** A timeline position resolved back to an asset's SOURCE time. */
-export interface SourceAt {
-  asset: string
-  /** Source-media ms inside that asset (NOT timeline ms). */
-  srcMs: number
-}
-
-export interface SourceTimelineOccurrence {
-  clipId: string
-  trackId: string
-  atMs: number
-}
-
-/**
- * Resolve a source-media instant to every video-timeline occurrence that shows
- * it. Visual-search hits are source-relative; sending `peak_ms` straight to
- * ui.playhead is wrong after a trim, delay, reuse, speed change, or reverse.
- * Variable-speed ramps are deliberately omitted here because the UI model does
- * not yet carry the engine's ramp segments; callers keep Source as the exact
- * fallback instead of presenting an approximate timeline jump.
- */
 export function sourceTimelineOccurrences(
   project: Project | null,
   assetId: string,
   sourceMs: number,
 ): SourceTimelineOccurrence[] {
-  if (!project || !Number.isFinite(sourceMs)) return []
-  const found: SourceTimelineOccurrence[] = []
-  for (const track of project.tracks) {
-    if (track.kind !== 'video') continue
-    for (const item of layoutTrack(track)) {
-      if (item.asset !== assetId || item.srcInMs === undefined || item.srcOutMs === undefined) continue
-      if (sourceMs < item.srcInMs || sourceMs >= item.srcOutMs) continue
-      const raw = track.clips.find((clip) => 'id' in clip && clip.id === item.id)
-      if (!raw || !('asset' in raw)) continue
-      if ((raw as { speed_ramp?: unknown }).speed_ramp != null) continue
-      const speed = raw.speed && raw.speed > 0 ? raw.speed : 1
-      const sourceOffset = raw.reverse
-        ? item.srcOutMs - sourceMs
-        : sourceMs - item.srcInMs
-      const timelineOffset = Math.round(sourceOffset / speed)
-      found.push({
-        clipId: item.id,
-        trackId: track.id,
-        atMs: Math.max(item.startMs, Math.min(item.startMs + item.durMs - 1, item.startMs + timelineOffset)),
-      })
-    }
-  }
-  return found.sort((a, b) => a.atMs - b.atMs || a.trackId.localeCompare(b.trackId))
+  return sourceTimelineOccurrencesForLayout(project, assetId, sourceMs, layoutTrack)
 }
 
-/**
- * Map a TIMELINE ms back to the source-media ms of the asset playing there, by
- * walking the EDL. After any cut the timeline and source clocks diverge —
- * a clip at timeline `startMs` plays source `[src_in_ms, src_out_ms)`, so the
- * source time at the playhead is `src_in_ms + (timelineMs − startMs)`. Without
- * this walk a transcript/word lookup that treats timelineMs AS source ms drifts
- * by the total removed duration before the playhead.
- *
- * Resolution: prefer the covering VIDEO clip (the speech reference); fall back
- * to the covering AUDIO clip when no video track covers the position (audio-only
- * sections). Returns null over a gap / past the end / with no project.
- */
 export function sourceAtPlayhead(project: Project | null, timelineMs: number): SourceAt | null {
-  if (!project) return null
-  const find = (kind: TrackKind): SourceAt | null => {
-    for (const track of project.tracks) {
-      if (track.kind !== kind) continue
-      for (const it of layoutTrack(track)) {
-        if (it.kind === 'gap' || it.kind === 'caption' || !it.asset || it.srcInMs === undefined) continue
-        if (timelineMs >= it.startMs && timelineMs < it.startMs + it.durMs) {
-          return { asset: it.asset, srcMs: it.srcInMs + (timelineMs - it.startMs) }
-        }
-      }
-    }
-    return null
-  }
-  return find('video') ?? find('audio')
+  return sourceAtPlayheadForLayout(project, timelineMs, layoutTrack)
 }
 
 /** Timeline content duration = max end across tracks + markers; min 60s. */

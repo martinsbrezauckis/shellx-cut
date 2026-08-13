@@ -27,9 +27,11 @@ pub(crate) fn args(
         "mcp_servers.cutd.args=[\"mcp\"]".into(),
         "-c".into(),
         format!(
-            "mcp_servers.cutd.env={{CUTD_PROXY_ADDR={},CUTD_PROXY_ACTOR={}}}",
+            "mcp_servers.cutd.env={{CUTD_PROXY_ADDR={},CUTD_PROXY_ACTOR={},{}={}}}",
             toml_str(proxy_addr),
-            toml_str(proxy_actor)
+            toml_str(proxy_actor),
+            crate::chat::capabilities::RESTRICTED_MCP_MARKER,
+            toml_str(crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE),
         ),
     ];
     if let Some(model) = model.filter(|model| !model.is_empty()) {

@@ -48,6 +48,7 @@ export function useTimelineContextMenus({
       itemId: gapId ? null : target.closest('[data-cut-clip]')?.getAttribute('data-cut-clip') ?? null,
       gapId,
       trackId: target.closest('[data-cut-track]')?.getAttribute('data-cut-track') ?? null,
+      headerTrackId: target.closest('[data-cut-track-header]')?.getAttribute('data-cut-track-header') ?? null,
       x: event.clientX,
       y: event.clientY,
       atMs: clientXToMs(event.clientX),

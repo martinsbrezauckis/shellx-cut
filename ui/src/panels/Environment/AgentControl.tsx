@@ -141,8 +141,8 @@ export default function AgentControl({ report }: { report: DoctorReport | null }
       )}
 
       <div className="settings-authority-note" data-cut-agent-control-client-guide>
-        <strong>Connect CALI or another MCP client</strong>
-        <p>Keep Cut open, copy the MCP setup, then add its <code>mcpServers</code> block to CALI, Claude, Codex, Cursor, or another stdio MCP client. Test MCP verifies this installed proxy returns to the same Cut engine; your external client should then list the <code>shellx-cut</code> tools.</p>
+        <strong>Connect an MCP client or agent</strong>
+        <p>Keep Cut open, copy the MCP setup, then add its <code>mcpServers</code> block to your MCP client configuration. Test MCP verifies this installed proxy returns to the same Cut engine; your external client should then list the <code>shellx-cut</code> tools.</p>
         <p>The Debug API and MCP both dispatch through that one running engine. Proxy mode does not open another project or keep separate edit state.</p>
       </div>
 

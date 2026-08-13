@@ -141,7 +141,7 @@ export const COMMANDS: Command[] = [
   {
     id: "cli-agent-setup",
     label: "CLI agent setup",
-    description: "Connect Claude for contained Agent Chat; Codex or Grok support other AI workflows.",
+    description: "Connect a local CLI for Agent Chat or other AI workflows.",
     group: "Setup",
     icon: "agent",
     keywords: "codex claude grok cli agent ai generate chat install connect subscription",

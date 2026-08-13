@@ -160,7 +160,7 @@ export default function App() {
 
   const { layout, setLayout, middleRef, mainRef, splitRef, txWidth, dragSplit, dragTimeline, dragRail } =
     useAppLayoutController(selectedClipIds)
-  const { clipboardHasContent, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard } = useAppClipboardController({
+  const { clipboardHasContent, clipboardKind, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard } = useAppClipboardController({
     project,
     playheadMs,
     selectedClipIds,
@@ -673,6 +673,7 @@ export default function App() {
           selectedClipIds={selectedClipIds}
           exportRange={exportRange}
           clipboardHasContent={clipboardHasContent}
+          clipboardKind={clipboardKind}
           clipboardClipId={clipboardClipId}
           commentsOpen={commentsOpen}
           focusComment={focusComment}

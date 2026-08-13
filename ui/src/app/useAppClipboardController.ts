@@ -18,6 +18,7 @@ export function useAppClipboardController({
 }: AppClipboardControllerArgs) {
   const clipboardRef = useRef<ClipSnapshot | null>(null)
   const [clipboardHasContent, setClipboardHasContent] = useState(false)
+  const [clipboardKind, setClipboardKind] = useState<ClipSnapshot['kind'] | null>(null)
   // Paste-attributes needs the SOURCE clip id (the copied clip must still
   // exist on the timeline; the server verb re-validates that honestly).
   const [clipboardClipId, setClipboardClipId] = useState<string | null>(null)
@@ -30,6 +31,7 @@ export function useAppClipboardController({
   const clearClipboard = useCallback(() => {
     clipboardRef.current = null
     setClipboardHasContent(false)
+    setClipboardKind(null)
     setClipboardClipId(null)
   }, [])
 
@@ -38,6 +40,7 @@ export function useAppClipboardController({
     if (!snap) return false
     clipboardRef.current = snap
     setClipboardHasContent(true)
+    setClipboardKind(snap.kind)
     setClipboardClipId(snap.clipId)
     return true
   }, [])
@@ -92,19 +95,22 @@ export function useAppClipboardController({
     void callVerb('ui.select', { clip_ids: [] })
   }, [copyClip, setSelectedClipIds])
 
-  const pasteClip = useCallback(async () => {
+  const pasteClip = useCallback(async (target?: { atMs: number; trackId: string }) => {
     const snap = clipboardRef.current
     if (!snap) return
     const { project, playheadMs: at, selectedClipIds: sel } = liveRef.current
+    const requestedTrack = target ? project?.tracks.find((track) => track.id === target.trackId) ?? null : null
+    if (target && (!requestedTrack || requestedTrack.kind !== snap.kind)) return
     const activeTrackId = sel.length > 0 ? (snapshotClip(project, sel[0])?.trackId ?? null) : null
-    const toTrack = pasteTargetTrack(project, snap, activeTrackId)
+    const toTrack = target?.trackId ?? pasteTargetTrack(project, snap, activeTrackId)
+    const atMs = target?.atMs ?? at
     await callVerb('edit.paste', {
       clip: snap.clipId,
       asset: snap.asset,
       src_range_ms: snap.srcRange,
       to_track: toTrack,
-      at_ms: Math.max(0, Math.round(at)),
-      rationale: `paste clip onto ${toTrack} @ ${Math.round(at)}ms (Ctrl+V / context menu)`,
+      at_ms: Math.max(0, Math.round(atMs)),
+      rationale: `paste clip onto ${toTrack} @ ${Math.round(atMs)}ms (${target ? 'timeline context menu' : 'Ctrl+V'})`,
     })
   }, [])
 
@@ -148,5 +154,5 @@ export function useAppClipboardController({
     return () => window.removeEventListener('keydown', onClipKey)
   }, [copyClip, cutClip, pasteClip, warnMultiSelectionClipboard])
 
-  return { clipboardHasContent, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard }
+  return { clipboardHasContent, clipboardKind, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard }
 }

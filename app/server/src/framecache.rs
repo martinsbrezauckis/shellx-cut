@@ -26,6 +26,9 @@ pub enum FrameMode {
     Scrub,
     /// Exact composed frame (full graph, captions + overlays).
     Compose,
+    /// Past-the-timeline black frame. Distinct because it is cached but never
+    /// reports the fast-proxy header.
+    Black,
 }
 
 /// Cache key: timeline revision + position + height + mode.
@@ -37,28 +40,33 @@ struct Key {
     mode: FrameMode,
 }
 
-/// A tiny LRU (insertion-order eviction by a monotonic tick). Bounded by
-/// `cap` entries; the JPEGs are small (≈10–200 KB) so the whole cache is at
-/// most a few MB. Thread-safe via one Mutex — the hot path is a hashmap get.
+/// A tiny LRU (insertion-order eviction by a monotonic tick). Bounded by both
+/// `cap` entries and `byte_cap` retained JPEG bytes, so a few high-resolution
+/// previews cannot turn a count-only cache into an unbounded memory sink.
+/// Thread-safe via one Mutex — the hot path is a hashmap get.
 pub struct FrameCache {
     inner: Mutex<Inner>,
     cap: usize,
+    byte_cap: usize,
 }
 
 struct Inner {
     map: HashMap<Key, (u64, Vec<u8>)>, // key -> (last_used_tick, bytes)
     tick: u64,
+    bytes: usize,
 }
 
 impl FrameCache {
     /// New cache holding at most `cap` frames.
-    pub fn new(cap: usize) -> Self {
+    pub fn new(cap: usize, byte_cap: usize) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 map: HashMap::new(),
                 tick: 0,
+                bytes: 0,
             }),
             cap,
+            byte_cap,
         }
     }
 
@@ -81,8 +89,12 @@ impl FrameCache {
     }
 
     /// Insert bytes for this key, evicting the least-recently-used entry when
-    /// over capacity.
+    /// over the entry or byte capacity. A single oversized JPEG is not cached.
     pub fn put(&self, edl_rev: u64, at_ms: u64, height: u32, mode: FrameMode, bytes: Vec<u8>) {
+        let byte_len = bytes.len();
+        if self.cap == 0 || byte_len > self.byte_cap {
+            return;
+        }
         let key = Key {
             edl_rev,
             at_ms,
@@ -94,16 +106,21 @@ impl FrameCache {
         };
         inner.tick += 1;
         let tick = inner.tick;
-        inner.map.insert(key, (tick, bytes));
-        // Evict oldest while over capacity.
-        while inner.map.len() > self.cap {
+        if let Some((_, old)) = inner.map.insert(key, (tick, bytes)) {
+            inner.bytes = inner.bytes.saturating_sub(old.len());
+        }
+        inner.bytes = inner.bytes.saturating_add(byte_len);
+        // Evict oldest while over either capacity.
+        while inner.map.len() > self.cap || inner.bytes > self.byte_cap {
             if let Some(oldest) = inner
                 .map
                 .iter()
                 .min_by_key(|(_, (t, _))| *t)
                 .map(|(k, _)| k.clone())
             {
-                inner.map.remove(&oldest);
+                if let Some((_, old)) = inner.map.remove(&oldest) {
+                    inner.bytes = inner.bytes.saturating_sub(old.len());
+                }
             } else {
                 break;
             }
@@ -119,7 +136,7 @@ mod tests {
     /// misses — proving an edit never serves a stale frame.
     #[test]
     fn cache_hit_and_rev_invalidation() {
-        let c = FrameCache::new(4);
+        let c = FrameCache::new(4, 16);
         c.put(1, 1000, 540, FrameMode::Scrub, vec![1, 2, 3]);
         assert_eq!(c.get(1, 1000, 540, FrameMode::Scrub), Some(vec![1, 2, 3]));
         // Same position, NEW revision (timeline edited) → miss.
@@ -134,7 +151,7 @@ mod tests {
     /// recently used and evicts the least recent.
     #[test]
     fn lru_eviction_keeps_recent() {
-        let c = FrameCache::new(2);
+        let c = FrameCache::new(2, 16);
         c.put(1, 0, 540, FrameMode::Scrub, vec![0]);
         c.put(1, 1, 540, FrameMode::Scrub, vec![1]);
         // Touch frame 0 so it is more-recently-used than frame 1.
@@ -150,5 +167,17 @@ mod tests {
             "newest survives"
         );
         assert!(c.get(1, 1, 540, FrameMode::Scrub).is_none(), "LRU evicted");
+    }
+
+    #[test]
+    fn byte_budget_evicts_old_entries_and_skips_oversized_jpegs() {
+        let c = FrameCache::new(4, 4);
+        c.put(1, 0, 540, FrameMode::Scrub, vec![1, 2, 3]);
+        c.put(1, 1, 540, FrameMode::Scrub, vec![4, 5]);
+        assert!(c.get(1, 0, 540, FrameMode::Scrub).is_none());
+        assert_eq!(c.get(1, 1, 540, FrameMode::Scrub), Some(vec![4, 5]));
+
+        c.put(1, 2, 540, FrameMode::Scrub, vec![6, 7, 8, 9, 10]);
+        assert!(c.get(1, 2, 540, FrameMode::Scrub).is_none());
     }
 }

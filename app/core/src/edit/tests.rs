@@ -564,6 +564,27 @@ fn split_divides_media_clip() {
     assert!(split(&mut p, "v1", 99999).is_err());
 }
 
+/// The operation-log effect is the identity handoff for projections that keep
+/// declarative metadata outside `MediaClip` (for example title/shape overlays).
+#[test]
+fn split_effect_identifies_the_exact_left_and_right_halves() {
+    let mut p = fixture();
+    let effect = split(&mut p, "v1", 2000)
+        .expect("split")
+        .into_iter()
+        .next()
+        .expect("one split effect");
+
+    let left = effect.detail["left"].as_str().expect("left id");
+    let right = effect.detail["right"].as_str().expect("right id");
+    assert_eq!(effect.track.as_deref(), Some("v1"));
+    assert_ne!(left, right, "a split allocates a distinct right half");
+
+    let clips = &p.track("v1").expect("v1").clips;
+    assert_eq!(clips[0].id(), Some(left));
+    assert_eq!(clips[1].id(), Some(right));
+}
+
 /// Timeline-wide ripple: AV stays in sync, captions trim/shift, markers move.
 #[test]
 fn ripple_delete_all_tracks() {

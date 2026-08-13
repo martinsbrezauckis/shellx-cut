@@ -135,6 +135,123 @@ fn edl_rev(dir: &std::path::Path, at_op: &str) -> u64 {
     h.finish()
 }
 
+/// Preview frames are intentionally bounded to 4K UHD. Full-resolution still
+/// export remains `export.frame`; `render.frame` and `/api/frame` are a scrub
+/// and inspection surface, not an arbitrary ffmpeg image-size API.
+const FRAME_PREVIEW_MAX_HEIGHT: u32 = 2160;
+const FRAME_PREVIEW_MAX_WIDTH: u64 = 3840;
+const FRAME_PREVIEW_MAX_PIXELS: u64 = FRAME_PREVIEW_MAX_WIDTH * FRAME_PREVIEW_MAX_HEIGHT as u64;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameResourceClass {
+    /// Human/API scrub previews have size admission limits.
+    Preview,
+    /// Explicit still export keeps its documented project-resolution contract.
+    Export,
+}
+
+/// Normalize the legacy sub-two-pixel request behavior, then reject preview
+/// sizes that would exceed the intended 4K UHD resource budget. `source_*`
+/// represents the rendered aspect, including a cropped proxy on the fast path.
+fn checked_preview_height(
+    height: u32,
+    source_width: u32,
+    source_height: u32,
+) -> Result<u32, CutError> {
+    let height = height.max(2);
+    if height > FRAME_PREVIEW_MAX_HEIGHT {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("frame preview height must not exceed {FRAME_PREVIEW_MAX_HEIGHT}px"),
+            format!(
+                "requested h={height}; /api/frame and render.frame are bounded preview surfaces"
+            ),
+        )
+        .with_suggested_action(
+            "use h <= 2160 for a preview, or export.frame for a full-resolution still",
+        ));
+    }
+    let (source_width, source_height) = if source_width == 0 || source_height == 0 {
+        (16_u64, 9_u64)
+    } else {
+        (u64::from(source_width), u64::from(source_height))
+    };
+    let numerator = source_width.saturating_mul(u64::from(height));
+    let width = numerator.saturating_add(source_height.saturating_sub(1)) / source_height;
+    let pixels = width.saturating_mul(u64::from(height));
+    if width > FRAME_PREVIEW_MAX_WIDTH || pixels > FRAME_PREVIEW_MAX_PIXELS {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "frame preview dimensions exceed the 4K UHD resource limit",
+            format!(
+                "requested h={height} at source aspect {source_width}:{source_height} derives {width}x{height}"
+            ),
+        )
+        .with_suggested_action("request a smaller h, or use export.frame for an explicit full-resolution still"));
+    }
+    Ok(height)
+}
+
+fn frame_height_for_class(
+    class: FrameResourceClass,
+    height: u32,
+    source_width: u32,
+    source_height: u32,
+) -> Result<u32, CutError> {
+    match class {
+        FrameResourceClass::Preview => checked_preview_height(height, source_width, source_height),
+        FrameResourceClass::Export => Ok(height.max(2)),
+    }
+}
+
+fn project_frame_aspect_source(project: &cut_core::Project) -> (u32, u32) {
+    if project.settings.width > 0 && project.settings.height > 0 {
+        (project.settings.width, project.settings.height)
+    } else {
+        (16, 9)
+    }
+}
+
+fn frame_render_busy() -> CutError {
+    CutError::new(
+        error_codes::GUARDRAIL,
+        "frame preview capacity is busy",
+        "at most two uncached frame renders may run concurrently",
+    )
+    .with_suggested_action(
+        "retry shortly; cache hits remain available while another frame is rendering",
+    )
+}
+
+fn frame_cache_mode(at_ms: u64, duration_ms: u64, compose: bool) -> crate::framecache::FrameMode {
+    if at_ms >= duration_ms {
+        crate::framecache::FrameMode::Black
+    } else if compose {
+        crate::framecache::FrameMode::Compose
+    } else {
+        crate::framecache::FrameMode::Scrub
+    }
+}
+
+fn cached_frame(
+    state: &AppState,
+    rev: u64,
+    duration_ms: u64,
+    at_ms: u64,
+    height: u32,
+    compose: bool,
+) -> Option<(Vec<u8>, bool)> {
+    let mode = frame_cache_mode(at_ms, duration_ms, compose);
+    // All positions beyond the timeline show the same black frame. Canonicalize
+    // them to the end position so attacker-selected timestamps cannot bypass the
+    // LRU by minting a unique key for identical output.
+    let cache_at_ms = at_ms.min(duration_ms);
+    state
+        .frame_cache
+        .get(rev, cache_at_ms, height, mode)
+        .map(|bytes| (bytes, mode == crate::framecache::FrameMode::Scrub))
+}
+
 /// Scrub frame bytes with the fast proxy-seek path + LRU cache.
 ///
 /// `height` scales the output (preview size; `?h=`). `compose` forces the EXACT
@@ -149,8 +266,51 @@ pub(crate) async fn scrub_frame_bytes(
     height: u32,
     compose: bool,
 ) -> Result<(Vec<u8>, bool), CutError> {
+    scrub_frame_bytes_with_class(state, at_ms, height, compose, FrameResourceClass::Preview).await
+}
+
+/// Full-resolution still export is not a scrub-preview request. It shares the
+/// subprocess admission/cache controls but keeps the explicit export contract.
+async fn scrub_frame_bytes_for_export(
+    state: &AppState,
+    at_ms: u64,
+    height: u32,
+    compose: bool,
+) -> Result<(Vec<u8>, bool), CutError> {
+    scrub_frame_bytes_with_class(state, at_ms, height, compose, FrameResourceClass::Export).await
+}
+
+async fn scrub_frame_bytes_with_class(
+    state: &AppState,
+    at_ms: u64,
+    height: u32,
+    compose: bool,
+    class: FrameResourceClass,
+) -> Result<(Vec<u8>, bool), CutError> {
+    let height = height.max(2);
+    // Reject a plainly oversized public preview before touching project media.
+    // The second aspect-aware check below protects unusually wide crops.
+    if class == FrameResourceClass::Preview {
+        checked_preview_height(height, 16, 9)?;
+    }
+    // A cheap snapshot establishes the cache key without resolving nested
+    // media. Cache hits stay available while renders are busy; cache misses are
+    // admitted before `snapshot_for_media_io` can flatten a nested project.
+    let (_project, edl, dir, at_op) = snapshot(state).await?;
+    let rev = edl_rev(&dir, &at_op);
+    if let Some(cached) = cached_frame(state, rev, edl.duration_ms, at_ms, height, compose) {
+        return Ok(cached);
+    }
+    let _permit = state
+        .frame_render_limiter
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| frame_render_busy())?;
     let (project, edl, dir, at_op) = snapshot_for_media_io(state, "render.frame.nests").await?;
-    scrub_frame_bytes_from_snapshot(state, project, edl, dir, at_op, at_ms, height, compose).await
+    scrub_frame_bytes_from_snapshot(
+        state, project, edl, dir, at_op, at_ms, height, compose, class,
+    )
+    .await
 }
 
 async fn scrub_frame_bytes_from_snapshot(
@@ -162,13 +322,22 @@ async fn scrub_frame_bytes_from_snapshot(
     at_ms: u64,
     height: u32,
     compose: bool,
+    class: FrameResourceClass,
 ) -> Result<(Vec<u8>, bool), CutError> {
+    let height = height.max(2);
+    let rev = edl_rev(&dir, &at_op);
+    let mode = frame_cache_mode(at_ms, edl.duration_ms, compose);
+    let cache_at_ms = at_ms.min(edl.duration_ms);
+    if let Some(cached) = cached_frame(state, rev, edl.duration_ms, at_ms, height, compose) {
+        return Ok(cached);
+    }
     // Past the composition end → a BLACK frame, not a 422. The UI ruler extends
     // past short content (min 60s), so scrubbing into the empty region requested
     // frames the engine refused; the poster <img> then broke and the loading
     // spinner spun forever ("endless rendering"). Black is the NLE-correct view.
     if at_ms >= edl.duration_ms {
         let s = &project.settings;
+        let height = frame_height_for_class(class, height, s.width, s.height)?;
         let aspect = if s.height > 0 {
             s.width as f64 / s.height as f64
         } else {
@@ -180,17 +349,10 @@ async fn scrub_frame_bytes_from_snapshot(
             cut_media::render::black_frame_jpeg(w, h)
         })
         .await?;
+        state
+            .frame_cache
+            .put(rev, cache_at_ms, height, mode, bytes.clone());
         return Ok((bytes, false));
-    }
-    let rev = edl_rev(&dir, &at_op);
-    let mode = if compose {
-        crate::framecache::FrameMode::Compose
-    } else {
-        crate::framecache::FrameMode::Scrub
-    };
-    // Cache hit → memcpy, no ffmpeg. used_fast reflects the cached path's mode.
-    if let Some(bytes) = state.frame_cache.get(rev, at_ms, height, mode) {
-        return Ok((bytes, mode == crate::framecache::FrameMode::Scrub));
     }
     // Decide the path: fast scrub when not compose AND the position is eligible.
     let plan = if compose {
@@ -199,12 +361,20 @@ async fn scrub_frame_bytes_from_snapshot(
         cut_media::render::plan_scrub_frame(&project, &edl, &dir, at_ms)
     };
     let (bytes, used_fast) = if let Some(plan) = plan {
+        let (source_width, source_height) =
+            plan.proxy_crop.map(|[_x, _y, w, h]| (w, h)).unwrap_or((
+                cut_media::proxy::PROXY_WIDTH,
+                cut_media::proxy::PROXY_HEIGHT,
+            ));
+        let height = frame_height_for_class(class, height, source_width, source_height)?;
         let bytes = run_blocking("render.scrub", move || {
             cut_media::render::extract_scrub_frame(&plan, height)
         })
         .await?;
         (bytes, true)
     } else {
+        let (source_width, source_height) = project_frame_aspect_source(&project);
+        let height = frame_height_for_class(class, height, source_width, source_height)?;
         // Composed fallback (captions/overlays/gap/no-proxy or compose=1).
         // A preview request (height below the project's full height) composites at
         // that reduced height over the light proxies → ~8.5× faster on heavy 4K HEVC, no
@@ -228,7 +398,7 @@ async fn scrub_frame_bytes_from_snapshot(
     };
     state
         .frame_cache
-        .put(rev, at_ms, height, store_mode, bytes.clone());
+        .put(rev, cache_at_ms, height, store_mode, bytes.clone());
     Ok((bytes, used_fast))
 }
 
@@ -263,7 +433,7 @@ pub(super) async fn export_frame(
     // the viewer sees — not the proxy-grade scrub frame.
     let (project, _edl, dir, _at) = snapshot(state).await?;
     let height = project.settings.height.max(1);
-    let (bytes, _fast) = scrub_frame_bytes(state, a.at_ms, height, true).await?;
+    let (bytes, _fast) = scrub_frame_bytes_for_export(state, a.at_ms, height, true).await?;
     let path = fence_output_path(
         &dir,
         a.path.as_deref(),
@@ -985,7 +1155,15 @@ pub(super) async fn render_storyboard(
             let at_op = at_op.clone();
             async move {
                 let (bytes, _fast) = scrub_frame_bytes_from_snapshot(
-                    &state, project, edl, dir, at_op, at, height, compose,
+                    &state,
+                    project,
+                    edl,
+                    dir,
+                    at_op,
+                    at,
+                    height,
+                    compose,
+                    FrameResourceClass::Preview,
                 )
                 .await?;
                 Ok(bytes)
@@ -1039,6 +1217,26 @@ pub(super) async fn render_storyboard(
 #[cfg(test)]
 mod storyboard_internal_tests {
     use super::*;
+
+    #[test]
+    fn preview_frame_size_limit_preserves_4k_and_export_controls() {
+        assert_eq!(checked_preview_height(540, 16, 9).unwrap(), 540);
+        assert_eq!(checked_preview_height(2160, 16, 9).unwrap(), 2160);
+
+        let too_tall = checked_preview_height(2161, 16, 9).unwrap_err();
+        assert_eq!(too_tall.code, error_codes::INVALID_ARGS);
+        assert!(too_tall.cause.contains("h=2161"));
+
+        let too_wide = checked_preview_height(2160, 2, 1).unwrap_err();
+        assert_eq!(too_wide.code, error_codes::INVALID_ARGS);
+        assert!(too_wide.cause.contains("4320x2160"));
+
+        assert_eq!(
+            frame_height_for_class(FrameResourceClass::Export, 4320, 16, 9).unwrap(),
+            4320,
+            "export.frame retains its explicit full-resolution still contract"
+        );
+    }
 
     #[test]
     fn tile_width_is_ceiling_based_and_even() {

@@ -143,7 +143,7 @@ pub fn build_command(
                 )),
             })
         }
-        "antigravity" if broker::antigravity_supported_on_this_platform() => {
+        "antigravity" => {
             let workspace = std::path::Path::new(mcp_config_path).parent()?;
             let workspace = workspace.to_string_lossy().into_owned();
             Some(ChatCommand {
@@ -502,7 +502,7 @@ mod tests {
         assert!(is_wired("claude"));
         assert!(is_wired("codex"));
         assert!(is_wired("grok"));
-        assert_eq!(is_wired("antigravity"), !cfg!(windows));
+        assert!(is_wired("antigravity"));
         assert!(!is_wired("nope"));
         // An explicit unknown agent never resolves, regardless of PATH.
         assert_eq!(pick_agent(Some("nope")), None);
@@ -684,7 +684,6 @@ mod tests {
         assert!(contents.contains("CUTD_PROXY_ACTOR = \"agent:chat-test:agent.chat\""));
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn antigravity_command_uses_workspace_mcp_and_native_sandbox() {
         let command = build_command(
@@ -708,6 +707,7 @@ mod tests {
         assert_eq!(path, ".agents/mcp_config.json");
         assert!(contents.contains("\"cutd\""));
         assert!(contents.contains("agent:chat-test:agent.chat"));
+        assert!(contents.contains("SHELLX_CUT_AGENT_CONTAINED"));
     }
 
     #[test]
@@ -839,11 +839,7 @@ mod tests {
         );
         assert_eq!(
             security_posture("antigravity"),
-            Some(if cfg!(windows) {
-                "disabled: Antigravity sandbox unavailable on Windows"
-            } else {
-                "native CLI: uses your Antigravity sandbox and permissions"
-            })
+            Some("native CLI: verifies its sandbox and non-interactive flags before each turn")
         );
         // A non-chat agent (the antigravity judge rung, or anything unknown) has none.
         assert_eq!(security_posture("agy"), None);

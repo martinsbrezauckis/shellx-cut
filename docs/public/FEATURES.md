@@ -7,6 +7,12 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
+## v0.6.109 release notes
+
+- Windows Agent Chat supports Antigravity when Cut verifies its installed CLI capabilities.
+- Contextual right-click menus target the item or time you clicked, use compact groups, and support keyboard access.
+- Bugfixes.
+
 ## Visible Surface Map
 
 The stable names below are the complete `ui.open` contract for human-visible
@@ -213,7 +219,8 @@ route to the same surface registry.
   disposable config/home with native tools disabled and only Cut's filtered MCP
   route, while its existing login file remains in place. Antigravity keeps its
   normal settings, sandbox, and permissions while Cut adds a workspace-local MCP
-  entry; that route currently requires macOS or Linux. Each route can inspect
+  entry and verifies the resolved CLI's sandbox and non-interactive flags before
+  each turn on every supported platform. Each route can inspect
   the open project and apply reversible in-project edits. Review every resulting
   edit, especially when using a local CLI that retains its own native tools and
   integrations.
@@ -523,8 +530,8 @@ route to the same surface registry.
   server has no token and any local process/account able to connect can drive
   the open editor. Remote use requires an independently authenticated and
   authorized SSH/VPN/ShellX broker or equivalent transport; without it, remote
-  access is refused. The contained Claude Agent Chat broker is a separate
-  provider-tool policy. See `DEBUG_API.md` and
+  access is refused. The brokered Agent Chat routes are separate provider-tool
+  policies. See `DEBUG_API.md` and
   `shellx-cut-threat-model.md` before changing deployment.
 - Agent-only plugins are a permission fence over the same verb registry, not a
   second extension API. `plugins.list`, `plugins.enable`, and `plugins.call`

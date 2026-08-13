@@ -137,7 +137,7 @@ export default function SettingsCategoryContent({
       )
     case 'agent-control':
       return (
-        <Section id={active} eyebrow="Local control" title="Agent control" description="CALI or another agent can control Cut through the Debug API or MCP without a second authority layer.">
+        <Section id={active} eyebrow="Local control" title="Agent control" description="Connect a local MCP client or agent through the Debug API without a second authority layer.">
           <AgentControl report={report} />
         </Section>
       )

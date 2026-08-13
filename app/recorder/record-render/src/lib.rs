@@ -31,6 +31,7 @@ pub mod text;
 pub use compose::{compose_frame, Compositor};
 pub use render::{
     render_frame_png, render_video, render_video_audio, render_video_audio_with_control,
+    render_video_audio_with_control_progress,
 };
 pub use source::{draw_desktop, generate_source};
 

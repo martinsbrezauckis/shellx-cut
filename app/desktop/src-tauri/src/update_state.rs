@@ -33,10 +33,11 @@
 //!
 //! SECURITY
 //!   The updater plugin verifies the minisign signature against the configured
-//!   updater public key before installing,
-//!   and the version comparator in lib.rs additionally requires release URLs
-//!   to be bound to the manifest version — both apply unchanged to every check
-//!   this service performs.
+//!   updater public key before installing, the version comparator in lib.rs
+//!   requires release URLs to be bound to the manifest version, and this
+//!   service verifies a second signed version/platform/byte identity after
+//!   download but before either native install path — all apply unchanged to
+//!   every check this service performs.
 //!   `SHELLX_CUT_UPDATE_FEED_URL` (point a test install at a
 //!   staged latest.json) can move the FEED but cannot bypass either check, and
 //!   downgrades are rejected by the `release.version > installed` comparator.
@@ -54,7 +55,10 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use base64::Engine as _;
+use minisign_verify::PublicKey;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 
 /// How often the periodic re-check runs while the app stays open. Chosen so a
@@ -66,10 +70,10 @@ pub(crate) const AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60
 pub(crate) const EVENT_NAME: &str = "cut:update-state";
 
 /// QA/staging override: replace the release feed URL for THIS process only.
-/// Signature verification, the version-bound-URL policy, and the no-downgrade
-/// comparator all still apply — this can point at a staged feed, not around
-/// the trust chain. Release builds additionally require an https URL
-/// (tauri-plugin-updater enforces the scheme).
+/// Package and artifact-identity signature verification, the version-bound URL
+/// policy, and the no-downgrade comparator all still apply — this can point at
+/// a staged feed, not around the trust chain. Release builds additionally
+/// require an https URL (tauri-plugin-updater enforces the scheme).
 pub(crate) const ENV_UPDATE_FEED_URL: &str = "SHELLX_CUT_UPDATE_FEED_URL";
 
 /// JSON schema tag on every snapshot the bridge returns/broadcasts.
@@ -143,7 +147,11 @@ pub(crate) struct Snapshot {
 impl Snapshot {
     pub(crate) fn new(current: String, supported: bool) -> Self {
         Snapshot {
-            status: if supported { Status::Idle } else { Status::Unsupported },
+            status: if supported {
+                Status::Idle
+            } else {
+                Status::Unsupported
+            },
             version: None,
             current,
             checked_at: None,
@@ -237,6 +245,104 @@ pub(crate) struct UpdateService {
 /// True on platforms whose installed app uses the in-app updater feed.
 const PLATFORM_SUPPORTED: bool = cfg!(all(desktop, not(target_os = "linux")));
 
+const ARTIFACT_IDENTITY_SCHEMA: &str = "shellx-cut/updater-artifact-identity@1";
+
+/// An updater package's version cannot be inferred safely from its filename or
+/// URL: release metadata is not part of Tauri's package-byte signature. The
+/// release builder therefore signs this canonical record with the same updater
+/// key. This is intentionally platform-neutral: it binds the identity before
+/// either NSIS or the macOS archive replacement code sees the bytes.
+fn updater_artifact_identity_claim(
+    raw_json: &serde_json::Value,
+    version: &str,
+    platform: &str,
+    bytes: &[u8],
+) -> Result<(String, String), String> {
+    let record = raw_json
+        .get("shellx_cut_artifact_identities")
+        .and_then(|identities| {
+            (identities.get("schema").and_then(serde_json::Value::as_str)
+                == Some(ARTIFACT_IDENTITY_SCHEMA))
+            .then_some(identities)
+        })
+        .and_then(|identities| identities.get("platforms"))
+        .and_then(|platforms| platforms.get(platform))
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            format!("update to {version} has no signed artifact identity for {platform}")
+        })?;
+    let identity_version = record
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("update to {version} has an invalid artifact identity version"))?;
+    if identity_version != version {
+        return Err(format!(
+            "update metadata advertises {version}, but its signed artifact identity is {identity_version}"
+        ));
+    }
+    let identity_sha256 = record
+        .get("sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("update to {version} has no artifact identity SHA-256"))?;
+    let actual_sha256 = format!("{:x}", Sha256::digest(bytes));
+    if identity_sha256 != actual_sha256 {
+        return Err(format!(
+            "update to {version} bytes do not match their signed artifact identity"
+        ));
+    }
+    let signature = record
+        .get("signature")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("update to {version} has no artifact identity signature"))?;
+    Ok((
+        format!(
+            "{ARTIFACT_IDENTITY_SCHEMA}\nversion={version}\nplatform={platform}\nsha256={actual_sha256}\n"
+        ),
+        signature.to_string(),
+    ))
+}
+
+fn updater_public_key() -> Result<PublicKey, String> {
+    // This is the same runtime trust key passed to the updater plugin. Do not
+    // read the bundle configuration here: a deliberate future key-transition
+    // release can keep a build-time key distinct from the key an installed
+    // bridge app accepts.
+    let encoded = crate::updater_key_transition::UPDATER_PUBLIC_KEY;
+    let text = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|error| format!("decode configured updater public key failed: {error}"))?;
+    let text = String::from_utf8(text)
+        .map_err(|error| format!("configured updater public key is not UTF-8: {error}"))?;
+    PublicKey::decode(&text)
+        .map_err(|error| format!("parse configured updater public key failed: {error}"))
+}
+
+/// Requires a second signature which binds the release's advertised version,
+/// selected platform, and raw package bytes. `Update::download` has already
+/// verified the ordinary package signature when this runs; neither signature
+/// alone is sufficient for a release-writer-without-signing-key replay.
+fn verify_update_artifact_identity(
+    update: &tauri_plugin_updater::Update,
+    bytes: &[u8],
+) -> Result<(), String> {
+    // `Update::target` is the updater's OS selector (e.g. `windows`), while
+    // static latest.json keys include the architecture (e.g.
+    // `windows-x86_64`). Use the plugin's public target helper, which is the
+    // same platform key it resolves from the static manifest.
+    let platform = tauri_plugin_updater::target()
+        .ok_or_else(|| "this updater platform has no supported identity key".to_string())?;
+    let (identity, encoded_signature) =
+        updater_artifact_identity_claim(&update.raw_json, &update.version, &platform, bytes)?;
+    let signature = crate::updater_signature::parse_tauri_updater_signature(
+        &encoded_signature,
+        "update artifact identity signature",
+    )?;
+    updater_public_key()?
+        .verify(identity.as_bytes(), &signature, true)
+        .map_err(|error| format!("update artifact identity signature verification failed: {error}"))
+}
+
 impl UpdateService {
     pub(crate) fn new(current_version: String) -> Self {
         UpdateService {
@@ -303,7 +409,10 @@ pub(crate) async fn update_install_now(app: tauri::AppHandle) -> Result<serde_js
     #[cfg(not(all(desktop, not(target_os = "linux"))))]
     {
         let _ = &app;
-        Err("Linux builds update through deb/rpm packages — the in-app installer is not used".into())
+        Err(
+            "Linux builds update through deb/rpm packages — the in-app installer is not used"
+                .into(),
+        )
     }
 }
 
@@ -350,13 +459,17 @@ fn build_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater
             let url: tauri::Url = feed
                 .parse()
                 .map_err(|e| format!("{ENV_UPDATE_FEED_URL} is not a valid URL: {e}"))?;
-            eprintln!("[shellx-cut] updater: using staged release feed {url} ({ENV_UPDATE_FEED_URL})");
+            eprintln!(
+                "[shellx-cut] updater: using staged release feed {url} ({ENV_UPDATE_FEED_URL})"
+            );
             builder = builder
                 .endpoints(vec![url])
                 .map_err(|e| format!("{ENV_UPDATE_FEED_URL} rejected: {e}"))?;
         }
     }
-    builder.build().map_err(|e| format!("updater unavailable: {e}"))
+    builder
+        .build()
+        .map_err(|e| format!("updater unavailable: {e}"))
 }
 
 /// One release-feed check: coalesces concurrent callers, stores the pending
@@ -490,6 +603,26 @@ async fn install_pending(app: &tauri::AppHandle) -> Result<serde_json::Value, St
         }
     };
 
+    // `download` above authenticates the raw package bytes. Bind those exact
+    // bytes to the separately advertised release version before stopping the
+    // Windows sidecar or giving either platform installer a chance to replace
+    // the app. A copied old package + its valid old signature therefore fails
+    // closed even when a release writer lies in unsigned latest.json.
+    if let Err(error) = verify_update_artifact_identity(&update, &bytes) {
+        let message = format!("Update to {version} was rejected: {error}");
+        eprintln!("[shellx-cut] updater: {message}");
+        state.update_and_broadcast(app, |snap| {
+            snap.installing = false;
+            snap.error = Some(message.clone());
+        });
+        let _ = app
+            .dialog()
+            .message(&message)
+            .title("Update rejected")
+            .blocking_show();
+        return Ok(json!({ "ok": false, "error": message }));
+    }
+
     #[cfg(windows)]
     let engine_was_stopped = match crate::update_handoff::stop_owned_engine_for_update(app) {
         Ok(stopped) => stopped,
@@ -548,6 +681,27 @@ async fn install_pending(app: &tauri::AppHandle) -> Result<serde_json::Value, St
 mod tests {
     use super::*;
 
+    fn artifact_identity_release(
+        advertised_version: &str,
+        identity_version: &str,
+        platform: &str,
+        bytes: &[u8],
+    ) -> serde_json::Value {
+        json!({
+            "version": advertised_version,
+            "shellx_cut_artifact_identities": {
+                "schema": ARTIFACT_IDENTITY_SCHEMA,
+                "platforms": {
+                    platform: {
+                        "version": identity_version,
+                        "sha256": format!("{:x}", Sha256::digest(bytes)),
+                        "signature": "fixture-signature",
+                    }
+                }
+            }
+        })
+    }
+
     fn fresh() -> Snapshot {
         Snapshot::new("0.6.105".into(), true)
     }
@@ -577,7 +731,10 @@ mod tests {
     #[test]
     fn a_failed_first_check_is_an_honest_error_state() {
         let mut snap = fresh();
-        snap.apply_outcome(CheckOutcome::Failed("update check failed: dns".into()), 1_000);
+        snap.apply_outcome(
+            CheckOutcome::Failed("update check failed: dns".into()),
+            1_000,
+        );
         assert_eq!(snap.status, Status::Error);
         assert_eq!(snap.version, None);
         assert_eq!(snap.error.as_deref(), Some("update check failed: dns"));
@@ -588,7 +745,10 @@ mod tests {
     fn a_transient_failure_never_hides_an_already_found_update() {
         let mut snap = fresh();
         snap.apply_outcome(CheckOutcome::Available("0.7.0".into()), 1_000);
-        snap.apply_outcome(CheckOutcome::Failed("update check failed: offline".into()), 2_000);
+        snap.apply_outcome(
+            CheckOutcome::Failed("update check failed: offline".into()),
+            2_000,
+        );
         // The release still exists — keep the button, surface the error too.
         assert_eq!(snap.status, Status::Available);
         assert_eq!(snap.version.as_deref(), Some("0.7.0"));
@@ -626,6 +786,57 @@ mod tests {
     #[test]
     fn the_periodic_cadence_is_six_hours() {
         assert_eq!(AUTO_CHECK_INTERVAL, Duration::from_secs(21_600));
+    }
+
+    #[test]
+    fn artifact_identity_rejects_an_old_signed_package_advertised_as_newer() {
+        // RED regression for CUT-UPDATER-VERSION-BYTES-001: a release writer
+        // can reuse old package bytes and their valid package signature under
+        // a higher `latest.json` version. The second, signed identity must
+        // reject the version mismatch before either native installer runs.
+        let bytes = b"officially signed 0.6.105 package bytes";
+        let release = artifact_identity_release("0.6.109", "0.6.105", "windows-x86_64", bytes);
+        assert!(matches!(
+            updater_artifact_identity_claim(&release, "0.6.109", "windows-x86_64", bytes),
+            Err(error) if error.contains("metadata advertises 0.6.109, but its signed artifact identity is 0.6.105")
+        ));
+    }
+
+    #[test]
+    fn artifact_identity_accepts_matching_version_platform_and_bytes() {
+        let bytes = b"officially signed 0.6.109 package bytes";
+        let release = artifact_identity_release("0.6.109", "0.6.109", "darwin-aarch64", bytes);
+        let (identity, signature) =
+            updater_artifact_identity_claim(&release, "0.6.109", "darwin-aarch64", bytes)
+                .expect("matching identity claim");
+        assert_eq!(signature, "fixture-signature");
+        assert_eq!(
+            identity,
+            format!(
+                "{ARTIFACT_IDENTITY_SCHEMA}\nversion=0.6.109\nplatform=darwin-aarch64\nsha256={:x}\n",
+                Sha256::digest(bytes),
+            )
+        );
+    }
+
+    #[test]
+    fn artifact_identity_rejects_substituted_bytes_even_with_matching_version() {
+        let release =
+            artifact_identity_release("0.6.109", "0.6.109", "windows-x86_64", b"signed bytes");
+        assert!(matches!(
+            updater_artifact_identity_claim(
+                &release,
+                "0.6.109",
+                "windows-x86_64",
+                b"substituted bytes",
+            ),
+            Err(error) if error.contains("bytes do not match their signed artifact identity")
+        ));
+    }
+
+    #[test]
+    fn artifact_identity_uses_the_runtime_updater_public_key() {
+        updater_public_key().expect("runtime updater public key must parse as Minisign");
     }
 
     #[test]

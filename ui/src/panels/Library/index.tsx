@@ -8,7 +8,7 @@ import { Icon } from '../../icons'
 import { LibraryBulkBar } from './LibraryBulkBar'
 import { LibraryCard } from './LibraryCard'
 import { LibraryCollections } from './LibraryCollections'
-import { LibraryContextMenus, type LibraryCardMenuState, type LibraryFolderMenuState } from './LibraryContextMenus'
+import LibraryContextMenuLayer, { type LibraryCardMenuState, type LibraryContextMenuController, type LibraryFolderMenuState } from './LibraryContextMenuLayer'
 import { LibraryDetails } from './LibraryDetails'
 import { LibraryFilters } from './LibraryFilters'
 import { LibraryFolders } from './LibraryFolders'
@@ -441,6 +441,13 @@ export default function LibraryPanel({
     .filter((id): id is string => !!id)), [project])
   const cardMenuItem = cardMenu ? (visibleItems.find((it) => it.id === cardMenu.id) ?? null) : null
   const detailItem = libraryDetailItem(visibleItems, selectedItems, keyboardNavigation.activeId)
+  const contextMenuController: LibraryContextMenuController = {
+    hasProject, busy, folders, onStartRename: startRename,
+    onCloseFolderMenu: () => setFolderMenu(null), onCloseCardMenu: () => setCardMenu(null),
+    onRemoveFolder: removeFolder, onAddToProject: addToProject, onInsertAtPlayhead: insertAtPlayhead,
+    onMoveTo: moveTo, onToggleFavorite: toggleFavorite, onEditTags: openTagEditor,
+    onRelink: relinkMissing, onMakePortable: makePortable, onRemove: remove,
+  }
   const emptyMessage = collection === 'favorites'
     ? 'No favorites match this view yet.'
     : collection === 'missing'
@@ -701,23 +708,11 @@ export default function LibraryPanel({
         />
       )}
 
-      <LibraryContextMenus
+      <LibraryContextMenuLayer
         folderMenu={folderMenu}
         cardMenu={cardMenu}
         cardMenuItem={cardMenuItem}
-        hasProject={hasProject}
-        onCloseFolderMenu={() => setFolderMenu(null)}
-        onCloseCardMenu={() => setCardMenu(null)}
-        onStartRename={startRename}
-        onRemoveFolder={(name) => { void removeFolder(name) }}
-        onAddToProject={(item) => { void addToProject(item) }}
-        onToggleFavorite={(item) => { void toggleFavorite(item) }}
-        onEditTags={(item) => {
-          setTagging(item.id)
-          setTagDraft(item.tags.join(', '))
-        }}
-        onMakePortable={(item) => { void makePortable(item) }}
-        onRemove={(item) => { void remove(item) }}
+        controller={contextMenuController}
       />
 
     </section>

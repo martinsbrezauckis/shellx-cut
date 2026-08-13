@@ -1026,6 +1026,13 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
             onExit={closeExactReview}
           />
         )}
+        <PreviewContextMenu
+          monitorRef={monitorRef}
+          video={video}
+          hasProject={!!project}
+          playheadMs={playheadMs}
+          onSeek={onSeek}
+        />
       </div>
 
       <PreviewTransport
@@ -1056,13 +1063,6 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
         onCycleGuides={cycleGuides}
         isFullscreen={isFullscreen}
         onFullscreenToggle={toggleFullscreen}
-      />
-      <PreviewContextMenu
-        monitorRef={monitorRef}
-        video={video}
-        hasProject={!!project}
-        playheadMs={playheadMs}
-        onSeek={onSeek}
       />
     </section>
   )

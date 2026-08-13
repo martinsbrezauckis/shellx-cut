@@ -363,6 +363,25 @@
   min-width: 0;
   flex: none;
 }
+.tl-track-menu-trigger {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.tl-track-menu-trigger:hover,
+.tl-track-menu-trigger:focus-visible {
+  border-color: var(--hairline-2);
+  color: var(--ink);
+  outline: none;
+}
 /* Audio has six persistent controls. Stack identity/lock above the transport
    controls so every action remains inside the fixed sticky rail. */
 .tl-track-head[data-cut-track-kind='audio'] {

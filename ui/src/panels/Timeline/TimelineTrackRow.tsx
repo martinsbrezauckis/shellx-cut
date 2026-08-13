@@ -1,5 +1,6 @@
-import type { MouseEvent } from 'react'
+import type { KeyboardEvent, MouseEvent } from 'react'
 import type { Track, WindowThumbs } from '../../lib/client'
+import { Icon } from '../../icons'
 import { useOfflineMedia } from '../../app/OfflineMediaContext'
 import { msToPx, TRACK_HEIGHT, type LaidItem, type Seam } from './layout'
 import ClipView from './ClipView'
@@ -48,6 +49,7 @@ interface TimelineTrackRowProps {
   onLaneDown: (e: MouseEvent<HTMLDivElement>) => void
   onClipDown: (e: MouseEvent, item: LaidItem, mode: ClipGestureMode) => void
   onSeamDown: (e: MouseEvent<HTMLDivElement>, seam: Seam) => void
+  onOpenTrackMenu: (trackId: string, x: number, y: number) => void
 }
 
 export default function TimelineTrackRow({
@@ -72,11 +74,23 @@ export default function TimelineTrackRow({
   onLaneDown,
   onClipDown,
   onSeamDown,
+  onOpenTrackMenu,
 }: TimelineTrackRowProps) {
   const { offlineAssetIds, relinkAsset, relinkingAssetId } = useOfflineMedia()
   const dropCls = isDrop ? (dropInvalid ? ' tl-track--drop-bad' : ' tl-track--drop-ok') : ''
   const visible = track.visible !== false
   const locked = !!track.locked
+  const openKeyboardMenu = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    event.currentTarget.dispatchEvent(new globalThis.MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + Math.min(24, rect.width / 2),
+      clientY: rect.top + Math.min(18, rect.height / 2),
+    }))
+  }
   return (
     <div
       className={`tl-track tl-track--${track.kind}${groupStart ? ' tl-track--group-start' : ''}${visible ? '' : ' tl-track--hidden'}${locked ? ' tl-track--locked' : ''}${dropCls}`}
@@ -87,7 +101,18 @@ export default function TimelineTrackRow({
       data-cut-locked={locked || undefined}
       data-cut-drop={isDrop ? (dropInvalid ? 'bad' : 'ok') : undefined}
     >
-      <div className="tl-track-head" data-cut-track-kind={track.kind} onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        className="tl-track-head"
+        data-cut-track-kind={track.kind}
+        data-cut-track-header={track.id}
+        data-cut-action="track-ctx"
+        tabIndex={0}
+        role="group"
+        aria-label={`${track.id} track menu`}
+        aria-keyshortcuts="Shift+F10 ContextMenu"
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={openKeyboardMenu}
+      >
         <span className="tl-track-meta">
           <span className="tl-kind-icon"><KindIcon kind={track.kind} /></span>
           <span className="tl-track-name" title={track.id}>{track.id}</span>
@@ -115,6 +140,21 @@ export default function TimelineTrackRow({
             </>
           )}
           {track.kind !== 'audio' && <TrackLockButton trackId={track.id} locked={locked} />}
+          <button
+            type="button"
+            className="tl-track-menu-trigger"
+            data-cut-track-menu-button={track.id}
+            title={`More actions for track ${track.id}`}
+            aria-label={`More actions for track ${track.id}`}
+            aria-haspopup="menu"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect()
+              onOpenTrackMenu(track.id, rect.right, rect.bottom + 2)
+            }}
+          >
+            <Icon name="moreV" size={14} />
+          </button>
         </span>
       </div>
       <div className="tl-lane" style={{ width: contentW }} onMouseDown={onLaneDown} data-cut-locked={locked || undefined}>

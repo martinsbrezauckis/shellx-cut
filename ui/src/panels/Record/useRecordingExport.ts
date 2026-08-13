@@ -52,6 +52,7 @@ export function useRecordingExport({ capture, format, outputPath, setNote }: Pro
       const status = response.result as {
         state?: string
         progress?: number
+        message?: string
         result?: { path?: string; elapsed_ms?: number }
         outcome?: string
         error?: { code?: string; message?: string; cause?: string }
@@ -75,7 +76,14 @@ export function useRecordingExport({ capture, format, outputPath, setNote }: Pro
         return
       }
       const verb = status.state === 'queued' ? 'Queued' : 'Rendering'
-      setNote(`${verb} ${job.format.toUpperCase()}… · ${elapsed(job.startedAt)}`)
+      // `message` is the server's bounded export phase. During the real
+      // compositor pass it includes confirmed frame progress; because every
+      // progress update is persisted, jobs.status.updated_ts remains the
+      // durable last-progress timestamp for diagnostics as well.
+      const phase = typeof status.message === 'string' && status.message.trim()
+        ? status.message.trim()
+        : `${verb} ${job.format.toUpperCase()}…`
+      setNote(`${phase} · ${elapsed(job.startedAt)}`)
     }
     void poll()
     const timer = window.setInterval(() => { void poll() }, 500)

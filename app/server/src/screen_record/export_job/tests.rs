@@ -173,3 +173,105 @@ async fn export_output_lease_releases_after_cancel_and_timeout() {
     );
     reclaim(&project, &path).await;
 }
+
+/// The export job's wall-clock deadline must not merely abandon a blocking
+/// ffmpeg wait. This uses a real sleeping child so the test covers the route
+/// that signals the process tree, waits for its leader, then releases the
+/// fenced output only after the worker returns.
+#[cfg(unix)]
+#[tokio::test]
+async fn export_timeout_terminates_and_reaps_a_hanging_ffmpeg_child() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("lease.cutproj");
+    std::fs::create_dir_all(&project).unwrap();
+    let state = AppState::new();
+    let (out, path) = test_output(&project, "hanging-child.mp4");
+
+    let started = std::time::Instant::now();
+    let timeout = spawn_lease_job(&state, out, Duration::from_millis(80), |cancel, _out| {
+        let control =
+            record_render::ffmpeg::ProcessControl::bounded(Duration::from_secs(5), move || {
+                cancel.is_cancelled()
+            });
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        record_render::ffmpeg::command_output_with_control(
+            &mut command,
+            &control,
+            "screen-record export hanging-child fixture",
+        )
+        .map(|_| ())
+        .map_err(crate::screen_record::record_err)
+    });
+
+    let record = wait_terminal(&state, &timeout).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "deadline cancellation should reap the child promptly"
+    );
+    assert_eq!(
+        record.error.as_ref().map(|error| error.code.as_str()),
+        Some(error_codes::FFMPEG)
+    );
+    reclaim(&project, &path).await;
+}
+
+/// The installed matrix hits this path after its five-minute evidence deadline:
+/// `jobs.cancel` may report completion only after the export's owned ffmpeg
+/// child is gone. Keep the real-child proof separate from the wall-clock timeout
+/// fixture above so an async-task abort cannot regress into a detached worker.
+#[cfg(unix)]
+#[tokio::test]
+async fn export_user_cancel_terminates_and_reaps_a_hanging_ffmpeg_child() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("lease.cutproj");
+    std::fs::create_dir_all(&project).unwrap();
+    let state = AppState::new();
+    let (out, path) = test_output(&project, "cancel-hanging-child.mp4");
+
+    let job_id = spawn_lease_job(&state, out, Duration::from_secs(30), |cancel, _out| {
+        let control =
+            record_render::ffmpeg::ProcessControl::bounded(Duration::from_secs(30), move || {
+                cancel.is_cancelled()
+            });
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        record_render::ffmpeg::command_output_with_control(
+            &mut command,
+            &control,
+            "screen-record export user-cancel hanging-child fixture",
+        )
+        .map(|_| ())
+        .map_err(crate::screen_record::record_err)
+    });
+
+    for _ in 0..100 {
+        if matches!(
+            state.jobs.get(&job_id).map(|record| record.state),
+            Some(crate::jobs::JobState::Running)
+        ) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        matches!(
+            state.jobs.get(&job_id).map(|record| record.state),
+            Some(crate::jobs::JobState::Running)
+        ),
+        "fixture export did not start its hanging child"
+    );
+    let started = std::time::Instant::now();
+    assert!(state.jobs.abort(&job_id).await.unwrap());
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "jobs.cancel should wait only until its child is reaped"
+    );
+    let record = state.jobs.get(&job_id).expect("cancelled export job");
+    assert_eq!(record.state, crate::jobs::JobState::Failed);
+    assert_eq!(
+        record.error.as_ref().map(|error| error.code.as_str()),
+        Some("job_cancelled")
+    );
+    reclaim(&project, &path).await;
+}

@@ -2,7 +2,7 @@
 
 ## Executive summary
 
-This is the v0.6.108 deployment contract for the local Debug API, WebSocket
+This is the v0.6.109 deployment contract for the local Debug API, WebSocket
 endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
 one trusted interactive environment**. Its unauthenticated loopback listener is
 a whole-machine trust boundary, not same-user or per-process isolation. Under
@@ -10,7 +10,7 @@ that explicit deployment assumption, no per-caller capability token is present
 and that is **NOT A DEFECT**.
 
 This report is grounded in `app/server/src/http.rs` (default loopback bind,
-non-loopback refusal, optional Origin/Host guard, and no-Origin HTTP test),
+non-loopback refusal, Origin/Host/Fetch-Metadata browser guard, and no-Origin HTTP test),
 `app/server/src/mcp.rs`/`httpc.rs` (the stdio proxy reaches the running engine),
 and `app/server/src/chat.rs` (separate contained-Claude capability broker).
 
@@ -20,10 +20,10 @@ and `app/server/src/chat.rs` (separate contained-Claude capability broker).
 | --- | --- |
 | Supported deployment | One personal workstation / one trusted interactive environment. |
 | Local authorization | None: any local process or OS account able to connect to the loopback port can use the open editor. |
-| Browser mitigation | Reject a non-loopback `Origin` or `Host`; this mitigates browser cross-origin and DNS-rebinding requests only. |
+| Browser mitigation | Reject a non-loopback `Origin` or `Host`, plus a no-Origin `Sec-Fetch-Site: cross-site` browser request; this mitigates browser cross-origin and DNS-rebinding requests only. |
 | Native callers | Can omit `Origin` and forge `Origin`/`Host`; headers are not authentication. |
 | Remote listening | Native LAN/public binding is unsupported and refused by default. `SHELLX_CUT_ALLOW_NON_LOCAL=1` changes only the bind check and provides no Cut authentication. |
-| Future hardening | A native remote mode must introduce and verify per-caller/per-user capability authentication. It is not implemented in v0.6.108. |
+| Future hardening | A native remote mode must introduce and verify per-caller/per-user capability authentication. It is not implemented in v0.6.109. |
 
 Remote use is supported only through an SSH/VPN/external ShellX broker or
 equivalent transport that independently authenticates and authorizes the
@@ -38,7 +38,7 @@ authentication.
 trusted local user/processes ─┐
 local MCP client ─ cutd mcp ──┼──> cutd loopback REST/WS ──> open project, media, jobs
 desktop UI ───────────────────┘
-browser from another origin ─────> Origin/Host guard (rejected)
+browser from another origin ─────> Origin/Host/Fetch-Metadata guard (rejected)
 ```
 
 | Asset | Why it matters |
@@ -52,7 +52,7 @@ browser from another origin ─────> Origin/Host guard (rejected)
 
 | Boundary / entry point | Attacker capability considered | Enforced mitigation | Residual risk |
 | --- | --- | --- | --- |
-| Off-machine browser reaching loopback through DNS rebinding | Browser supplies a hostile Origin/Host. | `guard_local_origin` rejects non-loopback headers. | A native local client is not a browser and is not authenticated by this guard. |
+| Off-machine browser reaching loopback through DNS rebinding or no-CORS subresource load | Browser supplies a hostile Origin/Host or no-Origin `Sec-Fetch-Site: cross-site`. | `guard_local_origin` rejects those browser signals before routing. | A native local client is not a browser and is not authenticated by this guard. |
 | Default `127.0.0.1`/`::1` listener | Local process/account connects directly with no Origin or forged headers. | Accepted by design only inside the whole-machine trusted deployment. | On a shared or compromised machine it can operate the editor. |
 | `cutd mcp` stdio proxy | A configured local MCP client invokes generated tools. | Proxy reaches the same running engine; it adds no caller authentication. | It inherits the machine-wide API trust boundary. |
 | Claude `agent.chat` | Hostile prompt/attachment attempts native or unrelated Cut actions. | Pinned CLI, native-tool denial, and Cut capability filtering limit that provider route. | Not an OS sandbox and does not protect the unauthenticated REST/MCP surface. |
@@ -61,8 +61,9 @@ browser from another origin ─────> Origin/Host guard (rejected)
 
 ## Abuse paths and mitigations
 
-1. A malicious web page attempts a loopback request through a DNS-rebound host.
-   The browser's non-loopback Origin/Host is rejected. This does not prove a
+1. A malicious web page attempts a loopback request through a DNS-rebound host
+   or a no-CORS image load. The browser's non-loopback Origin/Host or explicit
+   cross-site Fetch Metadata is rejected. This does not prove a
    local native process is authorized.
 2. An untrusted local app, service, second account, or host-network container
    connects to the default port and edits/reads the open project. This is outside
@@ -73,10 +74,11 @@ browser from another origin ─────> Origin/Host guard (rejected)
    the full surface. An independently authenticated SSH/VPN/broker/proxy may be
    a separate deployment, but Cut makes no assurance about it.
 4. Hostile project content tries to steer `agent.chat` through native tools or
-   broader Cut MCP verbs. The contained Claude route restricts both layers.
-   Codex intentionally keeps its normal user-configured native capabilities.
-   Both routes filter Cut's MCP verbs and record review/revert material, but
-   neither can turn local TCP into authenticated per-user access.
+   broader Cut MCP verbs. Every brokered route forwards an attributed restricted
+   MCP marker, so the server filters Cut verbs at both discovery and invocation.
+   Claude and Grok also restrict native tools; Codex and Antigravity intentionally
+   keep their normal user-configured native capabilities. None of these routes
+   turns local TCP into authenticated per-user access.
 
 ## Residual risk and operator guidance
 
@@ -89,13 +91,14 @@ and use its checkpoint/revert controls as recovery tools.
 For a future supported remote or multi-principal deployment, Cut must add a
 native, verified per-caller/per-user capability authentication mechanism and
 test it at the server boundary. That hardening is intentionally not silently
-claimed or partially implemented in v0.6.108.
+claimed or partially implemented in v0.6.109.
 
 ## Verification hooks
 
 Platform-specific verification exercises pin these statements to `http.rs`,
 while focused HTTP tests prove non-loopback bind refusal,
-no-Origin local success, loopback-Origin success, and cross-origin rejection.
+no-Origin local success, loopback-Origin success, and both cross-origin and
+no-Origin cross-site Fetch-Metadata rejection before route work.
 No verb, schema entry, or MCP tool changes in this slice: schema-generated MCP
 tools remain the existing control surface, and the MCP proxy inherits the same
 machine-wide trust contract.

@@ -1,4 +1,4 @@
-import { memo, type MouseEvent } from 'react'
+import { memo, type KeyboardEvent, type MouseEvent } from 'react'
 import { Icon } from '../../icons'
 import { TRACK_HEIGHT, msToPx, shortDur, type LaidItem } from './layout'
 import WaveformCanvas from './WaveformCanvas'
@@ -51,6 +51,17 @@ const ClipView = memo(function ClipView({ item, zoom, selected, dragging, locked
     ? `PiP ${Math.round(item.transform.scale * 100)}% @ (${item.transform.x.toFixed(2)}, ${item.transform.y.toFixed(2)})`
     : undefined
   const clipTitle = `${label} · ${shortDur(item.durMs)}${pipTitle ? ` · ${pipTitle}` : ''}`
+  const openKeyboardMenu = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    event.currentTarget.dispatchEvent(new globalThis.MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + Math.min(24, rect.width / 2),
+      clientY: rect.top + Math.min(18, rect.height / 2),
+    }))
+  }
   return (
     <div
       className={[
@@ -69,7 +80,12 @@ const ClipView = memo(function ClipView({ item, zoom, selected, dragging, locked
       data-cut-clip={item.id}
       data-cut-locked={locked || undefined}
       data-cut-offline-asset={offline ? item.asset : undefined}
+      tabIndex={0}
+      role="group"
+      aria-label={`${label} clip context menu`}
+      aria-keyshortcuts="Shift+F10 ContextMenu"
       onMouseDown={(e) => onClipDown(e, item, 'move')}
+      onKeyDown={openKeyboardMenu}
     >
       {/* Thumbnail filmstrip ("frames in the time bar"): the asset's strip,
           sliced to THIS clip's [src_in, src_out] and stretched to the clip width.

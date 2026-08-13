@@ -908,6 +908,21 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
                     {busy === id ? '…' : 'Add at playhead'}
                   </button>
                   <button
+                    type="button"
+                    className="assets__menu"
+                    data-cut-asset-menu-button={id}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect()
+                      setAssetMenu({ x: rect.right, y: rect.bottom + 2, assetId: id })
+                    }}
+                    title={`More actions for ${mediaBasename(path)}`}
+                    aria-label={`More actions for ${mediaBasename(path)}`}
+                    aria-haspopup="menu"
+                  >
+                    <Icon name="moreH" size={14} />
+                  </button>
+                  <button
                     className="assets__remove"
                     data-cut-action="remove-asset"
                     data-cut-asset-remove={id}

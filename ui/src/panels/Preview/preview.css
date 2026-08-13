@@ -15,6 +15,29 @@
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
   background: var(--orange); opacity: .35; z-index: 2;
 }
+.pv-context-trigger {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 4;
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  color: var(--ink-2);
+  box-shadow: var(--shadow-dropdown);
+  cursor: pointer;
+}
+.pv-context-trigger:hover,
+.pv-context-trigger:focus-visible {
+  border-color: var(--cut);
+  color: var(--ink);
+  outline: none;
+}
 .pv-setup {
   position: absolute;
   top: 12px;
@@ -133,6 +156,15 @@
 }
 .pv-stage .pv-base {
   width: 100%; height: 100%; object-fit: contain; display: block;
+}
+/* The base frame is display-only. Let the monitor receive secondary gestures
+   over its center instead of allowing a native video/image surface to consume
+   the event before the monitor's context-menu owner can see it. Scope this to
+   direct stage media: transform/mask/relink layers and exact-review controls
+   deliberately remain interactive. */
+.pv-stage > .pv-base,
+.pv-stage > img[data-cut-poster] {
+  pointer-events: none;
 }
 /* Isolate the playing video's per-frame repaints onto their own
    compositor layer so they stop re-rasterizing the transport SVG icons below (Chromium).
