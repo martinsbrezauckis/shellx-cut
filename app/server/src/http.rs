@@ -1786,7 +1786,6 @@ async fn get_agent_info(State(state): State<AppState>) -> Response {
         "docs_available": docs_available,
         "read_first": [
             {"id": "start-here", "path": "START_HERE_FOR_AGENT.txt", "url": "/api/agent-doc/START_HERE_FOR_AGENT.txt"},
-            {"id": "agent-rules", "path": "AGENTS.md", "url": "/api/agent-doc/AGENTS.md"},
             {"id": "readme", "path": "README.md", "url": "/api/agent-doc/README.md"},
             {"id": "skill", "path": "skill/shellx-cut/SKILL.md", "url": "/api/agent-doc/skill/shellx-cut/SKILL.md"},
             {"id": "reference", "path": "skill/shellx-cut/reference.md", "url": "/api/agent-doc/skill/shellx-cut/reference.md"},
@@ -1874,7 +1873,6 @@ fn agent_docs_root() -> Option<std::path::PathBuf> {
 fn clean_agent_doc_path(path: &str) -> Option<std::path::PathBuf> {
     let allowed = path.starts_with("skill/shellx-cut/")
         || path == "START_HERE_FOR_AGENT.txt"
-        || path == "AGENTS.md"
         || path == "README.md"
         || path == "schema/verbs.json"
         || path == "docs/public/FEATURES.md"

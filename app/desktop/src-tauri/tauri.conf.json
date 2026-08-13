@@ -61,7 +61,6 @@
       "../../perception/py/face_runner.py": "perception/face_runner.py",
       "../../perception/py/face_detection_yunet_2023mar.onnx": "perception/face_detection_yunet_2023mar.onnx",
       "../../../START_HERE_FOR_AGENT.txt": "agent-docs/START_HERE_FOR_AGENT.txt",
-      "../../../AGENTS.md": "agent-docs/AGENTS.md",
       "../../../README.md": "agent-docs/README.md",
       "../../../docs/public/FEATURES.md": "agent-docs/docs/public/FEATURES.md",
       "../../../docs/public/DEBUG_API.md": "agent-docs/docs/public/DEBUG_API.md",
