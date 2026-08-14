@@ -14,6 +14,15 @@ export type TimelineContextTarget =
   | TimelineSurfaceMenuState
   | { kind: 'none' }
 
+export type ClipPointerDownIntent =
+  | { kind: 'ignore' }
+  | { kind: 'primary'; selection: string[] | null }
+
+interface TimelinePointerEnvironment {
+  platform?: string
+  userAgent?: string
+}
+
 const hidden = (reason: string): ContextMenuActionState => ({ visibility: 'hidden', enabled: false, reason })
 const disabled = (reason: string): ContextMenuActionState => ({ visibility: 'visible', enabled: false, reason })
 const enabled = (reason: string): ContextMenuActionState => ({ visibility: 'visible', enabled: true, reason })
@@ -22,6 +31,41 @@ const enabled = (reason: string): ContextMenuActionState => ({ visibility: 'visi
  * coordinates before they reach DOM hit-testing or timeline conversion. */
 export function isFiniteTimelineContextPoint(x: number, y: number): boolean {
   return Number.isFinite(x) && Number.isFinite(y)
+}
+
+/** Resolve selection before a clip gesture starts. macOS reports its native
+ * Control-click context gesture as button 0 + Control, so it must take the
+ * same no-mutation path as a secondary button and leave final target ownership
+ * to the later contextmenu event. Command-click remains additive selection. */
+export function resolveClipPointerDownIntent(args: {
+  button: number
+  ctrlKey: boolean
+  metaKey: boolean
+  itemId: string
+  selectedClipIds: string[]
+  environment: TimelinePointerEnvironment
+}): ClipPointerDownIntent {
+  const isMac = /^Mac/i.test(args.environment.platform ?? '')
+    || /\b(?:Macintosh|Mac OS X)\b/i.test(args.environment.userAgent ?? '')
+  if (args.button !== 0 || (args.ctrlKey && isMac)) return { kind: 'ignore' }
+  if (args.ctrlKey || args.metaKey) {
+    return {
+      kind: 'primary',
+      selection: args.selectedClipIds.includes(args.itemId)
+        ? args.selectedClipIds.filter((id) => id !== args.itemId)
+        : [...args.selectedClipIds, args.itemId],
+    }
+  }
+  return {
+    kind: 'primary',
+    selection: args.selectedClipIds.includes(args.itemId) ? null : [args.itemId],
+  }
+}
+
+/** A context menu preserves a multi-selection only when its exact target is
+ * already a member; otherwise it owns one exact clip target. */
+export function resolveTimelineContextSelection(selectedClipIds: string[], itemId: string): string[] | null {
+  return selectedClipIds.length > 1 && selectedClipIds.includes(itemId) ? null : [itemId]
 }
 
 /** Resolve the DOM ids into one authoritative target. A track header owns its

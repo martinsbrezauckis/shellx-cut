@@ -102,12 +102,12 @@ function nonMedia(
 }
 
 const noop = () => {}
-function renderMenu(allItems: LaidItem[], itemId: string, atMs = 100): string {
+function renderMenu(allItems: LaidItem[], itemId: string, atMs = 100, selectedClipIds: string[] = []): string {
   return renderToStaticMarkup(createElement(ClipContextMenu, {
     menu: { x: 0, y: 0, itemId, atMs },
     project,
     allItems,
-    selectedClipIds: [],
+    selectedClipIds,
     assetPick: null,
     setAssetPick: noop,
     clipboardHasContent: false,
@@ -146,6 +146,18 @@ function btn(html: string, key: string): string | null {
 const present = (html: string, key: string) => btn(html, key) !== null
 /** renderToStaticMarkup emits the boolean attribute as `disabled=""`. */
 const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
+
+// A preserved two-clip context target must reach the visible result that found
+// the macOS regression: Nest selection remains enabled for adjacent clips.
+{
+  const adjacent = [
+    clip('nest-a', 'video', 'v1', 'muxed', 0, 1000),
+    clip('nest-b', 'video', 'v1', 'muxed', 1000, 1000),
+  ]
+  const nest = btn(renderMenu(adjacent, 'nest-b', 1100, adjacent.map(({ id }) => id)), 'nest')
+  assert.ok(nest, 'a selected adjacent pair exposes Nest selection')
+  assert.equal(isDisabled(nest), false, 'a selected adjacent pair keeps Nest selection enabled')
+}
 
 // ---- 0. Layout owns the semantic clip class --------------------------------
 {

@@ -104,6 +104,7 @@ import { useTimelineClipActions } from './useTimelineClipActions'
 import { useWindowedThumbnails } from './useWindowedThumbnails'
 import { useTimelineRangeSaves } from './useTimelineRangeSaves'
 import { useTimelineAssetDrop } from './useTimelineAssetDrop'
+import { resolveClipPointerDownIntent } from './TimelineSurfaceMenuModel'
 import { sourceTrimAtTimelinePosition } from './rippleTrim'
 import { mediaBasename } from '../../lib/mediaPath'
 import './timeline.css'
@@ -966,21 +967,21 @@ export default function Timeline(props: TimelineProps) {
   const onClipDown = useCallback((e: React.MouseEvent, item: LaidItem, mode: GestureMode) => {
     e.stopPropagation() // keep the lane background from starting a seek
     if (item.kind === 'gap') return
-    // Razor interaction guard: only the LEFT button drives razor-split / drag /
-    // trim. Right-click is now a real gesture (the context menu) — without this
-    // guard, right-clicking a clip in razor mode SPLIT it (destructive) before the
-    // context menu opened. The context menu's own handler selects the clicked clip.
-    if (e.button !== 0) return
     const c = cfg.current
+    // Only an ordinary primary gesture drives selection, razor-split, drag, or
+    // trim. On macOS, Control-primary is the native context gesture even though
+    // WebKit reports button 0; the later contextmenu handler owns its target.
+    const pointerIntent = resolveClipPointerDownIntent({
+      button: e.button,
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      itemId: item.id,
+      selectedClipIds: c.selectedClipIds,
+      environment: navigator,
+    })
+    if (pointerIntent.kind === 'ignore') return
     const updateSelection = () => {
-      if (e.ctrlKey || e.metaKey) {
-        const next = c.selectedClipIds.includes(item.id)
-          ? c.selectedClipIds.filter((id) => id !== item.id)
-          : [...c.selectedClipIds, item.id]
-        c.onSelect(next)
-      } else if (!c.selectedClipIds.includes(item.id)) {
-        c.onSelect([item.id]) // implicit select before drag
-      }
+      if (pointerIntent.selection) c.onSelect(pointerIntent.selection)
     }
     if (isTrackLocked(item.trackId)) {
       e.preventDefault()

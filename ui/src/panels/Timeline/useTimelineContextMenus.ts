@@ -4,6 +4,7 @@ import type { LaidItem } from './layout'
 import type { AssetPickMode, ClipMenuState } from './ClipContextMenu'
 import {
   isFiniteTimelineContextPoint,
+  resolveTimelineContextSelection,
   resolveTimelineContextTarget,
   type TimelineSurfaceMenuState,
 } from './TimelineSurfaceMenuModel'
@@ -63,9 +64,8 @@ export function useTimelineContextMenus({
       setSurfaceMenu(result)
       return
     }
-    // NLE convention: preserve a multiselection only when the exact clicked
-    // item belongs to it; otherwise the menu owns a single exact clip target.
-    if (!(selectedClipIds.length > 1 && selectedClipIds.includes(result.itemId))) onSelect([result.itemId])
+    const nextSelection = resolveTimelineContextSelection(selectedClipIds, result.itemId)
+    if (nextSelection) onSelect(nextSelection)
     setClipMenu({ x: event.clientX, y: event.clientY, itemId: result.itemId, atMs: clientXToMs(event.clientX) })
   }, [allItems, clientXToMs, onSelect, selectedClipIds, tracks])
 

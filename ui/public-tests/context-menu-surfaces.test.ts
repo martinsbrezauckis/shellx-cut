@@ -10,6 +10,8 @@ import {
   gapFillState,
   isFiniteTimelineContextPoint,
   removeTrackState,
+  resolveClipPointerDownIntent,
+  resolveTimelineContextSelection,
   resolveTimelineContextTarget,
 } from '../src/panels/Timeline/TimelineSurfaceMenuModel'
 import { parseSpeedFactor, speedFactorReason } from '../src/panels/Timeline/speedFactor'
@@ -45,6 +47,33 @@ const media = item('video-1', 'video', 'v1', 0, 1000)
 const gap = item('gap-v1-1000', 'gap', 'v1', 1000, 1000)
 const lockedMedia = item('locked-video', 'video', 'locked-v', 0, 1000)
 const items = [media, gap, lockedMedia]
+
+// macOS Control-primary is a context gesture, not additive selection. The
+// mousedown phase must leave both clips selected so the later contextmenu phase
+// keeps Nest selection enabled. Other platforms retain Ctrl-click toggling,
+// and macOS Command-click remains the additive selection gesture.
+{
+  const selected = ['video-1', 'video-2']
+  const mac = { platform: 'MacIntel', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7)' }
+  const windows = { platform: 'Win32', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+
+  assert.deepEqual(resolveClipPointerDownIntent({
+    button: 0, ctrlKey: true, metaKey: false, itemId: 'video-2', selectedClipIds: selected, environment: mac,
+  }), { kind: 'ignore' }, 'macOS Control-primary defers selection ownership to contextmenu')
+  assert.equal(resolveTimelineContextSelection(selected, 'video-2'), null,
+    'contextmenu preserves a multi-selection when the clicked clip belongs to it')
+  assert.deepEqual(resolveTimelineContextSelection(selected, 'video-3'), ['video-3'],
+    'contextmenu selects one exact target when the clicked clip is outside the multi-selection')
+  assert.deepEqual(resolveClipPointerDownIntent({
+    button: 0, ctrlKey: true, metaKey: false, itemId: 'video-2', selectedClipIds: selected, environment: windows,
+  }), { kind: 'primary', selection: ['video-1'] }, 'Windows/Linux Ctrl-click retains additive selection toggling')
+  assert.deepEqual(resolveClipPointerDownIntent({
+    button: 0, ctrlKey: false, metaKey: true, itemId: 'video-2', selectedClipIds: selected, environment: mac,
+  }), { kind: 'primary', selection: ['video-1'] }, 'macOS Command-click remains additive selection')
+  assert.deepEqual(resolveClipPointerDownIntent({
+    button: 2, ctrlKey: false, metaKey: false, itemId: 'video-2', selectedClipIds: selected, environment: windows,
+  }), { kind: 'ignore' }, 'a secondary button never mutates selection before contextmenu')
+}
 
 // Malformed automation/browser coordinates fail closed before DOM hit-testing;
 // they must never reach elementsFromPoint or timeline arithmetic.
