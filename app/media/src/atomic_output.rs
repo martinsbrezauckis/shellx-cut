@@ -12,6 +12,18 @@ use std::sync::atomic::AtomicU64;
 #[cfg(all(test, unix))]
 static OUTPUT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+pub(crate) fn private_test_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create private media test directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))
+            .expect("protect media test directory from the caller's umask");
+    }
+    dir
+}
+
 /// Reserve a random, exclusively-created regular sibling before handing its
 /// path to ffmpeg. `NamedTempFile` creates the leaf with the platform's
 /// create-new operation, so an existing symlink/reparse point cannot be opened

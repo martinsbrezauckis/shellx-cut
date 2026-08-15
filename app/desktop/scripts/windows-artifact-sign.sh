@@ -48,7 +48,7 @@ if [ "${SHELLX_WINDOWS_SIGNING_REQUIRED:-0}" = "1" ]; then
     echo "windows-artifact-sign: official signing requires an executable SHELLX_WINDOWS_SIGNING_HELPER" >&2
     exit 1
   fi
-  if [ "$(realpath -m "$helper")" = "$(realpath -m "$0")" ]; then
+  if [ "$(realpath "$helper")" = "$(realpath "$0")" ]; then
     echo "windows-artifact-sign: refusing a recursive signing helper" >&2
     exit 1
   fi

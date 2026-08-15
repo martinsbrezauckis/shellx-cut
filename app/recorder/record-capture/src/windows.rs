@@ -162,6 +162,8 @@ impl WindowsCapture {
 
 impl Capture for WindowsCapture {
     fn capture(&self, cfg: &CaptureConfig, stop: Arc<AtomicBool>) -> Result<CaptureOutput> {
+        crate::windows_runtime::pin_process_mta()
+            .map_err(|error| cap_err("initialize Windows capture runtime", error))?;
         // Open-ended capture: `None` = run until the external `stop` is set
         // (huge cap so only `stop` ends it); a concrete `duration_ms` is an upper
         // bound. The wait loop below polls `stop` 10×/s so `screen_record.stop` ends

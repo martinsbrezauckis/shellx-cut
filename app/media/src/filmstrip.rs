@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn incomplete_existing_filmstrip_is_not_a_cache_hit() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::atomic_output::private_test_tempdir();
         let out = dir.path().join("asset1.jpg");
         std::fs::write(&out, [0xff, 0xd8]).unwrap();
         let err = make_filmstrip(
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn late_filmstrip_never_recreates_a_deleted_project() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::atomic_output::private_test_tempdir();
         let project = root.path().join("deleted.cutproj");
         let filmstrip = project.join("filmstrip");
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 
 interface ContextMenuFrameProps {
   x: number
@@ -18,6 +18,23 @@ function clampMenu(el: HTMLDivElement, x: number, y: number): void {
   const rect = el.getBoundingClientRect()
   el.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))}px`
   el.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))}px`
+}
+
+function revealExpandedMenuGroup(menu: HTMLDivElement, x: number, y: number): void {
+  // A disclosure can make a previously short, bottom-clamped menu grow to its
+  // viewport maximum. Re-clamp the fixed shell before scrolling its content;
+  // otherwise the new lower half can remain physically below the WebView even
+  // though the menu itself owns an overflow scrollport.
+  clampMenu(menu, x, y)
+  const triggers = [...menu.querySelectorAll<HTMLButtonElement>('button[aria-expanded="true"]')]
+  const group = triggers.at(-1)?.nextElementSibling
+  if (!(group instanceof HTMLElement)) return
+  const menuRect = menu.getBoundingClientRect()
+  const groupRect = group.getBoundingClientRect()
+  const bottomOverflow = groupRect.bottom - (menuRect.bottom - 4)
+  if (bottomOverflow > 0) menu.scrollTop += bottomOverflow
+  const topOverflow = (menuRect.top + 4) - group.getBoundingClientRect().top
+  if (topOverflow > 0) menu.scrollTop -= topOverflow
 }
 
 /** Shared fixed-position shell for small operational context menus.
@@ -57,6 +74,23 @@ export default function ContextMenuFrame({
     return () => document.removeEventListener('keydown', onKey, true)
   }, [onClose])
 
+  useEffect(() => {
+    const menu = menuRef.current
+    if (!menu) return
+    // Descendant disclosure state (Audio, Speed, Replace, Library Move) does
+    // not re-render ContextMenuFrame itself. Observe that owned menu subtree so
+    // WebView2 and WKWebView both re-clamp before automation or a person can
+    // target the newly inserted children.
+    const observer = new MutationObserver(() => revealExpandedMenuGroup(menu, x, y))
+    observer.observe(menu, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-expanded'],
+    })
+    return () => observer.disconnect()
+  }, [x, y])
+
   const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return
@@ -84,6 +118,19 @@ export default function ContextMenuFrame({
     }
   }
 
+  const onMenuClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const trigger = (event.target as HTMLElement).closest<HTMLButtonElement>('button[aria-expanded]')
+    if (!trigger || !menuRef.current?.contains(trigger)) return
+    // Inline groups grow below their disclosure row. Once React commits the
+    // expanded children, reveal that group inside the menu's own scrollport so
+    // the newly opened actions are immediately clickable at laptop heights.
+    requestAnimationFrame(() => {
+      if (trigger.getAttribute('aria-expanded') !== 'true') return
+      const menu = menuRef.current
+      if (menu) revealExpandedMenuGroup(menu, x, y)
+    })
+  }
+
   return (
     <>
       <div
@@ -107,6 +154,7 @@ export default function ContextMenuFrame({
             el.focus({ preventScroll: true })
           }
         }}
+        onClick={onMenuClick}
         onKeyDown={onMenuKeyDown}
       >
         {children}

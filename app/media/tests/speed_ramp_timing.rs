@@ -9,6 +9,18 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod tempfile {
+    pub fn tempdir() -> std::io::Result<::tempfile::TempDir> {
+        let dir = ::tempfile::tempdir()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(dir)
+    }
+}
+
 fn generate_source(dir: &Path, fps: f64) -> PathBuf {
     let source = dir.join("source.mp4");
     let status = Command::new("ffmpeg")

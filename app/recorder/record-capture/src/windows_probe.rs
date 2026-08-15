@@ -49,6 +49,9 @@ impl GraphicsCaptureApiHandler for ProbeHandler {
 
 /// Run one first-frame WGC probe without writing a video file or showing a picker.
 pub(crate) fn screen_probe() -> ScreenProbe {
+    if let Err(error) = crate::windows_runtime::pin_process_mta() {
+        return ScreenProbe::Failed(format!("initialize Windows capture runtime: {error}"));
+    }
     let monitor = match Monitor::primary() {
         Ok(monitor) => monitor,
         Err(error) => return ScreenProbe::Failed(format!("find primary monitor: {error}")),

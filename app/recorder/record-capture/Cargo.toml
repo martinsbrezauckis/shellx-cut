@@ -46,7 +46,7 @@ tempfile.workspace = true
 
 # windows-capture (WGC) only exists on the windows target.
 [target.'cfg(windows)'.dependencies]
-windows-capture = { version = "2", optional = true }
+windows-capture = { version = "2.0.1", optional = true }
 # Raw Win32 for our OWN window enumeration (windows-capture's Window::enumerate uses
 # EnumChildWindows(GetDesktopWindow()) which returns EMPTY from cutd's sidecar thread —
 # we use EnumWindows on a thread attached to the INTERACTIVE desktop instead).

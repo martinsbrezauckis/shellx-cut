@@ -191,9 +191,18 @@ mod tests {
     use super::*;
     use cut_core::error_codes;
 
+    fn private_proxy_dir(path: &Path) {
+        std::fs::create_dir(path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
     #[test]
     fn late_proxy_never_recreates_a_deleted_project() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::atomic_output::private_test_tempdir();
         let project = root.path().join("deleted.cutproj");
         let proxies = project.join("proxies");
 
@@ -206,9 +215,9 @@ mod tests {
 
     #[test]
     fn invalid_cached_proxy_is_not_reused() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::atomic_output::private_test_tempdir();
         let proxies = root.path().join("proxies");
-        std::fs::create_dir(&proxies).unwrap();
+        private_proxy_dir(&proxies);
         let out = proxies.join("a1.mp4");
         std::fs::write(&out, b"nonempty partial MP4 with no moov atom").unwrap();
 
@@ -233,9 +242,9 @@ mod tests {
 
     #[test]
     fn simulated_sigsegv_never_leaves_a_final_proxy() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::atomic_output::private_test_tempdir();
         let proxies = root.path().join("proxies");
-        std::fs::create_dir(&proxies).unwrap();
+        private_proxy_dir(&proxies);
         let out = proxies.join("a1.mp4");
 
         let error = make_proxy_with(Path::new("source.mp4"), &proxies, "a1", |args, out| {

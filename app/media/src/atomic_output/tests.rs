@@ -1,4 +1,4 @@
-use super::{run_with_atomic_output, run_with_validated_atomic_output};
+use super::{private_test_tempdir, run_with_atomic_output, run_with_validated_atomic_output};
 use cut_core::{error_codes, CutError};
 
 #[cfg(unix)]
@@ -25,7 +25,7 @@ fn args_for(out: &std::path::Path) -> Vec<String> {
 #[cfg(unix)]
 #[test]
 fn precreated_legacy_temp_symlink_never_overwrites_its_sentinel() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
     let sentinel = dir.path().join("sentinel.txt");
     std::fs::write(&sentinel, b"keep me").unwrap();
@@ -59,7 +59,7 @@ fn precreated_legacy_temp_symlink_never_overwrites_its_sentinel() {
 fn group_or_world_writable_output_parent_is_refused_before_reservation() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().unwrap();
+    let root = private_test_tempdir();
     let output_dir = root.path().join("shared-output");
     std::fs::create_dir(&output_dir).unwrap();
     std::fs::set_permissions(&output_dir, std::fs::Permissions::from_mode(0o777)).unwrap();
@@ -75,7 +75,7 @@ fn group_or_world_writable_output_parent_is_refused_before_reservation() {
 fn owned_project_output_parent_is_hardened_before_reservation() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let root = tempfile::tempdir().unwrap();
+    let root = private_test_tempdir();
     let project = root.path().join("edit.cutproj");
     let output_dir = project.join("exports");
     std::fs::create_dir_all(&output_dir).unwrap();
@@ -98,7 +98,7 @@ fn owned_project_output_parent_is_hardened_before_reservation() {
 
 #[test]
 fn failed_writer_removes_its_temp_and_a_stale_zero_byte_final_output() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
     std::fs::write(&out, []).unwrap();
 
@@ -127,7 +127,7 @@ fn failed_writer_removes_its_temp_and_a_stale_zero_byte_final_output() {
 
 #[test]
 fn failed_writer_keeps_an_existing_nonempty_final_output() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
     std::fs::write(&out, b"known-good").unwrap();
 
@@ -146,7 +146,7 @@ fn failed_writer_keeps_an_existing_nonempty_final_output() {
 
 #[test]
 fn successful_writer_publishes_its_temp_at_the_final_path() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
 
     let result = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
@@ -167,7 +167,7 @@ fn successful_writer_publishes_its_temp_at_the_final_path() {
 
 #[test]
 fn second_successful_writer_replaces_the_prior_final_output() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
     std::fs::write(&out, b"old-render").unwrap();
 
@@ -183,7 +183,7 @@ fn second_successful_writer_replaces_the_prior_final_output() {
 
 #[test]
 fn publication_failure_at_an_existing_destination_is_an_error() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
     std::fs::create_dir(&out).unwrap();
 
@@ -200,7 +200,7 @@ fn publication_failure_at_an_existing_destination_is_an_error() {
 
 #[test]
 fn zero_byte_success_is_rejected_before_it_can_be_published() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
 
     let error = run_with_atomic_output(&args_for(&out), &out, |tmp_args| {
@@ -216,7 +216,7 @@ fn zero_byte_success_is_rejected_before_it_can_be_published() {
 
 #[test]
 fn failed_validation_removes_temp_without_publishing_it() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = private_test_tempdir();
     let out = dir.path().join("final.mp4");
 
     let error = run_with_validated_atomic_output(
@@ -247,7 +247,7 @@ fn failed_validation_removes_temp_without_publishing_it() {
 #[cfg(windows)]
 #[test]
 fn reparse_output_parent_is_refused_before_reservation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = private_test_tempdir();
     let target = root.path().join("target");
     let reparse = root.path().join("reparse");
     std::fs::create_dir(&target).unwrap();

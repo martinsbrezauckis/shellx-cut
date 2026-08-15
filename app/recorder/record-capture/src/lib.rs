@@ -62,6 +62,8 @@ mod system_audio_timing;
 mod windows;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_picker;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_runtime;
 
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_probe;

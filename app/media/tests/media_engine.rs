@@ -18,6 +18,30 @@ use cut_media::{
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+// Normalize test-fixture permissions across developer shells. A cooperative
+// 0002 umask must not make these synthetic output roots fail the production
+// shared-directory protection before the media assertion can run.
+mod tempfile {
+    pub fn tempdir() -> std::io::Result<::tempfile::TempDir> {
+        let dir = ::tempfile::tempdir()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(dir)
+    }
+}
+
+fn create_private_test_dir(path: &Path) {
+    std::fs::create_dir_all(path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+}
+
 /// Generate a ~2s 320x240@30 test clip with a 440 Hz sine track into `dir`.
 /// testsrc2 + sine = fully synthetic, deterministic ground truth.
 fn gen_clip(dir: &Path, name: &str) -> PathBuf {
@@ -56,7 +80,7 @@ fn gen_clip(dir: &Path, name: &str) -> PathBuf {
 fn filter_path_with_apostrophe_loads_real_lut() {
     let dir = tempfile::tempdir().unwrap();
     let asset_dir = dir.path().join("editor's assets");
-    std::fs::create_dir(&asset_dir).unwrap();
+    create_private_test_dir(&asset_dir);
     let lut = asset_dir.join("identity.cube");
     std::fs::write(
         &lut,
@@ -894,7 +918,7 @@ fn new_transition_renders_via_ffmpeg() {
 fn draft_preview_renders_timeline_with_still_card() {
     let dir = tempfile::tempdir().unwrap();
     let proxies = dir.path().join("proxies");
-    std::fs::create_dir_all(&proxies).unwrap();
+    create_private_test_dir(&proxies);
     let cache = dir.path().join(".preview");
 
     let clip = gen_clip(dir.path(), "in.mp4");
@@ -4715,7 +4739,7 @@ fn render_matte_remove_reveals_base_through_alpha() {
         seed: None,
     };
     let alpha_dir = dir.path().join("cache").join("matte");
-    std::fs::create_dir_all(&alpha_dir).unwrap();
+    create_private_test_dir(&alpha_dir);
     let alpha_path = alpha_dir.join(matte.cache_filename("sha256:a2"));
     let alpha_args: Vec<String> = [
         "-f",
@@ -4873,7 +4897,7 @@ fn render_range_preview_composites_matte() {
         seed: None,
     };
     let alpha_dir = dir.path().join("cache").join("matte");
-    std::fs::create_dir_all(&alpha_dir).unwrap();
+    create_private_test_dir(&alpha_dir);
     let alpha_args: Vec<String> = [
         "-f",
         "lavfi",
@@ -5124,7 +5148,7 @@ fn proxy_is_960x540_and_cached() {
     let dir = tempfile::tempdir().unwrap();
     let clip = gen_clip(dir.path(), "in.mp4");
     let proxies = dir.path().join("proxies");
-    std::fs::create_dir_all(&proxies).unwrap();
+    create_private_test_dir(&proxies);
     let proxy = make_proxy(&clip, &proxies, "a1").expect("proxy");
     let info = probe(&proxy).unwrap();
     assert_eq!((info.width, info.height), (Some(960), Some(540)));
@@ -5144,7 +5168,7 @@ fn corrupt_cached_proxy_is_rebuilt_before_reuse() {
     let dir = tempfile::tempdir().unwrap();
     let clip = gen_clip(dir.path(), "in.mp4");
     let proxies = dir.path().join("proxies");
-    std::fs::create_dir_all(&proxies).unwrap();
+    create_private_test_dir(&proxies);
     let proxy = proxies.join("a1.mp4");
     // This matches a killed MP4 encode: nonempty, so an exists()-only cache
     // check would incorrectly reuse it, but ffprobe reports no `moov` atom.
