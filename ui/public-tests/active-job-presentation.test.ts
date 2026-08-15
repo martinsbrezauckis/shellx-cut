@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 import { activeJobLabel, activeJobProgress } from '../src/lib/jobPresentation'
 import type { JobRecord } from '../src/lib/client'
 import { activeJobViews, type JobView } from '../src/topbar/useTopbarJobs'
@@ -56,5 +57,11 @@ assert.equal(
   })),
   '50% · rendering delivery 2/4 · waiting on rendering video job_042',
 )
+
+const statusbarCss = readFileSync(new URL('../src/statusbar/statusbar.css', import.meta.url), 'utf8')
+const cancelRule = statusbarCss.match(/[.]sb-job-cancel\s*\{([^}]*)\}/)?.[1] || ''
+assert.match(cancelRule, /width:\s*24px/)
+assert.match(cancelRule, /height:\s*24px/)
+assert.match(cancelRule, /flex:\s*none/)
 
 console.log('PASS active jobs use human labels and truthful queued/running progress')

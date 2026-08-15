@@ -32,7 +32,8 @@
 .sb-job-cancel {
   all: unset; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
-  width: 14px; height: 14px; border-radius: 999px;
+  width: 24px; height: 24px; flex: none; border-radius: 999px;
+  font-size: 16px; line-height: 1;
   color: var(--ink-4);
 }
 .sb-job-cancel:hover {
