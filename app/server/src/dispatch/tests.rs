@@ -1,6 +1,7 @@
 use super::media::{
     load_capture_manifest, manifest_event_to_marker, resolve_capture_manifest, utc_to_media_ms,
 };
+use super::rendering::ReceiptIdReservation;
 use super::*;
 use crate::state::AppState;
 
@@ -8617,6 +8618,23 @@ fn reserve_receipt_id_prevents_reuse_before_receipt_exists() {
     assert_eq!(first, "render_001");
     assert_eq!(second, "render_002");
     assert_eq!(next_receipt_id_preview(&receipts, "render"), "render_003");
+}
+
+#[test]
+fn receipt_id_reservation_releases_marker_when_render_exits_without_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let receipts = dir.path().join("receipts");
+    let (_id, marker) = reserve_receipt_id(&receipts, "render").unwrap();
+    assert!(marker.is_file(), "receipt reservation marker must exist");
+
+    let guard = ReceiptIdReservation::new(marker.clone());
+    drop(guard);
+
+    assert!(
+        !marker.exists(),
+        "failed or cancelled render must release its receipt reservation"
+    );
+    assert_eq!(next_receipt_id_preview(&receipts, "render"), "render_001");
 }
 
 #[test]

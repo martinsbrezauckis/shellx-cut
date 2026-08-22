@@ -1481,6 +1481,34 @@ pub(super) fn reserve_receipt_id(
     unreachable!("unbounded receipt id iterator")
 }
 
+/// Owns a claimed receipt id until the asynchronous render either persists its
+/// canonical receipt or exits. Every early error and cancellation path drops
+/// this guard, so a job that never emits `receipt_ready` cannot permanently
+/// consume a render id.
+pub(super) struct ReceiptIdReservation {
+    marker: Option<PathBuf>,
+}
+
+impl ReceiptIdReservation {
+    pub(super) fn new(marker: PathBuf) -> Self {
+        Self {
+            marker: Some(marker),
+        }
+    }
+
+    fn release(&mut self) {
+        if let Some(marker) = self.marker.take() {
+            let _ = std::fs::remove_file(marker);
+        }
+    }
+}
+
+impl Drop for ReceiptIdReservation {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 pub(super) async fn render_final(
     state: &AppState,
     args: Value,
@@ -1812,7 +1840,7 @@ pub(super) async fn render_final(
         (next_receipt_id_preview(&receipts, "render"), None)
     } else {
         let (id, marker) = reserve_receipt_id(&receipts, "render")?;
-        (id, Some(marker))
+        (id, Some(ReceiptIdReservation::new(marker)))
     };
     let out = match explicit_out {
         Some(path) => path,
@@ -1902,6 +1930,7 @@ pub(super) async fn render_final(
     let st = state.clone();
     let jobs = state.jobs.clone();
     jobs.spawn_limited(&job_id, "render", RENDER_MAX_RUNNING, async move {
+        let mut render_reservation = render_reservation;
         let jid = job.job_id.clone();
         st.jobs.progress(&jid, 0.01, Some("rendering".into()));
         // Progress callback bridges the render thread into job events.
@@ -2068,8 +2097,8 @@ pub(super) async fn render_final(
                         ),
                     );
                 }
-                if let Some(marker) = &render_reservation {
-                    let _ = std::fs::remove_file(marker);
+                if let Some(reservation) = render_reservation.as_mut() {
+                    reservation.release();
                 }
                 // the event-ordering contract ordering: render_done THEN receipt_ready.
                 st.events.publish(Event::RenderDone {
