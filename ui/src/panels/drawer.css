@@ -223,6 +223,7 @@
 }
 .cd-seg-btn:hover { color: var(--ink-2); }
 .cd-seg-btn--on { background: var(--cut-dim); color: var(--cut-soft); }
+.cd-seg-btn:focus-visible { outline: 2px solid var(--cut); outline-offset: 2px; }
 
 .cd-field--inline { flex-direction: row; align-items: center; gap: var(--space-2); flex: none; }
 .cd-sel--sm { padding: 3px 6px; font-size: var(--fs-ui-xs); }

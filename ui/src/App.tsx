@@ -47,6 +47,7 @@ import AppRightRail from './app/AppRightRail'
 import AppWorkspace from './app/AppWorkspace'
 import { useAppImportEvents } from './app/useAppImportEvents'
 import { useAppLayoutController } from './app/useAppLayoutController'
+import { useSourceNavigationController } from './app/useSourceNavigationController'
 import { useAppClipboardController } from './app/useAppClipboardController'
 import { useAppKeyboardController } from './app/useAppKeyboardController'
 import { useAppSurfaceEvents } from './app/useAppSurfaceEvents'
@@ -56,6 +57,7 @@ import { preferredProjectLeftTab, shouldReturnToProjectsAfterResync } from './ap
 import UserActionFeedback from './components/UserActionFeedback'
 import { runUserVerb } from './lib/userActionFeedback'
 import { OfflineMediaProvider } from './app/OfflineMediaContext'
+import { createStockImportCoordinator, type StockImportCoordinator } from './panels/Stock/importCoordinator'
 
 const EnvironmentPanel = lazy(() =>
   import('./panels/Environment').then((module) => ({ default: module.EnvironmentPanel })),
@@ -69,6 +71,15 @@ function SurfaceLoading({ label = 'Loading' }: { label?: string }) {
 }
 
 export default function App() {
+  // The Find-media panel is intentionally remounted as its Find sub-surface
+  // changes, and AppWorkspace itself swaps for Library/Record. Keep the one
+  // active import coordinator here, at the app lifetime, so a remount cannot
+  // admit a second assets.fetch before the first response settles.
+  const stockImportCoordinatorRef = useRef<StockImportCoordinator | null>(null)
+  if (stockImportCoordinatorRef.current === null) {
+    stockImportCoordinatorRef.current = createStockImportCoordinator()
+  }
+  const stockImportCoordinator = stockImportCoordinatorRef.current
   // --- server-truth snapshots (refreshed via verbs + WS events) -------------
   const [project, setProject] = useState<SyncedProject | null>(null)
   const [ops, setOps] = useState<OpRecord[]>([])
@@ -89,6 +100,7 @@ export default function App() {
   // A stable identity for Settings reads that are tied to an open project. It
   // changes on a confirmed switch/close, never on ordinary project deltas.
   const [projectSession, setProjectSession] = useState(0)
+  const projectSessionRef = useRef(0)
   const [generateTab, setGenerateTab] = useState<GenerateWorkspaceTab>('templates')
   const agentChatPromptSeq = useRef(0)
   const [agentChatPrefill, setAgentChatPrefill] = useState<{ prompt: string; nonce: number } | null>(null)
@@ -160,6 +172,7 @@ export default function App() {
 
   const { layout, setLayout, middleRef, mainRef, splitRef, txWidth, dragSplit, dragTimeline, dragRail } =
     useAppLayoutController(selectedClipIds)
+  const sourceNavigation = useSourceNavigationController(setLayout)
   const { clipboardHasContent, clipboardKind, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard } = useAppClipboardController({
     project,
     playheadMs,
@@ -258,7 +271,9 @@ export default function App() {
     if (reconciliationTimer.current) clearTimeout(reconciliationTimer.current)
     reconciliationTimer.current = null
     initialHistoryLoaded.current = false
-    setProjectSession((current) => current + 1)
+    projectSessionRef.current += 1
+    stockImportCoordinator.setProjectScope(projectSessionRef.current)
+    setProjectSession(projectSessionRef.current)
     setOps([])
     setReceipts([])
     setSelectedClipIds([])
@@ -276,7 +291,7 @@ export default function App() {
         leftCollapsed: false,
       }))
     }
-  }, [clearClipboard, setLayout])
+  }, [clearClipboard, setLayout, stockImportCoordinator])
 
   /** Follow one page at a time and merge only when this same project remains
    * current. Cold loads may transfer full history once; reconnects call this
@@ -452,9 +467,12 @@ export default function App() {
       .catch(() => undefined)
       .then(async () => {
         await callVerb(verbName, {})
-        await resync()
+        // History navigation only changes project state. Keep it serialized,
+        // but do not put the next undo/redo behind reconnect-only receipt and
+        // environment-doctor probes from the broader resync routine.
+        await syncProject()
       })
-  }, [resync])
+  }, [syncProject])
 
   useAppImportEvents({ project, onChanged: resync, setLayout })
 
@@ -660,12 +678,14 @@ export default function App() {
         <AppWorkspace
           layout={layout}
           setLayout={setLayout}
+          sourceNavigation={sourceNavigation}
           mainRef={mainRef}
           splitRef={splitRef}
           txWidth={txWidth}
           dragSplit={dragSplit}
           dragTimeline={dragTimeline}
           project={project}
+          projectScope={projectSession}
           doctor={doctor}
           ops={ops}
           transcripts={transcripts}
@@ -696,6 +716,7 @@ export default function App() {
             setEnvCategory('general')
             setEnvOpen(true)
           }}
+          stockImportCoordinator={stockImportCoordinator}
         />
 
         <AppRightRail
@@ -704,6 +725,7 @@ export default function App() {
           setLayout={setLayout}
           dragRail={dragRail}
           project={project}
+          projectRevision={project?.project_revision ?? null}
           doctor={doctor}
           ops={ops}
           receipts={receipts}

@@ -116,7 +116,7 @@ fn collect_clip_outputs(verb: &str, effects: &[OpEffect], out: &mut BTreeSet<Str
         // edit.insert → effect {added_clip, ...}; the splice that placed it may
         // ALSO have minted a `split_clip` id (the right half of a clip the
         // insert cut through). Both are outputs.
-        "edit.insert" => {
+        "edit.insert" | "edit.overwrite" => {
             for e in effects {
                 if let Some(c) = eff_str(e, "added_clip") {
                     out.insert(c.to_string());
@@ -233,7 +233,14 @@ fn args_marker_refs(verb: &str, args: &serde_json::Value, out: &mut BTreeSet<Str
 /// are never rebased out (add_track can't allocate them), so naming them costs
 /// nothing and keeps the analysis total.
 fn args_track_refs(args: &serde_json::Value, out: &mut BTreeSet<String>) {
-    for key in ["track", "to_track", "music_track", "against_track"] {
+    for key in [
+        "track",
+        "to_track",
+        "music_track",
+        "against_track",
+        "video_track",
+        "audio_track",
+    ] {
         if let Some(t) = args.get(key).and_then(|v| v.as_str()) {
             out.insert(t.to_string());
         }

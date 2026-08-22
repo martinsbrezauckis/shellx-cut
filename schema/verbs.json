@@ -465,7 +465,7 @@
     {
       "name": "project.sequence_index",
       "domain": "project",
-      "description": "Read-only searchable Sequence Index across every timeline in the open project. Returns path-light clip and marker metadata with stable sequence/track/item IDs and timeline ranges, including inactive sequences, so a user or agent can filter and navigate without opening sequences one by one. Text search is case-insensitive and matches all whitespace-separated terms against sequence name, track metadata, clip/asset labels, effect names, live offline state, and marker label/note/color. The status filter can isolate offline media, timeline gaps, effect-bearing clips, and clips on hidden/locked/muted tracks. Anonymous timeline gaps are returned only when status is gaps/issues or the text query explicitly asks for gap/gaps, preserving the default clip/marker index. Source paths are never returned.",
+      "description": "Read-only searchable Sequence Index across every timeline in the open project. Returns path-light clip and marker metadata with stable sequence/track/item IDs and laid timeline ranges, including inactive sequences, so a user or agent can filter and navigate without opening sequences one by one. `at_ms`/`end_ms` use the same post-transition layout as rendering and ui.playhead: a valid crossfade pulls its incoming clip and every later row on that track back by the resolved overlap. Text search is case-insensitive and matches all whitespace-separated terms against sequence name, track metadata, clip/asset labels, effect names, live offline state, and marker label/note/color. The exact `asset` filter is applied before the result limit and returns only matching media rows, avoiding text-match collisions for per-asset navigation. The status filter can isolate offline media, timeline gaps, effect-bearing clips, and clips on hidden/locked/muted tracks. Anonymous timeline gaps are returned only when status is gaps/issues or the text query explicitly asks for gap/gaps, preserving the default clip/marker index. Source paths are never returned.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -474,6 +474,10 @@
             "type": "string",
             "default": "",
             "description": "Optional case-insensitive text query. Every whitespace-separated term must match the row metadata. Empty lists the filtered index."
+          },
+          "asset": {
+            "type": "string",
+            "description": "Optional exact stable media asset id. Applied before limit and excludes marker, caption, and gap rows. Combine with query/status/sequence filters when needed."
           },
           "kind": {
             "type": "string",
@@ -520,7 +524,7 @@
           }
         }
       },
-      "result": "{query, kind, sequence?, track_kind?, status, total, clip_count, marker_count, issue_count, effect_clip_count, truncated, results:[clip {kind:'clip',sequence_id,sequence_name,active,id,at_ms,end_ms,track_id,track_kind,clip_kind:'media'|'caption'|'gap',label,asset?,src_in_ms?,src_out_ms?,effect_count,effects,offline,track_visible,track_locked,track_muted,issues} | marker {kind:'marker',sequence_id,sequence_name,active,id,at_ms,end_ms,label,note?,color?}]}",
+      "result": "{query, asset?, kind, sequence?, track_kind?, status, total, clip_count, marker_count, issue_count, effect_clip_count, truncated, results:[clip {kind:'clip',sequence_id,sequence_name,active,id,at_ms,end_ms,track_id,track_kind,clip_kind:'media'|'caption'|'gap',label,asset?,src_in_ms?,src_out_ms?,effect_count,effects,offline,track_visible,track_locked,track_muted,issues} | marker {kind:'marker',sequence_id,sequence_name,active,id,at_ms,end_ms,label,note?,color?}]} — at_ms/end_ms are laid positions after valid crossfade overlap",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -3597,6 +3601,118 @@
       }
     },
     {
+      "name": "edit.overwrite",
+      "domain": "edit",
+      "description": "TRUE OVERWRITE EDIT — place a source window at editorial at_ms on the explicitly chosen video_track, audio_track, or both, WITHOUT shifting downstream timeline time. at_ms is the cumulative clip-duration coordinate used by edit.insert/split/move; after an upstream crossfade it differs from the shorter rendered playhead coordinate, and a human Source Monitor converts that visible point before dispatch. This is not edit.insert {ripple:false}: insert still splices its target track, while overwrite replaces exactly [at_ms, at_ms+source_duration). Every overlapping media clip or gap on each chosen destination is removed or boundary-trimmed deterministically; multiple overlaps are all consumed, a gap is simply consumed, and a destination ending before the range is padded with a gap then tail-extended. An overwrite that would shorten or remove a live right-owned crossfade is rejected before mutation because losing its rendered overlap would shift later coordinates; place the edge outside the transition owner or rebuild it deliberately. A visible point inside that rendered overlap is multiply covered, so Source Monitor refuses it rather than choosing a left-clip editorial start that could change pixels before the playhead. Tracks not named here, captions, markers, and duck windows remain at their current absolute times. Passing both destinations creates ONE atomic linked A/V op and one undo/replay unit; passing only video_track or only audio_track deliberately makes a video-only or audio-only overwrite. Source is src_range_ms or the Source Monitor source_in_ms/source_out_ms pair (never both); omit both for all probed timed media. A still image instead requires duration_ms and can target video only. Source ranges, destination identities, added clip ids, and any necessary right-side split ids are recorded so replay/rebase is stable.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset",
+          "at_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Imported source asset id."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "EDITORIAL start of the fixed overwrite interval: the cumulative clip-duration coordinate. Convert a rendered/playhead position through the chosen target track's crossfade layout first."
+          },
+          "video_track": {
+            "type": "string",
+            "description": "Explicit video destination. Optional only when audio_track is supplied."
+          },
+          "audio_track": {
+            "type": "string",
+            "description": "Explicit audio destination. Optional only when video_track is supplied."
+          },
+          "src_range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[source_in_ms, source_out_ms) in the asset. Mutually exclusive with source_in_ms/source_out_ms."
+          },
+          "source_in_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Source Monitor In point. Must be paired with source_out_ms; mutually exclusive with src_range_ms."
+          },
+          "source_out_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Source Monitor Out point. Must be paired with source_in_ms; mutually exclusive with src_range_ms."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Required replacement duration for a still image; invalid for timed media and audio destinations."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Optional grouping tag for a trusted larger edit. A built-in linked A/V overwrite is already one operation."
+          }
+        }
+      },
+      "result": "{at_ms, src_range_ms, duration_ms, linked_av, tracks:[{track, clip_id, added_ms, overwritten_existing_ms, overlapped_clip_ids, removed_clip_ids, overwritten_gap_ms, tail_gap_ms, tail_extended_ms}]} — one atomic replayable edit.overwrite op; linked_av is true only when both destination tracks were chosen.",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "at_ms",
+          "src_range_ms",
+          "duration_ms",
+          "linked_av",
+          "tracks"
+        ],
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "src_range_ms": {
+            "type": "array"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "linked_av": {
+            "type": "boolean"
+          },
+          "tracks": {
+            "type": "array"
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_overwrite",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
       "name": "edit.detach_audio",
       "domain": "edit",
       "description": "Extract (PROMOTE) a video clip's audio onto its own editable audio track -- the 'Detach Audio' affordance, reframed for this engine. MODEL NOTE: the renderer mixes audio from AUDIO tracks ONLY, so a video's audio normally lives as a SEPARATE audio-track clip (the auto-place v1/a1t mirror). Exact sibling pairs are inferred as linked for edit.move by default; pass linked:false when an independent J/L-style offset is deliberate. This verb still means EXTRACT, not unlink: when no sibling audio clip exists it creates one at the video's timeline start; when one already exists it returns a clean informational no-op {detached:false}. Lowers to ONE replay-safe edit.insert (preceded by edit.add_track only when the project has no audio track). v1 refuses a retimed (speed != 1) clip because normal-speed extracted audio would desync the stretched video.",
@@ -5942,7 +6058,7 @@
     {
       "name": "assets.providers",
       "domain": "assets",
-      "description": "List the pluggable ASSET PROVIDERS — permission-scoped sources the agent/UI can SEARCH + FETCH media from, imported as normal project assets with the LICENSE + ATTRIBUTION surfaced (the first cut of the tool/plugin API). Each entry is {name, kinds, needs_key, network, note}. Pure READ (no project needed). Providers: local_folder (a user-designated folder, filename search, no network — pass `dir` to assets.search; the hit id is the absolute path) and openverse (api.openverse.org Creative-Commons MEDIA AGGREGATOR over Freesound/Jamendo/Wikimedia; KEYLESS but rate-limited; commercial-use results; license + attribution recorded on fetch).",
+      "description": "List the pluggable ASSET PROVIDERS — permission-scoped sources the agent/UI can SEARCH + FETCH media from, imported as normal project assets with the LICENSE + ATTRIBUTION surfaced (the first cut of the tool/plugin API). Each entry is {name, kinds, needs_key, network, note}. Pure READ (no project needed). The server-declared catalog is local_folder (a user-designated folder, filename search, no network — pass `dir` to assets.search; the hit id is the absolute path), openverse (api.openverse.org Creative-Commons media aggregator over Freesound/Jamendo/Wikimedia; keyless but rate-limited; commercial-use results), archive_org (Internet Archive public-domain/CC video and audio), wikimedia (Wikimedia Commons public-domain/CC media), nasa (NASA public-domain image and video), and stickers (offline built-in shape stickers). Network providers are contacted only when assets.search or assets.fetch is invoked; local_folder and stickers make no network request.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -6115,7 +6231,7 @@
     {
       "name": "agent.chat",
       "domain": "agent",
-      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's pinned contained contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
+      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Provider version text is informational only; required containment flags are verified before every turn. Claude uses Cut's contained capability contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
       "args": {
         "type": "object",
         "required": [
@@ -6180,7 +6296,7 @@
     {
       "name": "assets.generate",
       "domain": "assets",
-      "description": "Queue image/video generation through the USER'S OWN agent CLI and import it as a project asset — NO model is hosted (the Openverse philosophy applied to generation). Returns a job handle immediately; provider runs are serialized behind the shared asset_generate limiter, visible through jobs.status/list, and cancellable through jobs.cancel. cutd DETECTS the CLI (codex = gpt-image; grok = grok-imagine), spawns it in an isolated disposable run directory with a strict prompt to write the binary to an exact path, validates the result via the normal import probe, and publishes it immutably under assets/generated/<generation_id>.<ext> with a JSON provenance sidecar. Optional references are registered visual project asset IDs only (maximum four): cutd resolves, content-checks, and copies them into the isolated scratch workspace before the provider sees them, never accepting caller filesystem paths. family_id is content-addressed from provider/kind/model/prompt/reference content. The base generation_id remains backward-compatible with the original no-reference id; an explicit variation creates a distinct immutable take in the same family. Repeating the exact request reuses the unchanged project asset without running the provider CLI or consuming credits again. Different requests and variants never overwrite earlier generated sources. A job stays bound to the project open when submitted and fails on a project or reference change instead of importing against stale context. provider: 'codex' (image only) | 'grok' (image + video). HONEST degradation: empty prompt, invalid references, an unsupported kind, or an absent/un-signed-in CLI fails with a reason (NEVER a fake asset). The spawn is bounded by timeout_ms and killed on timeout/drop/cancel; scratch files are removed before cancellation reports completion. Requires an open project. NOTE: this runs the user's generation CLI, which may incur provider cost / need sign-in; these CLIs do not report a price, so the completed job's result.generated.cost_usd is null with an honest cost_note.",
+    "description": "Queue image/video generation through the USER'S OWN agent CLI and import it as a project asset — NO model is hosted (the Openverse philosophy applied to generation). Returns a job handle immediately; provider runs are serialized behind the shared asset_generate limiter, visible through jobs.status/list, and cancellable through jobs.cancel. cutd DETECTS the CLI (codex = gpt-image; grok = grok-imagine; antigravity = agy image generation), spawns it in an isolated disposable run directory with a strict prompt to write the binary to an exact path, validates the result via the normal import probe, and publishes it immutably under assets/generated/<generation_id>.<ext> with a JSON provenance sidecar. Antigravity reuses its verified native sandbox/non-interactive CLI contract and keeps its normal login/settings in place; Cut never reads, copies, or rewrites provider auth/settings. Optional references are registered visual project asset IDs only (maximum four): cutd resolves, content-checks, and copies them into the isolated scratch workspace before the provider sees them, never accepting caller filesystem paths. family_id is content-addressed from provider/kind/model/prompt/reference content. The base generation_id remains backward-compatible with the original no-reference id; an explicit variation creates a distinct immutable take in the same family. Repeating the exact request reuses the unchanged project asset without running the provider CLI or consuming credits again. Different requests and variants never overwrite earlier generated sources. A job stays bound to the project open when submitted and fails on a project or reference change instead of importing against stale context. provider: 'codex' (image only) | 'grok' (image + video) | 'antigravity' (image only). HONEST degradation: empty prompt, invalid references, an unsupported kind, an unsupported Antigravity capability contract, or an absent/un-signed-in CLI fails with a reason (NEVER a fake asset). The spawn is bounded by timeout_ms and killed on timeout/drop/cancel; scratch files are removed before cancellation reports completion. Requires an open project. NOTE: this runs the user's generation CLI, which may incur provider cost / need sign-in; these CLIs do not report a price, so the completed job's result.generated.cost_usd is null with an honest cost_note.",
       "args": {
         "type": "object",
         "required": [
@@ -6196,11 +6312,12 @@
           },
           "provider": {
             "type": "string",
-            "enum": [
-              "codex",
-              "grok"
-            ],
-            "description": "codex = gpt-image (image only); grok = grok-imagine (image + video)."
+        "enum": [
+          "codex",
+          "grok",
+          "antigravity"
+        ],
+        "description": "codex = gpt-image (image only); grok = grok-imagine (image + video); antigravity = agy (image only)."
           },
           "kind": {
             "type": "string",
@@ -6208,7 +6325,7 @@
               "image",
               "video"
             ],
-            "description": "Media kind (default image). Video needs provider:grok."
+        "description": "Media kind (default image). Video needs provider:grok; Antigravity is image-only."
           },
           "model": {
             "type": "string",
@@ -10517,7 +10634,7 @@
     {
       "name": "captions.kinetic",
       "domain": "captions",
-      "description": "Animated, transcript-synced captions (the motion-graphics counterpart to captions.generate's STATIC burn-in): each caption LINE pops in (fade + scale-up) and fades out in sync with speech, rendered as a native title overlay (resvg per-frame; in-house, no external tool). Reads the EXISTING cap1 caption cues (run captions.generate first), optionally narrowed to range_ms (a cue is kept if it overlaps the range), builds a kinetic TitleSpec spanning [first cue start, last cue end], and places it on the TOP-MOST title1 overlay track — lowering to import + insert. Cue text + timing come straight from captions.generate (per-LINE animation; per-WORD sub-cue reveal is a follow-up). position = bottom (default) | center | top; color defaults white; font_px defaults to a fraction of the project height. Set replace_static:true to REMOVE the cap1 static cues this call animates (range-aware: cues outside an explicit range stay static) so the kinetic overlay shows ALONE; overlay placement and static-cue clear are grouped as one Undo action. Default false keeps the kinetic-over-static behavior. Generation cost scales with the span; narrow range_ms for long videos.",
+      "description": "Animated, transcript-synced captions (the motion-graphics counterpart to captions.generate's STATIC burn-in), rendered as a native title overlay (resvg per-frame; in-house, no external tool). Default per_word:false animates existing caption LINE cues (run captions.generate first). Set per_word:true to animate each spoken WORD from a transcript mapped through the timeline EDL; this mode does not require a caption track. Both modes optionally narrow to range_ms (a cue is kept if it overlaps the range), build a kinetic TitleSpec spanning [first cue start, last cue end], and place it on the TOP-MOST title1 overlay track — lowering to import + insert. position = bottom (default) | center | top; color defaults white; font_px defaults to a fraction of the project height (larger for word mode). Set replace_static:true to REMOVE overlapping cap1 static cues so the kinetic overlay shows ALONE; overlay placement and static-cue clear are grouped as one Undo action. Default false keeps the kinetic-over-static behavior. Generation cost scales with the span; narrow range_ms for long videos.",
       "args": {
         "type": "object",
         "required": [],
@@ -10560,7 +10677,7 @@
           "per_word": {
             "type": "boolean",
             "default": false,
-            "description": "PER-WORD ('karaoke') mode: animate each spoken WORD as its own centred cue (the 2026 word-by-word short-form style) instead of one cue per caption LINE. Reads word timings from the transcript via the EDL, so it does NOT require captions.generate first. Pairs with replace_static for a pure word-by-word look."
+            "description": "PER-WORD ('karaoke') mode: animate each spoken WORD as its own cue instead of one cue per caption LINE. Reads word timings from the transcript via the EDL, so it does NOT require captions.generate first. Pairs with replace_static for a pure word-by-word look."
           }
         }
       },
@@ -14895,7 +15012,7 @@
     {
       "name": "system.doctor",
       "domain": "system",
-      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, the Settings>Environment panel, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, actionable BtbN hint when missing); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (PATH-detect + version, mirroring ladder_judge.py — NO model call, NO python dependency so doctor works on a cold box); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded, source?, version?, hint?, details}.",
+      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, the Settings>Environment panel, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, actionable BtbN hint when missing); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (PATH-detect + informational version; Agent Chat readiness also requires a successful required-help capability probe, never version text — NO model call, NO python dependency so doctor works on a cold box); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded, source?, version?, hint?, details}.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -15509,7 +15626,7 @@
     {
       "name": "motion.link.edit",
       "domain": "motion",
-      "description": "Open a rendered linked clip's verified local package in ShellX Canvas Motion Studio. Cut canonicalizes the source and re-checks packageId/motionId, creates an immutable project-local return request, then launches the configured Canvas executable with a fixed argv array: --motion-package <canonical-dir> --motion-cut-return-request <canonical-request>. Canvas keeps both paths in its trusted host, validates the package with the local Motion SDK, opens a path-free editable revision, and publishes immutable ready descriptors only after verified renders. No Cut timeline mutation and no shell command interpolation.",
+      "description": "Open a rendered linked clip's verified local package in ShellX Motion. Cut canonicalizes the source and re-checks packageId/motionId, creates an immutable project-local return request, then launches the configured ShellX Motion editor with a fixed argv array: --motion-package <canonical-dir> --motion-cut-return-request <canonical-request>. ShellX Motion keeps both paths in its trusted host, validates the package with the local Motion SDK, opens a path-free editable revision, and publishes immutable ready descriptors only after verified renders. No Cut timeline mutation and no shell command interpolation.",
       "args": {
         "type": "object",
         "required": [
@@ -15523,7 +15640,7 @@
           }
         }
       },
-      "result": "{ok:true, schema:'shellx-cut/motion-link-edit@1', clip, packageId, motionId, launched:true, pid?, returnChannel:{state:'pending',pathPrivate:true}, localOnly:true, remotePublish:false}. Set SHELLX_CANVAS_BIN when shellx-canvas is not on PATH.",
+      "result": "{ok:true, schema:'shellx-cut/motion-link-edit@1', clip, packageId, motionId, launched:true, pid?, returnChannel:{state:'pending',pathPrivate:true}, localOnly:true, remotePublish:false}. SHELLX_CANVAS_BIN remains a backward-compatible executable override for legacy installations.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

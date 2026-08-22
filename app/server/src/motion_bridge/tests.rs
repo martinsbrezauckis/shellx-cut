@@ -1565,7 +1565,7 @@ printf '{"ok":true,"output":{"path":"%s","sha256":"%s"},"receiptPath":"%s","rece
     let mut canvas_permissions = fs::metadata(&fake_canvas).unwrap().permissions();
     canvas_permissions.set_mode(0o755);
     fs::set_permissions(&fake_canvas, canvas_permissions).unwrap();
-    let _canvas_bin = EnvRestore::set(ENV_CANVAS_BIN, &fake_canvas);
+    let _canvas_bin = EnvRestore::set(LEGACY_CANVAS_BIN_ENV, &fake_canvas);
 
     let state = AppState::new();
     assert!(
@@ -1656,7 +1656,7 @@ printf '{"ok":true,"output":{"path":"%s","sha256":"%s"},"receiptPath":"%s","rece
         Actor::system(),
     )
     .await;
-    assert!(editing.ok, "Canvas Motion launch failed: {editing:?}");
+    assert!(editing.ok, "ShellX Motion launch failed: {editing:?}");
     let launch_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < launch_deadline {
         if canvas_args.is_file() {
@@ -1665,7 +1665,7 @@ printf '{"ok":true,"output":{"path":"%s","sha256":"%s"},"receiptPath":"%s","rece
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let launched_args = fs::read_to_string(&canvas_args)
-        .expect("fake Canvas did not record launch arguments within 5s");
+        .expect("fake ShellX Motion editor did not record launch arguments within 5s");
     let mut launched_args = launched_args.lines();
     assert_eq!(launched_args.next(), Some("--motion-package"));
     assert_eq!(

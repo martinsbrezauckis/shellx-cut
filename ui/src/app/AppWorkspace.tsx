@@ -5,6 +5,8 @@ import { Icon } from '../icons'
 import Divider from '../layout/Divider'
 import type { LayoutState } from '../layout/useLayout'
 import type { GenerateWorkspaceTab } from '../panels/GenerateTemplates'
+import type { SourceNavigationState } from './useSourceNavigationController'
+import type { StockImportCoordinator } from '../panels/Stock/importCoordinator'
 import Preview from '../panels/Preview'
 import Timeline from '../panels/Timeline'
 
@@ -16,12 +18,14 @@ const LibraryWorkspace = lazy(() => import('../panels/Library/LibraryWorkspace')
 interface AppWorkspaceProps {
   layout: LayoutState
   setLayout: Dispatch<SetStateAction<LayoutState>>
+  sourceNavigation: SourceNavigationState | null
   mainRef: RefObject<HTMLDivElement | null>
   splitRef: RefObject<HTMLDivElement | null>
   txWidth: string
   dragSplit: (clientX: number, clientY: number) => void
   dragTimeline: (clientX: number, clientY: number) => void
   project: Project | null
+  projectScope: number
   doctor: DoctorReport | null
   ops: OpRecord[]
   transcripts: Record<string, TranscriptData>
@@ -48,6 +52,8 @@ interface AppWorkspaceProps {
   onLibraryAddedToProject: () => void
   onRecordClipAdded: () => void
   onOpenOutputSettings: () => void
+  /** App-lifetime owner for an in-flight Find-media import across workspace remounts. */
+  stockImportCoordinator: StockImportCoordinator
 }
 
 function SurfaceLoading({ label = 'Loading' }: { label?: string }) {
@@ -61,12 +67,14 @@ function SurfaceLoading({ label = 'Loading' }: { label?: string }) {
 export default function AppWorkspace({
   layout,
   setLayout,
+  sourceNavigation,
   mainRef,
   splitRef,
   txWidth,
   dragSplit,
   dragTimeline,
   project,
+  projectScope,
   doctor,
   ops,
   transcripts,
@@ -93,6 +101,7 @@ export default function AppWorkspace({
   onLibraryAddedToProject,
   onRecordClipAdded,
   onOpenOutputSettings,
+  stockImportCoordinator,
 }: AppWorkspaceProps) {
   const recordTimelineDeferred = layout.workspaceMode === 'record'
     && !(project?.tracks.some((track) => track.clips.length > 0) ?? false)
@@ -124,6 +133,7 @@ export default function AppWorkspace({
             <LibraryWorkspace
               project={project}
               playheadMs={playheadMs}
+              sourceNavigation={sourceNavigation?.destination === 'library' ? sourceNavigation : null}
               onAddedToProject={onLibraryAddedToProject}
               onClose={() => setLayout((current) => ({ ...current, workspaceMode: 'edit' }))}
             />
@@ -147,6 +157,7 @@ export default function AppWorkspace({
               <Suspense fallback={<SurfaceLoading />}>
                 <LeftPanel
                   project={project}
+                  projectScope={projectScope}
                   doctor={doctor}
                   ops={ops}
                   playheadMs={playheadMs}
@@ -163,7 +174,9 @@ export default function AppWorkspace({
                   onGenerateTab={onGenerateTab}
                   onReopenProject={onReopenProject}
                   onProjectChanged={onLibraryAddedToProject}
+                  sourceNavigation={sourceNavigation?.destination === 'project' ? sourceNavigation : null}
                   onCollapse={() => setLayout((l) => ({ ...l, leftCollapsed: true }))}
+                  stockImportCoordinator={stockImportCoordinator}
                 />
               </Suspense>
             </div>

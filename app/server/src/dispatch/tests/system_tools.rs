@@ -10,6 +10,14 @@ use serde_json::json;
 #[cfg(target_os = "linux")]
 const FETCH_FIXTURE_CHILD_ENV: &str = "SHELLX_CUT_FETCH_FIXTURE_CHILD";
 
+/// Deadlock guard for the isolated end-to-end fixture child. This is not a
+/// product download SLO: the child deliberately runs beside the complete Rust
+/// suite, which can saturate the host while Doctor executes its own bounded
+/// capability probes. Keep the guard large enough for that supported test
+/// topology while still terminating a genuinely stuck fetch.
+#[cfg(target_os = "linux")]
+const FETCH_FIXTURE_FULL_SUITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// system.doctor returns a well-formed report with the expected cards and
 /// no project required (the environment is global).
 #[tokio::test]
@@ -86,6 +94,15 @@ async fn system_fetch_tool_full_path_against_local_fixture() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
+
+    // The child proves the built-in fetch/install/doctor transition, not the
+    // operator's coding-agent installation. Keep Doctor's agent resolution
+    // deterministic so a slow or newly installed host CLI cannot consume this
+    // fixture's bounded completion budget. The child process is disposable, so
+    // these process-global values cannot affect the parent test suite.
+    std::env::set_var("HOME", tmp.path().join("home"));
+    std::env::remove_var("USERPROFILE");
+    std::env::set_var("PATH", "/usr/bin:/bin");
 
     // 1. Build a fake ffmpeg build: <root>/ffbuild/bin/{ffmpeg,ffprobe},
     //    each a tiny executable shell script that prints a version banner.
@@ -177,10 +194,10 @@ esac
     assert!(r.ok, "{:?}", r.error);
     let job_id = r.result.unwrap()["job_id"].as_str().unwrap().to_string();
 
-    // Poll with a real deadline. The isolated child shares host resources with
-    // the full server suite, so a fixed 5-second iteration budget is too tight
-    // under parallel load even though the local fetch normally finishes in ~2s.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Poll with a real deadlock deadline. The child shares host resources with
+    // the full server suite; use the explicit isolation budget above rather
+    // than treating normal suite contention as a product failure.
+    let deadline = tokio::time::Instant::now() + FETCH_FIXTURE_FULL_SUITE_TIMEOUT;
     loop {
         let j = state.jobs.get(&job_id).unwrap();
         match j.state {
@@ -203,8 +220,11 @@ esac
             }
             _ if tokio::time::Instant::now() >= deadline => {
                 panic!(
-                    "fetch job did not complete within 30s: state={:?}, progress={:?}, error={:?}",
-                    j.state, j.progress, j.error
+                    "fetch job did not complete within {}s: state={:?}, progress={:?}, error={:?}",
+                    FETCH_FIXTURE_FULL_SUITE_TIMEOUT.as_secs(),
+                    j.state,
+                    j.progress,
+                    j.error
                 );
             }
             _ => tokio::time::sleep(std::time::Duration::from_millis(25)).await,

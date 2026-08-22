@@ -113,34 +113,53 @@ fn native_environment_keeps_inheritance_and_adds_restricted_cut_routing() {
 }
 
 #[test]
-fn exact_version_and_help_contract_are_required() {
-    let help = REQUIRED_HELP_TOKENS.join(" ");
-    assert!(verify_claude_capability_contract("2.1.224 (Claude Code)", &help).is_ok());
-    assert!(is_supported_claude_version("2.1.224 (Claude Code)"));
-    assert!(!is_supported_claude_version("2.1.225 (Claude Code)"));
-    assert!(verify_claude_capability_contract("2.1.225 (Claude Code)", &help).is_err());
-    for missing in REQUIRED_HELP_TOKENS {
-        let incomplete = REQUIRED_HELP_TOKENS
+fn contained_claude_contract_uses_capabilities_not_version_text() {
+    let help = REQUIRED_CONTAINED_CLAUDE_HELP_TOKENS.join(" ");
+    for version in [
+        "",
+        "Claude Code",
+        "current",
+        "2.1.223 (Claude Code)",
+        "2.1.224 (Claude Code)",
+        "2.1.236 (Claude Code)",
+        "3.0.0 (Claude Code)",
+        "99.99.99 (Claude Code)",
+        "3.0.0-beta.1+build.4 (Claude Code)",
+    ] {
+        assert!(
+            verify_claude_capability_contract(&help).is_ok(),
+            "version number alone must not reject a capable Claude CLI: {version}"
+        );
+    }
+    for missing in REQUIRED_CONTAINED_CLAUDE_HELP_TOKENS {
+        let incomplete = REQUIRED_CONTAINED_CLAUDE_HELP_TOKENS
             .iter()
             .copied()
             .filter(|token| token != missing)
             .collect::<Vec<_>>()
             .join(" ");
-        let error = verify_claude_capability_contract("2.1.224", &incomplete)
+        let error = verify_claude_capability_contract(&incomplete)
             .expect_err("each containment flag must be mandatory");
         assert!(
             error.contains(missing),
             "missing flag must be named: {missing}"
         );
     }
+    let renamed_flag = help.replacen("--model", "--model-v2", 1);
+    let error = verify_claude_capability_contract(&renamed_flag)
+        .expect_err("a longer, similarly named flag must not satisfy containment");
+    assert!(error.contains("--model"));
 }
 
 #[test]
-fn codex_capability_contract_is_flag_based_not_version_pinned() {
+fn codex_capability_contract_is_flag_based() {
     let help = REQUIRED_CODEX_EXEC_HELP_TOKENS.join(" ");
-    assert!(verify_codex_capability_contract("codex-cli 0.147.0", &help).is_ok());
-    assert!(verify_codex_capability_contract("codex-cli 0.148.0", &help).is_ok());
-    assert!(verify_codex_capability_contract("other-cli 1.0.0", &help).is_err());
+    for version in ["", "other-cli 1.0.0", "current build"] {
+        assert!(
+            verify_codex_capability_contract(&help).is_ok(),
+            "version text must not gate a capable Codex CLI: {version:?}"
+        );
+    }
     for missing in REQUIRED_CODEX_EXEC_HELP_TOKENS {
         let incomplete = REQUIRED_CODEX_EXEC_HELP_TOKENS
             .iter()
@@ -148,10 +167,13 @@ fn codex_capability_contract_is_flag_based_not_version_pinned() {
             .filter(|token| token != missing)
             .collect::<Vec<_>>()
             .join(" ");
-        let error = verify_codex_capability_contract("codex-cli 0.147.0", &incomplete)
+        let error = verify_codex_capability_contract(&incomplete)
             .expect_err("each required launch flag must be advertised");
         assert!(error.contains(missing));
     }
+    let error = verify_codex_capability_contract(&help.replacen("--model", "--model-v2", 1))
+        .expect_err("a longer, similarly named flag must not satisfy Codex containment");
+    assert!(error.contains("--model"));
 }
 
 #[test]

@@ -12,6 +12,8 @@ export interface LibraryQueryOptions {
   search: string
   sort: SortKey
   collection: LibraryCollection
+  /** Bounded identity lookup used by cross-surface reveal, never a path query. */
+  ids?: string[]
 }
 
 export interface LibraryQueryState {
@@ -28,6 +30,8 @@ export interface LibraryQueryState {
   pageCount: number
   qDebounced: string
   queryKey: string
+  /** Key of the last successful server response (not stale rows from a prior view). */
+  loadedQueryKey: string | null
   reload: () => void
   previousPage: () => void
   nextPage: () => void
@@ -47,6 +51,7 @@ export function useLibraryQuery({
   search,
   sort,
   collection,
+  ids,
 }: LibraryQueryOptions): LibraryQueryState {
   const [qDebounced, setQDebounced] = useState('')
   const [page, setPage] = useState({ key: '', offset: 0 })
@@ -59,7 +64,10 @@ export function useLibraryQuery({
   const [nextOffset, setNextOffset] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null)
   const requestSeq = useRef(0)
+  const exactIdsKey = Array.from(new Set(ids ?? [])).filter(Boolean).sort().join('\u0000')
+  const exactIds = useMemo(() => exactIdsKey ? exactIdsKey.split('\u0000') : [], [exactIdsKey])
 
   useEffect(() => {
     const timer = setTimeout(() => setQDebounced(search.trim()), 220)
@@ -74,8 +82,9 @@ export function useLibraryQuery({
       tag ?? '',
       qDebounced,
       sort,
+      exactIdsKey,
     ].join('\u0000'),
-    [collection, type, folder, tag, qDebounced, sort],
+    [collection, type, folder, tag, qDebounced, sort, exactIdsKey],
   )
   const offset = page.key === queryKey ? page.offset : 0
 
@@ -91,14 +100,20 @@ export function useLibraryQuery({
     const args: VerbArgs['library.list'] = {
       sort,
       offset,
-      limit: LIBRARY_PAGE_SIZE,
+      limit: exactIds.length || LIBRARY_PAGE_SIZE,
     }
-    if (type !== 'all') args.type = type
-    if (folder != null) args.folder = folder
-    if (tag) args.tag = tag
-    if (qDebounced) args.q = qDebounced
-    if (collection === 'favorites' || collection === 'missing') {
-      args.collection = collection
+    if (exactIds.length) {
+      // Exact reveal supersedes user filters so a registered item cannot stay
+      // hidden behind an old search/folder/favorite view.
+      args.ids = exactIds
+    } else {
+      if (type !== 'all') args.type = type
+      if (folder != null) args.folder = folder
+      if (tag) args.tag = tag
+      if (qDebounced) args.q = qDebounced
+      if (collection === 'favorites' || collection === 'missing') {
+        args.collection = collection
+      }
     }
 
     void callVerb('library.list', args).then((result) => {
@@ -122,6 +137,7 @@ export function useLibraryQuery({
       setTotal(value.total)
       setLimit(value.limit)
       setNextOffset(value.next_offset ?? null)
+      setLoadedQueryKey(queryKey)
       setLoading(false)
       document.dispatchEvent(new CustomEvent('cut:library-changed'))
     }).catch((cause: unknown) => {
@@ -135,6 +151,7 @@ export function useLibraryQuery({
   }, [
     active,
     collection,
+    exactIds,
     folder,
     offset,
     qDebounced,
@@ -173,6 +190,7 @@ export function useLibraryQuery({
     pageCount,
     qDebounced,
     queryKey,
+    loadedQueryKey,
     reload,
     previousPage,
     nextPage,

@@ -181,7 +181,9 @@ pub(crate) fn read_generation_provenance(
     let recorded_generation_id = required_string("generation_id", 64)?;
     let provider = required_string("provider", 16)?;
     let kind = required_string("kind", 16)?;
-    if !matches!(provider.as_str(), "codex" | "grok") || !matches!(kind.as_str(), "image" | "video")
+    if !matches!(provider.as_str(), "codex" | "grok" | "antigravity")
+        || !matches!(kind.as_str(), "image" | "video")
+        || (provider == "antigravity" && kind != "image")
     {
         return Err(GenerationProvenanceIssue::Invalid);
     }
@@ -716,5 +718,37 @@ mod tests {
         assert_eq!(parsed.family_id, generation_id);
         assert!(parsed.references.is_empty());
         assert_eq!(parsed.created_at_ms, None);
+    }
+
+    #[test]
+    fn antigravity_provenance_is_image_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("antigravity.json");
+        let generation_id = generation_family_id("antigravity", "image", None, "amber card", &[]);
+        let document = json!({
+            "schema": "shellx-cut/generated-asset/1",
+            "generation_id": generation_id,
+            "provider": "antigravity",
+            "kind": "image",
+            "model": null,
+            "prompt": "amber card",
+            "cost_note": "price unavailable",
+            "content_hash": format!("sha256:{}", "d".repeat(64)),
+        });
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert_eq!(
+            read_generation_provenance(&path).unwrap().provider,
+            "antigravity"
+        );
+
+        let video_id = generation_family_id("antigravity", "video", None, "amber card", &[]);
+        let mut video = document;
+        video["generation_id"] = json!(video_id);
+        video["kind"] = json!("video");
+        std::fs::write(&path, serde_json::to_vec(&video).unwrap()).unwrap();
+        assert_eq!(
+            read_generation_provenance(&path),
+            Err(GenerationProvenanceIssue::Invalid)
+        );
     }
 }

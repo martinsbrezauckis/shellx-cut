@@ -1,9 +1,6 @@
 //! Bounded executable capability probes for Agent Chat providers.
 
-use super::{
-    verify_antigravity_capability_contract, verify_claude_capability_contract,
-    verify_codex_capability_contract, verify_grok_capability_contract, LaunchEnvironment,
-};
+use super::{capability_help_args, verify_agent_capability_contract, LaunchEnvironment};
 use std::path::Path;
 
 async fn probe(
@@ -43,17 +40,25 @@ async fn probe(
             output.status.code().unwrap_or(-1)
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    let help = if output.stdout.is_empty() {
+        &output.stderr
+    } else {
+        &output.stdout
+    };
+    Ok(String::from_utf8_lossy(help).into_owned())
 }
 
-async fn verify_claude(
+async fn verify_capability_contract(
+    agent: &str,
+    display_name: &str,
     executable: &Path,
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<(), String> {
-    let version = probe("Claude", executable, &["--version"], environment, workspace).await?;
-    let help = probe("Claude", executable, &["--help"], environment, workspace).await?;
-    verify_claude_capability_contract(&version, &help)
+    let arguments = capability_help_args(agent)
+        .ok_or_else(|| format!("agent '{agent}' has no Agent Chat launch contract"))?;
+    let help = probe(display_name, executable, arguments, environment, workspace).await?;
+    verify_agent_capability_contract(agent, &help)
 }
 
 pub(super) async fn installed_agent(
@@ -63,43 +68,24 @@ pub(super) async fn installed_agent(
     workspace: &Path,
 ) -> Result<(), String> {
     match agent {
-        "claude" => verify_claude(executable, environment, workspace).await,
+        "claude" => {
+            verify_capability_contract("claude", "Claude", executable, environment, workspace).await
+        }
         "codex" => {
-            let version =
-                probe("Codex", executable, &["--version"], environment, workspace).await?;
-            let help = probe(
-                "Codex",
-                executable,
-                &["exec", "--help"],
-                environment,
-                workspace,
-            )
-            .await?;
-            verify_codex_capability_contract(&version, &help)
+            verify_capability_contract("codex", "Codex", executable, environment, workspace).await
         }
         "grok" => {
-            let version = probe("Grok", executable, &["--version"], environment, workspace).await?;
-            let help = probe("Grok", executable, &["--help"], environment, workspace).await?;
-            verify_grok_capability_contract(&version, &help)
+            verify_capability_contract("grok", "Grok", executable, environment, workspace).await
         }
         "antigravity" => {
-            let version = probe(
+            verify_capability_contract(
+                "antigravity",
                 "Antigravity",
                 executable,
-                &["--version"],
                 environment,
                 workspace,
             )
-            .await?;
-            let help = probe(
-                "Antigravity",
-                executable,
-                &["--help"],
-                environment,
-                workspace,
-            )
-            .await?;
-            verify_antigravity_capability_contract(&version, &help)
+            .await
         }
         _ => Err(format!("agent '{agent}' has no Agent Chat launch contract")),
     }

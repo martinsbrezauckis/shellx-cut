@@ -1,94 +1,92 @@
 const areas = {
-  setup: { left: 0.396, top: 0.009, width: 0.055, height: 0.022, label: "Settings" },
-  recordMode: { left: 0.214, top: 0.009, width: 0.043, height: 0.022, label: "Record" },
-  projects: { left: 0.292, top: 0.009, width: 0.048, height: 0.022, label: "Projects" },
-  libraryTop: { left: 0.345, top: 0.009, width: 0.045, height: 0.022, label: "Library" },
-  manualTop: { left: 0.456, top: 0.009, width: 0.047, height: 0.022, label: "Manual" },
-  render: { left: 0.854, top: 0.009, width: 0.034, height: 0.022, label: "Render" },
+  setup: { left: 0.393, top: 0.009, width: 0.054, height: 0.025, label: "Settings" },
+  recordMode: { left: 0.236, top: 0.009, width: 0.043, height: 0.025, label: "Record" },
+  projects: { left: 0.288, top: 0.009, width: 0.05, height: 0.025, label: "Projects" },
+  libraryTop: { left: 0.343, top: 0.009, width: 0.044, height: 0.025, label: "Library" },
+  manualTop: { left: 0.452, top: 0.009, width: 0.048, height: 0.025, label: "Manual" },
+  render: { left: 0.897, top: 0.009, width: 0.048, height: 0.025, label: "Render" },
   exportMenu: { left: 0.95, top: 0.009, width: 0.042, height: 0.022, label: "Export" },
-  titleTool: { left: 0.632, top: 0.009, width: 0.014, height: 0.022, label: "Title" },
-  shapeTool: { left: 0.647, top: 0.009, width: 0.014, height: 0.022, label: "Shape" },
-  regionMaskTool: { left: 0.662, top: 0.009, width: 0.014, height: 0.022, label: "Mask / privacy" },
-  musicTool: { left: 0.678, top: 0.009, width: 0.014, height: 0.022, label: "Music" },
-  mixerTool: { left: 0.693, top: 0.009, width: 0.014, height: 0.022, label: "Mixer" },
-  repurposeTool: { left: 0.708, top: 0.009, width: 0.014, height: 0.022, label: "Repurpose" },
-  autopilotTool: { left: 0.724, top: 0.009, width: 0.014, height: 0.022, label: "Autopilot" },
-  recipesTool: { left: 0.739, top: 0.009, width: 0.014, height: 0.022, label: "Recipes" },
-  assembleTool: { left: 0.754, top: 0.009, width: 0.014, height: 0.022, label: "Assemble" },
-  storyboardTool: { left: 0.769, top: 0.009, width: 0.014, height: 0.022, label: "Storyboard" },
-  commentsTool: { left: 0.79, top: 0.009, width: 0.014, height: 0.022, label: "Comments" },
-  gpuToggle: { left: 0.81, top: 0.009, width: 0.041, height: 0.022, label: "GPU" },
+  titleTool: { left: 0.672, top: 0.009, width: 0.014, height: 0.025, label: "Title" },
+  shapeTool: { left: 0.69, top: 0.009, width: 0.014, height: 0.025, label: "Shape" },
+  regionMaskTool: { left: 0.708, top: 0.009, width: 0.014, height: 0.025, label: "Mask / privacy" },
+  musicTool: { left: 0.724, top: 0.009, width: 0.014, height: 0.025, label: "Music" },
+  mixerTool: { left: 0.74, top: 0.009, width: 0.014, height: 0.025, label: "Mixer" },
+  repurposeTool: { left: 0.756, top: 0.009, width: 0.014, height: 0.025, label: "Repurpose" },
+  autopilotTool: { left: 0.772, top: 0.009, width: 0.014, height: 0.025, label: "Autopilot" },
+  recipesTool: { left: 0.788, top: 0.009, width: 0.014, height: 0.025, label: "Recipes" },
+  assembleTool: { left: 0.804, top: 0.009, width: 0.014, height: 0.025, label: "Assemble" },
+  storyboardTool: { left: 0.82, top: 0.009, width: 0.014, height: 0.025, label: "Storyboard" },
+  commentsTool: { left: 0.836, top: 0.009, width: 0.014, height: 0.025, label: "Comments" },
+  gpuToggle: { left: 0.861, top: 0.009, width: 0.033, height: 0.025, label: "GPU" },
 
-  transcriptTab: { left: 0.004, top: 0.04, width: 0.036, height: 0.024, label: "Transcript" },
-  assetsTab: { left: 0.04, top: 0.04, width: 0.036, height: 0.024, label: "Assets" },
-  generateTab: { left: 0.077, top: 0.04, width: 0.034, height: 0.024, label: "Generate" },
-  libraryTab: { left: 0.111, top: 0.04, width: 0.027, height: 0.024, label: "Library tab" },
-  projectsTab: { left: 0.139, top: 0.04, width: 0.03, height: 0.024, label: "Projects tab" },
-  findTab: { left: 0.17, top: 0.04, width: 0.02, height: 0.024, label: "Find tab" },
-  findMediaTab: { left: 0.004, top: 0.071, width: 0.196, height: 0.022, label: "Find media" },
-  findMomentTab: { left: 0.2, top: 0.071, width: 0.196, height: 0.022, label: "Find moment" },
-  stockSearch: { left: 0.007, top: 0.271, width: 0.385, height: 0.026, label: "Search field" },
-  proxyToggle: { left: 0.111, top: 0.112, width: 0.022, height: 0.02, label: "Proxies" },
-  assetSearch: { left: 0.007, top: 0.148, width: 0.29, height: 0.026, label: "Filter field" },
-  assetFilters: { left: 0, top: 0.142, width: 0.305, height: 0.065, label: "Kind filters" },
-  assetNeedsAction: { left: 0.195, top: 0.176, width: 0.086, height: 0.023, label: "Needs action" },
-  mediaHealth: { left: 0, top: 0.207, width: 0.305, height: 0.074, label: "Media Health" },
-  importButton: { left: 0.175, top: 0.106, width: 0.052, height: 0.027, label: "Import" },
-  generateButton: { left: 0.232, top: 0.106, width: 0.065, height: 0.027, label: "Generate asset" },
-  assetCard: { left: 0.006, top: 0.29, width: 0.294, height: 0.082, label: "Asset card" },
-  addAtPlayhead: { left: 0.202, top: 0.318, width: 0.07, height: 0.027, label: "Add at playhead" },
+  transcriptTab: { left: 0.074, top: 0.041, width: 0.036, height: 0.023, label: "Transcript" },
+  assetsTab: { left: 0.035, top: 0.041, width: 0.032, height: 0.023, label: "Assets" },
+  generateTab: { left: 0.111, top: 0.041, width: 0.034, height: 0.023, label: "Generate" },
+  libraryTab: { left: 0.343, top: 0.009, width: 0.044, height: 0.025, label: "Library" },
+  projectsTab: { left: 0.288, top: 0.009, width: 0.05, height: 0.025, label: "Projects" },
+  findTab: { left: 0.145, top: 0.041, width: 0.022, height: 0.023, label: "Find tab" },
+  assetSearch: { left: 0.005, top: 0.098, width: 0.18, height: 0.019, label: "Filter field" },
+  assetFilters: { left: 0.005, top: 0.098, width: 0.39, height: 0.019, label: "Kind filters" },
+  assetNeedsAction: { left: 0.36, top: 0.098, width: 0.035, height: 0.019, label: "Needs action" },
+  mediaHealth: { left: 0.005, top: 0.152, width: 0.39, height: 0.061, label: "Readiness summary" },
+  proxyToggle: { left: 0.266, top: 0.072, width: 0.041, height: 0.018, label: "Proxies" },
+  importButton: { left: 0.31, top: 0.071, width: 0.036, height: 0.02, label: "Import" },
+  generateButton: { left: 0.35, top: 0.071, width: 0.044, height: 0.02, label: "Generate asset" },
+  assetCard: { left: 0.004, top: 0.242, width: 0.392, height: 0.042, label: "Asset card" },
+  addAtPlayhead: { left: 0.328, top: 0.253, width: 0.047, height: 0.019, label: "Add at playhead" },
 
-  preview: { left: 0.306, top: 0.06, width: 0.457, height: 0.583, label: "Preview" },
-  previewSetup: { left: 0.44, top: 0.085, width: 0.2, height: 0.055, label: "FFmpeg setup notice" },
-  playbackButtons: { left: 0.48, top: 0.599, width: 0.17, height: 0.044, label: "Playback" },
-  frameButton: { left: 0.595, top: 0.603, width: 0.031, height: 0.038, label: "Frame" },
-  renderSelectionButton: { left: 0.629, top: 0.603, width: 0.062, height: 0.038, label: "Render selection" },
-  audioButton: { left: 0.692, top: 0.603, width: 0.033, height: 0.038, label: "Audio" },
-  composedToggle: { left: 0.733, top: 0.603, width: 0.06, height: 0.038, label: "Composed" },
-  guidesButton: { left: 0.775, top: 0.604, width: 0.016, height: 0.032, label: "Guides" },
-  fullscreenButton: { left: 0.791, top: 0.604, width: 0.016, height: 0.032, label: "Fullscreen" },
+  preview: { left: 0.4, top: 0.064, width: 0.443, height: 0.68, label: "Preview monitor" },
+  playbackButtons: { left: 0.618, top: 0.739, width: 0.07, height: 0.021, label: "Playback controls" },
+  frameButton: { left: 0.785, top: 0.739, width: 0.024, height: 0.021, label: "Frame" },
+  renderSelectionButton: { left: 0.81, top: 0.739, width: 0.033, height: 0.021, label: "Render selection" },
 
-  timelineTracks: { left: 0, top: 0.682, width: 0.763, height: 0.273, label: "Timeline" },
-  trackControls: { left: 0.004, top: 0.711, width: 0.095, height: 0.18, label: "Track controls" },
-  trackVisibility: { left: 0.006, top: 0.714, width: 0.019, height: 0.035, label: "Show / hide" },
-  trackOrder: { left: 0.026, top: 0.714, width: 0.038, height: 0.035, label: "Layer order" },
-  trackLock: { left: 0.065, top: 0.714, width: 0.026, height: 0.035, label: "Lock" },
-  trackMuteSolo: { left: 0.006, top: 0.796, width: 0.047, height: 0.035, label: "Mute / solo" },
-  trackListen: { left: 0.054, top: 0.796, width: 0.026, height: 0.035, label: "Listen" },
-  trackGain: { left: 0.006, top: 0.835, width: 0.052, height: 0.035, label: "Gain" },
-  trackPan: { left: 0.06, top: 0.835, width: 0.037, height: 0.035, label: "Pan" },
-  timecode: { left: 0.006, top: 0.645, width: 0.098, height: 0.035, label: "Timecode" },
-  razorButton: { left: 0.11, top: 0.635, width: 0.045, height: 0.056, label: "Razor" },
-  trimButton: { left: 0.157, top: 0.635, width: 0.04, height: 0.056, label: "Trim" },
-  snapButton: { left: 0.2, top: 0.635, width: 0.042, height: 0.056, label: "Snap" },
-  rippleButton: { left: 0.251, top: 0.635, width: 0.047, height: 0.056, label: "Ripple del" },
-  liftButton: { left: 0.301, top: 0.635, width: 0.036, height: 0.056, label: "Lift del" },
-  speedControls: { left: 0.346, top: 0.635, width: 0.126, height: 0.056, label: "Speed" },
-  syncButton: { left: 0.481, top: 0.635, width: 0.045, height: 0.056, label: "Sync" },
-  multicamButton: { left: 0.536, top: 0.635, width: 0.048, height: 0.056, label: "Multicam" },
-  beatButton: { left: 0.589, top: 0.635, width: 0.04, height: 0.056, label: "Beat" },
-  timelineCleanupTools: { left: 0.632, top: 0.635, width: 0.18, height: 0.056, label: "Cleanup tools" },
-  trimDeadAirButton: { left: 0.632, top: 0.635, width: 0.064, height: 0.056, label: "Trim dead air" },
-  splitScenesButton: { left: 0.699, top: 0.635, width: 0.056, height: 0.056, label: "Split scenes" },
-  markScenesButton: { left: 0.758, top: 0.635, width: 0.054, height: 0.056, label: "Mark scenes" },
-  gradeLayerMatte: { left: 0.632, top: 0.635, width: 0.082, height: 0.056, label: "Grade/Layer/Matte" },
-  saveAssetsGif: { left: 0.716, top: 0.635, width: 0.061, height: 0.056, label: "Save/GIF" },
+  timelineTracks: { left: 0, top: 0.762, width: 0.843, height: 0.198, label: "Timeline" },
+  timelineToolbar: { left: 0.004, top: 0.762, width: 0.839, height: 0.022, label: "Timeline toolbar" },
+  trackControls: { left: 0.004, top: 0.812, width: 0.078, height: 0.071, label: "Track controls" },
+  trackVisibility: { left: 0.06, top: 0.818, width: 0.011, height: 0.022, label: "Show / hide" },
+  trackOrder: { left: 0.004, top: 0.812, width: 0.078, height: 0.032, label: "Video track header" },
+  trackLock: { left: 0.07, top: 0.818, width: 0.01, height: 0.022, label: "Lock" },
+  trackMuteSolo: { left: 0.004, top: 0.85, width: 0.03, height: 0.03, label: "Mute / solo" },
+  trackListen: { left: 0.025, top: 0.85, width: 0.016, height: 0.03, label: "Listen" },
+  trackGain: { left: 0.045, top: 0.85, width: 0.03, height: 0.03, label: "Gain" },
+  trackPan: { left: 0.004, top: 0.85, width: 0.078, height: 0.03, label: "Audio track header" },
+  timecode: { left: 0.004, top: 0.762, width: 0.07, height: 0.022, label: "Timecode" },
+  razorButton: { left: 0.113, top: 0.762, width: 0.028, height: 0.022, label: "Razor" },
+  trimButton: { left: 0.146, top: 0.762, width: 0.028, height: 0.022, label: "Trim" },
+  snapButton: { left: 0.173, top: 0.762, width: 0.03, height: 0.022, label: "Snap" },
+  rippleButton: { left: 0.398, top: 0.762, width: 0.039, height: 0.022, label: "Ripple del" },
+  liftButton: { left: 0.444, top: 0.762, width: 0.035, height: 0.022, label: "Lift del" },
+  speedControls: { left: 0.488, top: 0.762, width: 0.065, height: 0.022, label: "Speed" },
+  gradeLayerMatte: { left: 0.566, top: 0.762, width: 0.07, height: 0.022, label: "Grade/Layer/Matte" },
+  saveAssetsGif: { left: 0.64, top: 0.762, width: 0.075, height: 0.022, label: "Save/GIF" },
+  timelineClip: { left: 0.082, top: 0.817, width: 0.125, height: 0.028, label: "Timeline clip" },
+  timelineSurface: { left: 0.23, top: 0.85, width: 0.4, height: 0.08, label: "Timeline empty lane" },
+  timelineMarker: { left: 0.09, top: 0.796, width: 0.02, height: 0.018, label: "Timeline marker" },
 
-  propertiesTab: { left: 0.769, top: 0.06, width: 0.059, height: 0.035, label: "Properties" },
-  colorTab: { left: 0.829, top: 0.06, width: 0.039, height: 0.035, label: "Color" },
-  audioTab: { left: 0.87, top: 0.06, width: 0.041, height: 0.035, label: "Audio" },
-  chatTab: { left: 0.912, top: 0.06, width: 0.036, height: 0.035, label: "Chat" },
-  toolsStrip: { left: 0.764, top: 0.06, width: 0.236, height: 0.896, label: "Tools strip" },
-  railPin: { left: 0.96, top: 0.064, width: 0.017, height: 0.027, label: "Pin tools" },
-  scoreButton: { left: 0.774, top: 0.273, width: 0.21, height: 0.032, label: "Score clip" },
-  fadeSliders: { left: 0.774, top: 0.324, width: 0.21, height: 0.125, label: "Fade sliders" },
-  transformSliders: { left: 0.774, top: 0.49, width: 0.21, height: 0.105, label: "Transform sliders" },
-  opsTab: { left: 0.764, top: 0.642, width: 0.059, height: 0.033, label: "Ops" },
-  receiptsTabs: { left: 0.823, top: 0.642, width: 0.12, height: 0.033, label: "Receipts/QC/Scopes/Diff" },
+  propertiesTab: { left: 0.846, top: 0.041, width: 0.043, height: 0.023, label: "Properties" },
+  colorTab: { left: 0.894, top: 0.041, width: 0.029, height: 0.023, label: "Color" },
+  audioTab: { left: 0.927, top: 0.041, width: 0.029, height: 0.023, label: "Audio inspector tab" },
+  chatTab: { left: 0.958, top: 0.041, width: 0.028, height: 0.023, label: "Chat" },
+  toolsStrip: { left: 0.843, top: 0.041, width: 0.157, height: 0.91, label: "Tools strip" },
+  railPin: { left: 0.977, top: 0.041, width: 0.011, height: 0.023, label: "Pin tools" },
+  inspectorHeader: { left: 0.848, top: 0.072, width: 0.14, height: 0.045, label: "Inspector" },
+  receiptStatus: { left: 0.806, top: 0.966, width: 0.08, height: 0.02, label: "Receipt status" },
 
-  cutdStatus: { left: 0.008, top: 0.968, width: 0.055, height: 0.02, label: "cutd status" },
-  envStatus: { left: 0.074, top: 0.968, width: 0.115, height: 0.02, label: "Environment" },
-  versionStatus: { left: 0.895, top: 0.968, width: 0.1, height: 0.02, label: "Version" },
+  cutdStatus: { left: 0.005, top: 0.966, width: 0.04, height: 0.02, label: "cutd status" },
+  envStatus: { left: 0.05, top: 0.966, width: 0.09, height: 0.02, label: "Environment" },
+  versionStatus: { left: 0.956, top: 0.966, width: 0.043, height: 0.02, label: "Version" },
+};
+
+const recordAreas = {
+  workspace: { surface: "recording", left: 0.015, top: 0.075, width: 0.68, height: 0.86, label: "Recording workspace" },
+  studioPreview: { surface: "recording", left: 0.015, top: 0.681, width: 0.485, height: 0.318, label: "Studio preview" },
+  cameraUnavailable: { surface: "recording", left: 0.52, top: 0.697, width: 0.155, height: 0.083, label: "Camera capture unavailable" },
+  background: { surface: "recording", left: 0.52, top: 0.81, width: 0.155, height: 0.04, label: "Background selector" },
+  rawStreams: { surface: "recording", left: 0.52, top: 0.878, width: 0.14, height: 0.058, label: "Raw streams" },
+  hotkeys: { surface: "recording", left: 0.547, top: 0.362, width: 0.126, height: 0.043, label: "Start recording (F9)" },
+  rawMode: { surface: "recording", left: 0.405, top: 0.363, width: 0.072, height: 0.034, label: "Raw capture" },
+  autoedit: { surface: "recording", left: 0.349, top: 0.363, width: 0.057, height: 0.034, label: "Auto-edit" },
+  studioEvents: { surface: "recording", left: 0.52, top: 0.907, width: 0.052, height: 0.031, label: "Studio events" },
 };
 
 function opened(title, items, left, top, width = 0.16) {
@@ -114,7 +112,7 @@ const opens = {
   storyboard: opened("Storyboard", ["Generate plan", "Review shots", "Preview sequence", "Insert storyboard"], 0.73, 0.047, 0.17),
   comments: opened("Review comments", ["Add comment", "Draft reply", "Apply note", "Resolve"], 0.75, 0.047, 0.17),
   transcript: opened("Transcript", ["Phrase search", "Clip / Program / Source", "Generate captions", "Transcript tools"], 0.01, 0.087, 0.28),
-  assets: opened("Assets", ["Media Health", "Readiness badges", "Needs action filter", "Proxy imports", "Relink missing files"], 0.01, 0.087, 0.28),
+  assets: opened("Assets", ["Media Health", "Readiness badges", "Needs action filter", "Proxy imports", "Source Monitor / All uses / Reveal", "Relink missing files"], 0.01, 0.087, 0.28),
   generate: opened("Generate", ["Templates", "Prompt plan", "Storyboard plan", "Reference media", "History / compare", "Insert / replace"], 0.01, 0.087, 0.28),
   color: opened("Color", ["Basic grade", "Looks", "Exposure", "Contrast"], 0.825, 0.087, 0.16),
   audio: opened("Audio", ["Gain", "Waveform", "Linked audio", "Ducking"], 0.825, 0.087, 0.16),
@@ -122,6 +120,14 @@ const opens = {
   selectedTools: opened("Selected-clip tools", ["Properties", "Color", "Audio", "Chat", "Pin tools"], 0.79, 0.087, 0.2),
   receipts: opened("Review tabs", ["Receipts", "QC", "Scopes", "Diff", "Accept / reject"], 0.825, 0.665, 0.16),
   record: opened("Record", ["Studio preview", "Camera capture", "Background", "Raw streams", "Hotkeys", "Start / Stop"], 0.19, 0.047, 0.18),
+  contextAsset: opened("Asset menu", ["Open in Source Monitor", "Add at playhead", "Relink source…", "Remove from project…"], 0.018, 0.29, 0.2),
+  contextLibrary: opened("Library item menu", ["Add to project", "Insert at playhead", "Add / remove favorite", "Edit tags…", "Move to…", "Relink source…", "Make portable copy…", "Remove from Library…"], 0.06, 0.12, 0.22),
+  contextProject: opened("Recent project menu", ["Reopen", "Forget from list", "Delete project…"], 0.16, 0.1, 0.18),
+  contextPreview: opened("Preview menu", ["Open base source", "Seek to base clip start", "Add marker here"], 0.53, 0.31, 0.2),
+  contextTimelineClip: opened("Clip menu", ["Split here", "Trim (slip / slide / roll)…", "Copy", "Cut", "Paste attributes…", "Match Frame", "Reveal in Project / Library", "Reveal Source File", "Replace with…", "Fit to fill gap…", "Audio…", "Speed & time…", "Remove clip", "Remove, keep gap"], 0.37, 0.72, 0.22),
+  contextTimelineSurface: opened("Timeline menu", ["Seek here", "Paste copied clip here", "Add marker here", "Set export in / out", "Add video track", "Add audio track"], 0.42, 0.76, 0.22),
+  contextTimelineTrack: opened("Track menu", ["Match Frame", "Lock / unlock track", "Show / hide track", "Mute / solo track", "Remove track…"], 0.08, 0.74, 0.2),
+  contextTimelineMarker: opened("Marker menu", ["Rename marker", "Add a marker note", "Set marker color", "Seek to marker", "Delete marker"], 0.28, 0.69, 0.2),
 };
 
 function feature(title, where, description, requirement, api, highlight, open) {
@@ -234,7 +240,6 @@ const features = {
   "cut.top.projects": feature("Projects", "Top bar", "Open, switch, create, or return to recent Cut projects.", "Project files use .cutproj directories.", "project.list, project.open, project.create", areas.projects, opens.projects),
   "cut.record.open": feature("Record workspace", "Top bar", "Switch from Edit into the Recording Studio workspace for screen capture, background choice, raw streams, and auto-polished recording clips.", "Requires a desktop capture backend; FFmpeg is required for recording and output.", "ui.open {panel:\"record\"}, screen_record.doctor", areas.recordMode, opens.record),
   "cut.top.library": feature("Library", "Top bar", "Open saved media, reusable assets, and library-backed material.", "Requires media already saved to the library.", "library.list, library.add_to_project", areas.libraryTop, opens.library),
-  "cut.top.find": feature("Find tab", "Left sidebar", "Search for reusable media and indexed visual moments without opening a header menu.", "Find media works immediately; Find moment works best after video indexing.", "assets.search, assets.fetch, media.search, media.index, ui.open", areas.findTab, opens.find),
   "cut.top.settings": feature("Settings", "Top bar", "Configure tools, environment readiness, agents, paths, and editor preferences.", "Some checks require FFmpeg or CLI tools installed locally.", "system.doctor, system.mcp_test", areas.setup, opens.settings),
   "cut.top.manual": feature("Manual", "Top bar", "Open the current ShellX Cut web manual at docs.theshellx.com/manual/cut/ from inside Cut.", "Requires a browser and network access for the latest online manual.", "CUT_MANUAL_URL, docs.theshellx.com/manual/cut/", areas.manualTop),
 
@@ -264,24 +269,24 @@ const features = {
   "cut.left.add_at_playhead": feature("Add at playhead", "Asset card", "Insert an asset at the current playhead on the base story timeline. Linked audio is placed with the video so preview and export stay audible.", "Requires an imported asset and an open project.", "edit.insert", areas.addAtPlayhead),
   "cut.left.generate": feature("Generate tab", "Left sidebar", "Create prompt plans, storyboard material, generated inserts, and reusable generated assets.", "Prompt and storyboard planning need a configured CLI agent.", "generate.list, generate.preview, generate.insert, generate.from_prompt, generate.storyboard", areas.generateTab, opens.generate),
   "cut.left.generated_history": feature("Generated history and compare", "Generate tab", "Review integrity-checked project generation history, compare takes, choose one, then insert it or replace the selected clip without regenerating.", "Requires at least one completed generated image or video in the open project.", "assets.generated_list, edit.insert, edit.replace", areas.generateTab, selectedOpen(opens.generate, "History / compare")),
-  "cut.left.generated_references": feature("References and variations", "Generate tab", "Attach up to four registered project image or video assets as generation references and label the requested variation. Retry reuses the saved provenance and never exposes arbitrary source paths.", "Provider-backed generation requires the selected local generation CLI and may spend provider quota only after confirmation.", "assets.generate, assets.generated_list", areas.generateTab, selectedOpen(opens.generate, "Reference media")),
-  "cut.left.motion_edit": feature("Edit in Motion", "Timeline and Inspector", "Open the selected linked Motion package in Canvas without exposing the package or return-request paths. Canvas publishes a new immutable ready revision only after its render is verified.", "Requires a selected Motion-linked clip and an installed or configured ShellX Canvas editor.", "motion.link.edit", areas.generateTab, selectedOpen(opens.generate, "Templates")),
+  "cut.left.generated_references": feature("References and variations", "Generate tab", "Attach up to four registered project image or video assets as generation references and label the requested variation. Choose Codex images, Grok Imagine images/video, or Antigravity (`agy`) images; retry reuses saved provenance and never exposes arbitrary source paths.", "Provider-backed generation requires the selected local generation CLI and may spend provider quota only after confirmation. Antigravity uses its native sandboxed non-interactive contract and is image-only.", "assets.generate, assets.generated_list", areas.generateTab, selectedOpen(opens.generate, "Reference media")),
+  "cut.left.motion_edit": feature("Edit in Motion", "Timeline and Inspector", "Open the selected linked Motion package in ShellX Motion without exposing the package or return-request paths. ShellX Motion publishes a new immutable ready revision only after its render is verified.", "Requires a selected Motion-linked clip and an installed or configured ShellX Motion editor.", "motion.link.edit", areas.generateTab, selectedOpen(opens.generate, "Templates")),
   "cut.left.motion_refresh": feature("Refresh linked Motion render", "Timeline and Inspector", "Adopt the newest verified Canvas return for the same package, motion identity, and authored source revision, replacing pixels in the existing Cut clip without changing its editorial identity.", "Run Edit in Motion and complete a verified Canvas render first. A mismatch or failed render leaves the last good Cut clip untouched.", "motion.link.refresh, project.undo", areas.generateTab, selectedOpen(opens.generate, "Templates")),
   "cut.left.motion_tracking": feature("Track and stabilize linked footage", "Inspector", "Choose manifest-declared footage and a visual target, analyze a point or planar region, apply ordinary Motion transform keyframes, verify the attachment, or detach back to the exact prior keyframes.", "Requires a Motion-linked package with footage and a target visual layer. Refresh remains explicit after applying or detaching.", "motion.link.tracking.inventory, motion.link.tracking.request, motion.link.tracking.apply, motion.link.tracking.verify, motion.link.tracking.detach", areas.generateTab, selectedOpen(opens.generate, "Templates")),
-  "cut.left.find": feature("Find tab", "Left sidebar", "Keep search available at all times in the sidebar. Use it for reusable media, local folders, and indexed visual moments.", "Find media needs no project-specific indexing; Find moment needs imported video and indexing for content search.", "assets.search, assets.fetch, media.index, media.search, ui.open", areas.findTab, opens.find),
-  "cut.left.find.media": menuChoice("Find media", "Find tab", "Search reusable media providers or a local folder, then import a result into the open project.", "assets.search, assets.fetch", areas.findMediaTab, opens.find, "Find media"),
-  "cut.left.find.moment": menuChoice("Find moment", "Find tab", "Search indexed frames inside the project to jump to matching visual moments.", "media.index, media.search", areas.findMomentTab, opens.find, "Find moment", "Requires imported video; index the clip before content search."),
+  "cut.left.find": feature("Find tab", "Left sidebar", "Keep search available at all times in the sidebar. Use it for reusable media, local folders, source-backed stock, and indexed visual moments.", "Find media needs no project-specific indexing; Find moment needs imported video and indexing for content search.", "assets.providers, assets.search, assets.fetch, media.index, media.search, ui.open", areas.findTab, opens.find),
+  "cut.left.find.media": menuChoice("Find media", "Find tab", "Choose a source from the matching Cut server, search its supported kinds, review license and credit, then import into the open project. Built-in stickers work offline and can be browsed without a query; network sources are contacted when you search or import a result.", "assets.providers, assets.search, assets.fetch", areas.findTab, opens.find, "Find media"),
+  "cut.left.find.moment": menuChoice("Find moment", "Find tab", "Search indexed frames inside the project to jump to matching visual moments.", "media.index, media.search", areas.findTab, opens.find, "Find moment", "Requires imported video; index the clip before content search."),
   "cut.left.sequence_index": menuChoice("Sequence Index", "Find tab", "Search clips and markers across every project sequence, filter by result kind, sequence, or track, then switch sequences and seek the exact result time.", "project.sequence_index, project.sequence_switch, ui.playhead", areas.findTab, opens.find, "Sequence Index", "Requires an open project; results remain path-light and project-scoped."),
 
   "cut.preview.monitor": feature("Video preview", "Center editor surface", "Preview the current frame, selected edit, and rendered composition while you work.", "Requires imported media for real playback.", "ui.screenshot, render.preview", areas.preview),
-  "cut.preview.ffmpeg_setup": feature("Preview setup notice", "Preview monitor", "When FFmpeg is missing, Preview shows a clear setup notice with an Install action that opens the Video processing card.", "Requires the system doctor to confirm FFmpeg is missing.", "system.doctor, system.fetch_tool, ui.highlight", areas.previewSetup),
+  "cut.preview.ffmpeg_setup": feature("Preview setup notice", "Preview monitor", "When FFmpeg is missing, Preview shows a clear setup notice with an Install action that opens the Video processing card.", "Requires the system doctor to confirm FFmpeg is missing.", "system.doctor, system.fetch_tool, ui.highlight", areas.preview),
   "cut.preview.transport": feature("Play controls", "Preview monitor", "Jump to start or end, shuttle backward or forward, and play or pause the timeline.", "Requires an open timeline.", "ui.playhead (play/pause is a preview transport, not a verb)", areas.playbackButtons),
   "cut.preview.frame": feature("Frame button", "Preview controls", "Capture or save the current preview frame for review or reuse.", "Requires a visible preview frame.", "render.frame, media.import", areas.frameButton),
   "cut.preview.render_selection": feature("Render selection", "Preview controls", "Render only the selected range when a timeline range is active.", "Requires an export range on the ruler.", "render.preview", areas.renderSelectionButton),
-  "cut.preview.audio": feature("Audio monitor", "Preview controls", "Toggle and monitor preview audio while checking cuts, sync, and narration.", "Requires audio in the timeline for level movement.", "media.waveform, edit.gain", areas.audioButton),
-  "cut.preview.composed": feature("Composed toggle", "Preview controls", "Switch composed preview on or off when checking generated frames, overlays, or render previews.", "Depends on the active render or preview mode.", "render.preview", areas.composedToggle),
-  "cut.preview.guides": feature("Guides", "Preview controls", "Cycle visual guides for safe areas, thirds, or both when framing titles and overlays.", "No setup required.", "no verb — a preview-only control", areas.guidesButton),
-  "cut.preview.fullscreen": feature("Full-screen preview", "Preview controls", "Expand the monitor when checking focus, titles, caption placement, or visual defects.", "No setup required.", "no verb — a preview-only control", areas.fullscreenButton),
+  "cut.preview.audio": feature("Audio monitor", "Preview controls", "Toggle and monitor preview audio while checking cuts, sync, and narration.", "Requires audio in the timeline for level movement.", "media.waveform, edit.gain", areas.preview),
+  "cut.preview.composed": feature("Composed toggle", "Preview controls", "Switch composed preview on or off when checking generated frames, overlays, or render previews.", "Depends on the active render or preview mode.", "render.preview", areas.preview),
+  "cut.preview.guides": feature("Guides", "Preview controls", "Cycle visual guides for safe areas, thirds, or both when framing titles and overlays.", "No setup required.", "no verb — a preview-only control", areas.preview),
+  "cut.preview.fullscreen": feature("Full-screen preview", "Preview controls", "Expand the monitor when checking focus, titles, caption placement, or visual defects.", "No setup required.", "no verb — a preview-only control", areas.preview),
 
   "cut.timeline.timecode": feature("Timecode", "Timeline", "Read or jump the current playhead time while trimming and reviewing edits.", "Requires an open timeline.", "ui.playhead", areas.timecode),
   "cut.timeline.razor": feature("Razor", "Timeline toolbar", "Split a clip at the playhead so each side can be moved, trimmed, graded, or deleted independently.", "Requires a clip under the playhead.", "edit.split", areas.razorButton),
@@ -290,13 +295,13 @@ const features = {
   "cut.timeline.ripple": feature("Ripple delete", "Timeline toolbar", "Delete a selection and close the gap so following clips move left.", "Requires a selected clip or range.", "edit.ripple_delete", areas.rippleButton),
   "cut.timeline.lift": feature("Lift delete", "Timeline toolbar", "Delete a selection while leaving a gap in its original time span.", "Requires a selected clip or range.", "edit.ripple_delete {ripple:false}", areas.liftButton),
   "cut.timeline.speed": feature("Speed controls", "Timeline toolbar", "Retiming controls change clip playback speed while preserving the edit span rules.", "Requires a selected clip.", "edit.speed", areas.speedControls),
-  "cut.timeline.sync": feature("Sync by audio", "Timeline toolbar", "Align clips using their audio waveforms when matching camera or recorder sources.", "Requires clips with usable audio.", "edit.multicam_sync", areas.syncButton),
-  "cut.timeline.multicam": feature("Auto multicam", "Timeline toolbar", "Build a multicam-style alignment from multiple sources when their audio can be matched.", "Requires multiple compatible clips.", "edit.multicam_switch", areas.multicamButton),
-  "cut.timeline.beat": feature("Cut to beat", "Timeline toolbar", "Place cuts or timing choices against detected beats in the audio.", "Requires analyzed audio.", "edit.cut_to_beat", areas.beatButton),
-  "cut.timeline.cleanup_tools": feature("Cleanup tools", "Timeline toolbar", "Run cleanup and scene-detection actions directly beside editing tools instead of opening a top-bar menu.", "Requires an open project. Scene actions need at least one imported video asset.", "edit.trim_edges, edit.split_at_scenes, edit.mark_scenes", areas.timelineCleanupTools),
-  "cut.timeline.trim_dead_air": feature("Trim dead air", "Timeline toolbar", "Trim silence from the beginning and end of the current timeline while keeping the operation reversible.", "Requires an open timeline with audio analysis available.", "edit.trim_edges", areas.trimDeadAirButton),
-  "cut.timeline.split_scenes": feature("Split scenes", "Timeline toolbar", "Split the first imported video asset at detected scene cuts so each scene can be moved, trimmed, or deleted.", "Requires an imported video asset with scene detection data.", "edit.split_at_scenes", areas.splitScenesButton),
-  "cut.timeline.mark_scenes": feature("Mark scenes", "Timeline toolbar", "Add timeline markers at detected scene cuts without changing clip timing.", "Requires an imported video asset with scene detection data.", "edit.mark_scenes", areas.markScenesButton),
+  "cut.timeline.sync": feature("Sync by audio", "Timeline toolbar", "Align clips using their audio waveforms when matching camera or recorder sources.", "Requires clips with usable audio.", "edit.multicam_sync", areas.timelineToolbar),
+  "cut.timeline.multicam": feature("Auto multicam", "Timeline toolbar", "Build a multicam-style alignment from multiple sources when their audio can be matched.", "Requires multiple compatible clips.", "edit.multicam_switch", areas.timelineToolbar),
+  "cut.timeline.beat": feature("Cut to beat", "Timeline toolbar", "Place cuts or timing choices against detected beats in the audio.", "Requires analyzed audio.", "edit.cut_to_beat", areas.timelineToolbar),
+  "cut.timeline.cleanup_tools": feature("Cleanup tools", "Timeline toolbar", "Run cleanup and scene-detection actions directly beside editing tools instead of opening a top-bar menu.", "Requires an open project. Scene actions need at least one imported video asset.", "edit.trim_edges, edit.split_at_scenes, edit.mark_scenes", areas.timelineToolbar),
+  "cut.timeline.trim_dead_air": feature("Trim dead air", "Timeline toolbar", "Trim silence from the beginning and end of the current timeline while keeping the operation reversible.", "Requires an open timeline with audio analysis available.", "edit.trim_edges", areas.timelineToolbar),
+  "cut.timeline.split_scenes": feature("Split scenes", "Timeline toolbar", "Split the first imported video asset at detected scene cuts so each scene can be moved, trimmed, or deleted.", "Requires an imported video asset with scene detection data.", "edit.split_at_scenes", areas.timelineToolbar),
+  "cut.timeline.mark_scenes": feature("Mark scenes", "Timeline toolbar", "Add timeline markers at detected scene cuts without changing clip timing.", "Requires an imported video asset with scene detection data.", "edit.mark_scenes", areas.timelineToolbar),
   "cut.timeline.grade": feature("Grade, Layer, Matte", "Timeline toolbar", "Open visual editing groups for color, compositing, layer behavior, and matte work.", "Requires a selected visual clip.", "edit.grade, edit.effect", areas.gradeLayerMatte),
   "cut.timeline.track_controls": feature("Track controls", "Timeline track header", "Use lane headers for show/hide, lock, layer order, mute, solo, listen, gain, and pan without opening the mixer first.", "Requires at least one timeline track; controls vary by track kind.", "edit.track_visible, edit.track_lock, edit.reorder_track, edit.mute, edit.solo, edit.gain, edit.pan, export.audio", areas.trackControls),
   "cut.timeline.track_visibility": feature("Show or hide a track", "Timeline track header", "Hide a video or caption lane from preview and export without deleting its clips. Use mute for audio tracks.", "Requires a video or caption track.", "edit.track_visible", areas.trackVisibility),
@@ -310,6 +315,16 @@ const features = {
   "cut.timeline.base_overlay": feature("Base track and overlays", "Timeline tracks", "Normal Insert and normal drops build the base story timeline and ripple later clips. Extra video tracks are overlays: use Alt-drag, a new overlay lane, or an existing overlay lane when the clip should appear on top.", "Requires an open project; overlay placement requires an overlay lane or Alt-drag.", "edit.insert, edit.add_track", areas.timelineTracks),
   "cut.timeline.save_assets": feature("Save to Assets and GIF", "Timeline toolbar", "Save selected output back into project assets or create a GIF from the current selection.", "Requires a selected range or renderable clip.", "media.import, render.preview", areas.saveAssetsGif),
 
+  "cut.context.menu": feature("Using context menus", "Assets, Library, Projects, Preview, and Timeline", "Right-click the exact item you want to work on. Cut keeps that target through the menu action instead of applying it to a similarly named or merely selected item. Commands that need an open project, compatible media, an unlocked track, or copied clip stay visible but explain why they are unavailable.", "For a focused Library item or folder, timeline clip, marker, or track header, press the Context Menu key or Shift+F10. Once open, use Arrow keys, Home, or End to move between enabled commands; Escape or an outside click closes the menu.", "UI menu; its enabled actions dispatch the corresponding Cut operation", areas.timelineTracks),
+  "cut.context.assets": feature("Asset item menu", "Assets card", "Right-click an asset card or use its More actions button. Video, audio, and still-image assets can open in Source Monitor; its All uses list is UI-only navigation over exact per-asset Sequence Index rows, switching and seeking to the chosen occurrence. A still shows an image preview with a bounded duration and an unlocked video target or Off; it has no pretend transport, source marks, range insert, or audio destination. Source Monitor can reveal that registered asset in Project Assets or Library, or ask the installed desktop shell to reveal its local source file; browser and unavailable-source cases explain why they refuse. An online asset can be added at the playhead; an offline asset gets Relink source. Remove from project is disabled while the asset still has timeline clips, and does not delete the original source file.", "Requires an imported asset. The exact actions vary by media kind, offline state, and whether Cut is already updating that asset.", "UI menu; exact asset target", areas.assetCard, opens.contextAsset),
+  "cut.context.library": feature("Library item and folder menus", "Library", "A Library item menu can add or insert its exact item into the open project, toggle favorite, edit tags, move it to a folder, relink a missing source, make a portable copy, or remove it from the Library. A folder menu is intentionally shorter: rename or delete the folder.", "Add and Insert require an open project and an available source. Focus a Library item or folder and use the Context Menu key or Shift+F10 when you do not want to right-click.", "UI menu; exact Library item or folder target", areas.libraryTab, opens.contextLibrary),
+  "cut.context.projects": feature("Recent project menu", "Projects", "Use the menu on a recent-project row to reopen that exact project, forget only its recent-list entry, or delete that project after confirmation. Forget leaves files on disk; deleting leaves original media files untouched.", "The current project cannot be reopened or deleted here. A missing project must be restored or forgotten first.", "UI menu; exact recent-project target", areas.projectsTab, opens.contextProject),
+  "cut.context.preview": feature("Preview menu", "Preview monitor", "Right-click the Preview monitor or choose More Preview actions. When there is an unambiguous base clip under the playhead, open that source in Source Monitor or seek to its start; with an open project, add a marker at the exact preview time.", "Open base source and Seek stay disabled over a black frame, gap, or composited view with no unambiguous base video.", "edit.add_marker; exact base clip and preview time", areas.preview, opens.contextPreview),
+  "cut.context.timeline_clip": feature("Timeline clip menu", "Timeline clip", "Right-click inside a timeline clip for target-specific edits. Footage exposes Match Frame, which opens Source Monitor on the exact normal/reverse/freeze source frame under the playhead; speed ramps and unavailable sources remain disabled instead of guessed. Its Reveal in Project / Library entries focus the exact registered asset in an existing surface. Reveal Source File is desktop-only and re-resolves that asset in the native shell; browser, missing, offline, and non-file cases tell you why they refuse. Media clips also expose split, trim, copy/cut/paste attributes, source replacement or fitting, transitions and fades, Audio, Speed & time, picture controls, and the two remove choices. Caption clips keep only caption edit, seek, and remove; generated titles and shapes keep Inspector edit, Transform, split, and remove so rendered overlays cannot be treated as ordinary footage.", "Focus a clip and press the Context Menu key or Shift+F10 for the keyboard route. Some entries depend on clip kind, a valid seam or click point, selected clips, an adjacent gap, imported compatible media, or timeline audio.", "UI-only source navigation plus edit operations retain the exact clip target", areas.timelineClip, opens.contextTimelineClip),
+  "cut.context.timeline_surface": feature("Timeline empty-lane and gap menu", "Timeline lane or gap", "Right-click an empty lane to seek, paste the copied clip on its compatible unlocked track, add a marker, set the export in or out point, or add a video or audio track. Right-click a visible gap to seek its start, paste at the gap, select the gap as the export range, or fit a compatible copied clip to fill it.", "Empty-lane editing needs an open project. Paste requires a copied compatible clip and an unlocked target track; fit also requires the source clip to remain on the timeline and to meet the shown speed range.", "edit.add_marker, edit.fit_to_fill; exact timeline position", areas.timelineSurface, opens.contextTimelineSurface),
+  "cut.context.timeline_track": feature("Timeline track menu", "Timeline track header", "Right-click a video track header to Match Frame the clip under the playhead in Source Monitor; normal, reverse, and freeze map exactly, while ramps and unavailable sources stay disabled. At a crossfade or other overlap, select one clip directly before Match Frame can identify its exact source. Track headers also lock or unlock; video and caption tracks can show or hide; audio tracks can mute or solo. Non-base tracks can be removed after confirmation. A right-clicked clip on a locked track instead offers inspection and unlock, never an edit.", "Focus a track header and press the Context Menu key or Shift+F10 for the keyboard route. Base video and audio tracks cannot be removed.", "UI-only source navigation; edit.track_lock, edit.track_visible, edit.mute, edit.solo; exact track target", areas.trackControls, opens.contextTimelineTrack),
+  "cut.context.timeline_marker": feature("Timeline marker menu", "Timeline ruler marker", "Right-click a plain timeline marker to rename it, add a note, choose its color, seek to its time, or delete it. Enter commits a rename; Ctrl/Cmd+Enter saves a note; Escape leaves the menu without saving.", "Focus a plain marker and press the Context Menu key or Shift+F10 for the keyboard route. Non-editable marker classes do not open this menu.", "edit.update_marker, edit.remove_marker, edit.seek_marker; exact marker target", areas.timelineMarker, opens.contextTimelineMarker),
+
   "cut.inspector.properties": feature("Properties tab", "Inspector", "Show selected clip details, engagement scoring, fades, clip actions, and transform controls.", "Requires a selected clip for clip-specific controls.", "ui.select, edit.fade, edit.transform", areas.propertiesTab),
   "cut.inspector.color": feature("Color tab", "Inspector", "Adjust grade and color controls for the selected visual clip.", "Requires a selected visual clip.", "edit.grade", areas.colorTab, opens.color),
   "cut.inspector.audio": feature("Audio tab", "Inspector", "Adjust audio controls, gain, and related clip audio settings.", "Requires an audio clip or linked audio.", "edit.gain, media.waveform", areas.audioTab, opens.audio),
@@ -318,24 +333,24 @@ const features = {
   "cut.inspector.chat_review": feature("Review each agent turn", "Chat tab and Review Diff", "Every editing turn records its plan, baseline, tip, exact diff, and safe-revert verdict. Preview or inspect Diff, then Accept, Revert, or Try again. Concurrent human or agent operations disable whole-turn revert.", "Requires an agent turn that applied at least one operation.", "agent.chat, project.diff, project.revert", areas.chatTab, selectedOpen(opens.chat, "Turn review")),
   "cut.inspector.tools_overlay": feature("Tools overlay", "Right edge", "Open selected-clip tools without permanently narrowing the timeline. The overlay closes with the close button, Escape, or an outside click.", "No setup required.", "ui.open, ui.highlight", areas.toolsStrip, opens.selectedTools),
   "cut.inspector.pin": feature("Pin tools", "Tools header", "Pin the selected-clip tools beside the editor when you want a persistent inspector; unpin to return to the full-width timeline.", "Open the Tools overlay first.", "ui.state", areas.railPin, opens.selectedTools),
-  "cut.inspector.fades": feature("Fades", "Inspector Properties", "Set fade-in and fade-out values for the selected clip.", "Requires a selected clip.", "edit.fade", areas.fadeSliders),
-  "cut.inspector.transform": feature("Transform", "Inspector Properties", "Adjust position, scale, crop, and related visual transform settings.", "Requires a selected visual clip.", "edit.transform, edit.effect", areas.transformSliders),
-  "cut.review.ops": feature("Review Ops", "Review panel", "Read every applied operation so edits remain auditable and reversible.", "Requires project operations in the current session or file.", "project.ops, project.undo, project.redo", areas.opsTab),
-  "cut.review.receipts": feature("Receipts, QC, Scopes, Diff", "Review panel", "Switch review tabs to inspect receipts, quality checks, video scopes, and project diffs before delivery.", "Some tabs depend on completed review, render, or scope-check jobs.", "project.diff, verify.checks, verify.scopes, ui.open", areas.receiptsTabs, opens.receipts),
-  "cut.review.scopes": feature("Video scopes", "Review panel", "Run an objective frame check for luma, saturation, white balance, broadcast range, and clipping. Turn on images when you want vectorscope, waveform, or histogram evidence. Agents and tests can open this exact tab with ui.open {panel:\"scopes\"}.", "Requires an open project with a renderable frame and FFmpeg.", "verify.scopes, ui.open {panel:\"scopes\"}", areas.receiptsTabs, selectedOpen(opens.receipts, "Scopes")),
+  "cut.inspector.fades": feature("Fades", "Inspector Properties", "Set fade-in and fade-out values for the selected clip.", "Requires a selected clip.", "edit.fade", areas.inspectorHeader),
+  "cut.inspector.transform": feature("Transform", "Inspector Properties", "Adjust position, scale, crop, and related visual transform settings.", "Requires a selected visual clip.", "edit.transform, edit.effect", areas.inspectorHeader),
+  "cut.review.ops": feature("Review Ops", "Review panel", "Read every applied operation so edits remain auditable and reversible.", "Requires project operations in the current session or file.", "project.ops, project.undo, project.redo", areas.receiptStatus),
+  "cut.review.receipts": feature("Receipts, QC, Scopes, Diff", "Review panel", "Switch review tabs to inspect receipts, quality checks, video scopes, and project diffs before delivery.", "Some tabs depend on completed review, render, or scope-check jobs.", "project.diff, verify.checks, verify.scopes, ui.open", areas.receiptStatus, opens.receipts),
+  "cut.review.scopes": feature("Video scopes", "Review panel", "Run an objective frame check for luma, saturation, white balance, broadcast range, and clipping. Turn on images when you want vectorscope, waveform, or histogram evidence. Agents and tests can open this exact tab with ui.open {panel:\"scopes\"}.", "Requires an open project with a renderable frame and FFmpeg.", "verify.scopes, ui.open {panel:\"scopes\"}", areas.receiptStatus, selectedOpen(opens.receipts, "Scopes")),
 
-  "cut.record.studio": feature("Studio preview", "Record workspace", "The large Studio preview shows the screen composition and the elapsed recording state before and during capture.", "Requires the Record workspace. The preview is a composition guide; real capture still depends on OS screen permissions.", "screen_record.doctor, screen_record.start", areas.recordMode, selectedOpen(opens.record, "Studio preview")),
-  "cut.record.camera_enable": feature("Camera overlay", "Record workspace", "Live camera capture is not available in this release. The Record workspace says so where the controls used to be, and no enable, position, size or shape control is shown. Screen, microphone and supported system-audio recording are unaffected.", "Nothing to enable — plan a webcam pass as a separate recording for now.", "screen_record.start (no webcam stream in this release)", areas.recordMode, selectedOpen(opens.record, "Camera capture")),
-  "cut.record.camera_visible": feature("Show or hide camera", "Record workspace", "Not available in this release: with no live camera stream there is nothing to show or hide. The F10 binding stays in the keymap but has no effect.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"visibility\"} — accepted by the API, no live stream to drive it", areas.recordMode, selectedOpen(opens.record, "Camera capture")),
-  "cut.record.camera_position": feature("Camera position", "Record workspace", "Not available in this release. The F11 and Shift+F11 bindings stay in the keymap but have no effect while there is no camera stream.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"transform\", x, y} — accepted by the API, no live stream to drive it", areas.recordMode, selectedOpen(opens.record, "Camera capture")),
-  "cut.record.camera_size": feature("Camera size", "Record workspace", "Not available in this release. Camera size is still a timed Studio event in the API, but live capture produces no camera stream to size.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"transform\", size}", areas.recordMode, selectedOpen(opens.record, "Camera capture")),
-  "cut.record.camera_shape": feature("Camera shape", "Record workspace", "Not available in this release. Circle and rounded-rectangle shaping remains in the compositor for a camera file supplied by an agent, but the recorder captures no camera of its own.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"transform\", shape}", areas.recordMode, selectedOpen(opens.record, "Camera capture")),
-  "cut.record.background": feature("Background", "Record workspace", "Choose the recording background style for polished screen-demo output while raw streams remain untouched.", "Works with auto-edit/polish recording output.", "screen_record.studio_event {source:\"background\", kind:\"style\"}", areas.recordMode, selectedOpen(opens.record, "Background")),
-  "cut.record.raw_streams": feature("Raw streams", "Record workspace", "After a capture, Cut reports the raw screen, microphone, system audio, and Studio event artifacts so you can diagnose or reuse what was recorded. The camera chip stays dark: live camera capture is not available in this release. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen and microphone capture continue and the missing stream is reported.", "Requires a completed capture. A new Windows build may need one audio-capture approval from security software.", "screen_record.stop raw_streams", areas.recordMode, selectedOpen(opens.record, "Raw streams")),
-  "cut.record.hotkeys": feature("Recording hotkeys", "Record workspace", "F9 starts or stops recording and F12 drops a marker — the two the Studio shows. The camera bindings (F10, F11, Shift+F11) remain in the keymap but do nothing while live camera capture is unavailable.", "Global F9 is available in the desktop app; focused-window fallback works while Cut has focus.", "screen_record.start, screen_record.stop, screen_record.studio_event", areas.recordMode, selectedOpen(opens.record, "Hotkeys")),
-  "cut.record.raw_mode": feature("Raw capture mode", "Record workspace", "Raw capture saves the recording as captured without auto-edit or polish, then lets you add the saved file to the timeline manually.", "Requires FFmpeg and a writable output location.", "screen_record.stop {mux_raw:true}, media.import", areas.recordMode, selectedOpen(opens.record, "Raw streams")),
-  "cut.record.autoedit": feature("Auto-edit recording", "Record workspace", "Auto-edit stops the capture, builds a recorder plan, replays Studio camera/background metadata, polishes the clip, and places it on the timeline.", "Requires FFmpeg and a finalized capture. Background and marker metadata is replayed from the capture's Studio events; there is no camera layer in this release.", "screen_record.stop {autoedit:true}, screen_record.autoedit, screen_record.polish", areas.recordMode, selectedOpen(opens.record, "Start / Stop")),
-  "cut.record.studio_event_api": feature("Studio event API", "Debug API", "Agents and the UI append timed Studio events for background style and recording markers. The camera event sources are still accepted by the API for a camera file supplied by an agent, but live capture emits no camera stream in this release.", "Requires an open project and a valid capture_id returned by screen_record.start.", "screen_record.studio_event", areas.recordMode, selectedOpen(opens.record, "Background")),
+  "cut.record.studio": feature("Studio preview", "Record workspace", "The large Studio preview shows the screen composition and the elapsed recording state before and during capture.", "Requires the Record workspace. The preview is a composition guide; real capture still depends on OS screen permissions.", "screen_record.doctor, screen_record.start", recordAreas.studioPreview),
+  "cut.record.camera_enable": feature("Camera overlay", "Record workspace", "Live camera capture is not available in this release. The Record workspace says so where the controls used to be, and no enable, position, size or shape control is shown. Screen, microphone and supported system-audio recording are unaffected.", "Nothing to enable — plan a webcam pass as a separate recording for now.", "screen_record.start (no webcam stream in this release)", recordAreas.cameraUnavailable),
+  "cut.record.camera_visible": feature("Show or hide camera", "Record workspace", "Not available in this release: with no live camera stream there is nothing to show or hide. The F10 binding stays in the keymap but has no effect.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"visibility\"} — accepted by the API, no live stream to drive it", recordAreas.cameraUnavailable),
+  "cut.record.camera_position": feature("Camera position", "Record workspace", "Not available in this release. The F11 and Shift+F11 bindings stay in the keymap but have no effect while there is no camera stream.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"transform\", x, y} — accepted by the API, no live stream to drive it", recordAreas.cameraUnavailable),
+  "cut.record.camera_size": feature("Camera size", "Record workspace", "Not available in this release. Camera size is still a timed Studio event in the API, but live capture produces no camera stream to size.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"transform\", size}", recordAreas.cameraUnavailable),
+  "cut.record.camera_shape": feature("Camera shape", "Record workspace", "Not available in this release. Circle and rounded-rectangle shaping remains in the compositor for a camera file supplied by an agent, but the recorder captures no camera of its own.", "Returns when live camera capture returns.", "screen_record.studio_event {source:\"camera\", kind:\"transform\", shape}", recordAreas.cameraUnavailable),
+  "cut.record.background": feature("Background", "Record workspace", "Choose the recording background style for polished screen-demo output while raw streams remain untouched.", "Works with auto-edit/polish recording output.", "screen_record.studio_event {source:\"background\", kind:\"style\"}", recordAreas.background),
+  "cut.record.raw_streams": feature("Raw streams", "Record workspace", "After a capture, Cut reports the raw screen, microphone, system audio, and Studio event artifacts so you can diagnose or reuse what was recorded. The camera chip stays dark: live camera capture is not available in this release. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen and microphone capture continue and the missing stream is reported.", "Requires a completed capture. A new Windows build may need one audio-capture approval from security software.", "screen_record.stop raw_streams", recordAreas.rawStreams),
+  "cut.record.hotkeys": feature("Recording hotkeys", "Record workspace", "F9 starts or stops recording and F12 drops a marker — the two the Studio shows. The camera bindings (F10, F11, Shift+F11) remain in the keymap but do nothing while live camera capture is unavailable.", "Global F9 is available in the desktop app; focused-window fallback works while Cut has focus.", "screen_record.start, screen_record.stop, screen_record.studio_event", recordAreas.hotkeys),
+  "cut.record.raw_mode": feature("Raw capture mode", "Record workspace", "Raw capture saves the recording as captured without auto-edit or polish, then lets you add the saved file to the timeline manually.", "Requires FFmpeg and a writable output location.", "screen_record.stop {mux_raw:true}, media.import", recordAreas.rawMode),
+  "cut.record.autoedit": feature("Auto-edit recording", "Record workspace", "Auto-edit stops the capture, builds a recorder plan, replays Studio camera/background metadata, polishes the clip, and places it on the timeline.", "Requires FFmpeg and a finalized capture. Background and marker metadata is replayed from the capture's Studio events; there is no camera layer in this release.", "screen_record.stop {autoedit:true}, screen_record.autoedit, screen_record.polish", recordAreas.autoedit),
+  "cut.record.studio_event_api": feature("Studio event API", "Debug API", "Agents and the UI append timed Studio events for background style and recording markers. The camera event sources are still accepted by the API for a camera file supplied by an agent, but live capture emits no camera stream in this release.", "Requires an open project and a valid capture_id returned by screen_record.start.", "screen_record.studio_event", recordAreas.studioEvents),
 
   "cut.workflow.import": feature("Import and organize media", "Assets tab and timeline", "Import a file, verify it in Assets, then add it at the playhead or drag it into the base timeline.", "Requires readable media and FFmpeg.", "media.import, edit.insert", areas.importButton),
   "cut.workflow.base_overlay": feature("Build the base timeline, then overlays", "Assets tab and timeline", "Drop ordinary clips onto the base timeline first. Use Alt-drag or drop on an overlay lane for B-roll, picture-in-picture, titles, masks, or any video that should composite above the main story.", "Requires imported media; overlays need a video overlay lane.", "edit.insert, edit.add_track, edit.transform", areas.timelineTracks),
@@ -343,12 +358,12 @@ const features = {
   "cut.workflow.captions": feature("Captions and transcript", "Transcript tab and Inspector", "Generate or import captions, style them, and translate caption or transcript text.", "Requires speech-to-text setup for generated transcript content.", "media.transcribe, captions.import, transcript.timeline", areas.transcriptTab, opens.transcript),
   "cut.workflow.edit_for_clarity": feature("Edit for Clarity", "Recipes", "Preview and run the conservative clarity pass: transcribe, analyze pauses, remove retakes and fillers, then tighten pauses at the chosen intensity without forcing a delivery render.", "Requires an open project with speech media and local speech-to-text readiness.", "recipe.describe {name:\"edit-for-clarity\"}, recipe.run", areas.recipesTool, selectedOpen(opens.recipes, "Edit for clarity")),
   "cut.workflow.generate": feature("Prompt and storyboard Generate", "Generate tab", "Use prompt and storyboard flows to create planned inserts, generated assets, and template-backed material.", "Requires a configured CLI agent for planning flows.", "generate.from_prompt, generate.storyboard, generate.insert", areas.generateTab, opens.generate),
-  "cut.workflow.generated_media": feature("Compare and place generated media", "Generate tab", "Choose registered references, request a labelled variation, compare completed takes, select one, and insert or replace it from verified project history. A cancelled placement can be retried explicitly.", "Requires a configured generation provider and an open project.", "assets.generate, assets.generated_list, edit.insert, edit.replace", areas.generateTab, selectedOpen(opens.generate, "History / compare")),
-  "cut.workflow.motion_roundtrip": feature("Edit a linked clip in Motion", "Timeline, Inspector, and Canvas", "Select a Motion-linked clip, choose Edit in Motion, make rich source changes in Canvas, render the copy-on-write revision, return to Cut, and refresh the same clip. Cut rechecks package identity, authored revision, receipt identity, and media hash before replacing the linked render.", "Requires ShellX Canvas and a current linked package. Refresh is explicit; stale or mismatched handbacks never replace the last good render.", "motion.link.edit, motion.link.refresh, motion.link.relink, project.undo", areas.generateTab, selectedOpen(opens.generate, "Templates")),
+  "cut.workflow.generated_media": feature("Compare and place generated media", "Generate tab", "Choose registered references, request a labelled variation, compare completed takes, select one, and insert or replace it from verified project history. Codex and Antigravity generate images; Grok Imagine also supports video. A cancelled placement can be retried explicitly.", "Requires a configured generation provider and an open project; a provider call may spend quota only after the second confirmation click.", "assets.generate, assets.generated_list, edit.insert, edit.replace", areas.generateTab, selectedOpen(opens.generate, "History / compare")),
+  "cut.workflow.motion_roundtrip": feature("Edit a linked clip in Motion", "Timeline, Inspector, and ShellX Motion", "Select a Motion-linked clip, choose Edit in Motion, make rich source changes in ShellX Motion, render the copy-on-write revision, return to Cut, and refresh the same clip. Cut rechecks package identity, authored revision, receipt identity, and media hash before replacing the linked render.", "Requires ShellX Motion and a current linked package. Refresh is explicit; stale or mismatched handbacks never replace the last good render.", "motion.link.edit, motion.link.refresh, motion.link.relink, project.undo", areas.generateTab, selectedOpen(opens.generate, "Templates")),
   "cut.workflow.sequence_index": feature("Search across sequences", "Find tab: Sequence Index", "Search clips and markers project-wide, narrow by kind, sequence, or track, and open a result to switch sequence and seek its time.", "Requires an open project with one or more sequences.", "project.sequence_index, project.sequence_switch, ui.playhead", areas.findTab, selectedOpen(opens.find, "Sequence Index")),
   "cut.workflow.agent_review": feature("Review an agent turn", "Chat tab and Review Diff", "Attach registered project assets, choose or edit a prompt, run the turn, inspect its composed Preview and exact Diff, then Accept, guarded Revert, or Try again.", "Requires a configured CLI agent; whole-turn revert is available only when no concurrent operation crossed the turn boundary.", "agent.chat, project.diff, project.revert", areas.chatTab, selectedOpen(opens.chat, "Turn review")),
-  "cut.workflow.recording": feature("Record, polish, and export", "Record workspace", "Open Record, confirm FFmpeg/readiness, choose the source, audio and background, start capture, stop it, then let auto-edit polish the result or save raw streams for manual work. Windows system audio uses endpoint-independent process loopback on supported builds; live camera capture is unavailable in this release.", "Requires desktop capture permission and FFmpeg; system audio is optional. Security software may ask to allow audio capture for a new Windows build.", "screen_record.doctor, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export", areas.recordMode, opens.record),
-  "cut.workflow.review": feature("Review receipts", "Review panel", "Check operation history, receipts, QC, scopes, and diffs before accepting a change or rendering final output.", "Requires project operations or completed checks.", "project.ops, project.diff, verify.checks, verify.scopes", areas.opsTab),
+  "cut.workflow.recording": feature("Record, polish, and export", "Record workspace", "Open Record, confirm FFmpeg/readiness, choose the source, audio and background, start capture, stop it, then let auto-edit polish the result or save raw streams for manual work. Windows system audio uses endpoint-independent process loopback on supported builds; live camera capture is unavailable in this release.", "Requires desktop capture permission and FFmpeg; system audio is optional. Security software may ask to allow audio capture for a new Windows build.", "screen_record.doctor, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export", recordAreas.workspace),
+  "cut.workflow.review": feature("Review receipts", "Review panel", "Check operation history, receipts, QC, scopes, and diffs before accepting a change or rendering final output.", "Requires project operations or completed checks.", "project.ops, project.diff, verify.checks, verify.scopes", areas.receiptStatus),
   "cut.workflow.export": feature("Render and export", "Top bar", "Render a preview, final file, range, or delivery bundle from the active project.", "Requires FFmpeg and a valid output folder.", "render.preview, render.final, export.publish", areas.render),
 
   "cut.api.debug": feature("Debug API overview", "cutd local API", "Use the Debug API when you need repeatable automation, integration tests, external inspection, or MCP access to Cut.", "Requires a running cutd server bound to loopback.", "POST /api/verb/{name}, GET /api/verbs, cutd mcp", areas.cutdStatus),
@@ -359,6 +374,18 @@ const features = {
   "cut.api.motion_jobs": feature("Observe a Motion render", "Debug API or MCP", "Choose a job_id before starting a blocking Motion-backed render, then query that same id from another request without exposing another project's jobs or Motion runtime paths.", "Requires an open Cut project and a current ShellX Motion CLI. Poll no faster than pollAfterMs and stop when it disappears.", "motion.template_to_cut, motion.script_to_cut, motion.link.refresh, motion.job.get, motion.job.list", areas.cutdStatus),
   "cut.api.catalog": feature("Verb catalog", "cutd local API", "Read the machine-readable verb contract used by tools and docs.", "Requires a running cutd server or local schema file.", "GET /api/verbs, schema/verbs.json", areas.versionStatus),
 };
+
+let activeFeatureId = "";
+
+const legacyFeatureAliases = {
+  "cut.top.find": "cut.left.find",
+  "cut.top.find.media": "cut.left.find.media",
+  "cut.top.find.captions": "cut.left.find.moment",
+};
+
+function resolveFeatureId(id) {
+  return features[id] ? id : legacyFeatureAliases[id] || "cut.left.assets";
+}
 
 Object.assign(features, {
   "cut.header.title.add": menuChoice("Add title", "Title menu", "Add a text title at the current playhead.", "title.add", areas.titleTool, opens.title, "Add title"),
@@ -420,8 +447,6 @@ Object.assign(features, {
   "cut.top.projects.create": menuChoice("Create project", "Projects menu", "Create a new Cut project.", "project.create", areas.projects, opens.projects, "Create project"),
   "cut.top.library.saved": menuChoice("Saved assets", "Library menu", "Browse saved assets available for reuse.", "library.list", areas.libraryTop, opens.library, "Saved assets"),
   "cut.top.library.add": menuChoice("Add to project", "Library menu", "Add a saved library asset into the current project.", "library.add_to_project", areas.libraryTop, opens.library, "Add to project"),
-  "cut.top.find.media": menuChoice("Find media", "Find tab", "Search reusable media providers or a local folder, then import a result into the open project.", "assets.search, assets.fetch", areas.findMediaTab, opens.find, "Find media"),
-  "cut.top.find.captions": menuChoice("Find moment", "Find tab", "Search indexed frames inside the project to jump to matching visual moments.", "media.index, media.search", areas.findMomentTab, opens.find, "Find moment", "Requires imported video; index the clip before content search."),
   "cut.top.render.preview": menuChoice("Draft-quality check pass", "Render menu", "Set the quality preset to draft for a fast look at the whole timeline before committing to a delivery render.", "render.preview, render.final", areas.render, opens.render, "Quality preset", "Requires FFmpeg."),
   "cut.top.render.full": menuChoice("Render the timeline", "Render menu", "Render the whole timeline using the quality preset, delivery aspect and loudness target chosen in this panel. The deterministic checks run themselves and leave a receipt.", "render.final, verify.checks", areas.render, opens.render, "Quality preset", "Requires FFmpeg and an output folder."),
   "cut.top.render.range": menuChoice("Render selected range", "Preview monitor", "Mark a range on the timeline ruler, then use Render selection under the Preview monitor to render only that window.", "render.preview", areas.renderSelectionButton, opens.render, "Quality preset", "Requires a marked range on the ruler."),
@@ -437,9 +462,45 @@ Object.assign(features, {
   "cut.export.preflight.borders": menuChoice("Black border", "Preflight warnings", "Source media appears letterboxed or pillarboxed.", "verify.pregate uniform_border", areas.exportMenu, opens.exportMenu, "Video (.mp4)", "Crop to visible content if you do not want black bands in the export."),
 });
 
-function setActiveFeature(id, selectedNode) {
-  const feature = features[id] || features["cut.left.assets"];
-  const highlight = document.querySelector("[data-manual-highlight]");
+function updateHighlight(highlight, area) {
+  const surface = highlight.closest(".manual-surface");
+  const width = surface?.clientWidth || 0;
+  const height = surface?.clientHeight || 0;
+  // Keep icon-scale targets legible after desktop or mobile layout rounding.
+  const minimum = 14;
+  const visualWidth = width ? minimum / width : 0;
+  const visualHeight = height ? minimum / height : 0;
+  const highlightWidth = Math.min(1, Math.max(area.width, visualWidth));
+  const highlightHeight = Math.min(1, Math.max(area.height, visualHeight));
+  const left = Math.max(0, Math.min(1 - highlightWidth, area.left + area.width / 2 - highlightWidth / 2));
+  const top = Math.max(0, Math.min(1 - highlightHeight, area.top + area.height / 2 - highlightHeight / 2));
+
+  highlight.style.left = `${left * 100}%`;
+  highlight.style.top = `${top * 100}%`;
+  highlight.style.width = `${highlightWidth * 100}%`;
+  highlight.style.height = `${highlightHeight * 100}%`;
+  highlight.dataset.label = area.label;
+}
+
+function setActiveHighlight(feature) {
+  const surfaceName = feature.highlight.surface || "editor";
+  let activeHighlight = null;
+  document.querySelectorAll("[data-manual-highlight]").forEach((highlight) => {
+    const active = highlight.dataset.manualHighlight === surfaceName;
+    highlight.hidden = !active;
+    if (active) {
+      updateHighlight(highlight, feature.highlight);
+      activeHighlight = highlight;
+    }
+  });
+  return activeHighlight;
+}
+
+function setActiveFeature(id, selectedNode, revealTarget = Boolean(selectedNode)) {
+  const resolvedId = resolveFeatureId(id);
+  const feature = features[resolvedId];
+  activeFeatureId = resolvedId;
+  const highlight = setActiveHighlight(feature);
   const detailTitle = document.querySelector("[data-detail-title]");
   const detailDescription = document.querySelector("[data-detail-description]");
   const detailWhere = document.querySelector("[data-detail-where]");
@@ -447,15 +508,7 @@ function setActiveFeature(id, selectedNode) {
   const detailApi = document.querySelector("[data-detail-api]");
   const popover = document.querySelector("[data-manual-popover]");
 
-  if (highlight) {
-    highlight.style.left = `${feature.highlight.left * 100}%`;
-    highlight.style.top = `${feature.highlight.top * 100}%`;
-    highlight.style.width = `${feature.highlight.width * 100}%`;
-    highlight.style.height = `${feature.highlight.height * 100}%`;
-    highlight.dataset.label = feature.highlight.label;
-  }
-
-  renderOpenedSurface(popover, feature.open);
+  renderOpenedSurface(popover, feature.highlight.surface ? null : feature.open);
 
   if (detailTitle) detailTitle.textContent = feature.title;
   if (detailDescription) detailDescription.textContent = feature.description;
@@ -464,13 +517,17 @@ function setActiveFeature(id, selectedNode) {
   if (detailApi) detailApi.textContent = feature.api;
 
   const nodes = Array.from(document.querySelectorAll("[data-feature-id]"));
-  const activeNode = selectedNode || nodes.find((node) => node.dataset.featureId === id);
+  const activeNode = selectedNode || nodes.find((node) => node.dataset.featureId === resolvedId);
   nodes.forEach((node) => {
     node.classList.toggle("active", node === activeNode);
   });
 
   if (window.location.hash !== `#${id}`) {
     history.replaceState(null, "", `#${id}`);
+  }
+
+  if (revealTarget) {
+    highlight?.closest(".manual-surface")?.scrollIntoView({ block: "center", inline: "nearest" });
   }
 }
 
@@ -572,7 +629,16 @@ function initManual() {
 
   const queryId = new URLSearchParams(window.location.search).get("feature") || "";
   const initialId = queryId || window.location.hash.slice(1);
-  setActiveFeature(features[initialId] ? initialId : "cut.left.assets");
+  const initialIsResolvable = Boolean(features[initialId] || legacyFeatureAliases[initialId]);
+  setActiveFeature(initialIsResolvable ? initialId : "cut.left.assets", null, initialIsResolvable);
 }
 
 document.addEventListener("DOMContentLoaded", initManual);
+
+window.addEventListener("resize", () => {
+  const feature = features[activeFeatureId];
+  if (feature) {
+    setActiveHighlight(feature);
+    renderOpenedSurface(document.querySelector("[data-manual-popover]"), feature.highlight.surface ? null : feature.open);
+  }
+});

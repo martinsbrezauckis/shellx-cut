@@ -20,7 +20,7 @@ fn restricted_mcp_marker_requires_the_agent_chat_actor() {
 }
 
 #[test]
-fn schema_classifies_every_registry_verb_and_preserves_the_safe_94_170_split() {
+fn schema_classifies_every_registry_verb_and_preserves_the_safe_95_170_split() {
     let registry = crate::registry::VerbRegistry::load();
     let mut allowed = 0;
     let mut denied = 0;
@@ -30,7 +30,7 @@ fn schema_classifies_every_registry_verb_and_preserves_the_safe_94_170_split() {
             AgentChatCapability::Deny => denied += 1,
         }
     }
-    assert_eq!(allowed, 94, "schema-derived safe capability count");
+    assert_eq!(allowed, 95, "schema-derived safe capability count");
     assert_eq!(denied, 170, "schema-derived denied capability count");
     assert_eq!(allowed + denied, registry.verbs.len());
 }

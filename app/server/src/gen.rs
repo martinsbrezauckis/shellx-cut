@@ -1,8 +1,8 @@
 //! gen.rs — `assets.generate`: image/video via the user's own agent CLI.
 //!
 //! Clean-room port of ShellX Canvas's `media-provider` adapter (the design, not the
-//! code). NO model is hosted — the user's installed codex (gpt-image) / grok
-//! (grok-imagine) CLI does the generation; cutd just (1) DETECTS the CLI, (2) spawns
+//! code). NO model is hosted — the user's installed codex (gpt-image), grok
+//! (grok-imagine), or Antigravity (`agy`) CLI does the generation; cutd just (1) DETECTS the CLI, (2) spawns
 //! it with a strict prompt that tells it to write the binary to an exact path, (3)
 //! validates the result via the NORMAL import probe (ffprobe — a fake/placeholder
 //! file fails to probe), and (4) imports it like any upload through `record_import`.
@@ -15,11 +15,13 @@
 
 use std::path::{Path, PathBuf};
 
-/// The CLI binary for a provider (`codex` → gpt-image, `grok` → grok-imagine).
+/// The CLI binary for a provider (`codex` → gpt-image, `grok` → grok-imagine,
+/// `antigravity` → `agy`).
 pub fn cli_for(provider: &str) -> Option<&'static str> {
     match provider {
         "codex" => Some("codex"),
         "grok" => Some("grok"),
+        "antigravity" => Some("agy"),
         _ => None,
     }
 }
@@ -270,10 +272,12 @@ fn direct_tokio_command(
     Ok(command)
 }
 
-/// Which kinds a provider can generate (codex = image only; grok = image + video).
+/// Which kinds a provider can generate. Antigravity is deliberately image-only:
+/// its installed CLI contract proves a safe non-interactive turn, not a native
+/// video-generation capability.
 pub fn supports_kind(provider: &str, kind: &str) -> bool {
     match provider {
-        "codex" => kind == "image",
+        "codex" | "antigravity" => kind == "image",
         "grok" => kind == "image" || kind == "video",
         _ => false,
     }
@@ -289,13 +293,22 @@ pub fn output_filename(kind: &str) -> &'static str {
     }
 }
 
-/// A resolved CLI invocation: the command, its args, the prompt, and whether the
-/// prompt is delivered on STDIN (codex) or written to a `--prompt-file` (grok).
+/// How a provider accepts the fully constructed prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptTransport {
+    Stdin,
+    PromptFile,
+    Argument,
+}
+
+/// A resolved CLI invocation: the command, its args, and the provider's prompt
+/// transport. Antigravity uses the exact non-interactive `--print` contract that
+/// Agent Chat already verifies.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenCommand {
     pub cmd: String,
     pub args: Vec<String>,
-    pub via_stdin: bool,
+    pub prompt_transport: PromptTransport,
 }
 
 /// Build the agent-CLI invocation for `provider`. `workspace` is the scratch
@@ -320,7 +333,7 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
             Some(GenCommand {
                 cmd: "codex".into(),
                 args,
-                via_stdin: true,
+                prompt_transport: PromptTransport::Stdin,
             })
         }
         "grok" => {
@@ -352,9 +365,14 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
             Some(GenCommand {
                 cmd: "grok".into(),
                 args,
-                via_stdin: false,
+                prompt_transport: PromptTransport::PromptFile,
             })
         }
+        "antigravity" => Some(GenCommand {
+            cmd: "agy".into(),
+            args: crate::chat::broker::antigravity_args(workspace, model),
+            prompt_transport: PromptTransport::Argument,
+        }),
         _ => None,
     }
 }
@@ -375,10 +393,11 @@ pub fn build_prompt(
     } else {
         "png, jpg, gif, or webp"
     };
-    let label = if provider == "codex" {
-        "Codex (gpt-image)"
-    } else {
-        "Grok Build (Imagine)"
+    let label = match provider {
+        "codex" => "Codex (gpt-image)",
+        "grok" => "Grok Build (Imagine)",
+        "antigravity" => "Antigravity (agy)",
+        _ => "the selected provider",
     };
     let mut lines = vec![
         "You are running inside ShellX Cut local media generation.".to_string(),
@@ -400,6 +419,8 @@ pub fn build_prompt(
     }
     if provider == "codex" {
         lines.push("Use real image-generation tooling available to Codex, such as image_gen or the OpenAI Image API. If this CLI session has no such tool, fail honestly.".to_string());
+    } else if provider == "antigravity" {
+        lines.push("Use a real image-generation capability already available to this Antigravity CLI session. If no real image-generation capability is available, fail honestly without writing a substitute file.".to_string());
     } else if kind == "video" {
         lines.push(format!(
             "Use Grok Build's native Imagine flow: /imagine {}.",
@@ -444,12 +465,34 @@ pub struct GenJson {
 /// is present.
 pub fn parse_output_json(stdout: &str) -> Option<GenJson> {
     fn from_value(v: &serde_json::Value) -> Option<GenJson> {
-        let ok = v.get("ok")?.as_bool()?;
-        Some(GenJson {
-            ok,
-            path: v.get("path").and_then(|x| x.as_str()).map(String::from),
-            reason: v.get("reason").and_then(|x| x.as_str()).map(String::from),
-        })
+        if let Some(ok) = v.get("ok").and_then(|value| value.as_bool()) {
+            return Some(GenJson {
+                ok,
+                path: v.get("path").and_then(|x| x.as_str()).map(String::from),
+                reason: v.get("reason").and_then(|x| x.as_str()).map(String::from),
+            });
+        }
+        // Antigravity's native JSON envelope names failures with `status` and
+        // keeps the human-readable detail in `response`. Preserve that detail
+        // as an honest generation failure when the agent cannot return the
+        // requested {ok:false,...} payload.
+        let status = v.get("status").and_then(|value| value.as_str())?;
+        if matches!(status, "ERROR" | "FAILED" | "FAILURE") {
+            let reason = v
+                .get("response")
+                .or_else(|| v.get("error"))
+                .or_else(|| v.get("message"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(String::from)
+                .or_else(|| Some(format!("Antigravity reported {status}")));
+            return Some(GenJson {
+                ok: false,
+                path: None,
+                reason,
+            });
+        }
+        None
     }
     fn loose(s: &str) -> Option<serde_json::Value> {
         // The last {...} object in the string (CLIs prepend logs).
@@ -465,8 +508,12 @@ pub fn parse_output_json(stdout: &str) -> Option<GenJson> {
         if let Some(g) = from_value(&v) {
             return Some(g);
         }
-        // 2. {text:"...json..."} wrapper.
-        if let Some(t) = v.get("text").and_then(|x| x.as_str()) {
+        // 2. {text:"...json..."} / Antigravity {response:"...json..."} wrapper.
+        if let Some(t) = v
+            .get("text")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("response").and_then(|x| x.as_str()))
+        {
             if let Some(inner) = loose(t).as_ref().and_then(from_value) {
                 return Some(inner);
             }
@@ -710,10 +757,13 @@ mod tests {
     fn cli_mapping_and_kinds() {
         assert_eq!(cli_for("codex"), Some("codex"));
         assert_eq!(cli_for("grok"), Some("grok"));
+        assert_eq!(cli_for("antigravity"), Some("agy"));
         assert_eq!(cli_for("dalle"), None);
         assert!(supports_kind("codex", "image"));
         assert!(!supports_kind("codex", "video")); // codex = image only
         assert!(supports_kind("grok", "video"));
+        assert!(supports_kind("antigravity", "image"));
+        assert!(!supports_kind("antigravity", "video"));
         assert!(!supports_kind("nope", "image"));
     }
 
@@ -721,7 +771,7 @@ mod tests {
     fn codex_command_is_exec_stdin() {
         let c = build_command("codex", "/scratch", Some("gpt-image-1")).unwrap();
         assert_eq!(c.cmd, "codex");
-        assert!(c.via_stdin);
+        assert_eq!(c.prompt_transport, PromptTransport::Stdin);
         assert!(c.args.contains(&"exec".to_string()));
         assert!(c.args.contains(&"workspace-write".to_string()));
         assert!(c.args.windows(2).any(|w| w == ["-m", "gpt-image-1"]));
@@ -731,10 +781,21 @@ mod tests {
     fn grok_command_uses_prompt_file() {
         let c = build_command("grok", "/scratch", None).unwrap();
         assert_eq!(c.cmd, "grok");
-        assert!(!c.via_stdin);
+        assert_eq!(c.prompt_transport, PromptTransport::PromptFile);
         assert!(c.args.contains(&"__PROMPT_FILE__".to_string()));
         // default model.
         assert!(c.args.windows(2).any(|w| w == ["--model", "grok-build"]));
+    }
+
+    #[test]
+    fn antigravity_command_reuses_the_native_safe_print_contract() {
+        let c = build_command("antigravity", "/scratch", Some("Gemini 3.5 Flash")).unwrap();
+        assert_eq!(c.cmd, "agy");
+        assert_eq!(c.prompt_transport, PromptTransport::Argument);
+        assert!(c.args.contains(&"--sandbox".to_string()));
+        assert!(c.args.contains(&"--disable-slash-commands".to_string()));
+        assert!(c.args.windows(2).any(|w| w == ["--output-format", "json"]));
+        assert_eq!(&c.args[c.args.len() - 2..], ["--print", "__PROMPT_TEXT__"]);
     }
 
     #[test]
@@ -784,5 +845,28 @@ mod tests {
         let g = parse_output_json("{\"ok\":false,\"reason\":\"no image tool\"}").unwrap();
         assert!(!g.ok);
         assert_eq!(g.reason.as_deref(), Some("no image tool"));
+    }
+
+    #[test]
+    fn parses_antigravity_response_wrapped_json() {
+        let g = parse_output_json(
+            r#"{"status":"SUCCESS","response":"{\"ok\":true,\"path\":\"/x/g.png\"}"}"#,
+        )
+        .unwrap();
+        assert!(g.ok);
+        assert_eq!(g.path.as_deref(), Some("/x/g.png"));
+    }
+
+    #[test]
+    fn parses_antigravity_envelope_failure() {
+        let g = parse_output_json(
+            r#"{"status":"ERROR","response":"image generation is unavailable for this session"}"#,
+        )
+        .unwrap();
+        assert!(!g.ok);
+        assert_eq!(
+            g.reason.as_deref(),
+            Some("image generation is unavailable for this session")
+        );
     }
 }

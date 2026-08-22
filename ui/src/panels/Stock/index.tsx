@@ -1,201 +1,349 @@
-// panels/Stock — the "Find media" provider-search tab for
-// assets.search / assets.fetch).
-// Role: the Find ▸ Find media tab that lets a human
-// SEARCH the pluggable asset PROVIDERS (Openverse Creative-Commons aggregator +
-// a local folder) and FETCH a result straight into the open project as a normal
-// asset — with the LICENSE + ATTRIBUTION surfaced before they import it. Makes
-// the agent-only assets.* verbs a real user feature.
+// panels/Stock — the Find ▸ Find media surface for assets.providers/search/fetch.
 //
-// TRUST STORY: every result shows its license + a ready-to-use attribution line;
-// fetching records that credit on the import op (the verb does it). Relay-
-// drivable: ui.open{panel:"stock"} opens the compatibility alias for this tab.
-//
-// Callers: LeftPanel (mounted under Find). Deps: lib/client (verbs), ../drawer.css.
+// It reads the live provider catalog before enabling a search. That keeps the
+// human picker aligned with the matching cutd's request vocabulary while the
+// panel stays deliberately small: choose a source, choose its valid media kind,
+// search, inspect the returned license/credit, and import into the open project.
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { callVerb, type Project } from '../../lib/client'
-import { Icon } from '../../icons'
+import {
+  type AssetKind,
+  type AssetProvider,
+  type AssetProviderName,
+  type ProviderHit,
+  isAssetProviderName,
+  normalizeProviderCatalog,
+  normalizeProviderHits,
+  preferredProvider,
+  providerAllowsEmptyQuery,
+  providerLabel,
+  providerNeedsDirectory,
+  providerQueryLabel,
+  providerQueryPlaceholder,
+} from './providerCatalog'
+import {
+  beginStockSearch,
+  finishStockSearch,
+  initialStockRequestState,
+  invalidateStockRequests,
+  isCurrentStockSearch,
+} from './requestState'
+import { stockImportKey, type StockImportCoordinator } from './importCoordinator'
+import { StockResults } from './StockResults'
 import '../drawer.css'
 
 export interface StockDrawerProps {
   project: Project | null
+  /** Monotonic App identity; prevents old-project hits being shown after a switch. */
+  projectScope: number
+  /** Owned by App so an in-flight import survives any Find/workspace remount. */
+  importCoordinator: StockImportCoordinator
 }
 
-type Provider = 'openverse' | 'local_folder'
-type Kind = 'audio' | 'image' | 'video'
+interface SearchSession { provider: AssetProviderName; dir: string | null }
+const providerFailure = (prefix: string, error?: { code?: string; message?: string }) => `${prefix}: ${error?.code ?? 'failed'}: ${error?.message ?? 'request failed'}`
 
-/** One normalized provider hit (assets.search result item). */
-interface Hit {
-  provider: string
-  id: string
-  title: string
-  kind: string
-  creator?: string | null
-  license: string
-  license_url?: string | null
-  source_url?: string | null
-  filetype?: string | null
-  duration_ms?: number | null
-  attribution: string
-  requires_attribution: boolean
-}
-
-const PROVIDERS: { id: Provider; label: string; kinds: Kind[]; net: boolean }[] = [
-  { id: 'openverse', label: 'Openverse (Creative Commons)', kinds: ['audio', 'image'], net: true },
-  { id: 'local_folder', label: 'Local folder', kinds: ['audio', 'image', 'video'], net: false },
-]
-
-function providerFromInput(value: string, fallback: Provider): Provider {
-  for (const provider of PROVIDERS) {
-    if (provider.id === value) return provider.id
-  }
-  return fallback
-}
-
-export default function StockDrawer({ project }: StockDrawerProps) {
-  const [provider, setProvider] = useState<Provider>('openverse')
-  const [kind, setKind] = useState<Kind>('audio')
+export default function StockDrawer({ project, projectScope, importCoordinator }: StockDrawerProps) {
+  const [providers, setProviders] = useState<AssetProvider[]>([])
+  const [provider, setProvider] = useState<AssetProviderName | null>(null)
+  const [catalogState, setCatalogState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [kind, setKind] = useState<AssetKind>('audio')
   const [q, setQ] = useState('')
-  const [dir, setDir] = useState('') // local_folder only
-  const [hits, setHits] = useState<Hit[]>([])
+  const [dir, setDir] = useState('')
+  const [hits, setHits] = useState<ProviderHit[]>([])
+  const [searchScope, setSearchScope] = useState(projectScope)
+  const [searchSession, setSearchSession] = useState<SearchSession | null>(null)
   const [searching, setSearching] = useState(false)
-  const [fetchingId, setFetchingId] = useState<string | null>(null)
-  const [fetched, setFetched] = useState<Record<string, string>>({}) // hit id → asset_id
   const [err, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const requestState = useRef(initialStockRequestState)
+  const importSnapshot = useSyncExternalStore(
+    importCoordinator.subscribe,
+    importCoordinator.getSnapshot,
+    importCoordinator.getSnapshot,
+  )
 
-  const meta = PROVIDERS.find((p) => p.id === provider)!
+  const loadProviders = useCallback(async () => {
+    setCatalogState('loading')
+    setCatalogError(null)
+    try {
+      const response = await callVerb('assets.providers', {})
+      if (!response.ok) {
+        setCatalogState('error')
+        setCatalogError(providerFailure('Could not load media sources', response.error))
+        return
+      }
+      const catalog = normalizeProviderCatalog((response.result as { providers?: unknown }).providers)
+      const initial = preferredProvider(catalog)
+      if (!initial) {
+        setCatalogState('error')
+        setCatalogError('No compatible media sources are available from this Cut server.')
+        return
+      }
+      setProviders(catalog)
+      setProvider((current) => catalog.some((item) => item.name === current) ? current : initial.name)
+      setCatalogState('ready')
+    } catch {
+      setCatalogState('error')
+      setCatalogError('Could not load media sources: server unreachable')
+    }
+  }, [])
 
-  // Keep the kind valid for the selected provider.
+  useEffect(() => { void loadProviders() }, [loadProviders])
+
+  // A Find-media remount starts with local inputs empty, but the app-lifetime
+  // coordinator retains the last safe, server-normalized hit list. Rehydrate it
+  // after the live catalog returns so the active Import is still visible and
+  // disabled instead of offering a fresh route around the in-flight request.
   useEffect(() => {
+    const remembered = importSnapshot.search
+    if (catalogState !== 'ready' || !remembered || !providers.some((item) => item.name === remembered.provider)) return
+    setProvider(remembered.provider)
+    setKind(remembered.kind)
+    setDir(remembered.dir)
+    setQ(remembered.q)
+    setHits(remembered.hits)
+    setSearchScope(projectScope)
+    setSearchSession(remembered.session)
+  }, [catalogState, importSnapshot.search, providers])
+
+  // A project close/open may leave this component mounted during the App shell
+  // transition. Do not render a prior project's local hit state for even one
+  // frame; the coordinator has already cleared its durable cache and retained
+  // any old request lock until that request settles.
+  useEffect(() => {
+    requestState.current = invalidateStockRequests(requestState.current)
+    setSearching(false)
+    setHits([])
+    setSearchScope(projectScope)
+    setSearchSession(null)
+    setErr(null)
+    setNote(null)
+  }, [projectScope])
+
+  const meta = provider ? providers.find((item) => item.name === provider) ?? null : null
+
+  // A server controls each provider's valid kinds. Never send a stale kind after
+  // changing source, even when an old server/catalog is unusual or partial.
+  useEffect(() => {
+    if (!meta) return
     if (!meta.kinds.includes(kind)) setKind(meta.kinds[0])
-  }, [provider]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [kind, meta])
+
+  const clearSearch = () => {
+    requestState.current = invalidateStockRequests(requestState.current)
+    setSearching(false)
+    setHits([])
+    setSearchScope(projectScope)
+    setSearchSession(null)
+    importCoordinator.clearSearch(projectScope)
+    setErr(null)
+    setNote(null)
+  }
+
+  const chooseProvider = (value: string) => {
+    // A source switch invalidates pending results. Do not make that available
+    // while the server is already importing one of those results: it could
+    // visually clear the busy state and admit a second fetch before the first
+    // response settles.
+    if (importSnapshot.request.fetchingId !== null) return
+    if (!isAssetProviderName(value) || !providers.some((item) => item.name === value)) return
+    setProvider(value)
+    clearSearch()
+  }
 
   const search = async () => {
-    if (provider === 'local_folder' && !dir.trim()) { setErr('Enter a folder path to search'); return }
-    if (provider === 'openverse' && !q.trim()) { setErr('Enter a search term'); return }
-    setSearching(true); setErr(null); setNote(null); setHits([]); setFetched({})
+    if (importSnapshot.request.fetchingId !== null) return
+    if (!meta || catalogState !== 'ready') {
+      setErr('Media sources are not ready yet.')
+      return
+    }
+    if (meta.needsKey) {
+      setErr(`${providerLabel(meta.name)} needs source setup before it can be searched here.`)
+      return
+    }
+    const query = q.trim()
+    const searchDir = dir.trim()
+    if (providerNeedsDirectory(meta.name) && !searchDir) {
+      setErr('Enter a folder path to search.')
+      return
+    }
+    if (!providerAllowsEmptyQuery(meta.name) && !query) {
+      setErr('Enter a search term.')
+      return
+    }
+    const requestStateAfterStart = beginStockSearch(requestState.current)
+    requestState.current = requestStateAfterStart
+    const request = requestStateAfterStart.searchEpoch
+    setSearching(requestStateAfterStart.searching)
+    setErr(null)
+    setNote(null)
+    setHits([])
+    setSearchScope(projectScope)
+    setSearchSession(null)
+    importCoordinator.clearSearch(projectScope)
     try {
-      const args: Record<string, unknown> = { provider, q: q.trim(), kind, limit: 16 }
-      if (provider === 'local_folder') args.dir = dir.trim()
-      const r = await callVerb('assets.search', args as never)
-      if (r.ok) {
-        const list = (r.result as { hits?: Hit[] }).hits ?? []
-        setHits(list)
-        if (list.length === 0) setNote('No results.')
-      } else {
-        setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'search failed'}`)
+      const args: Record<string, unknown> = { provider: meta.name, q: query, kind, limit: 16 }
+      if (providerNeedsDirectory(meta.name)) args.dir = searchDir
+      const response = await callVerb('assets.search', args as never)
+      if (!isCurrentStockSearch(requestState.current, request)) return
+      if (!response.ok) {
+        setErr(providerFailure('Search failed', response.error))
+        return
       }
-    } catch { setErr('server unreachable') }
-    finally { setSearching(false) }
+      const list = normalizeProviderHits((response.result as { hits?: unknown }).hits, meta)
+      const session = { provider: meta.name, dir: providerNeedsDirectory(meta.name) ? searchDir : null }
+      setHits(list)
+      setSearchScope(projectScope)
+      setSearchSession(session)
+      importCoordinator.rememberSearch(projectScope, { provider: meta.name, kind, dir: searchDir, q: query, session, hits: list })
+      if (list.length === 0) setNote('No usable results from this source.')
+    } catch {
+      if (isCurrentStockSearch(requestState.current, request)) setErr('Search failed: server unreachable')
+    } finally {
+      const settled = finishStockSearch(requestState.current, request)
+      if (settled !== requestState.current) {
+        requestState.current = settled
+        setSearching(settled.searching)
+      }
+    }
   }
 
-  const fetchHit = async (h: Hit) => {
-    if (!project) { setErr('Create or open a project first — fetched media imports into it.'); return }
-    setFetchingId(h.id); setErr(null); setNote(null)
+  const fetchHit = async (hit: ProviderHit) => {
+    if (!project) {
+      setErr('Create or open a project first — imported media goes into that project.')
+      return
+    }
+    const session = searchSession
+    if (!session || session.provider !== hit.provider) {
+      setErr('Search this source again before importing a result.')
+      return
+    }
+    if (providerNeedsDirectory(hit.provider) && !session.dir) {
+      setErr('The original local folder is unavailable. Search that folder again before importing.')
+      return
+    }
+    const requestStateAfterStart = importCoordinator.begin(projectScope, hit.id)
+    // Admission is App-owned and updates before the first await. A queued
+    // handler — including one from a just-remounted Find media panel — cannot
+    // dispatch a second assets.fetch before React repaints disabled controls.
+    if (!requestStateAfterStart) return
+    const request = requestStateAfterStart.fetchEpoch
+    let completed: { key: string; assetId: string } | undefined
+    setErr(null)
+    setNote(null)
     try {
-      const fetchArgs: Record<string, string> = { provider: h.provider, id: h.id, kind: h.kind }
-      if (h.provider === 'local_folder') fetchArgs.dir = dir.trim()
-      const r = await callVerb('assets.fetch', fetchArgs as never)
-      if (r.ok) {
-        const aid = (r.result as { asset_id?: string }).asset_id ?? ''
-        setFetched((f) => ({ ...f, [h.id]: aid }))
-        setNote(`Imported "${h.title}" → ${aid}. It's in the Assets tray.`)
+      const args: Record<string, string> = { provider: hit.provider, id: hit.id, kind: hit.kind }
+      if (session.dir) args.dir = session.dir
+      const response = await callVerb('assets.fetch', args as never)
+      if (!importCoordinator.isActive(projectScope, request)) return
+      if (response.ok) {
+        const assetId = (response.result as { asset_id?: string }).asset_id ?? ''
+        if (importCoordinator.isCurrentScope(projectScope)) {
+          completed = { key: stockImportKey(hit.provider, hit.id), assetId }
+          setNote(`Imported “${hit.title}” into Assets.`)
+        }
       } else {
-        setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'fetch failed'}`)
+        if (importCoordinator.isCurrentScope(projectScope)) setErr(providerFailure('Import failed', response.error))
       }
-    } catch { setErr('server unreachable') }
-    finally { setFetchingId(null) }
+    } catch {
+      if (importCoordinator.isActive(projectScope, request) && importCoordinator.isCurrentScope(projectScope)) setErr('Import failed: server unreachable')
+    } finally {
+      importCoordinator.finish(projectScope, request, completed)
+    }
   }
 
-  const fmtDur = (ms?: number | null) => (ms && ms > 0 ? `${(ms / 1000).toFixed(1)}s` : '')
+  const fetchingId = importSnapshot.request.fetchingId
+  const importing = fetchingId !== null
+  const visibleHits = searchScope === projectScope ? hits : []
 
-  const body = (
-        <div className="cd-body">
-          {/* provider */}
+  return (
+    <section className="cd-embed" data-cut-stock data-cut-stock-open="true" data-cut-stock-embed aria-label="Find media">
+      <div className="cd-body">
+        <div className="cd-note" data-cut-stock-providers-status aria-live="polite">
+          {catalogState === 'loading' && 'Loading available media sources…'}
+          {catalogState === 'ready' && `${providers.length} media sources available.`}
+          {catalogState === 'error' && catalogError}
+        </div>
+
+        {meta && catalogState === 'ready' && <>
           <label className="cd-field">
-            <span className="cd-field-label">Provider</span>
-            <select className="cd-sel" data-cut-stock-provider value={provider} onChange={(e) => setProvider(providerFromInput(e.target.value, provider))}>
-              {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            <span className="cd-field-label">Source</span>
+            <select className="cd-sel" data-cut-stock-provider value={provider ?? ''} disabled={importing} onChange={(event) => chooseProvider(event.target.value)}>
+              {providers.map((item) => (
+                <option key={item.name} value={item.name} data-cut-stock-provider-option={item.name}>
+                  {providerLabel(item.name)}{item.network ? '' : ' · offline'}
+                </option>
+              ))}
             </select>
           </label>
 
-          {/* kind */}
+          <p className="cd-note" data-cut-stock-provider-note data-cut-stock-provider-network={meta.network ? 'network' : 'offline'}>
+            {meta.note} {meta.network ? 'This source is contacted when you search or import a result.' : 'This source works offline.'}
+          </p>
+
+          {meta.needsKey && <p className="cd-note cd-note--warn" data-cut-stock-provider-setup>
+            This source needs setup before searching is available in Find media.
+          </p>}
+
           <div className="cd-field">
             <span className="cd-field-label">Kind</span>
             <div className="cd-seg" role="tablist" data-cut-stock-kind>
-              {meta.kinds.map((k) => (
+              {meta.kinds.map((item) => (
                 <button
-                  key={k} role="tab" aria-selected={kind === k}
-                  className={`cd-seg-btn ${kind === k ? 'cd-seg-btn--on' : ''}`}
-                  data-cut-stock-kind-opt={k} onClick={() => setKind(k)}
-                >{k}</button>
+                  key={item}
+                  type="button"
+                  role="tab"
+                  aria-selected={kind === item}
+                  className={`cd-seg-btn ${kind === item ? 'cd-seg-btn--on' : ''}`}
+                  data-cut-stock-kind-opt={item}
+                  disabled={importing}
+                  onClick={() => setKind(item)}
+                >{item}</button>
               ))}
             </div>
           </div>
 
-          {provider === 'local_folder' && (
+          {providerNeedsDirectory(meta.name) && (
             <label className="cd-field">
               <span className="cd-field-label">Folder</span>
-              <input className="cd-input cd-input--mono" data-cut-stock-dir type="text" spellCheck={false}
-                placeholder="/path/to/your/media" value={dir} onChange={(e) => setDir(e.target.value)} />
+              <input className="cd-input cd-input--mono" data-cut-stock-dir type="text" spellCheck={false} disabled={importing}
+                placeholder="/path/to/your/media" value={dir} onChange={(event) => setDir(event.target.value)} />
             </label>
           )}
 
-          {/* query */}
           <label className="cd-field">
-            <span className="cd-field-label">{provider === 'local_folder' ? 'Filename contains' : 'Search'}</span>
-            <input className="cd-input" data-cut-stock-query autoFocus
-              placeholder={provider === 'local_folder' ? 'e.g. whoosh' : 'e.g. rain, applause, whoosh'}
-              value={q} onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void search() }} />
+            <span className="cd-field-label">{providerQueryLabel(meta.name)}</span>
+            <input className="cd-input" data-cut-stock-query autoFocus disabled={importing}
+              placeholder={providerQueryPlaceholder(meta.name)} value={q}
+              onChange={(event) => setQ(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') void search() }} />
           </label>
 
-          <button className="cd-btn cd-btn--primary" data-cut-stock-search disabled={searching} onClick={() => void search()}>
-            {searching ? 'Searching…' : 'Search'}
+          <button className="cd-btn cd-btn--primary" data-cut-stock-search disabled={searching || importing || meta.needsKey} onClick={() => void search()}>
+            {searching ? 'Searching…' : meta.name === 'stickers' && !q.trim() ? 'Browse stickers' : 'Search'}
           </button>
+        </>}
 
-          {err && <div className="cd-err" data-cut-stock-error role="alert">{err}</div>}
-          {note && <p className="cd-note" data-cut-stock-note>{note}</p>}
+        {err && <div className="cd-err" data-cut-stock-error role="alert">{err}</div>}
+        {note && <p className="cd-note" data-cut-stock-note>{note}</p>}
+        <p className="cd-note" id="cut-stock-import-status" data-cut-stock-import-status role="status" aria-live="polite">
+          {importing ? 'Importing one media item. Other imports are unavailable until it finishes.' : ''}
+        </p>
 
-          {/* results */}
-          {hits.length > 0 && (
-            <div className="cd-stock-list" data-cut-stock-results>
-              {hits.map((h) => (
-                <div className="cd-stock-hit" data-cut-stock-hit={h.id} key={h.id}>
-                  <div className="cd-stock-hit-main">
-                    <div className="cd-stock-hit-title" title={h.title}>{h.title}</div>
-                    <div className="cd-stock-hit-meta">
-                      <span className="cd-tag">{h.kind}</span>
-                      {h.filetype && <span className="cd-tag">{h.filetype}</span>}
-                      {fmtDur(h.duration_ms) && <span className="cd-tag">{fmtDur(h.duration_ms)}</span>}
-                      <span className="cd-tag" data-cut-stock-hit-license title={h.attribution}>
-                        {h.license.toUpperCase()}{h.requires_attribution ? ' ⚠' : ''}
-                      </span>
-                    </div>
-                    <div className="cd-stock-hit-attr" title={h.attribution}>{h.attribution}</div>
-                  </div>
-                  <button
-                    className="cd-btn cd-btn--sm" data-cut-stock-fetch={h.id}
-                    disabled={fetchingId === h.id || !!fetched[h.id]}
-                    onClick={() => void fetchHit(h)}
-                  >
-                    {fetched[h.id] ? <><Icon name="check" size={14} tone="success" /> Added</> : fetchingId === h.id ? 'Fetching…' : 'Import'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="cd-note">
-            Openverse results are commercial-use Creative Commons; license + credit are shown and recorded on import.
-            {' '}<code>⚠</code> = attribution required.
-          </p>
-        </div>
-  )
+        <StockResults
+          hits={visibleHits}
+          fetchingId={fetchingId}
+          fetched={importSnapshot.fetched}
+          onFetch={fetchHit}
+        />
 
-  return (
-    <section className="cd-embed" data-cut-stock data-cut-stock-open="true" data-cut-stock-embed aria-label="Find media">
-      {body}
+        {meta && <p className="cd-note">
+          License and credit come from the selected source and are retained with each import.
+        </p>}
+      </div>
     </section>
   )
 }

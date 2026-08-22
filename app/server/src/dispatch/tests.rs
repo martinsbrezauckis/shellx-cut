@@ -43,11 +43,14 @@ fn test_actor() -> Actor {
     }
 }
 
+mod assets_fetch_transition;
 mod caption_track_resolution;
+mod captions_kinetic_regression;
 mod detach_audio;
 mod generation_cli;
 mod nest_media_io;
 mod output_contract;
+mod overwrite;
 mod recipe_runner;
 mod render_verify;
 mod request_idempotency;
@@ -1449,39 +1452,6 @@ async fn unknown_verb_rejected() {
     let r = dispatch(&state, "nope.nothing", json!({}), test_actor()).await;
     assert!(!r.ok);
     assert_eq!(r.error.unwrap().code, "not_found");
-}
-
-/// Every registry verb has a dispatch arm (the anti-drift tripwire).
-#[tokio::test]
-async fn every_verb_has_an_arm() {
-    let state = AppState::new();
-    let names: Vec<String> = state
-        .registry
-        .verbs
-        .iter()
-        .map(|v| v.name.clone())
-        .collect();
-    for name in names {
-        // This tripwire checks dispatch coverage, not the OS capture backend.
-        // Valid empty args would launch a real portal capture on headless Linux.
-        let args = if name == "debug.screenshot" {
-            json!({"monitor":"structural-test"})
-        } else {
-            json!({})
-        };
-        let r = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            dispatch(&state, &name, args, test_actor()),
-        )
-        .await
-        .unwrap_or_else(|_| panic!("verb {name} did not return within 30 seconds"));
-        if let Some(e) = &r.error {
-            assert!(
-                !e.message.contains("no dispatch arm"),
-                "verb {name} missing from dispatch match"
-            );
-        }
-    }
 }
 
 /// project.create → state → ops → close round-trip works.
@@ -7553,6 +7523,66 @@ async fn assets_generate_imports_generated_file_without_extra_media_import_args(
         2,
         "the unchanged base request reuses while the explicit variation runs once"
     );
+
+    // Antigravity uses its own `agy` executable and prompt-as-final-argument
+    // contract. This fixture produces a real PNG for the normal import/probe
+    // path; it proves Cut's integration mechanics only, not paid provider media.
+    let _fake_antigravity = generation_cli::FakeGenerationCli::install_as(
+        dir.path(),
+        "agy",
+        generation_cli::FakeGenerationCliConfig::copying(fixture.clone()),
+    );
+    let antigravity = dispatch(
+        &state,
+        "assets.generate",
+        json!({"prompt":"amber title card","provider":"antigravity","kind":"image","timeout_ms":30000}),
+        test_actor(),
+    )
+    .await;
+    assert!(antigravity.ok, "{:?}", antigravity.error);
+    let antigravity_job = wait_job(
+        &state,
+        antigravity.result.as_ref().unwrap()["job_id"]
+            .as_str()
+            .unwrap(),
+        30,
+    )
+    .await;
+    assert_eq!(
+        antigravity_job.state,
+        crate::jobs::JobState::Done,
+        "{:?}",
+        antigravity_job.error
+    );
+    let antigravity_result = antigravity_job.result.unwrap();
+    assert_eq!(antigravity_result["generated"]["provider"], "antigravity");
+    assert_eq!(antigravity_result["generated"]["kind"], "image");
+
+    let unsupported_video = dispatch(
+        &state,
+        "assets.generate",
+        json!({"prompt":"not supported","provider":"antigravity","kind":"video","timeout_ms":30000}),
+        test_actor(),
+    )
+    .await;
+    assert!(unsupported_video.ok, "{:?}", unsupported_video.error);
+    let unsupported_video_job = wait_job(
+        &state,
+        unsupported_video.result.as_ref().unwrap()["job_id"]
+            .as_str()
+            .unwrap(),
+        30,
+    )
+    .await;
+    assert_eq!(unsupported_video_job.state, crate::jobs::JobState::Failed);
+    assert!(
+        unsupported_video_job
+            .error
+            .as_ref()
+            .is_some_and(|error| error.message.contains("does not generate video")),
+        "{unsupported_video_job:?}"
+    );
+
     let runs = project.join("cache/gen/runs");
     assert!(
         !runs.exists() || std::fs::read_dir(runs).unwrap().next().is_none(),

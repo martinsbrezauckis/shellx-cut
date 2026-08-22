@@ -17,6 +17,9 @@ pub(super) use timeline::{
     edit_trim, edit_trim_edges, edit_update_marker,
 };
 
+mod overwrite;
+pub(super) use overwrite::edit_overwrite;
+
 mod visual;
 pub(super) use visual::{
     edit_add_mask, edit_adjustment, edit_animate, edit_auto_balance, edit_auto_zoom,
@@ -58,6 +61,10 @@ pub(super) use assets_plugins::{
     agent_chat, assets_fetch, assets_generate, assets_providers, assets_search, effects_list,
     media_index, media_index_status, media_search, plugins_call, plugins_enable, plugins_list,
     transitions_list,
+};
+#[cfg(test)]
+pub(in crate::dispatch) use assets_plugins::{
+    install_assets_fetch_project_transition_gate, AssetsFetchProjectTransitionGate,
 };
 
 /// captions.kinetic — ANIMATED, transcript-synced captions: each caption line

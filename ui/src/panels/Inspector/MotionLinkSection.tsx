@@ -22,12 +22,12 @@ export default function MotionLinkSection({ link }: MotionLinkSectionProps) {
   const editInMotion = async () => {
     if (busy || !canEditInMotion) return
     setBusy('edit')
-    setNote('Opening verified package in Canvas Motion Studio…')
+    setNote('Opening verified package in ShellX Motion…')
     try {
       const result = await callVerb('motion.link.edit', { clip: link.clipId })
-      setNote(result.ok ? 'Opened in Canvas Motion Studio.' : result.error?.message ?? 'Canvas launch failed')
+      setNote(result.ok ? 'Opened in ShellX Motion.' : result.error?.message ?? 'ShellX Motion launch failed')
     } catch (error) {
-      setNote(error instanceof Error ? error.message : 'Canvas launch failed')
+      setNote(error instanceof Error ? error.message : 'ShellX Motion launch failed')
     } finally {
       setBusy(null)
     }
@@ -86,14 +86,14 @@ export default function MotionLinkSection({ link }: MotionLinkSectionProps) {
         <dt>Mode</dt><dd>{link.mode === 'rendered_media' ? 'Rendered fallback' : 'Native lowering'}</dd>
         {link.lastReceiptId && (<><dt>Receipt</dt><dd title={link.lastReceiptId}>{shortDigest(link.lastReceiptId)}</dd></>)}
       </dl>
-      <p className="insp__hint">Cut preserves this clip’s timeline identity while Motion owns rain, water, snow, shaders, 3D, particles, blur, and film rendering. Edit the source in Canvas, then refresh this render.</p>
+      <p className="insp__hint">Cut preserves this clip’s timeline identity while Motion owns rain, water, snow, shaders, 3D, particles, blur, and film rendering. Edit the source in ShellX Motion, then refresh this render.</p>
       <div className="insp__motion-actions">
         <button
           type="button"
           className="insp__btn insp__btn--primary"
           data-cut-motion-edit={link.clipId}
           disabled={busy !== null || !canEditInMotion}
-          title={canEditInMotion ? 'Open weather, effects, curves, and keyframes in Canvas Motion Studio' : 'Install/configure ShellX Canvas and relink the source first'}
+          title={canEditInMotion ? 'Open weather, effects, curves, and keyframes in ShellX Motion' : 'Install/configure ShellX Motion and relink the source first'}
           onClick={() => void editInMotion()}
         >
           {busy === 'edit' ? 'Opening…' : 'Edit in Motion'}

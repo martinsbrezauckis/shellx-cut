@@ -13,11 +13,13 @@ import { useEffect } from 'react'
 import type { OpRecord, Project, Transcript as TranscriptData } from '../../lib/client'
 import type { DoctorReport } from '../../lib/doctor'
 import type { LeftTab, FindSurface } from '../../layout/useLayout'
+import type { SourceNavigationState } from '../../app/useSourceNavigationController'
 import Transcript from '../Transcript'
 import Assets from '../Assets'
 import GenerateTemplatesWorkspace, { type GenerateWorkspaceTab } from '../GenerateTemplates'
 import ProjectsPanel from '../Projects'
 import StockDrawer from '../Stock'
+import type { StockImportCoordinator } from '../Stock/importCoordinator'
 import SearchDrawer from '../Search'
 import SequenceIndex from '../SequenceIndex'
 import { Icon } from '../../icons'
@@ -25,6 +27,7 @@ import './leftpanel.css'
 
 export interface LeftPanelProps {
   project: Project | null
+  projectScope: number
   doctor: DoctorReport | null
   /** App-owned complete durable history; shared with Review and Transcript. */
   ops: OpRecord[]
@@ -50,10 +53,15 @@ export interface LeftPanelProps {
   onProjectChanged: () => void
   /** Collapse the whole sidebar (App hides it, shows the expand strip). */
   onCollapse: () => void
+  /** App-routed exact registered asset requested by a timeline/source occurrence. */
+  sourceNavigation?: SourceNavigationState | null
+  /** App-owned so a Find sub-surface remount cannot bypass an active import. */
+  stockImportCoordinator: StockImportCoordinator
 }
 
 export default function LeftPanel({
   project,
+  projectScope,
   doctor,
   ops,
   playheadMs,
@@ -71,6 +79,8 @@ export default function LeftPanel({
   onReopenProject,
   onProjectChanged,
   onCollapse,
+  sourceNavigation,
+  stockImportCoordinator,
 }: LeftPanelProps) {
   const assetCount = Object.keys(project?.assets ?? {}).length
 
@@ -161,7 +171,13 @@ export default function LeftPanel({
           />
         </div>
         <div className="lp__pane" style={{ display: tab === 'assets' ? 'flex' : 'none' }}>
-          <Assets project={project} doctor={doctor} playheadMs={playheadMs} />
+          <Assets
+            project={project}
+            doctor={doctor}
+            playheadMs={playheadMs}
+            onProjectChanged={onProjectChanged}
+            sourceNavigation={sourceNavigation}
+          />
         </div>
         <div className="lp__pane lp__pane--generate" style={{ display: tab === 'generate' ? 'flex' : 'none' }}>
           <GenerateTemplatesWorkspace
@@ -216,7 +232,7 @@ export default function LeftPanel({
             </div>
             <div className="lp__find-body">
               {findSurface === 'find-media'
-                ? <StockDrawer project={project} />
+                ? <StockDrawer project={project} projectScope={projectScope} importCoordinator={stockImportCoordinator} />
                 : findSurface === 'find-moment'
                   ? <SearchDrawer project={project} playheadMs={playheadMs} />
                   : <SequenceIndex project={project} onProjectChanged={onProjectChanged} />}

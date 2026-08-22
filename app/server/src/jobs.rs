@@ -445,10 +445,11 @@ impl JobManager {
         rec.updated_ts = cut_core::OpRecord::now_ts();
         let kind = rec.kind.clone();
         let terminal = matches!(rec.state, JobState::Done | JobState::Failed);
-        // Persist every transition — crash-recoverable by design (server contract).
+        // Persist every transition crash-recoverably, clearing any prior notice before serializing.
+        rec.persistence_error = None;
         if let Some(dir) = persist_dir {
             match persist(&dir.join(format!("{job_id}.json")), rec) {
-                Ok(()) => rec.persistence_error = None,
+                Ok(()) => {}
                 Err(e) => {
                     tracing::error!(
                         job_id,
@@ -470,7 +471,6 @@ impl JobManager {
         self.inner.lock().expect("job lock").tasks.len()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

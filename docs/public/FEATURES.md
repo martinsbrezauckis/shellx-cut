@@ -7,10 +7,12 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.109 release notes
+## v0.6.110 release notes
 
-- Windows Agent Chat supports Antigravity when Cut verifies its installed CLI capabilities.
-- Contextual right-click menus target the item or time you clicked, use compact groups, and support keyboard access.
+- Atomic Overwrite edits with compact Source Monitor targets and stills.
+- Match Frame, All Uses, and registered source reveal.
+- One-word captions.
+- Bounded clip-volume automation.
 - Bugfixes.
 
 ## Visible Surface Map
@@ -103,6 +105,16 @@ route to the same surface registry.
   Transcript panel, and per-track mute/solo.
 - Audio pan/balance per track with center-neutral semantics, available in the
   mixer and as a compact timeline-header shortcut.
+- The selected audio clip's Inspector **Volume** section combines static Gain
+  with manual **Volume automation**: add or update explicit clip-local time in
+  seconds (dispatched as exact milliseconds) and level control points, choose
+  linear/hold/smooth or advanced easing, select a listed point to edit it,
+  remove a point, or clear the track. One point holds its level for the whole
+  clip; add another to make a ramp. Automation truthfully overrides static Gain
+  only while points exist. This compact inspector point editor is not presented
+  as a timeline automation lane; a full lane remains future work. Automation
+  saves are revision-protected: if another edit changes the project first, Cut
+  reloads the current points instead of overwriting them.
 - Viewing aids: fullscreen preview (`f`), rule-of-thirds and title/action safe
   guides (`g`).
 - Keyboard remapping: a central keymap with a Settings editor
@@ -115,8 +127,9 @@ route to the same surface registry.
 - Transcript editing: word-level cuts, non-destructive Ignore for words that
   should be skipped by captions/reels, silence removal, filler removal, search,
   and transcript-based assembly.
-- Captions and titles: caption generation, text cards, kinetic captions,
-  styling, a caption style preset gallery (built-in looks + save-your-own,
+- Captions and titles: caption generation, text cards, kinetic captions (Lines
+  from caption cues or One word at a time from a timeline transcript), styling,
+  a caption style preset gallery (built-in looks + save-your-own,
   replay-independent apply), range controls, shifting, reflow, and animated
   titles.
 - Mask / privacy drawer: quick actions for Blur face, Blur rectangle, and Hide
@@ -156,7 +169,33 @@ route to the same surface registry.
   platform-unsupported source codecs remain auditionable; use the explicit
   keyboard-accessible Play/Pause transport, mark source In/Out,
   and insert that exact range at the timeline playhead. Video assets with audio
-  create aligned linked picture and sound.
+  create aligned linked picture and sound. The same compact V and A destination
+  selectors can target either unlocked track or Off, then **Overwrite range**
+  replaces only the selected destinations at the playhead; native selects work
+  with Tab and arrow keys, while the action remains disabled until a marked
+  range and at least one destination are available. From a selected footage clip or
+  video-track header, **Match Frame** opens the Source monitor at the exact
+  source frame under the playhead for normal, reverse, and freeze playback;
+  unavailable/offline sources and speed ramps stay visibly disabled rather
+  than guessed. A track header also refuses a crossfade or other overlap until
+  one clip is selected directly. **All uses** is a compact UI-only navigator over the existing
+  per-asset Sequence Index: it switches to the selected sequence and seeks its
+  laid clip start after any upstream crossfades, never claiming a ramp-exact
+  source mapping; its exact asset filter is applied before the 500-occurrence
+  cap.
+  Online still images open in the same monitor as a real image preview, not
+  pretend timed media: set a bounded duration (0.1 seconds to one hour), choose
+  an unlocked video track or Off, and **Overwrite still** replaces that exact
+  interval at the visible playhead. Stills never offer source In/Out, transport,
+  range insert, or an audio destination.
+  The monitor and a footage clip menu also offer **Reveal in Project** and
+  **Reveal in Library**:
+  each clears local filters and selects the same registered asset in the
+  existing surface. **Reveal Source File** is desktop-only and resolves that
+  registered identity again in the native shell before asking File Explorer,
+  Finder, or the Linux file manager to show a local regular file. Browser,
+  removed, offline, and non-file cases stay closed with a visible reason; the
+  UI neither supplies nor displays a raw source path.
 - Visual search: index video frames and find moments by content. Results keep
   source time distinct from edited timeline time, jump to the nearest real use
   of a trimmed/reused clip, and open unused hits at the exact Source frame.
@@ -168,9 +207,16 @@ route to the same surface registry.
   not create an unbounded DOM. Missing linked sources expose Relink and accept
   only the same content at its new location; different media stays a separate
   Library item.
-- Asset sources: local folders, Openverse, Internet Archive, Wikimedia, NASA,
-  built-in shape stickers, and provider-backed generation through the user's
-  configured generation CLI.
+- Asset sources: Find media reads the matching Cut server's source catalog for
+  local folders, Openverse, Internet Archive, Wikimedia, NASA, and built-in
+  shape stickers. It limits kinds to the selected source, shows its license and
+  credit before import, and lets the offline sticker catalog browse with an
+  empty query; network sources are contacted when you search or import a
+  result. Provider-
+  backed generation uses the user's configured generation CLI: Codex images,
+  Grok Imagine images/video, or Antigravity (`agy`) images. Antigravity uses a
+  native sandboxed non-interactive CLI contract and keeps its existing login and
+  settings in place; Cut never reads or rewrites them.
 
 ## AI-Assisted Editing
 
@@ -213,8 +259,9 @@ route to the same surface registry.
   prompt library pre-fills eight common Polish, Repurpose, Speech, and Review
   outcomes without sending or spending an agent turn until the user presses Send.
   Agent Chat launches the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses
-  Cut's pinned 2.1.224 contained route in a disposable cwd with native CLI tools
-  disabled. Codex keeps the user's normal configuration, native sandbox, and
+  Cut's contained capability route in a disposable cwd with native CLI tools
+  disabled. Provider version text is informational only and each route's required
+  containment flags are verified before each turn. Codex keeps the user's normal configuration, native sandbox, and
   permissions; Cut neither copies nor rewrites its login files. Grok receives a
   disposable config/home with native tools disabled and only Cut's filtered MCP
   route, while its existing login file remains in place. Antigravity keeps its
@@ -330,6 +377,8 @@ route to the same surface registry.
   powers the path-light project history, re-checking sidecar and media integrity
   before a take is offered for reference or retry. Requests use the persisted job
   queue, expose progress, and can be cancelled before or during the provider run.
+  Antigravity is deliberately image-only because Cut has no source-proven
+  Antigravity video-generation capability to advertise.
 
 ## Review, Verification, And Delivery
 
@@ -541,5 +590,5 @@ route to the same surface registry.
   repairs only the named plugin and leaves other plugins disabled.
 - WebSocket events are `op_applied`, `job_progress`, `render_done`,
   `receipt_ready`, `project_changed`, `ui_state`, and `doctor_updated`.
-- Feature changes must follow `docs/public/FEATURE_CHANGE_WORKFLOW.md` so the
-  contract, engine, UI, debug, skill, docs, tests, and packaging stay in sync.
+- `FEATURE_SURFACE_CONTRACT.md` defines the public human, agent, debug, and
+  documentation surfaces a supported capability may expose.

@@ -67,10 +67,24 @@ fn output_path(prompt: &str) -> Option<&str> {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--version") {
+        println!("1.1.9");
+        return;
+    }
+    if args.iter().any(|arg| arg == "--help") {
+        println!("--print --output-format --disable-slash-commands --sandbox --log-file --print-timeout --model");
+        return;
+    }
     let mut prompt = String::new();
     io::stdin()
         .read_to_string(&mut prompt)
         .unwrap_or_else(|error| fail(&format!("read generation prompt: {error}"), 2));
+    if prompt.is_empty() {
+        if let Some(index) = args.iter().position(|arg| arg == "--print") {
+            prompt = args.get(index + 1).cloned().unwrap_or_default();
+        }
+    }
 
     let output = output_path(&prompt)
         .filter(|path| Path::new(path).is_absolute())
@@ -187,11 +201,24 @@ pub(super) struct FakeGenerationCli {
 
 impl FakeGenerationCli {
     pub(super) fn install(dir: &Path, config: FakeGenerationCliConfig) -> Self {
+        Self::install_as(dir, "codex", config)
+    }
+
+    pub(super) fn install_as(
+        dir: &Path,
+        executable: &str,
+        config: FakeGenerationCliConfig,
+    ) -> Self {
+        assert!(matches!(executable, "codex" | "grok" | "agy"));
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).expect("create fake generation CLI directory");
         let source = bin.join("fake_generation_cli.rs");
         std::fs::write(&source, STUB_SOURCE).expect("write fake generation CLI source");
-        let program = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let program = bin.join(if cfg!(windows) {
+            format!("{executable}.exe")
+        } else {
+            executable.to_string()
+        });
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
         let compiled = Command::new(rustc)
             .args(["--edition=2021"])

@@ -84,6 +84,8 @@ export interface VerbResult<T = unknown> {
   ok: boolean
   result?: T
   op_ids?: string[]
+  /** Latest durable project revision after a successful controlled mutation. */
+  project_revision?: string
   /** Non-fatal findings (public verb contract) — e.g. media.relink's relink_shorter_than_used. */
   warnings?: Array<{ code: string; message: string }>
   error?: CutError
@@ -108,7 +110,7 @@ export interface VerbArgs {
   'project.state': { since_revision?: string; limit?: number }
   'project.health': { cursor?: string; revision?: string; limit?: number }
   'project.sequence_list': Record<string, never>
-  'project.sequence_index': { query?: string; kind?: 'all' | 'clip' | 'marker'; sequence?: string; track_kind?: 'video' | 'audio' | 'caption'; status?: 'all' | 'issues' | 'offline' | 'gaps' | 'effects' | 'hidden' | 'locked' | 'muted'; limit?: number }
+  'project.sequence_index': { query?: string; asset?: string; kind?: 'all' | 'clip' | 'marker'; sequence?: string; track_kind?: 'video' | 'audio' | 'caption'; status?: 'all' | 'issues' | 'offline' | 'gaps' | 'effects' | 'hidden' | 'locked' | 'muted'; limit?: number }
   'project.sequence_create': { name: string; from?: 'empty' | 'active'; rationale?: string }
   'project.sequence_switch': { id: string; rationale?: string }
   'project.sequence_rename': { id: string; name: string; rationale?: string }
@@ -401,6 +403,11 @@ export interface VerbArgs {
   // omitted = resolved from the target track (base → true for AV sync,
   // overlay/extra → false, overlays float).
   'edit.insert': { asset: string; track: string; at_ms: number; src_range_ms?: [number, number]; duration_ms?: number; ripple?: boolean; rationale?: string; group_id?: string }
+  // TRUE OVERWRITE: unlike edit.insert {ripple:false}, this replaces a fixed
+  // source-duration interval and never shifts downstream timing. Choose either
+  // destination or both for one atomic linked A/V edit. Source Monitor marks
+  // may use source_in_ms/source_out_ms instead of src_range_ms.
+  'edit.overwrite': { asset: string; at_ms: number; video_track?: string; audio_track?: string; src_range_ms?: [number, number]; source_in_ms?: number; source_out_ms?: number; duration_ms?: number; rationale?: string; group_id?: string }
   // Duplicate a clip (NLE Ctrl+D): copy a clip + place the copy IMMEDIATELY AFTER
   // it on the same track, rippling the rest. The copy carries the SAME asset +
   // source range AND ALL per-clip attributes (effects/grade/transform/crop/fade/
@@ -680,7 +687,7 @@ export interface VerbArgs {
   'screen_record.export': { source: string; plan: string; path?: string; format?: 'mp4' | 'gif'; gif_fps?: number; gif_width?: number }
   'assets.generate': {
     prompt: string
-    provider: 'codex' | 'grok'
+    provider: 'codex' | 'grok' | 'antigravity'
     kind?: 'image' | 'video'
     model?: string
     references?: string[]
@@ -971,6 +978,14 @@ export interface VerbArgs {
 }
 
 export type VerbName = keyof VerbArgs
+/** Shared mutation controls are merged into every live verb input by the
+ * server registry. They remain opt-in at each call site: a caller that needs
+ * retry identity or an atomic revision guard explicitly supplies them. */
+export interface MutationControls {
+  request_id?: string
+  expected_revision?: string
+}
+export type ControlledVerbArgs<N extends VerbName> = VerbArgs[N] & MutationControls
 type VerbResultPayload<N extends VerbName> = N extends keyof VerbResults ? VerbResults[N] : unknown
 
 // ---------------------------------------------------------------------------
@@ -984,7 +999,7 @@ type VerbResultPayload<N extends VerbName> = N extends keyof VerbResults ? VerbR
  */
 export async function callVerb<N extends VerbName>(
   name: N,
-  args: VerbArgs[N],
+  args: ControlledVerbArgs<N>,
 ): Promise<VerbResult<VerbResultPayload<N>>> {
   const res = await fetch(`${API_BASE}/api/verb/${name}`, {
     method: 'POST',

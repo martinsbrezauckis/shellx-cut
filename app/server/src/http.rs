@@ -1794,7 +1794,7 @@ async fn get_agent_info(State(state): State<AppState>) -> Response {
             {"id": "features", "path": "docs/public/FEATURES.md", "url": "/api/agent-doc/docs/public/FEATURES.md"},
             {"id": "debug-api", "path": "docs/public/DEBUG_API.md", "url": "/api/agent-doc/docs/public/DEBUG_API.md"},
             {"id": "local-trust", "path": "docs/public/shellx-cut-threat-model.md", "url": "/api/agent-doc/docs/public/shellx-cut-threat-model.md"},
-            {"id": "feature-workflow", "path": "docs/public/FEATURE_CHANGE_WORKFLOW.md", "url": "/api/agent-doc/docs/public/FEATURE_CHANGE_WORKFLOW.md"},
+            {"id": "feature-surfaces", "path": "docs/public/FEATURE_SURFACE_CONTRACT.md", "url": "/api/agent-doc/docs/public/FEATURE_SURFACE_CONTRACT.md"},
             {"id": "motion-boundary", "path": "docs/public/SHELLX_MOTION_BOUNDARY.md", "url": "/api/agent-doc/docs/public/SHELLX_MOTION_BOUNDARY.md"}
         ],
         "critical_verbs": [
@@ -1879,7 +1879,7 @@ fn clean_agent_doc_path(path: &str) -> Option<std::path::PathBuf> {
         || path == "docs/public/DEBUG_API.md"
         || path == "docs/public/shellx-cut-threat-model.md"
         || path == "docs/public/JUDGE_REVIEW.md"
-        || path == "docs/public/FEATURE_CHANGE_WORKFLOW.md"
+        || path == "docs/public/FEATURE_SURFACE_CONTRACT.md"
         || path == "docs/public/SHELLX_MOTION_BOUNDARY.md";
     if !allowed || path.ends_with('/') {
         return None;

@@ -8,7 +8,8 @@ feature descriptions self-contained and usable from a fresh checkout.
 - `DEBUG_API.md` documents local Debug API and MCP control.
 - `shellx-cut-threat-model.md` states the local-machine trust contract and
   residual risk for the unauthenticated loopback API.
-- `FEATURE_CHANGE_WORKFLOW.md` is the contributor feature checklist.
+- `FEATURE_SURFACE_CONTRACT.md` describes the supported human, agent, internal,
+  and rig-only feature surfaces.
 - `BUILDING.md` covers public build and verification steps.
 - `SHELLX_MOTION_BOUNDARY.md` defines the Cut and Motion integration boundary.
 - `site/` contains the public manual source.

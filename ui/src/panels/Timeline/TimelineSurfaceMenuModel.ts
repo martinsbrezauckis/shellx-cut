@@ -6,7 +6,7 @@ import { SPEED_FACTOR_MAX, SPEED_FACTOR_MIN } from './speedFactor'
 export type TimelineSurfaceMenuState =
   | { kind: 'empty'; x: number; y: number; atMs: number; trackId: string | null }
   | { kind: 'gap'; x: number; y: number; itemId: string }
-  | { kind: 'track'; x: number; y: number; trackId: string }
+  | { kind: 'track'; x: number; y: number; trackId: string; atMs: number }
   | { kind: 'locked'; x: number; y: number; trackId: string; itemId: string | null; atMs: number }
 
 export type TimelineContextTarget =
@@ -92,7 +92,7 @@ export function resolveTimelineContextTarget(args: {
   if (!item && args.trackId && !args.tracks.some((candidate) => candidate.id === args.trackId)) return { kind: 'none' }
   if (args.headerTrackId) {
     if (args.headerTrackId !== args.trackId || !args.tracks.some((candidate) => candidate.id === args.headerTrackId)) return { kind: 'none' }
-    return { kind: 'track', x: args.x, y: args.y, trackId: args.headerTrackId }
+    return { kind: 'track', x: args.x, y: args.y, trackId: args.headerTrackId, atMs: args.atMs }
   }
   const trackId = item?.trackId ?? args.trackId
   const track = trackId ? args.tracks.find((candidate) => candidate.id === trackId) ?? null : null

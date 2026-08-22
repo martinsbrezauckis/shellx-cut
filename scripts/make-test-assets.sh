@@ -13,6 +13,10 @@
 #   testdata/talking_head.truth.json ground truth: segment script + windows,
 #       filler instances, exact silence spans, scene-cut ms, duration
 #
+# Deliberately not produced: `moving_face.mp4`. Face-redaction coverage needs a
+# detector-proven local video, which a synthetic pattern cannot honestly claim.
+# Native Windows qualification therefore requires an explicit `--face <file>`.
+#
 # TTS engine: espeak-ng (apt). The audio_perception MCP / piper voices are
 # nicer, but the test asset must be regenerable from a bare checkout in one
 # deterministic step — espeak-ng is the only engine guaranteed present and

@@ -1,7 +1,23 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { callVerb, type Project, type Track } from '../lib/client'
+import { callVerb, type Project, type Track, type VerbResult } from '../lib/client'
 import { shouldIgnoreGlobalShortcut } from '../lib/dom'
+import { publishUserActionMessage, userVerbFailureMessage } from '../lib/userActionFeedback'
 import { type ClipSnapshot, pasteTargetTrack, snapshotClip } from './model'
+
+const PASTE_FAILURE_FALLBACK = 'Could not paste the copied clip.'
+
+/**
+ * Paste uses a clipboard snapshot, so the original clip can disappear after
+ * copy/cut. Keep the engine's refusal verbatim, including the snapshot cause
+ * when it is the only recovery guidance (for example, re-import the asset).
+ */
+export function clipboardPasteFailureMessage(result: VerbResult): string | null {
+  const message = userVerbFailureMessage(result, PASTE_FAILURE_FALLBACK)
+  if (!message || result.error?.suggested_action?.trim()) return message
+  const cause = result.error?.cause?.trim()
+  if (!cause || message.toLocaleLowerCase().includes(cause.toLocaleLowerCase())) return message
+  return `${message} ${cause}`
+}
 
 interface AppClipboardControllerArgs {
   project: Project | null
@@ -104,14 +120,20 @@ export function useAppClipboardController({
     const activeTrackId = sel.length > 0 ? (snapshotClip(project, sel[0])?.trackId ?? null) : null
     const toTrack = target?.trackId ?? pasteTargetTrack(project, snap, activeTrackId)
     const atMs = target?.atMs ?? at
-    await callVerb('edit.paste', {
-      clip: snap.clipId,
-      asset: snap.asset,
-      src_range_ms: snap.srcRange,
-      to_track: toTrack,
-      at_ms: Math.max(0, Math.round(atMs)),
-      rationale: `paste clip onto ${toTrack} @ ${Math.round(atMs)}ms (${target ? 'timeline context menu' : 'Ctrl+V'})`,
-    })
+    try {
+      const result = await callVerb('edit.paste', {
+        clip: snap.clipId,
+        asset: snap.asset,
+        src_range_ms: snap.srcRange,
+        to_track: toTrack,
+        at_ms: Math.max(0, Math.round(atMs)),
+        rationale: `paste clip onto ${toTrack} @ ${Math.round(atMs)}ms (${target ? 'timeline context menu' : 'Ctrl+V'})`,
+      })
+      const message = clipboardPasteFailureMessage(result)
+      if (message) publishUserActionMessage(message)
+    } catch {
+      publishUserActionMessage('Could not paste the copied clip: the local engine is unreachable.')
+    }
   }, [])
 
   const warnMultiSelectionClipboard = useCallback((action: string) => {

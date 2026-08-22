@@ -195,7 +195,7 @@ pub(super) fn reflow_cues(
 ///
 /// Shared by `captions.generate` (which groups the words into LINE cues by char
 /// budget + speech gaps) and `captions.kinetic{per_word}` (which animates each
-/// WORD as its own centred cue — the 2026 word-by-word / "karaoke" style). An
+/// WORD as its own "karaoke" cue). An
 /// empty Vec means no transcribed words on the timeline; each caller renders its
 /// own actionable message.
 pub(crate) async fn harvest_timeline_words(

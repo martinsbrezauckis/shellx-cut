@@ -59,6 +59,7 @@ jobs:
           node --test
           scripts/public-tests/cross-host-media.test.mjs
           scripts/public-tests/dependency-audit.test.mjs
+          scripts/public-tests/hq-media-gate.test.mjs
           scripts/public-tests/safe-data.test.mjs
           scripts/public-tests/third-party-notice.test.mjs
 

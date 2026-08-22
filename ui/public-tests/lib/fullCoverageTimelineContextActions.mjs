@@ -1,6 +1,9 @@
 // Canonical native-matrix coverage for context owners outside the clip menu.
 // Each row opens the real menu on the exact Timeline target, actuates its UI
 // route, and proves the resulting project or UI state.
+import { createTimelineContextAuditCoverage } from './fullCoverageTimelineContextAuditScenarios.mjs'
+import { openKeyboardContextMenu } from './fullCoverageContextMenuKeyboard.mjs'
+import { proveSourceMonitorFrame } from './fullCoverageSourceMonitorFrameProof.mjs'
 
 export function createTimelineContextActionCoverage({
   probe,
@@ -22,120 +25,6 @@ export function createTimelineContextActionCoverage({
     await page.keyboard.press('Escape').catch(() => {})
     await page.locator('[data-cut-timeline-ctx-backdrop]').click({ timeout: 500 }).catch(() => {})
     await sleep(80)
-  }
-
-  async function beginKeyboardMenuDiagnostics(page, menuSelector) {
-    return page.evaluate((selector) => {
-      const describe = (node) => {
-        if (!(node instanceof Element)) return null
-        const rect = node.getBoundingClientRect()
-        return {
-          tag: node.tagName.toLowerCase(),
-          id: node.id || '',
-          trackHeader: node.getAttribute('data-cut-track-header') || '',
-          track: node.getAttribute('data-cut-track') || '',
-          role: node.getAttribute('role') || '',
-          label: node.getAttribute('aria-label') || '',
-          visible: rect.width > 0 && rect.height > 0,
-        }
-      }
-      const previous = globalThis.__shellxCutFcvKeyboardMenuDiagnostics
-      previous?.stop?.()
-      const keys = []
-      const capture = (event) => {
-        keys.push({
-          type: event.type,
-          key: event.key,
-          code: event.code,
-          shiftKey: event.shiftKey,
-          target: describe(event.target),
-          activeElement: describe(document.activeElement),
-        })
-      }
-      document.addEventListener('keydown', capture, true)
-      document.addEventListener('keyup', capture, true)
-      globalThis.__shellxCutFcvKeyboardMenuDiagnostics = {
-        menuSelector: selector,
-        keys,
-        stop: () => {
-          document.removeEventListener('keydown', capture, true)
-          document.removeEventListener('keyup', capture, true)
-        },
-      }
-      return {
-        activeElement: describe(document.activeElement),
-        menu: describe(document.querySelector(selector)),
-      }
-    }, menuSelector).catch((error) => ({ captureError: String(error?.message || error) }))
-  }
-
-  async function endKeyboardMenuDiagnostics(page, menuSelector) {
-    return page.evaluate((selector) => {
-      const describe = (node) => {
-        if (!(node instanceof Element)) return null
-        const rect = node.getBoundingClientRect()
-        return {
-          tag: node.tagName.toLowerCase(),
-          id: node.id || '',
-          trackHeader: node.getAttribute('data-cut-track-header') || '',
-          track: node.getAttribute('data-cut-track') || '',
-          role: node.getAttribute('role') || '',
-          label: node.getAttribute('aria-label') || '',
-          visible: rect.width > 0 && rect.height > 0,
-        }
-      }
-      const diagnostics = globalThis.__shellxCutFcvKeyboardMenuDiagnostics
-      const keyEvents = diagnostics?.keys?.slice(-8) || []
-      diagnostics?.stop?.()
-      if (globalThis.__shellxCutFcvKeyboardMenuDiagnostics === diagnostics) {
-        delete globalThis.__shellxCutFcvKeyboardMenuDiagnostics
-      }
-      return {
-        captureInstalled: diagnostics?.menuSelector === selector,
-        activeElement: describe(document.activeElement),
-        menu: describe(document.querySelector(selector)),
-        keyEvents,
-      }
-    }, menuSelector).catch((error) => ({ captureError: String(error?.message || error) }))
-  }
-
-  async function openKeyboardMenu(page, target, menuSelector) {
-    await dismiss(page)
-    await target.waitFor({ state: 'visible', timeout: 8_000 })
-    await target.scrollIntoViewIfNeeded().catch(() => {})
-    const before = await beginKeyboardMenuDiagnostics(page, menuSelector)
-    const headerBefore = await target.evaluate((element) => {
-      const rect = element.getBoundingClientRect()
-      return {
-        visible: rect.width > 0 && rect.height > 0,
-        locked: element.closest('[data-cut-track]')?.getAttribute('data-cut-track-locked') || 'false',
-        active: document.activeElement === element,
-      }
-    }).catch((error) => ({ captureError: String(error?.message || error) }))
-    let pressError = ''
-    try {
-      await target.focus()
-      await page.keyboard.press('Shift+F10')
-    } catch (error) {
-      pressError = String(error?.message || error)
-    }
-    const menu = page.locator(menuSelector).first()
-    let menuWaitError = ''
-    try {
-      await menu.waitFor({ state: 'visible', timeout: 2_500 })
-    } catch (error) {
-      menuWaitError = String(error?.message || error)
-    }
-    const headerAfterFocus = await target.evaluate((element) => ({
-      active: document.activeElement === element,
-      locked: element.closest('[data-cut-track]')?.getAttribute('data-cut-track-locked') || 'false',
-    })).catch((error) => ({ captureError: String(error?.message || error) }))
-    const after = await endKeyboardMenuDiagnostics(page, menuSelector)
-    const opened = !menuWaitError && await menu.isVisible().catch(() => false)
-    return {
-      menu: opened ? menu : null,
-      diagnostics: { before, headerBefore, headerAfterFocus, pressError, menuWaitError, after },
-    }
   }
 
   async function openMenu(page, target, menuSelector, { ratio = 0.5 } = {}) {
@@ -192,10 +81,11 @@ export function createTimelineContextActionCoverage({
   }
 
   async function openTrackKeyboard(page, trackId) {
-    return openKeyboardMenu(
+    return openKeyboardContextMenu(
       page,
       page.locator(`[data-cut-track-header="${trackId}"]`).first(),
       '[data-cut-track-menu]',
+      dismiss,
     )
   }
 
@@ -243,12 +133,12 @@ export function createTimelineContextActionCoverage({
     ).first().waitFor({ state: 'visible', timeout: 8_000 })
   }
 
-  async function openEmpty(page, trackId) {
+  async function openEmpty(page, trackId, ratio = 0.72) {
     return openMenu(
       page,
       page.locator(`[data-cut-track="${trackId}"] .tl-lane`).first(),
       '[data-cut-timeline-empty-menu]',
-      { ratio: 0.72 },
+      { ratio },
     )
   }
 
@@ -282,6 +172,25 @@ export function createTimelineContextActionCoverage({
     if (!baseVideo || !baseAudio) throw new Error('context surface fixture lacks base video/audio tracks')
     const overlay = await addTrackFixture('video', 'fcv: empty-lane and removable-track context fixture')
 
+    // Use a non-zero, source-relative instant. A count-only dialog assertion can
+    // accidentally pass while Match Frame opens the right asset at time zero.
+    const frameClip = trackOf(project, baseVideo)?.clips?.find((clip) => clip.asset)
+    const sourceInMs = Number(frameClip?.src_in_ms)
+    const sourceOutMs = Number(frameClip?.src_out_ms)
+    const sourceSpanMs = sourceOutMs - sourceInMs
+    if (!frameClip?.asset || !Number.isFinite(sourceInMs) || !Number.isFinite(sourceOutMs) || sourceSpanMs < 3) {
+      throw new Error('context Match Frame fixture lacks a finite video source range')
+    }
+    const requestedFrameAtMs = Math.max(1, Math.min(1_200, Math.floor(sourceSpanMs / 3)))
+    const anchored = await verb('ui.playhead', { at_ms: requestedFrameAtMs })
+    const uiAfterAnchor = await verb('ui.state', {})
+    const frameAtMs = Number(uiAfterAnchor?.result?.playhead_ms)
+    if (!anchored?.ok || !Number.isFinite(frameAtMs) || frameAtMs !== requestedFrameAtMs) {
+      throw new Error(`context Match Frame could not anchor playhead: ${JSON.stringify({ anchored, frameAtMs, requestedFrameAtMs })}`)
+    }
+    const expectedSourceMs = sourceInMs + frameAtMs
+    await sleep(300)
+
     const keyboardMenu = await openTrackKeyboard(page, baseVideo)
     const keyboardOutcome = recordKeyboardEntry(baseVideo, keyboardMenu)
     // Keep the Shift+F10 row self-contained. A failed/unsupported keyboard
@@ -290,6 +199,20 @@ export function createTimelineContextActionCoverage({
     let menu = keyboardMenu.menu || await openTrack(page, baseVideo)
     const menuEntry = keyboardOutcome === 'pass' ? 'Shift+F10' : 'WebDriver right-click after keyboard entry did not pass'
     let response = null
+    await probe(page, {
+      surface, name: 'track-context-match-frame', actionId: 'match-frame-track',
+      sel: menu.locator('[data-cut-track-ctx="match-frame"]'), group: menu, groupName: 'ctx-track-video',
+      doClick: async () => {
+        await menu.locator('[data-cut-track-ctx="match-frame"]').click()
+        await page.locator(`[data-cut-source-monitor="${frameClip.asset}"]`).waitFor({ state: 'visible', timeout: 8_000 })
+      },
+      assertResult: async () => proveSourceMonitorFrame(page, {
+        assetId: frameClip.asset,
+        expectedSourceMs,
+      }),
+    })
+
+    menu = await openTrack(page, baseVideo)
     await probe(page, {
       surface, name: 'track-context-lock', actionId: 'track-ctx',
       sel: menu.locator('[data-cut-track-ctx="lock"]'), group: menu, groupName: 'ctx-track-video',
@@ -428,19 +351,41 @@ export function createTimelineContextActionCoverage({
     }
 
     await copyVideoClip(page, baseVideo)
-    menu = await openEmpty(page, overlay)
+    // Open Paste at a DIFFERENT lane position than the playhead established by
+    // the earlier Seek action. Capture the actual edit.paste request so this
+    // proves context-target time/track ownership rather than merely observing
+    // that some clip appeared somewhere on the destination lane.
+    menu = await openEmpty(page, overlay, 0.36)
     const overlayBefore = trackOf(await state(), overlay)?.clips?.length || 0
     response = null
+    let pasteArgs = null
+    const onPasteRequest = (request) => {
+      if (!/\/api\/verb\/edit[.]paste$/.test(request.url())) return
+      try { pasteArgs = request.postDataJSON() } catch { pasteArgs = null }
+    }
+    page.on('request', onPasteRequest)
     await probe(page, {
       surface, name: 'empty-context-paste', actionId: 'timeline-ctx',
       sel: menu.locator('[data-cut-timeline-ctx="empty-paste"]'), group: menu, groupName: 'ctx-empty-lane',
       doClick: async () => {
-        response = await captureVerbResp(page, 'edit.paste', () => menu.locator('[data-cut-timeline-ctx="empty-paste"]').click(), 12_000)
+        try {
+          response = await captureVerbResp(page, 'edit.paste', () => menu.locator('[data-cut-timeline-ctx="empty-paste"]').click(), 12_000)
+        } finally {
+          page.off('request', onPasteRequest)
+        }
       },
-      assertResult: async () => ({
-        ok: !!response?.ok && !!(await waitForState((next) => (trackOf(next, overlay)?.clips?.length || 0) > overlayBefore, 8_000)),
-        detail: `${overlay} gained pasted clip; response=${response?.ok}`,
-      }),
+      assertResult: async () => {
+        const landed = !!(await waitForState((next) => (trackOf(next, overlay)?.clips?.length || 0) > overlayBefore, 8_000))
+        const exactTrack = pasteArgs?.to_track === overlay
+        const exactContextTime = Number.isFinite(pasteArgs?.at_ms)
+          && Number.isFinite(emptyAt)
+          && Math.abs(pasteArgs.at_ms - emptyAt) > 250
+          && /timeline context menu/.test(pasteArgs?.rationale || '')
+        return {
+          ok: !!response?.ok && landed && exactTrack && exactContextTime,
+          detail: `${overlay} gained pasted clip; response=${response?.ok}; request track=${pasteArgs?.to_track || 'missing'}; context at=${pasteArgs?.at_ms}; stale playhead=${emptyAt}`,
+        }
+      },
     })
 
     menu = await openTrack(page, overlay)
@@ -544,8 +489,18 @@ export function createTimelineContextActionCoverage({
   }
 
   async function run(page) {
+    const audit = createTimelineContextAuditCoverage({
+      probe, verb, state, waitForState, captureVerbResp, sleep, freshProject, closeOverlays,
+    })
+    // A stable e2e audit ID is an explicit focused run: do not require unrelated
+    // legacy context rows to establish their own fixtures before this bounded proof.
+    if ((process.env.FCV_ONLY || '').startsWith('e2e-')) {
+      await audit.run(page, { only: process.env.FCV_ONLY })
+      return
+    }
     await runTrackAndEmptyMenus(page)
     await runGapMenus(page)
+    await audit.run(page)
   }
 
   return { run }

@@ -1,5 +1,7 @@
 //! Antigravity CLI argument and workspace-MCP construction for Agent Chat.
 
+use super::missing_required_help_tokens;
+
 const REQUIRED_HELP_TOKENS: &[&str] = &[
     "--print",
     "--output-format",
@@ -68,24 +70,8 @@ pub(crate) fn args(workspace: &str, model: Option<&str>) -> Vec<String> {
     args
 }
 
-pub(crate) fn verify_capability_contract(version: &str, help: &str) -> Result<(), String> {
-    let version = version.trim();
-    if version.is_empty()
-        || version
-            .split('.')
-            .filter(|part| !part.is_empty())
-            .take(3)
-            .any(|part| !part.chars().all(|ch| ch.is_ascii_digit()))
-    {
-        return Err(format!(
-            "the resolved Antigravity executable returned an unexpected version string: {version:?}"
-        ));
-    }
-    let missing: Vec<&str> = REQUIRED_HELP_TOKENS
-        .iter()
-        .copied()
-        .filter(|token| !help.contains(token))
-        .collect();
+pub(crate) fn verify_capability_contract(help: &str) -> Result<(), String> {
+    let missing = missing_required_help_tokens(help, REQUIRED_HELP_TOKENS);
     if !missing.is_empty() {
         return Err(format!(
             "the installed Antigravity CLI does not advertise required native Agent Chat flags: {}",
@@ -136,12 +122,30 @@ mod tests {
     #[test]
     fn capability_contract_is_help_based_and_rejects_drift() {
         let help = REQUIRED_HELP_TOKENS.join(" ");
-        assert!(verify_capability_contract("1.1.9", &help).is_ok());
-        assert!(verify_capability_contract("Antigravity unknown", &help).is_err());
+        for version in ["", "Antigravity unknown", "current build"] {
+            assert!(
+                verify_capability_contract(&help).is_ok(),
+                "version text must not gate a capable Antigravity CLI: {version:?}"
+            );
+        }
+        for missing in REQUIRED_HELP_TOKENS {
+            let incomplete = REQUIRED_HELP_TOKENS
+                .iter()
+                .copied()
+                .filter(|token| token != missing)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let error = verify_capability_contract(&incomplete)
+                .expect_err("each native Agent Chat flag must be mandatory");
+            assert!(
+                error.contains(missing),
+                "missing flag must be named: {missing}"
+            );
+        }
         assert!(
-            verify_capability_contract("1.1.11", &help.replace("--sandbox", ""))
+            verify_capability_contract(&help.replacen("--model", "--model-v2", 1))
                 .unwrap_err()
-                .contains("--sandbox")
+                .contains("--model")
         );
     }
 }

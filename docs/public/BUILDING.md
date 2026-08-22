@@ -2,8 +2,9 @@
 
 Role: the build-from-source and dev-environment guide for contributors and
 agents on a fresh machine. Companion docs: `docs/public/FEATURES.md` (what the app
-does), `docs/public/DEBUG_API.md` (how to drive it), `docs/public/FEATURE_CHANGE_WORKFLOW.md`
-(how to change it). The verb contract lives in `schema/verbs.json`.
+does), `docs/public/DEBUG_API.md` (how to drive it), and
+`docs/public/FEATURE_SURFACE_CONTRACT.md` (which public surfaces a supported
+feature exposes). The verb contract lives in `schema/verbs.json`.
 
 ## Prerequisites
 
@@ -89,6 +90,19 @@ are maintainer operations and are deliberately outside the public source-build
 workflow. Contributors can validate the same product source through the
 unsigned Smoke build without access to release credentials.
 
+On macOS, `scripts/build-macos.sh release` is a fail-closed maintainer path. It
+requires the Developer ID identity, all three App Store Connect API settings,
+and a signed Tauri updater before it builds. The generated `.app` must pass
+strict code-signature, expected bundle/team identity, Gatekeeper, and stapled
+ticket validation before the final DMG is accepted. The final DMG is then
+submitted to Apple, must return `Accepted`, is stapled, and passes both ticket
+validation and a separate Gatekeeper assessment. Both artifacts are required
+outcomes regardless of the cargo-tauri implementation used to produce them. A
+missing credential, submission error, rejected result, staple failure,
+validation failure, identity mismatch, or missing DMG fails the release build.
+`scripts/build-macos.sh debug` may make a local package but explicitly does not
+qualify it for release or distribution.
+
 ## Verification gates (the definition of done)
 
 Run these before claiming a change works; CI-grade, all exit 0 on green:
@@ -106,8 +120,8 @@ npm --prefix ui run test:lib
 node --test scripts/public-tests/*.test.mjs
 ```
 
-`docs/public/FEATURE_CHANGE_WORKFLOW.md` explains which surfaces every feature change
-must touch; the gates above are what enforce it.
+`docs/public/FEATURE_SURFACE_CONTRACT.md` explains the observable human, agent,
+and debug surfaces that the gates above validate.
 
 Native/UI test environments must isolate both kinds of user data. Set
 `SHELLX_CUT_HOME` for the internal project index, global Library, and mutable

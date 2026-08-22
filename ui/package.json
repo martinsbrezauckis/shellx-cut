@@ -1,14 +1,26 @@
 {
   "name": "shellx-cut-ui",
   "private": true,
-  "version": "0.6.109",
+  "version": "0.6.110",
   "type": "module",
   "description": "ShellX Cut UI — Vite + React + TS app shell (UI contract). The UI is an API client, nothing more: all state via verbs/WS, zero local mutation.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:lib": "tsx public-tests/motion-effects.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts && tsx public-tests/panel-persist-guard.test.ts && tsx public-tests/grade-drawer.test.ts && tsx public-tests/clip-context-menu.test.ts && tsx public-tests/context-menu-surfaces.test.ts && tsx public-tests/project-sync.test.ts && tsx public-tests/health-recovery.test.ts && tsx public-tests/speed-ramp-editor.test.ts && tsx public-tests/keymap-profile.test.ts && tsx public-tests/op-group-model.test.ts && tsx public-tests/active-job-presentation.test.ts && tsx public-tests/media-time.test.ts"
+    "test:lib": "tsx public-tests/motion-effects.test.ts && tsx public-tests/motion-terminology-contract.test.ts && tsx public-tests/generate-rich-motion.test.ts && tsx public-tests/theme-toggle-sync.test.ts && tsx public-tests/stt-model-feedback.test.ts && tsx public-tests/panel-persist-guard.test.ts && tsx public-tests/grade-drawer.test.ts && tsx public-tests/clip-context-menu.test.ts && tsx public-tests/context-menu-surfaces.test.ts && tsx public-tests/context-menu-reverse-match-frame.test.ts && tsx public-tests/timeline-context-audit.test.ts && tsx public-tests/focused-scenario-contract.test.ts && tsx public-tests/interaction-fuzz.test.ts && tsx public-tests/base-video-track-regression.test.ts && tsx public-tests/project-sync.test.ts && tsx public-tests/health-recovery.test.ts && tsx public-tests/speed-ramp-editor.test.ts && tsx public-tests/volume-automation.test.ts && tsx public-tests/keymap-profile.test.ts && tsx public-tests/op-group-model.test.ts && tsx public-tests/active-job-presentation.test.ts && tsx public-tests/media-time.test.ts && tsx public-tests/asset-uses.test.ts && tsx public-tests/capture-error-contract.test.ts && tsx public-tests/stock-provider-catalog.test.ts && tsx public-tests/stock-import-coordinator.test.ts && node public-tests/fullCoverageScenarioSelection.test.mjs && tsx public-tests/feature-surface-contract.test.ts && tsx public-tests/source-overwrite-targets.test.ts && tsx public-tests/source-navigation.test.ts && node public-tests/fullCoverageOfflineMediaActions.test.mjs",
+    "test:offline-media-actions": "node public-tests/fullCoverageOfflineMediaActions.test.mjs",
+    "test:focused-scenario-contract": "tsx public-tests/focused-scenario-contract.test.ts",
+    "test:interaction-fuzz": "tsx public-tests/interaction-fuzz.test.ts",
+    "test:feature-surface-contract": "tsx public-tests/feature-surface-contract.test.ts",
+    "test:stock-provider-catalog": "tsx public-tests/stock-provider-catalog.test.ts",
+    "test:source-navigation": "tsx public-tests/source-navigation.test.ts",
+    "test:legacy-audit": "tsx public-tests/legacy-lib-audit-runner.test.ts",
+    "test:legacy-audit-integrity": "tsx public-tests/legacy-lib-audit-integrity.test.ts",
+    "test:package-command-contract": "node public-tests/package-command-contract.test.mjs",
+    "verify-generated-lifecycle": "node public-tests/verify-generated-asset-lifecycle.mjs",
+    "verify-publish-package": "node public-tests/verify-publish-package.mjs",
+    "verify-layout-contract": "node public-tests/layout-contract-verify.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
@@ -21,6 +33,7 @@
   "overrides": {
     "@puppeteer/browsers": "3.0.4",
     "@wdio/native-utils": "2.5.0",
+    "deepmerge-ts": "8.0.1",
     "js-yaml": "4.3.1",
     "postcss": "8.5.24",
     "serialize-javascript": "7.0.5"

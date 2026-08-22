@@ -52,6 +52,46 @@ function queryTarget(selector: string): HTMLElement | null {
   }
 }
 
+const HIGHLIGHT_MARGIN = 5
+const HIGHLIGHT_GROW = 3
+const HIGHLIGHT_TOLERANCE = 1.5
+
+const closeEnough = (left: number, right: number) => Math.abs(left - right) <= HIGHLIGHT_TOLERANCE
+
+/** A highlight may be in React state before smooth scrolling has brought its
+ * target into view. Success must mean the person can see a complete, aligned
+ * ring, not merely that an overlay root mounted somewhere off-screen. */
+function highlightIsVisible(selector: string, targetId: string): boolean {
+  const root = document.querySelector<HTMLElement>('[data-cut-highlight]')
+  const target = queryTarget(selector)
+  const ring = root?.querySelector<HTMLElement>('.hl-ring')
+  if (!root || root.dataset.cutHighlight !== targetId || !target || !ring) return false
+
+  const targetBox = target.getBoundingClientRect()
+  const ringBox = ring.getBoundingClientRect()
+  if (
+    targetBox.width <= 0
+    || targetBox.height <= 0
+    || targetBox.left < 0
+    || targetBox.top < 0
+    || targetBox.right > window.innerWidth
+    || targetBox.bottom > window.innerHeight
+    || ringBox.left < HIGHLIGHT_MARGIN - HIGHLIGHT_TOLERANCE
+    || ringBox.top < HIGHLIGHT_MARGIN - HIGHLIGHT_TOLERANCE
+    || ringBox.right > window.innerWidth - HIGHLIGHT_MARGIN + HIGHLIGHT_TOLERANCE
+    || ringBox.bottom > window.innerHeight - HIGHLIGHT_MARGIN + HIGHLIGHT_TOLERANCE
+  ) return false
+
+  const expectedLeft = Math.max(HIGHLIGHT_MARGIN, targetBox.left - HIGHLIGHT_GROW)
+  const expectedTop = Math.max(HIGHLIGHT_MARGIN, targetBox.top - HIGHLIGHT_GROW)
+  const expectedRight = Math.min(window.innerWidth - HIGHLIGHT_MARGIN, targetBox.right + HIGHLIGHT_GROW)
+  const expectedBottom = Math.min(window.innerHeight - HIGHLIGHT_MARGIN, targetBox.bottom + HIGHLIGHT_GROW)
+  return closeEnough(ringBox.left, expectedLeft)
+    && closeEnough(ringBox.top, expectedTop)
+    && closeEnough(ringBox.right, expectedRight)
+    && closeEnough(ringBox.bottom, expectedBottom)
+}
+
 /** Applies relayed view commands and answers only after a later state revision
  * proves the requested outcome. Unknown, unavailable, and no-op requests are
  * explicit applied:false results. */
@@ -179,6 +219,13 @@ export function useUiCommandController({
         case 'ui.highlight': {
           const clear = command.args.clear === true
           const selector = highlightSelector(command.args)
+          const targetId = typeof command.args.selector === 'string'
+            ? command.args.selector
+            : typeof command.args.clip === 'string'
+              ? command.args.clip
+              : typeof command.args.panel === 'string'
+                ? command.args.panel
+                : ''
           const requested = Object.fromEntries(
             Object.entries(command.args).filter(([, value]) => value !== undefined),
           )
@@ -202,6 +249,7 @@ export function useUiCommandController({
             return
           }
           highlightNonce.current += 1
+          const nonce = highlightNonce.current
           setHighlight({
             selector: typeof command.args.selector === 'string' ? command.args.selector : undefined,
             clip: typeof command.args.clip === 'string' ? command.args.clip : undefined,
@@ -210,15 +258,34 @@ export function useUiCommandController({
             description: typeof command.args.description === 'string' ? command.args.description : undefined,
             duration_ms: typeof command.args.duration_ms === 'number' ? command.args.duration_ms : undefined,
             scroll: typeof command.args.scroll === 'boolean' ? command.args.scroll : undefined,
-            n: highlightNonce.current,
+            n: nonce,
           })
           const state = await waitForCommittedState(
             stateRef,
             before.state_revision,
-            (current) => current.overlays.highlight !== null && document.querySelector('[data-cut-highlight]') !== null,
+            (current) => current.overlays.highlight !== null && highlightIsVisible(selector, targetId),
+            5_000,
           )
-          if (state) answer(command, true, requested, state, { selector })
-          else reject(command, requested, { code: 'conflict', message: 'highlight did not become observable before the confirmation deadline' }, { selector })
+          if (state) {
+            answer(command, true, requested, state, { selector })
+            return
+          }
+
+          // A target can exist yet never be able to fit in the viewport (for
+          // example a non-scrollable element wider than the window). Do not
+          // leave that invisible spec live to surface later. Use the monotonic
+          // nonce in the functional update so an older waiter's timeout cannot
+          // clear a highlight that a newer command has since replaced.
+          if (highlightNonce.current === nonce) {
+            const failureRevision = stateRef.current.state_revision
+            setHighlight((current) => current?.n === nonce ? null : current)
+            await waitForCommittedState(
+              stateRef,
+              failureRevision,
+              (current) => highlightNonce.current !== nonce || current.overlays.highlight === null,
+            )
+          }
+          reject(command, requested, { code: 'conflict', message: 'highlight did not become visibly aligned before the confirmation deadline' }, { selector })
         }
       }
     }

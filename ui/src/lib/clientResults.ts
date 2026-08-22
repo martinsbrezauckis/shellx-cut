@@ -16,6 +16,19 @@ import type {
 } from './clientModel'
 import type { MotionImportAttestation } from './motionLinkModel'
 
+/** ui.state result. Keep the relay's path-safe fields typed for UI-internal
+ * satisfied-state checks without importing the app layer back into lib/. */
+export interface UiStateResult {
+  schema: 'shellx-cut/ui-state/2'
+  connected: true
+  ui_clients: number
+  state_revision: number
+  playhead_ms: number
+  selected_clip_ids: string[]
+  open_surface_ids: string[]
+  project: { open: boolean; name?: string; active_sequence?: string }
+}
+
 // Director-model job-result shapes (land in
 // jobs.status → result.result for render.direct / render.qc).
 /** One candidate subject on a director contact-sheet scene. */
@@ -433,7 +446,7 @@ export interface GeneratedAssetMetadata {
   schema: 'shellx-cut/generated-asset/1' | 'shellx-cut/generated-asset/2'
   generation_id: string
   family_id?: string
-  provider: 'codex' | 'grok'
+  provider: 'codex' | 'grok' | 'antigravity'
   kind: 'image' | 'video'
   model: string | null
   prompt: string
@@ -450,7 +463,7 @@ export interface AssetsGenerateResult {
   job_id: string
   generation_id: string
   family_id: string
-  provider: 'codex' | 'grok'
+  provider: 'codex' | 'grok' | 'antigravity'
   kind: 'image' | 'video'
   variation: string | null
   placement: GeneratedAssetPlacement | null
@@ -482,7 +495,7 @@ export interface GeneratedAssetRecord {
   asset_id: string
   generation_id: string
   family_id: string
-  provider: 'codex' | 'grok' | null
+  provider: 'codex' | 'grok' | 'antigravity' | null
   kind: 'image' | 'video' | null
   model: string | null
   prompt: string
@@ -971,6 +984,7 @@ export interface SequenceIndexMarkerRow extends SequenceIndexBaseRow {
 
 export interface SequenceIndexResult {
   query: string
+  asset?: string
   kind: 'all' | 'clip' | 'marker'
   sequence?: string
   track_kind?: 'video' | 'audio' | 'caption'
@@ -1158,6 +1172,28 @@ export interface McpSelfTestResult {
   same_engine: true
 }
 
+/** One destination affected by an atomic edit.overwrite receipt. */
+export interface OverwriteTrackResult {
+  track: string
+  clip_id: string
+  added_ms: [number, number]
+  overwritten_existing_ms: [number, number]
+  overlapped_clip_ids: string[]
+  removed_clip_ids: string[]
+  overwritten_gap_ms: number
+  tail_gap_ms: number
+  tail_extended_ms: number
+}
+
+/** Stable result portion of an atomic edit.overwrite operation. */
+export interface OverwriteResult {
+  at_ms: number
+  src_range_ms: [number, number]
+  duration_ms: number
+  linked_av: boolean
+  tracks: OverwriteTrackResult[]
+}
+
 /** Typed result payloads where the shape is pinned by the contract. */
 export interface VerbResults {
   'project.create': { path: string; project: Project; starter_asset_path?: string }
@@ -1174,6 +1210,7 @@ export interface VerbResults {
   'project.ops': { ops: OpRecord[]; cursor?: string; next_cursor?: string; has_more: boolean; limit: number; encoded_bytes: number; undo_available: boolean; redo_available: boolean; project_revision?: string | null }
   'project.undo': { to_op: string | null; cursor: number; undo_available: boolean; redo_available: boolean }
   'project.redo': { to_op: string | null; cursor: number; undo_available: boolean; redo_available: boolean }
+  'ui.state': UiStateResult
   'project.brand': { brand: BrandKit | null; cleared: boolean }
   'verify.brand': BrandCheckResult
   // agent.chat — SUCCESS path is {ok:true, agent, reply, actions, attachments, cost_usd}.
@@ -1319,6 +1356,7 @@ export interface VerbResults {
   'recipe.list': { recipes: RecipeSummary[] }
   'recipe.describe': RecipeManifest
   'recipe.run': RecipeDryRun | RecipeRunHandle
+  'edit.overwrite': OverwriteResult
   // edit.cut_to_beat: cuts = resulting cut positions (split) or the new boundary
   // positions (snap); moves present only in snap mode. beats_used = cuts made.
   'edit.cut_to_beat': {

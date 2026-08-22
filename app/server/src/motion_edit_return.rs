@@ -107,11 +107,11 @@ pub(crate) fn resolve_latest_source(
     {
         return Err(CutError::new(
             error_codes::CONFLICT,
-            "Canvas Motion revision changed after verified handback",
-            "the returned package no longer matches Canvas's verified source revision",
+            "ShellX Motion revision changed after verified handback",
+            "the returned package no longer matches ShellX Motion's verified source revision",
         )
         .with_suggested_action(
-            "render the current revision in Canvas again before refreshing Cut",
+            "render the current revision in ShellX Motion again before refreshing Cut",
         ));
     }
     Ok(ResolvedMotionEditSource {

@@ -1,4 +1,5 @@
 import type { Project } from '../../lib/client'
+import type { SourceNavigationState } from '../../app/useSourceNavigationController'
 import { Icon } from '../../icons'
 import LibraryPanel from './index'
 
@@ -7,6 +8,7 @@ export interface LibraryWorkspaceProps {
   playheadMs: number
   onAddedToProject: () => void
   onClose: () => void
+  sourceNavigation?: SourceNavigationState | null
 }
 
 export default function LibraryWorkspace({
@@ -14,6 +16,7 @@ export default function LibraryWorkspace({
   playheadMs,
   onAddedToProject,
   onClose,
+  sourceNavigation,
 }: LibraryWorkspaceProps) {
   return (
     <section className="library-workspace" data-cut-library-workspace>
@@ -33,6 +36,7 @@ export default function LibraryWorkspace({
           project={project}
           playheadMs={playheadMs}
           onAddedToProject={onAddedToProject}
+          sourceNavigation={sourceNavigation}
           active
         />
       </div>

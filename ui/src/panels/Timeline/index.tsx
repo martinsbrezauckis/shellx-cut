@@ -107,6 +107,7 @@ import { useTimelineAssetDrop } from './useTimelineAssetDrop'
 import { resolveClipPointerDownIntent } from './TimelineSurfaceMenuModel'
 import { sourceTrimAtTimelinePosition } from './rippleTrim'
 import { mediaBasename } from '../../lib/mediaPath'
+import { baseVideoTrackId } from '../../lib/layerStack'
 import './timeline.css'
 
 export interface TimelineProps {
@@ -290,9 +291,12 @@ export default function Timeline(props: TimelineProps) {
     for (const { track, items } of laidTracks) map[track.id] = trackSeams(items)
     return map
   }, [laidTracks])
-  // First video track = the base canvas; every later video track is an
-  // OVERLAY (track order = stacking order, edit.transform semantics).
-  const baseVideoId = useMemo(() => project?.tracks.find((t) => t.kind === 'video')?.id, [project])
+  // The renderer's first NON-EMPTY video track is the base canvas. Reuse the
+  // shared rule so an empty structural lane cannot turn the real program track
+  // into an overlay in Timeline while Preview/Inspector/render disagree.
+  // TimelineTrackRow models an absent base as `undefined`; keep that component
+  // contract while sharing the renderer helper (which uses `null`).
+  const baseVideoId = useMemo(() => baseVideoTrackId(project?.tracks ?? []) ?? undefined, [project])
   const allItems = useMemo(() => laidTracks.flatMap((t) => t.items), [laidTracks])
 
   const windowedTiles = useWindowedThumbnails({ allItems, filmstrips, zoom, viewW, scrollX })
@@ -1148,6 +1152,7 @@ export default function Timeline(props: TimelineProps) {
     allItems,
     tracks: project?.tracks ?? [],
     selectedClipIds,
+    playheadMs,
     clientXToMs,
     onSelect,
   })
@@ -1282,10 +1287,11 @@ export default function Timeline(props: TimelineProps) {
         fitToWindow()
         return
       }
-      if (e.ctrlKey || e.metaKey || e.altKey) return
-      // The single-key editor actions consult the remappable keymap
-      // (lib/keymap.ts) — bindings read live, remaps apply instantly. Zoom
-      // keys / Delete / Shift+Z stay literal (conventions, not preferences).
+      // The remappable editor actions consult the live keymap after the fixed
+      // shortcuts above have claimed their reserved combinations. Do not reject
+      // modifier chords here: the keymap intentionally supports bindings such
+      // as Alt+1 and Ctrl+K, and the old blanket guard made those saved remaps
+      // unreachable despite accepting them in Settings and profile import.
       if (matchesAction(e, 'timeline.split')) {
         splitAtPlayhead() // split at the playhead (also Cmd/Ctrl+B)
         e.preventDefault()
@@ -1587,7 +1593,7 @@ export default function Timeline(props: TimelineProps) {
                 onSeamDown={onSeamDown}
                 onOpenTrackMenu={(trackId, x, y) => {
                   contextMenus.setClipMenu(null)
-                  contextMenus.setSurfaceMenu({ kind: 'track', trackId, x, y })
+                  contextMenus.setSurfaceMenu({ kind: 'track', trackId, x, y, atMs: playheadMs })
                 }}
               />
             )

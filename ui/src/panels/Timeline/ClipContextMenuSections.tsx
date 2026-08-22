@@ -3,6 +3,7 @@ import type { Asset } from '../../lib/client'
 import { Icon } from '../../icons'
 import { assetBasename, assetMediaKind, type AssetPickMode, type ContextMenuActionState } from './ClipContextMenuModel'
 import CustomSpeedMenuEditor from './CustomSpeedMenuEditor'
+import type { SourceFrameMatch } from './layout'
 
 interface ClipboardSectionProps {
   canMedia: boolean
@@ -65,6 +66,10 @@ interface SourceSectionProps {
   canNest: boolean
   nestCount: number
   fitDurationMs: number | null
+  matchFrame: SourceFrameMatch | null
+  sourceAssetId: string | null
+  sourceRevealReason: string
+  sourceFileDisabledReason: string | null
   itemId: string
   sourceAssets: Array<[string, Asset]>
   assetPick: AssetPickMode | null
@@ -72,6 +77,10 @@ interface SourceSectionProps {
   onReplace: (itemId: string, assetId: string) => void
   onFit: (itemId: string, assetId: string) => void | Promise<void>
   onNest: () => void | Promise<void>
+  onMatchFrame: () => void
+  onRevealInProject: () => void
+  onRevealInLibrary: () => void
+  onRevealSourceFile: () => void
   onClose: () => void
 }
 
@@ -85,6 +94,10 @@ export function SourceSection({
   canNest,
   nestCount,
   fitDurationMs,
+  matchFrame,
+  sourceAssetId,
+  sourceRevealReason,
+  sourceFileDisabledReason,
   itemId,
   sourceAssets,
   assetPick,
@@ -92,6 +105,10 @@ export function SourceSection({
   onReplace,
   onFit,
   onNest,
+  onMatchFrame,
+  onRevealInProject,
+  onRevealInLibrary,
+  onRevealSourceFile,
   onClose,
 }: SourceSectionProps) {
   if (!allowsSourceEdits) return null
@@ -106,6 +123,36 @@ export function SourceSection({
   return <>
     <span className="tl-ctx__sep" aria-hidden="true" />
     <span className="tl-ctx__label" aria-hidden="true">Source</span>
+    {matchFrame && <button className="tl-ctx__item" data-cut-action="match-frame" data-cut-ctx="match-frame" role="menuitem"
+      disabled={!matchFrame.source}
+      title={matchFrame.source ? 'Open the exact source frame under the playhead' : matchFrame.reason}
+      aria-description={!matchFrame.source ? matchFrame.reason : undefined}
+      onClick={onMatchFrame}>
+      <Icon name="screenPlay" size={14} /> Match Frame
+    </button>}
+    <button className="tl-ctx__item" data-cut-action="reveal-source-project" data-cut-ctx="reveal-source-project" role="menuitem"
+      disabled={!sourceAssetId}
+      title={sourceAssetId ? 'Reveal this exact registered asset in Project Assets' : sourceRevealReason}
+      aria-description={!sourceAssetId ? sourceRevealReason : undefined}
+      onClick={onRevealInProject}>
+      <Icon name="projectOpen" size={14} /> Reveal in Project
+    </button>
+    <button className="tl-ctx__item" data-cut-action="reveal-source-library" data-cut-ctx="reveal-source-library" role="menuitem"
+      disabled={!sourceAssetId}
+      title={sourceAssetId ? 'Reveal this exact registered asset in the cross-project Library' : sourceRevealReason}
+      aria-description={!sourceAssetId ? sourceRevealReason : undefined}
+      onClick={onRevealInLibrary}>
+      <Icon name="folder" size={14} /> Reveal in Library
+    </button>
+    <button className="tl-ctx__item" data-cut-action="reveal-source-file" data-cut-ctx="reveal-source-file" role="menuitem"
+      disabled={!sourceAssetId || !!sourceFileDisabledReason}
+      title={sourceFileDisabledReason ?? (sourceAssetId
+        ? 'Reveal this registered local source file in the desktop file manager'
+        : sourceRevealReason)}
+      aria-description={sourceFileDisabledReason ?? (!sourceAssetId ? sourceRevealReason : undefined)}
+      onClick={onRevealSourceFile}>
+      <Icon name="file" size={14} /> Reveal Source File
+    </button>
     <button className="tl-ctx__item" data-cut-ctx="replace" role="menuitem"
       aria-expanded={assetPick === 'replace'}
       disabled={!canReplace}

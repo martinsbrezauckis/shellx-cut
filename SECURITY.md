@@ -28,7 +28,7 @@ reproduction. Reports are acknowledged and assessed on a best-effort basis.
 ShellX Cut's supported default is **one personal workstation / one trusted
 interactive environment**. The trust boundary is the **whole local machine**,
 not an OS user account or an individual process. This is an intentional
-v0.6.109 deployment contract, not an omitted same-user security feature.
+v0.6.110 deployment contract, not an omitted same-user security feature.
 
 - `cutd` exposes its editing API, WebSocket events, and MCP proxy on loopback.
   It refuses non-loopback binds by default and rejects browser requests with
@@ -50,7 +50,7 @@ v0.6.109 deployment contract, not an omitted same-user security feature.
 - Shared or multi-user machines, untrusted local apps/services, containers
   sharing host networking, and exposed ports are outside this default trust
   boundary. Per-caller or per-user capability authentication is future
-hardening, not present in v0.6.109. Under the stated deployment assumption,
+hardening, not present in v0.6.110. Under the stated deployment assumption,
   lack of that token is **NOT A DEFECT**.
 - See [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
   for assets, abuse paths, mitigations, and residual risk.
@@ -68,12 +68,14 @@ hardening, not present in v0.6.109. Under the stated deployment assumption,
 ## Headless agent control
 
 `agent.chat` launches locally verified Claude Code, Codex, Grok, or Antigravity
-routes. Before every turn, Cut probes the resolved CLI's `--version` and
-`--help` and refuses it when that provider's required launch contract is absent.
-Claude remains pinned to `2.1.224`; Codex and Grok are flag-verified without a
-version pin; Antigravity must advertise Cut's sandbox and non-interactive
-launch flags on every platform, including Windows. An upstream CLI must not
-silently weaken a selected route's policy.
+routes. Before every turn, Cut probes the resolved CLI's required executable
+capabilities and `--help` flags, and refuses it when that provider's required
+launch contract is absent.
+Every provider's version text is informational only; required containment flags
+decide admission. Claude uses a contained capability contract; Codex and Grok are likewise
+capability-verified; Antigravity must advertise Cut's sandbox and
+non-interactive launch flags on every platform, including Windows. An upstream
+CLI must not silently weaken a selected route's policy.
 
 Each supported turn starts in a new empty disposable directory. Claude and
 Grok use provider-specific restricted environments; Codex and Antigravity keep
@@ -85,16 +87,17 @@ user-configured MCP child has neither and keeps the full machine-local surface.
 
 Claude runs with an explicit MCP-only allowlist plus a deny list for file
 read/write/edit, shell/process, web/search, skills, and recursive `agent_chat`,
-a strict one-server Cut MCP config, and no session persistence. In the pinned
-2.1.224 CLI those native and unrelated tools are absent from the turn's tool
-registry rather than producing per-call denial receipts. `--tools ""` and
+a strict one-server Cut MCP config, and no session persistence. In the
+contained capability contract those native and unrelated tools are absent from
+the turn's tool registry rather than producing per-call denial receipts.
+`--tools ""` and
 `--safe-mode` suppress even an explicitly supplied MCP server, so Cut does not
 use either incompatible flag; the allowlist and deny list are probed before
 every turn instead.
 
 To preserve the user's existing subscription login without reloading the
 user's Claude customizations, Cut passes `--setting-sources ""` and
-`--disable-slash-commands`. The pinned CLI then loads no user/project/local
+`--disable-slash-commands`. The contained CLI then loads no user/project/local
 settings, hooks, plugins, commands, or skills; a fresh disposable cwd contains
 only the generated Cut MCP config. Cut does not use `--bare`: that mode also
 suppresses the keychain/OAuth authentication needed for subscription CLI use.

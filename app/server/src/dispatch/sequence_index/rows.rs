@@ -1,5 +1,9 @@
 //! Row projection and filtering for `project.sequence_index`.
 
+use super::{
+    filtering::{status_matches, StatusFacts},
+    layout::laid_layouts,
+};
 use cut_core::{Asset, Clip, Project, TrackKind};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -8,21 +12,15 @@ pub(super) type IndexedRow = (usize, u64, u8, String, Value);
 
 pub(super) struct RowFilters<'a> {
     pub kind: &'a str,
+    /// An exact stable asset id. Unlike text search, this filters before the
+    /// bounded result limit so an occurrence cannot be crowded out by a
+    /// sequence/track/id/label text collision.
+    pub asset: Option<&'a str>,
     pub sequence: Option<&'a str>,
     pub track_kind: Option<&'a str>,
     pub status: &'a str,
     pub terms: &'a [String],
     pub include_gaps: bool,
-}
-
-#[derive(Clone, Copy)]
-struct StatusFacts {
-    gap: bool,
-    offline: bool,
-    effect_count: usize,
-    visible: bool,
-    locked: bool,
-    muted: bool,
 }
 
 fn track_kind(kind: TrackKind) -> &'static str {
@@ -45,20 +43,6 @@ fn asset_is_offline(project_dir: &Path, asset: &Asset) -> bool {
         path
     };
     !resolved.is_file()
-}
-
-fn status_matches(status: &str, facts: StatusFacts) -> bool {
-    match status {
-        "all" => true,
-        "issues" => facts.gap || facts.offline,
-        "offline" => facts.offline,
-        "gaps" => facts.gap,
-        "effects" => facts.effect_count > 0,
-        "hidden" => !facts.visible,
-        "locked" => facts.locked,
-        "muted" => facts.muted,
-        _ => false,
-    }
 }
 
 fn matches_terms(terms: &[String], fields: &[&str]) -> bool {
@@ -91,6 +75,7 @@ pub(super) fn collect_rows(
         }
         let active = sequence.id == *active_sequence;
         if filters.kind != "marker" {
+            let mut sequence_layouts = laid_layouts(project, sequence);
             for track in &sequence.tracks {
                 let row_track_kind = track_kind(track.kind);
                 if filters
@@ -99,11 +84,20 @@ pub(super) fn collect_rows(
                 {
                     continue;
                 }
+                let mut laid_layout = sequence_layouts.remove(&track.id).unwrap_or_default();
                 let mut cursor_ms = 0_u64;
                 for clip in &track.clips {
                     let duration_ms = clip.timeline_duration_ms();
                     match clip {
-                        Clip::Gap(_) if filters.include_gaps => {
+                        Clip::Gap(_) if filters.include_gaps && filters.asset.is_none() => {
+                            let (at_ms, end_ms) = laid_layout
+                                .gap_ranges
+                                .pop_front()
+                                // A malformed zero-length gap can be absent
+                                // from an EDL. Preserve the old row rather
+                                // than dropping it, while valid timelines
+                                // always take the shared laid layout.
+                                .unwrap_or((cursor_ms, cursor_ms.saturating_add(duration_ms)));
                             let facts = StatusFacts {
                                 gap: true,
                                 offline: false,
@@ -125,10 +119,10 @@ pub(super) fn collect_rows(
                                     ],
                                 )
                             {
-                                let id = format!("gap:{}:{cursor_ms}", track.id);
+                                let id = format!("gap:{}:{at_ms}", track.id);
                                 rows.push((
                                     sequence_order,
-                                    cursor_ms,
+                                    at_ms,
                                     0,
                                     id.clone(),
                                     json!({
@@ -137,8 +131,8 @@ pub(super) fn collect_rows(
                                         "sequence_name": sequence.name,
                                         "active": active,
                                         "id": id,
-                                        "at_ms": cursor_ms,
-                                        "end_ms": cursor_ms.saturating_add(duration_ms),
+                                        "at_ms": at_ms,
+                                        "end_ms": end_ms,
                                         "track_id": track.id,
                                         "track_kind": row_track_kind,
                                         "clip_kind": "gap",
@@ -153,12 +147,16 @@ pub(super) fn collect_rows(
                                     }),
                                 ));
                             }
-                            cursor_ms = cursor_ms.saturating_add(duration_ms);
                         }
-                        Clip::Gap(_) => {
-                            cursor_ms = cursor_ms.saturating_add(duration_ms);
-                        }
+                        Clip::Gap(_) => {}
                         Clip::Media(media) => {
+                            let (at_ms, end_ms) = laid_layout
+                                .media_ranges
+                                .remove(&media.id)
+                                // Every valid media clip yields an EDL span.
+                                // Keep legacy malformed data visible if it
+                                // cannot be flattened.
+                                .unwrap_or((cursor_ms, cursor_ms.saturating_add(duration_ms)));
                             let asset = project.assets.get(&media.asset);
                             let asset_label = asset
                                 .map(|asset| source_label(&asset.path))
@@ -190,7 +188,8 @@ pub(super) fn collect_rows(
                                 locked: track.locked,
                                 muted: track.muted,
                             };
-                            if status_matches(filters.status, facts)
+                            if filters.asset.is_none_or(|asset| asset == media.asset)
+                                && status_matches(filters.status, facts)
                                 && matches_terms(
                                     filters.terms,
                                     &[
@@ -208,7 +207,7 @@ pub(super) fn collect_rows(
                             {
                                 rows.push((
                                     sequence_order,
-                                    cursor_ms,
+                                    at_ms,
                                     0,
                                     track.id.clone(),
                                     json!({
@@ -217,8 +216,8 @@ pub(super) fn collect_rows(
                                         "sequence_name": sequence.name,
                                         "active": active,
                                         "id": media.id,
-                                        "at_ms": cursor_ms,
-                                        "end_ms": cursor_ms.saturating_add(duration_ms),
+                                        "at_ms": at_ms,
+                                        "end_ms": end_ms,
                                         "track_id": track.id,
                                         "track_kind": row_track_kind,
                                         "clip_kind": "media",
@@ -236,7 +235,6 @@ pub(super) fn collect_rows(
                                     }),
                                 ));
                             }
-                            cursor_ms = cursor_ms.saturating_add(duration_ms);
                         }
                         Clip::Caption(caption) => {
                             let at_ms = caption.range_ms[0];
@@ -256,7 +254,8 @@ pub(super) fn collect_rows(
                                 locked: track.locked,
                                 muted: track.muted,
                             };
-                            if status_matches(filters.status, facts)
+                            if filters.asset.is_none()
+                                && status_matches(filters.status, facts)
                                 && matches_terms(
                                     filters.terms,
                                     &[
@@ -299,10 +298,17 @@ pub(super) fn collect_rows(
                             }
                         }
                     }
+                    if track.kind != TrackKind::Caption {
+                        cursor_ms = cursor_ms.saturating_add(duration_ms);
+                    }
                 }
             }
         }
-        if filters.kind != "clip" && filters.track_kind.is_none() && filters.status == "all" {
+        if filters.asset.is_none()
+            && filters.kind != "clip"
+            && filters.track_kind.is_none()
+            && filters.status == "all"
+        {
             for marker in &sequence.markers {
                 if matches_terms(
                     filters.terms,

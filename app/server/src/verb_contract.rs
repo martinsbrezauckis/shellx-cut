@@ -79,6 +79,7 @@ pub enum DispatchTarget {
     EditTrim,
     EditMove,
     EditInsert,
+    EditOverwrite,
     EditDetachAudio,
     EditDuplicate,
     EditNest,

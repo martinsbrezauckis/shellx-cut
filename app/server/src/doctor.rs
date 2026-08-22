@@ -21,10 +21,12 @@
 //!     env → beside-exe → app-data → PATH) so the doctor and the engine agree
 //!     on ONE ffmpeg. The `tools-doctor.json` file the desktop shell writes
 //!     becomes a CACHE of this verb's ffmpeg result, never a parallel truth.
-//!   - Judge rungs are detected in Rust (cheap `which` + `--version`) and the
-//!     bundled adapter + Python runtime are checked without a model call. A CLI
-//!     can therefore remain visible for agent chat while its render-review card
-//!     honestly reports degraded until the adapter runtime is usable.
+//!   - Judge rungs are detected in Rust (cheap `which` + informational
+//!     `--version`; Agent Chat providers also need a required-help capability
+//!     probe) and the bundled adapter + Python runtime are checked without a
+//!     model call. A CLI can therefore remain visible for agent chat while its
+//!     render-review card honestly reports degraded until the adapter runtime
+//!     is usable.
 //!   - The perception python probe has a SHORT timeout and is best-effort; it
 //!     never blocks the verb loop (the verb is a fast cached read; `refresh`
 //!     re-probes).
@@ -226,6 +228,28 @@ fn version_line(prog: &std::ffi::OsStr, args: &[&str], timeout: Duration) -> Opt
         ProbeOutcome::Ran(line) if !line.is_empty() => Some(line),
         _ => None,
     }
+}
+
+/// Run a capability probe to successful completion and retain its complete
+/// output. Unlike the informational version banner, this is a policy input:
+/// callers must inspect the advertised capability tokens before reporting ready.
+fn successful_command_output(
+    prog: &std::ffi::OsStr,
+    args: &[&str],
+    timeout: Duration,
+) -> Option<String> {
+    let owned_args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let mut command = crate::gen::agent_std_command(Path::new(prog), &owned_args).ok()?;
+    let output = run_doctor_command(&mut command, timeout, "doctor capability probe").ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = if !output.stdout.is_empty() {
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    } else {
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Probe whether a runnable ffmpeg has the OPTIONAL filters three ShellX Cut features
@@ -942,22 +966,20 @@ fn chat_agent_block(
     provider: &str,
     found: bool,
     resolved: Option<&Path>,
-    version: Option<&str>,
+    capability_verified: bool,
 ) -> Value {
     if !crate::chat::CHAT_AGENTS.contains(&provider) {
         return Value::Null;
     }
-    let version_supported = provider != "claude"
-        || version
-            .map(crate::chat::broker::is_supported_claude_version)
-            .unwrap_or(false);
-    let wired = crate::chat::is_wired(provider) && version_supported;
+    // Every version banner stays informational. Readiness is earned only by a
+    // successful required-help probe that advertises every provider flag.
+    let wired = crate::chat::is_wired(provider) && capability_verified;
     let (authenticated, auth_detail) = chat_auth_state(provider, resolved);
-    // READY = installed && supported route/version && CONFIRMED auth. An
-    // installed but unwired (or version-mismatched) CLI remains visible as disabled.
+    // READY = installed && wired containment route && CONFIRMED auth. An
+    // An installed CLI without verified required flags remains disabled.
     let ready = found && wired && authenticated == "yes";
-    let posture = if provider == "claude" && found && !version_supported {
-        Some("disabled: unsupported Claude Code version")
+    let posture = if found && !capability_verified {
+        Some("disabled: required Agent Chat capability flags are unavailable")
     } else {
         crate::chat::security_posture(provider)
     };
@@ -968,7 +990,7 @@ fn chat_agent_block(
         "authenticated": authenticated,
         "auth_detail": auth_detail,
         "ready": ready,
-        "version_supported": version_supported,
+        "capability_verified": capability_verified,
         "posture": posture,
     })
 }
@@ -978,86 +1000,124 @@ fn chat_agent_block(
 /// agent-CLI ladder the chat path uses (`gen::resolve_agent`: process PATH first,
 /// then the explicit install dirs incl. grok's off-PATH ~/.grok/bin / a
 /// Finder-stripped-PATH .app's Homebrew dirs) so the doctor reports an off-PATH grok
-/// as present — and the version probe runs the RESOLVED path, so `--version` works
-/// even when the binary is not on PATH. Mirrors ladder_judge.py's PROVIDER_BIN map.
+/// as present — and its informational version/help probes run the RESOLVED path,
+/// so they work even when the binary is not on PATH. Mirrors ladder_judge.py's
+/// PROVIDER_BIN map.
+fn judge_card(
+    provider: &'static str,
+    bin: &'static str,
+    vflag: &'static str,
+    adapter: Option<&Path>,
+    adapter_python: Option<&Path>,
+) -> Card {
+    let review_ready = adapter.is_some() && adapter_python.is_some();
+    // `bin` is the binary stem; for grok it equals "grok", which keys the
+    // grok-only ~/.grok/bin rung inside the resolver.
+    let resolved = crate::gen::resolve_agent(bin);
+    let found = resolved.is_some();
+    // Version is display-only. Never let an informational banner consume the
+    // capability scan's budget or decide whether the provider is admitted.
+    let version = resolved
+        .as_ref()
+        .and_then(|p| version_line(p.as_os_str(), &[vflag], Duration::from_secs(2)));
+    let capability_verified = resolved
+        .as_ref()
+        .and_then(|path| {
+            crate::chat::broker::capability_help_args(provider).and_then(|arguments| {
+                successful_command_output(path.as_os_str(), arguments, Duration::from_secs(15))
+            })
+        })
+        .map(|help| crate::chat::broker::verify_agent_capability_contract(provider, &help).is_ok())
+        .unwrap_or(false);
+    let status = if !found {
+        CardStatus::Missing
+    } else if review_ready {
+        CardStatus::Ok
+    } else {
+        CardStatus::Degraded
+    };
+    let hint = if !found {
+        Some(format!(
+            "{provider} CLI (`{bin}`) not found on PATH or in the standard \
+                     install dirs. Install + log in to enable verify.judge via your \
+                     {provider} subscription (no API key — the CLI drives the review). \
+                     Any one judge rung is enough."
+        ))
+    } else if adapter.is_none() {
+        Some(
+            "The bundled render-review adapter is missing. Reinstall ShellX Cut, \
+                     or correct CUTD_JUDGE_ADAPTER if you set an override. Agent chat can \
+                     still use this CLI, but Get AI review cannot run yet."
+                .into(),
+        )
+    } else if adapter_python.is_none() {
+        Some(
+            "This CLI is installed, but render review still needs a Python runtime \
+                     for frame sampling and provider orchestration. Choose Install captions \
+                     to add Cut's managed runtime, or set CUTD_ADAPTER_PYTHON. Agent chat can \
+                     still use the CLI in the meantime."
+                .into(),
+        )
+    } else {
+        None
+    };
+    let chat = chat_agent_block(provider, found, resolved.as_deref(), capability_verified);
+    Card {
+        id: format!("judge.{provider}"),
+        kind: "judge".into(),
+        status,
+        source: Some(if found {
+            CardSource::Path
+        } else {
+            CardSource::Missing
+        }),
+        version,
+        hint,
+        details: json!({
+            "provider": provider,
+            "binary": bin,
+            "found": found,
+            "review_ready": found && review_ready,
+            "adapter": adapter.map(|p| p.display().to_string()),
+            "adapter_python": adapter_python.map(|p| p.display().to_string()),
+            // Where it resolved (e.g. ~/.grok/bin/grok) — null when absent.
+            // Lets the UI/agent (and the agent-dropdown) see the path.
+            "resolved": resolved.as_ref().map(|p| p.display().to_string()),
+            "role": "render judge (verify.judge) — drives the user's own coding-agent CLI as a vision reviewer; NO API key, NO model call during detection",
+            // The agent-chat dropdown state (3-level: absent / present-but-
+            // unauthenticated / ready) + the security-posture badge — folded
+            // here for the chat agents (claude/codex/grok); null for the
+            // provider-specific chat wiring is attached below when available.
+            "chat": chat,
+        }),
+    }
+}
+
 fn judge_cards() -> Vec<Card> {
     let adapter = crate::dispatch::configured_judge_adapter();
     let adapter_python = crate::dispatch::configured_adapter_python().filter(|python| {
         version_line(python.as_os_str(), &["--version"], Duration::from_secs(8)).is_some()
     });
-    let review_ready = adapter.is_some() && adapter_python.is_some();
-    JUDGE_RUNGS
-        .iter()
-        .map(|&(provider, bin, vflag)| {
-            // `bin` is the binary stem; for grok it equals "grok", which keys the
-            // grok-only ~/.grok/bin rung inside the resolver.
-            let resolved = crate::gen::resolve_agent(bin);
-            let found = resolved.is_some();
-            // Probe `<resolved> --version` by the FULL path (an off-PATH grok would
-            // not spawn by bare name) to confirm runnability + report the version.
-            let version = resolved
-                .as_ref()
-                .and_then(|p| version_line(p.as_os_str(), &[vflag], Duration::from_secs(15)));
-            let status = if !found {
-                CardStatus::Missing
-            } else if review_ready {
-                CardStatus::Ok
-            } else {
-                CardStatus::Degraded
-            };
-            let hint = if !found {
-                Some(format!(
-                    "{provider} CLI (`{bin}`) not found on PATH or in the standard \
-                     install dirs. Install + log in to enable verify.judge via your \
-                     {provider} subscription (no API key — the CLI drives the review). \
-                     Any one judge rung is enough."
-                ))
-            } else if adapter.is_none() {
-                Some(
-                    "The bundled render-review adapter is missing. Reinstall ShellX Cut, \
-                     or correct CUTD_JUDGE_ADAPTER if you set an override. Agent chat can \
-                     still use this CLI, but Get AI review cannot run yet."
-                        .into(),
-                )
-            } else if adapter_python.is_none() {
-                Some(
-                    "This CLI is installed, but render review still needs a Python runtime \
-                     for frame sampling and provider orchestration. Choose Install captions \
-                     to add Cut's managed runtime, or set CUTD_ADAPTER_PYTHON. Agent chat can \
-                     still use the CLI in the meantime."
-                        .into(),
-                )
-            } else {
-                None
-            };
-            let chat = chat_agent_block(provider, found, resolved.as_deref(), version.as_deref());
-            Card {
-                id: format!("judge.{provider}"),
-                kind: "judge".into(),
-                status,
-                source: Some(if found { CardSource::Path } else { CardSource::Missing }),
-                version,
-                hint,
-                details: json!({
-                    "provider": provider,
-                    "binary": bin,
-                    "found": found,
-                    "review_ready": found && review_ready,
-                    "adapter": adapter.as_ref().map(|p| p.display().to_string()),
-                    "adapter_python": adapter_python.as_ref().map(|p| p.display().to_string()),
-                    // Where it resolved (e.g. ~/.grok/bin/grok) — null when absent.
-                    // Lets the UI/agent (and the agent-dropdown) see the path.
-                    "resolved": resolved.as_ref().map(|p| p.display().to_string()),
-                    "role": "render judge (verify.judge) — drives the user's own coding-agent CLI as a vision reviewer; NO API key, NO model call during detection",
-                    // The agent-chat dropdown state (3-level: absent / present-but-
-                    // unauthenticated / ready) + the security-posture badge — folded
-                    // here for the chat agents (claude/codex/grok); null for the
-                    // provider-specific chat wiring is attached below when available.
-                    "chat": chat,
-                }),
-            }
-        })
-        .collect()
+    std::thread::scope(|scope| {
+        let probes: Vec<_> = JUDGE_RUNGS
+            .iter()
+            .map(|&(provider, bin, vflag)| {
+                scope.spawn(|| {
+                    judge_card(
+                        provider,
+                        bin,
+                        vflag,
+                        adapter.as_deref(),
+                        adapter_python.as_deref(),
+                    )
+                })
+            })
+            .collect();
+        probes
+            .into_iter()
+            .map(|probe| probe.join().expect("doctor judge probe panicked"))
+            .collect()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,19 +1601,47 @@ fn matte_premium_card() -> Card {
 }
 
 pub fn scan(addr: Option<String>) -> DoctorReport {
+    // Every group is observational and independent. Run them together so one
+    // slow optional CLI/model never turns the total Doctor scan into the sum of
+    // every individual timeout. Card order remains stable below.
+    let (ffmpeg, gpu, perception, matte, matte_premium, dub, diarize, judges, disk) =
+        std::thread::scope(|scope| {
+            let ffmpeg = scope.spawn(ffmpeg_cards);
+            let gpu = scope.spawn(gpu_encode_card);
+            let perception = scope.spawn(perception_card);
+            let matte = scope.spawn(matte_card);
+            let matte_premium = scope.spawn(matte_premium_card);
+            let dub = scope.spawn(service_cards::dub_card);
+            let diarize = scope.spawn(service_cards::diarize_card);
+            let judges = scope.spawn(judge_cards);
+            let disk = scope.spawn(disk_card);
+            (
+                ffmpeg.join().expect("doctor ffmpeg probe panicked"),
+                gpu.join().expect("doctor GPU probe panicked"),
+                perception.join().expect("doctor perception probe panicked"),
+                matte.join().expect("doctor matte probe panicked"),
+                matte_premium
+                    .join()
+                    .expect("doctor premium matte probe panicked"),
+                dub.join().expect("doctor dub probe panicked"),
+                diarize.join().expect("doctor diarize probe panicked"),
+                judges.join().expect("doctor judge group panicked"),
+                disk.join().expect("doctor disk probe panicked"),
+            )
+        });
     let mut cards = Vec::new();
-    cards.extend(ffmpeg_cards());
-    cards.push(gpu_encode_card());
-    cards.push(perception_card());
-    cards.push(matte_card());
-    cards.push(matte_premium_card());
+    cards.extend(ffmpeg);
+    cards.push(gpu);
+    cards.push(perception);
+    cards.push(matte);
+    cards.push(matte_premium);
     // Optional remote AI microservices (dub/diarize). NEUTRAL — never factor into
     // `essential_ok` (the gate below keys only off ffmpeg), so an absent service
     // (the normal case on a plain editing box) never pops the first-run wizard.
-    cards.push(service_cards::dub_card());
-    cards.push(service_cards::diarize_card());
-    cards.extend(judge_cards());
-    cards.push(disk_card());
+    cards.push(dub);
+    cards.push(diarize);
+    cards.extend(judges);
+    cards.push(disk);
 
     // Essential gate: ffmpeg PRESENT ⇒ core editing/render possible, so the first-run
     // wizard does NOT need to auto-pop. A DEGRADED ffmpeg (Homebrew 8.x without libass/
@@ -1698,28 +1786,46 @@ mod tests {
         // cards: installed / wired / authenticated (yes|no|unknown) / ready + the
         // launch posture — for each detectable chat-agent CLI.
         let cards = judge_cards();
-        for (id, posture, wired) in [
+        for (id, posture) in [
+            (
+                "judge.claude",
+                crate::chat::broker::CONTAINED_CLAUDE_CAPABILITY_POSTURE,
+            ),
             (
                 "judge.codex",
                 "native CLI: uses your Codex settings and permissions",
-                true,
             ),
             (
                 "judge.grok",
                 "isolated turn: only Cut MCP, existing Grok login",
-                true,
             ),
             (
                 "judge.antigravity",
                 "native CLI: verifies its sandbox and non-interactive flags before each turn",
-                true,
             ),
         ] {
             let c = cards.iter().find(|c| c.id == id).expect("chat-agent card");
             let chat = &c.details["chat"];
             assert!(chat.is_object(), "{id} must carry a chat-state block");
-            assert_eq!(chat["posture"], posture, "{id} posture tag");
-            assert_eq!(chat["wired"], serde_json::json!(wired), "{id} wired state");
+            assert!(chat["capability_verified"].is_boolean());
+            if chat["capability_verified"] == serde_json::json!(true) {
+                assert_eq!(chat["posture"], posture, "{id} posture tag");
+                assert_eq!(chat["wired"], serde_json::json!(true), "{id} wired state");
+            } else {
+                assert_eq!(
+                    chat["wired"],
+                    serde_json::json!(false),
+                    "{id} disabled state"
+                );
+                if chat["installed"] == serde_json::json!(true) {
+                    assert_eq!(
+                        chat["posture"],
+                        "disabled: required Agent Chat capability flags are unavailable"
+                    );
+                } else {
+                    assert_eq!(chat["posture"], posture, "{id} absent posture tag");
+                }
+            }
             assert!(chat["installed"].is_boolean());
             assert!(chat["ready"].is_boolean());
             let auth = chat["authenticated"].as_str().unwrap();
@@ -1736,26 +1842,6 @@ mod tests {
                 );
             }
         }
-        let claude = cards
-            .iter()
-            .find(|c| c.id == "judge.claude")
-            .expect("claude chat-agent card");
-        let chat = &claude.details["chat"];
-        assert!(chat["version_supported"].is_boolean());
-        if chat["version_supported"] == serde_json::json!(true) {
-            assert_eq!(chat["wired"], serde_json::json!(true));
-            assert_eq!(chat["posture"], "contained: pinned Claude Code 2.1.224");
-        } else {
-            assert_eq!(chat["wired"], serde_json::json!(false));
-            if chat["installed"] == serde_json::json!(true) {
-                assert_eq!(chat["posture"], "disabled: unsupported Claude Code version");
-            }
-        }
-        // Antigravity is a chat agent on every platform; each launch verifies
-        // the resolved CLI's advertised sandbox and non-interactive flags.
-        let agy = cards.iter().find(|c| c.id == "judge.antigravity").unwrap();
-        assert!(agy.details["chat"].is_object());
-        assert_eq!(agy.details["chat"]["wired"], serde_json::json!(true));
     }
 
     #[test]

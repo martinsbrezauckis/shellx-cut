@@ -1,7 +1,7 @@
 // panels/Kinetic — the kinetic-captions drawer (0.5.0 UI for captions.kinetic).
 // Role: a right-side drawer (the MusicBed drawer family) that drives ONE verb —
-// captions.kinetic — to animate the existing transcript caption cues (each line
-// pops in / fades out in sync with speech) as a native title overlay.
+// captions.kinetic — to animate caption lines or transcript words as a native
+// title overlay.
 //
 // PLACEMENT: captions are a promoted, near-one-tap action, and here the transcript IS
 // the caption source. So the launch point is a button in the TRANSCRIPT panel
@@ -37,6 +37,7 @@ const POSITIONS = [
   { id: 'top', label: 'Top' },
 ] as const
 type Position = (typeof POSITIONS)[number]['id']
+type KineticMode = 'lines' | 'words'
 
 function positionFromInput(value: string, fallback: Position): Position {
   for (const option of POSITIONS) {
@@ -89,8 +90,8 @@ function kineticResultFrom(v: unknown): KineticResult | null {
   }
 }
 
-/** Count static caption cues across ALL caption-kind tracks (the cues kinetic
- *  animates). Detect by `kind === 'caption'`, NOT a literal `cap1` id: a caption
+/** Count static caption cues across ALL caption-kind tracks (the line cues
+ *  kinetic animates). Detect by `kind === 'caption'`, NOT a literal `cap1` id: a caption
  *  track created with any other id still holds animatable cues, and keying on the
  *  hardcoded `cap1` id falsely reported "No captions" and hid the Animate button
  *  (caption-track regression). The engine may treat `cap1` as the first caption track, but detection
@@ -104,9 +105,23 @@ function captionCueCount(project: Project | null): number | null {
   return capTracks.reduce((n, t) => n + t.clips.filter((c) => 'text' in c).length, 0)
 }
 
+/** Word mode reads the EDL-mapped transcript, so an unused transcribed asset is
+ * not enough: at least one timeline media clip must reference that asset. */
+function hasTimelineTranscript(project: Project | null): boolean {
+  if (!project) return false
+  return project.tracks.some((track) => (
+    (track.kind === 'video' || track.kind === 'audio')
+      && track.clips.some((clip) => (
+        'asset' in clip && Boolean(project.assets[clip.asset]?.transcript)
+      ))
+  ))
+}
+
 export default function KineticDrawer({ project, onClose }: KineticDrawerProps) {
   const overlay = useBlockingOverlay<HTMLElement>(onClose)
   const cueCount = useMemo(() => captionCueCount(project), [project])
+  const wordTranscriptReady = useMemo(() => hasTimelineTranscript(project), [project])
+  const [mode, setMode] = useState<KineticMode>('lines')
   const [position, setPosition] = useState<Position>('bottom')
   const [replaceStatic, setReplaceStatic] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -115,11 +130,19 @@ export default function KineticDrawer({ project, onClose }: KineticDrawerProps) 
 
   // Esc closes (drawer family convention).
 
-  // Kinetic needs caption cues to animate. null = no caption track yet.
+  // Line mode needs caption cues; word mode reads a transcript through the EDL.
   const hasCaptions = cueCount !== null && cueCount > 0
+  const ready = mode === 'lines' ? hasCaptions : wordTranscriptReady
+
+  const chooseMode = (next: KineticMode) => {
+    if (busy) return
+    setMode(next)
+    setErr(null)
+    setResult(null)
+  }
 
   const fire = async () => {
-    if (!hasCaptions || busy) return
+    if (!ready || busy) return
     setBusy(true)
     setErr(null)
     setResult(null)
@@ -127,7 +150,8 @@ export default function KineticDrawer({ project, onClose }: KineticDrawerProps) 
       const r = await callVerb('captions.kinetic', {
         position,
         replace_static: replaceStatic,
-        rationale: `user: kinetic captions (${position}${replaceStatic ? ', replace static' : ''})`,
+        per_word: mode === 'words',
+        rationale: `user: kinetic captions (${mode === 'words' ? 'one word at a time' : 'lines'}, ${position}${replaceStatic ? ', replace static' : ''})`,
       })
       const result = r.ok ? kineticResultFrom(r.result) : null
       if (result) {
@@ -163,7 +187,7 @@ export default function KineticDrawer({ project, onClose }: KineticDrawerProps) 
         <header className="cd-head">
           <div>
             <h2 className="cd-title">Kinetic captions</h2>
-            <p className="cd-sub">Animate transcript captions so each line pops in and fades out in sync with speech.</p>
+            <p className="cd-sub">Animate caption lines or word-timed transcript text in sync with speech.</p>
           </div>
           <button className="cd-btn cd-btn--ghost" data-cut-kinetic-close onClick={onClose}>
             Close
@@ -171,80 +195,113 @@ export default function KineticDrawer({ project, onClose }: KineticDrawerProps) 
         </header>
 
         <div className="cd-body">
-          {!hasCaptions ? (
-            // Teach the prerequisite verb in the empty state.
-            <div className="cd-empty" data-cut-kinetic-empty>
-              No captions to animate yet.
-              <br />
-              Run <code>Generate captions</code> in the transcript panel first — kinetic captions animate those cues.
+          <div className="cd-field">
+            <span className="cd-field-label">Timing</span>
+            <div className="cd-seg" data-cut-kinetic-mode={mode} role="group" aria-label="Kinetic caption timing">
+              <button
+                type="button"
+                className={`cd-seg-btn${mode === 'lines' ? ' cd-seg-btn--on' : ''}`}
+                data-cut-kinetic-mode-lines
+                aria-pressed={mode === 'lines'}
+                disabled={busy}
+                onClick={() => chooseMode('lines')}
+              >
+                Lines
+              </button>
+              <button
+                type="button"
+                className={`cd-seg-btn${mode === 'words' ? ' cd-seg-btn--on' : ''}`}
+                data-cut-kinetic-mode-words
+                aria-pressed={mode === 'words'}
+                disabled={busy}
+                onClick={() => chooseMode('words')}
+              >
+                One word at a time
+              </button>
             </div>
-          ) : (
-            <>
+          </div>
+
+          {mode === 'lines' ? (
+            hasCaptions ? (
               <p className="cd-note" data-cut-kinetic-cuecount>
                 {cueCount} caption cue{cueCount === 1 ? '' : 's'} ready to animate.
               </p>
+            ) : (
+              <div className="cd-empty" data-cut-kinetic-empty>
+                Generate captions first.
+              </div>
+            )
+          ) : wordTranscriptReady ? (
+            <p className="cd-note" data-cut-kinetic-word-ready>
+              Timeline transcript ready for word timing.
+            </p>
+          ) : (
+            <p className="cd-note" data-cut-kinetic-word-unavailable>
+              Transcribe footage first
+            </p>
+          )}
 
-              {/* position */}
-              <label className="cd-field">
-                <span className="cd-field-label">Position</span>
-                <select
-                  className="cd-sel"
-                  data-cut-kinetic-position
-                  value={position}
-                  onChange={(e) => setPosition(positionFromInput(e.target.value, position))}
-                >
-                  {POSITIONS.map((p) => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
-              </label>
+          {/* position */}
+          <label className="cd-field">
+            <span className="cd-field-label">Position</span>
+            <select
+              className="cd-sel"
+              data-cut-kinetic-position
+              value={position}
+              disabled={busy}
+              onChange={(e) => setPosition(positionFromInput(e.target.value, position))}
+            >
+              {POSITIONS.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
+          </label>
 
-              {/* replace static — the overlap fix, default ON */}
-              <label className="cd-toggle" data-cut-kinetic-replace-toggle>
-                <input
-                  type="checkbox"
-                  data-cut-kinetic-replace
-                  checked={replaceStatic}
-                  onChange={(e) => setReplaceStatic(e.target.checked)}
-                />
-                <span className="cd-field-label">Replace the static captions</span>
-              </label>
-              <p className="cd-note">
-                {replaceStatic
-                  ? 'The static burn-in is removed so only the animated captions show (recommended).'
-                  : 'The static burn-in STAYS — animated captions render ON TOP of it (both visible).'}
-              </p>
+          {/* replace static — the overlap fix, default ON */}
+          <label className="cd-toggle" data-cut-kinetic-replace-toggle>
+            <input
+              type="checkbox"
+              data-cut-kinetic-replace
+              checked={replaceStatic}
+              disabled={busy}
+              onChange={(e) => setReplaceStatic(e.target.checked)}
+            />
+            <span className="cd-field-label">Replace the static captions</span>
+          </label>
+          <p className="cd-note">
+            {replaceStatic
+              ? 'The static burn-in is removed so only the animated captions show (recommended).'
+              : 'The static burn-in STAYS — animated captions render ON TOP of it (both visible).'}
+          </p>
 
-              <button
-                className="cd-btn cd-btn--primary"
-                data-cut-kinetic-apply
-                disabled={busy || !hasCaptions}
-                onClick={() => void fire()}
-              >
-                {busy ? 'Animating…' : 'Animate captions'}
-              </button>
+          <button
+            className="cd-btn cd-btn--primary"
+            data-cut-kinetic-apply
+            disabled={busy || !ready}
+            onClick={() => void fire()}
+          >
+            {busy ? 'Animating…' : 'Animate captions'}
+          </button>
 
-              {err && (
-                <div className="cd-err" data-cut-kinetic-error role="alert">{err}</div>
-              )}
+          {err && (
+            <div className="cd-err" data-cut-kinetic-error role="alert">{err}</div>
+          )}
 
-              {result && (
-                <div className="cd-result" data-cut-kinetic-result>
-                  <div className="cd-result-head">kinetic captions placed · {result.title_track}</div>
-                  <dl className="cd-result-grid">
-                    <dt>animated cues</dt>
-                    <dd data-cut-kinetic-result-cues>{result.cue_count}</dd>
-                    <dt>static cleared</dt>
-                    <dd data-cut-kinetic-result-cleared>{result.cleared_static}</dd>
-                    <dt>span</dt>
-                    <dd>{(result.range_ms[0] / 1000).toFixed(1)}–{(result.range_ms[1] / 1000).toFixed(1)}s</dd>
-                  </dl>
-                  <div className="cd-result-foot">
-                    See the <strong>{result.title_track}</strong> overlay on the timeline; scrub to watch the captions animate.
-                  </div>
-                </div>
-              )}
-            </>
+          {result && (
+            <div className="cd-result" data-cut-kinetic-result>
+              <div className="cd-result-head">kinetic captions placed · {result.title_track}</div>
+              <dl className="cd-result-grid">
+                <dt>{mode === 'words' ? 'animated words' : 'animated cues'}</dt>
+                <dd data-cut-kinetic-result-cues>{result.cue_count}</dd>
+                <dt>static cleared</dt>
+                <dd data-cut-kinetic-result-cleared>{result.cleared_static}</dd>
+                <dt>span</dt>
+                <dd>{(result.range_ms[0] / 1000).toFixed(1)}–{(result.range_ms[1] / 1000).toFixed(1)}s</dd>
+              </dl>
+              <div className="cd-result-foot">
+                See the <strong>{result.title_track}</strong> overlay on the timeline; scrub to watch the captions animate.
+              </div>
+            </div>
           )}
         </div>
       </aside>

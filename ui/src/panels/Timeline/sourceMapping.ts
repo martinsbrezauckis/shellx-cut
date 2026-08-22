@@ -28,6 +28,14 @@ export interface SourceTimelineOccurrence {
   atMs: number
 }
 
+/** A source-frame resolution for a deliberate timeline target.  Unlike the
+ * generic playhead helper below, this carries a concise refusal reason so a
+ * visible Match Frame control can stay honest when its exact mapping is not
+ * available. */
+export type SourceFrameMatch =
+  | { source: SourceAt; clipId: string; trackId: string }
+  | { source: null; reason: string }
+
 function sourceWindowForItem(item: SourceLaidItem, freezeAtMs?: number | null): TimelineSourceWindow | null {
   if (item.srcInMs === undefined || item.srcOutMs === undefined) return null
   return {
@@ -131,4 +139,82 @@ export function sourceAtPlayheadForLayout(
   }
   const video = find('video')
   return video.covered ? video.source : find('audio').source
+}
+
+/**
+ * Resolve one explicitly targeted VIDEO clip or video track at the playhead to
+ * its exact source frame. Match Frame is intentionally narrower than generic
+ * source lookup: it never switches to another video track or falls back to
+ * audio. Constant speed, reverse, and freeze use the shared source clock;
+ * speed ramps have no authoritative UI mapping and fail closed.
+ */
+export function sourceFrameMatchForLayout(
+  project: Project | null,
+  timelineMs: number,
+  target: { clipId?: string; trackId?: string },
+  layoutTrack: LayoutTrack,
+): SourceFrameMatch {
+  if (!project) return { source: null, reason: 'Open a project first' }
+  if (!Number.isFinite(timelineMs)) return { source: null, reason: 'Move the playhead to a video frame' }
+  if (!target.clipId && !target.trackId) return { source: null, reason: 'Choose a video clip or track first' }
+
+  const track = target.trackId
+    ? project.tracks.find((candidate) => candidate.id === target.trackId) ?? null
+    : null
+  if (target.trackId && !track) return { source: null, reason: 'That video track is no longer available' }
+  if (track && track.kind !== 'video') return { source: null, reason: 'Match Frame needs a video track' }
+
+  const candidates = track ? [track] : project.tracks
+  // A track header names a lane, not one of its clips. During a crossfade (or
+  // any other laid overlap) two visible media clips cover the same playhead,
+  // so choosing the first EDL item would only be deterministic by accident.
+  // An explicit clip target remains authoritative: its identity disambiguates
+  // the source frame even while another clip is visible underneath/over it.
+  if (track && !target.clipId) {
+    const coveringMedia = layoutTrack(track).filter((item) => (
+      item.kind === 'video'
+      && !!item.asset
+      && timelineMs >= item.startMs
+      && timelineMs < item.startMs + item.durMs
+    ))
+    if (coveringMedia.length > 1) {
+      return {
+        source: null,
+        reason: 'More than one video clip covers this playhead; select one clip to match its exact frame',
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.kind !== 'video') continue
+    for (const item of layoutTrack(candidate)) {
+      if (target.clipId && item.id !== target.clipId) continue
+      if (item.kind !== 'video' || !item.asset || item.srcInMs === undefined || item.srcOutMs === undefined) continue
+      if (timelineMs < item.startMs || timelineMs >= item.startMs + item.durMs) {
+        if (target.clipId) return { source: null, reason: 'Move the playhead onto this video clip' }
+        continue
+      }
+      const asset = project.assets?.[item.asset]
+      if (project.assets && !asset) return { source: null, reason: 'This source is no longer available' }
+      const probeKind = asset?.probe && typeof asset.probe === 'object' && 'kind' in asset.probe
+        ? (asset.probe as { kind?: unknown }).kind
+        : undefined
+      if (probeKind && probeKind !== 'video') {
+        return { source: null, reason: 'Match Frame needs a video source' }
+      }
+      const raw = candidate.clips.find((clip) => 'id' in clip && clip.id === item.id)
+      if (!raw || !('asset' in raw)) return { source: null, reason: 'This clip no longer has a source' }
+      if ((raw as { speed_ramp?: unknown }).speed_ramp != null) {
+        return { source: null, reason: 'Speed ramps cannot match an exact source frame' }
+      }
+      const window = sourceWindowForItem(item, raw.freeze?.at_ms)
+      if (!window) return { source: null, reason: 'This clip has no source range' }
+      return {
+        source: { asset: item.asset, srcMs: sourceMsAtTimelinePosition(window, timelineMs) },
+        clipId: item.id,
+        trackId: candidate.id,
+      }
+    }
+  }
+
+  return { source: null, reason: target.clipId ? 'This clip is not on a video track' : 'No video clip covers this playhead' }
 }

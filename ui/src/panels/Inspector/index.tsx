@@ -48,6 +48,8 @@ import './inspectorTasks.css'
 import './motion.css'
 export interface InspectorProps {
   project: Project | null
+  /** Ephemeral project.state revision passed separately from durable Project. */
+  projectRevision?: string | null
   /** The selected clip id (Timeline selection). */
   selectedClipId: string | null
   /** Live playhead (timeline ms) — the start anchor for a placed caption card. */
@@ -60,7 +62,7 @@ function openDrawer(name: string) {
   document.dispatchEvent(new CustomEvent('cut:open-drawer', { detail: name }))
 }
 
-export default function Inspector({ project, selectedClipId, playheadMs = 0, doctor }: InspectorProps) {
+export default function Inspector({ project, projectRevision, selectedClipId, playheadMs = 0, doctor }: InspectorProps) {
   // Resolve the selected clip + its track kind from project state.
   const sel = useMemo(() => {
     if (!project || !selectedClipId) return null
@@ -351,10 +353,7 @@ export default function Inspector({ project, selectedClipId, playheadMs = 0, doc
               </>
             ) : (
               <>
-                <VolumeSection
-                  clipId={sel.clip.id}
-                  gainDb={typeof sel.clip.gain_db === 'number' ? sel.clip.gain_db : 0}
-                />
+                <VolumeSection clip={sel.clip} isAudioClip={sel.trackKind === 'audio'} projectRevision={projectRevision} />
                 <AudioInspectorTools
                   selection={sel}
                   speechTrackId={speechTrackId}

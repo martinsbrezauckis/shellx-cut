@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod filtering;
+mod layout;
 mod rows;
 
 use rows::{collect_rows, RowFilters};
@@ -10,6 +12,7 @@ use rows::{collect_rows, RowFilters};
 struct Args {
     #[serde(default)]
     query: String,
+    asset: Option<String>,
     #[serde(default = "default_kind")]
     kind: String,
     sequence: Option<String>,
@@ -105,6 +108,7 @@ pub(super) async fn project_sequence_index(
         .any(|term| matches!(term.as_str(), "gap" | "gaps"));
     let filters = RowFilters {
         kind: &args.kind,
+        asset: args.asset.as_deref(),
         sequence: args.sequence.as_deref(),
         track_kind: args.track_kind.as_deref(),
         status: &args.status,
@@ -147,6 +151,7 @@ pub(super) async fn project_sequence_index(
 
     Ok(VerbResult::ok(json!({
         "query": query,
+        "asset": args.asset,
         "kind": args.kind,
         "sequence": args.sequence,
         "track_kind": args.track_kind,

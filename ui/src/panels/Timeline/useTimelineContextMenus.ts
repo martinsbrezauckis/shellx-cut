@@ -13,6 +13,7 @@ interface UseTimelineContextMenusArgs {
   allItems: LaidItem[]
   tracks: Track[]
   selectedClipIds: string[]
+  playheadMs: number
   clientXToMs: (clientX: number) => number
   onSelect: (clipIds: string[]) => void
 }
@@ -23,6 +24,7 @@ export function useTimelineContextMenus({
   allItems,
   tracks,
   selectedClipIds,
+  playheadMs,
   clientXToMs,
   onSelect,
 }: UseTimelineContextMenusArgs) {
@@ -52,7 +54,9 @@ export function useTimelineContextMenus({
       headerTrackId: target.closest('[data-cut-track-header]')?.getAttribute('data-cut-track-header') ?? null,
       x: event.clientX,
       y: event.clientY,
-      atMs: clientXToMs(event.clientX),
+      // Track-header Match Frame deliberately targets the track at the live
+      // playhead, while clip/gap/empty menus retain their exact click position.
+      atMs: target.closest('[data-cut-track-header]') ? playheadMs : clientXToMs(event.clientX),
       items: allItems,
       tracks,
     })
@@ -67,7 +71,7 @@ export function useTimelineContextMenus({
     const nextSelection = resolveTimelineContextSelection(selectedClipIds, result.itemId)
     if (nextSelection) onSelect(nextSelection)
     setClipMenu({ x: event.clientX, y: event.clientY, itemId: result.itemId, atMs: clientXToMs(event.clientX) })
-  }, [allItems, clientXToMs, onSelect, selectedClipIds, tracks])
+  }, [allItems, clientXToMs, onSelect, playheadMs, selectedClipIds, tracks])
 
   useEffect(() => {
     if (!clipMenu) return

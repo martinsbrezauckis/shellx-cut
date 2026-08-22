@@ -1,7 +1,8 @@
 // panels/Generate — the "Generate (AI)" surface for assets.generate.
 //
 // Role: the human UI for the agent-only assets.generate verb — generate an
-// image or short video from a text prompt via the USER'S OWN codex/grok CLI, and
+// image or short video from a text prompt via the USER'S OWN Codex, Grok, or
+// Antigravity CLI, and
 // import the result straight into the open project as a normal asset (it lands in
 // the Assets tray). Makes the agent-only verb a discoverable user feature in the
 // LEFT sidebar beside Assets/Library.
@@ -53,8 +54,9 @@ export interface GenerateDrawerProps {
 }
 
 /** assets.generate provider: codex = gpt-image (image only); grok = grok-imagine
- *  (image + video). The kind toggle is constrained to what the provider supports. */
-type Provider = 'codex' | 'grok'
+ *  (image + video); Antigravity = agy (image only). The kind toggle is
+ *  constrained to what the provider supports. */
+type Provider = 'codex' | 'grok' | 'antigravity'
 type Kind = 'image' | 'video'
 type PlacementMode = 'asset' | 'insert' | 'replace'
 type RetryPlacement = { mode: 'replace'; target_clip: string }
@@ -72,6 +74,7 @@ interface StoredGenerationJob {
 const PROVIDERS: { id: Provider; label: string; kinds: Kind[] }[] = [
   { id: 'codex', label: 'Codex — gpt-image (images)', kinds: ['image'] },
   { id: 'grok', label: 'Grok — grok-imagine (images + video)', kinds: ['image', 'video'] },
+  { id: 'antigravity', label: 'Antigravity — agy (images)', kinds: ['image'] },
 ]
 
 const GENERATION_JOB_STORAGE_KEY = 'cut.generate.active-job'
@@ -174,7 +177,7 @@ export default function GenerateDrawer({
 
   const meta = PROVIDERS.find((p) => p.id === provider)!
 
-  // Keep the kind valid for the selected provider (codex = image only).
+  // Keep the kind valid for the selected provider (Codex and Antigravity = image only).
   useEffect(() => {
     if (!meta.kinds.includes(kind)) setKind(meta.kinds[0])
   }, [provider]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -639,6 +642,11 @@ export default function GenerateDrawer({
         <Icon name="warning" size={14} tone="warn" /> Uses your signed-in <b>{provider} CLI</b> and
         may consume provider credits.
       </p>
+      {provider === 'antigravity' && (
+        <p className="cd-note" data-cut-generate-provider-capability="antigravity">
+          Images only. Cut uses Antigravity&apos;s native sandboxed, non-interactive CLI contract; video is not advertised.
+        </p>
+      )}
 
       <button
         className={`cd-btn ${armed ? 'cd-btn--danger' : 'cd-btn--primary'}`}

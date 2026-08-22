@@ -32,9 +32,10 @@ const FRAME_RENDER_CONCURRENCY: usize = 2;
 pub struct AppState {
     /// The open project, if any. RwLock: verbs mutate, readers snapshot.
     pub project: Arc<RwLock<Option<ProjectStore>>>,
-    /// Serializes create/open/close/delete ownership changes. A project switch
-    /// temporarily removes the current store while its background jobs drain;
-    /// only one such transition may run, and deletion must not race that gap.
+    /// Serializes create/open/close/delete ownership changes and project-bound
+    /// provider-import admission. A project switch temporarily removes the
+    /// current store while its background jobs drain; only one ownership change
+    /// may run, and a fetch cannot resolve for one project then record in another.
     pub project_transition: Arc<Mutex<()>>,
     /// Serializes caller-controlled idempotency preflight through durable
     /// response-receipt publication. Legacy calls keep their existing locks.

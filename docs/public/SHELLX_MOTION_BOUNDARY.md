@@ -184,7 +184,7 @@ receipt.
   relink, and refresh.
 - Rain, water, snow, shaders, particles, 3D, blur, and film stay on this linked
   rendered-media path. Cut exposes their ownership and state, launches the full
-  controls/curve editor in Canvas, and refreshes the attested fallback in place;
+  controls/curve editor in ShellX Motion, and refreshes the attested fallback in place;
   it does not pretend those controls are native Cut effects.
 - `motion.link.relink` repairs only the local package binding after validating
   the durable package/motion identity; it never changes pixels and marks the
@@ -203,15 +203,16 @@ receipt.
   populated `unsupported` list on a `rendered_media` plan and reports every
   reason as a warning; only an `editable_lowering` plan claiming unsupported
   content is refused. Cut has no `motion.screenshot` call site.
-- `motion.link.edit` revalidates the source identity and launches ShellX Canvas
+- `motion.link.edit` revalidates the source identity and launches ShellX Motion
   with fixed argv (`--motion-package <canonical-dir>` plus a canonical
-  `--motion-cut-return-request`). Canvas keeps both paths in its trusted host,
-  SDK-validates the package, and opens a path-free stale editor revision in the
-  same rich Motion workspace. A verified render publishes a new immutable ready
+  `--motion-cut-return-request`). ShellX Motion keeps both paths in its trusted
+  host, SDK-validates the package, and opens a path-free stale editor revision in
+  the same rich workspace. A verified render publishes a new immutable ready
   descriptor; refresh rechecks package/motion identity and the exact source
-  revision before adopting that copy-on-write package. Set `SHELLX_CANVAS_BIN`
-  when the executable is not on `PATH`; no shell interpolation or Cut timeline
-  mutation is involved.
+  revision before adopting that copy-on-write package. `SHELLX_CANVAS_BIN` and
+  historical `shellx-canvas` executable names are backward-compatibility
+  discovery fallbacks only; they are not the ShellX Motion product name or an
+  ownership boundary. No shell interpolation or Cut timeline mutation is involved.
 - Linked footage tracking stays Motion-owned while Cut owns the host workflow.
   `motion.link.tracking.inventory` exposes only package/video/layer/lifecycle ids;
   `request` converts a normalized seed to source pixels and asks the local Motion

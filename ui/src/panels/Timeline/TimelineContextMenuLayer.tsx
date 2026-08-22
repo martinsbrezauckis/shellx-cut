@@ -55,6 +55,7 @@ export default function TimelineContextMenuLayer({
       menu={clipMenu}
       project={timeline.project}
       allItems={allItems}
+      playheadMs={timeline.playheadMs}
       selectedClipIds={timeline.selectedClipIds}
       assetPick={assetPick}
       setAssetPick={setAssetPick}

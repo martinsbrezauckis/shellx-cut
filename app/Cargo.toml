@@ -1,6 +1,6 @@
 # ShellX Cut — cargo workspace (workspace contract).
-# Members: core (cut-core shared types + op-log), media (ffmpeg orchestration),
-# perception (instrument orchestration + receipt checks), server (cutd binary).
+# The `members` array below is the sole authoritative workspace map. Add, remove,
+# or relocate crates there; Cargo metadata resolves that declaration for tools and CI.
 # Dependency versions are pinned at the workspace boundary. Do not bump major
 # versions without checking the whole workspace.
 [workspace]
@@ -81,6 +81,6 @@ items_after_test_module = "allow"
 # the doctor card shows on the installed app). Bump in lockstep with the desktop
 # shell version (app/desktop/src-tauri/Cargo.toml + tauri.conf.json) so the
 # doctor card identifies the running build correctly on every platform.
-version = "0.6.109"
+version = "0.6.110"
 edition = "2021"
 license = "MIT"

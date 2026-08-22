@@ -22,7 +22,7 @@
 //! Safety: `assets.fetch` re-RESOLVES the hit through the provider by id and
 //! downloads ONLY the URL the provider returns — there is no CALLER-supplied URL
 //! (so no caller-driven SSRF). The provider-returned URL (a third-party CC CDN)
-//! is still treated defensively: `download_to` REJECTS internal/private hosts and
+//! is still treated defensively: the provider download path REJECTS internal/private hosts and
 //! DISABLES redirects (so a hostile CC entry can't 302 the desktop app at an
 //! internal address), and the download is size-capped. The import goes through
 //! core's `record_import` + the import chain (the ONLY valid import path), so
@@ -35,6 +35,8 @@ use cut_core::{error_codes, CutError};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+
+mod network_transport;
 
 /// The provider names `assets.search`/`assets.fetch` accept (display order).
 pub const PROVIDERS: &[&str] = &[
@@ -49,7 +51,6 @@ pub const PROVIDERS: &[&str] = &[
 /// Max bytes `assets.fetch` will download for a single provider asset (a stock
 /// SFX/clip is small; this fences a pathological response). 200 MB.
 const MAX_FETCH_BYTES: u64 = 200 * 1024 * 1024;
-
 /// Openverse API base. Audio + images only (no video endpoint upstream).
 const OPENVERSE_BASE: &str = "https://api.openverse.org/v1";
 
@@ -397,7 +398,8 @@ fn user_agent() -> String {
 /// GET an Openverse URL → parsed JSON. Maps transport/HTTP errors (incl. 429
 /// rate-limit) to actionable CutErrors.
 fn openverse_get(url: &str) -> Result<Value, CutError> {
-    let resp = ureq::get(url)
+    let resp = network_transport::provider_http_agent()
+        .get(url)
         .header("User-Agent", &user_agent())
         .header("Accept", "application/json")
         .call();
@@ -541,13 +543,14 @@ fn urlencode(s: &str) -> String {
 // Each is a keyless REST adapter. `search` lists hits (id + metadata); `resolve`
 // does the per-item file lookup that yields the authoritative download URL — so a
 // search stays one request, and the (heavier) file resolution happens only on the
-// hit the user actually fetches. download_to() keeps the SSRF fence.
+// hit the user actually fetches. download_vetted_to() keeps the SSRF fence.
 // ---------------------------------------------------------------------------
 
 /// GET a URL → parsed JSON, with an actionable error labelled by `who`. The shared
 /// blocking GET for the network providers (mirrors `openverse_get`).
 fn http_json(url: &str, who: &str) -> Result<Value, CutError> {
-    let resp = ureq::get(url)
+    let resp = network_transport::provider_http_agent()
+        .get(url)
         .header("User-Agent", &user_agent())
         .header("Accept", "application/json")
         .call();
@@ -1271,7 +1274,8 @@ impl ureq::unversioned::resolver::Resolver for PinnedResolver {
 }
 
 #[derive(Debug)]
-struct VettedDownloadTarget {
+pub(crate) struct VettedDownloadTarget {
+    url: String,
     host: String,
     port: u16,
     addrs: Vec<std::net::SocketAddr>,
@@ -1308,30 +1312,36 @@ fn vetted_download_target(url: &str) -> Result<VettedDownloadTarget, CutError> {
         .port_u16()
         .unwrap_or(if scheme == Some("https") { 443 } else { 80 });
     let addrs = vetted_socket_addrs(&host, port)?;
-    Ok(VettedDownloadTarget { host, port, addrs })
+    Ok(VettedDownloadTarget {
+        url: url.to_string(),
+        host,
+        port,
+        addrs,
+    })
 }
 
-/// Download `url` to `dest`, size-capped at [`MAX_FETCH_BYTES`]. Streams the body
-/// so a pathological response can't balloon memory. SSRF-fenced: http(s) only,
-/// internal/private hosts rejected, redirects DISABLED. Returns bytes written.
-pub fn download_to(url: &str, dest: &Path) -> Result<u64, CutError> {
-    let target = vetted_download_target(url)?;
+/// Resolve the untrusted provider URL on a timed blocking worker and retain its
+/// vetted public addresses for the following pinned connection.
+pub(crate) async fn prepare_download_target(url: String) -> Result<VettedDownloadTarget, CutError> {
+    network_transport::resolve_pinned_download_target(url).await
+}
+
+/// Download a pre-vetted target to `dest`, size-capped at [`MAX_FETCH_BYTES`].
+/// The async preflight is deliberately separate: its timed DNS worker receives
+/// no destination path; only a successful target reaches this file-writing step.
+/// Redirects remain disabled so a redirect cannot introduce a second origin.
+pub(crate) fn download_vetted_to(
+    target: VettedDownloadTarget,
+    dest: &Path,
+) -> Result<u64, CutError> {
     // Connect only to the addresses accepted above. The request URI remains
     // unchanged, so HTTPS still sends the hostname as SNI and verifies its
     // certificate against that hostname. Proxies are disabled because a CONNECT
     // proxy would otherwise resolve the provider hostname independently.
-    let config = ureq::Agent::config_builder()
-        .proxy(None)
-        .max_redirects(0)
-        .build();
-    let agent = ureq::Agent::with_parts(
-        config,
-        ureq::unversioned::transport::DefaultConnector::default(),
-        PinnedResolver::new(target.host, target.port, target.addrs),
-    );
+    let agent = network_transport::pinned_download_agent(&target);
     // Redirects stay disabled so a redirect cannot introduce a second origin.
     let resp = agent
-        .get(url)
+        .get(&target.url)
         .header("User-Agent", &user_agent())
         .call()
         .map_err(|e| CutError::new(error_codes::IO, "asset download failed", e.to_string()))?;
@@ -1718,6 +1728,7 @@ mod tests {
             vec!["93.184.216.34:443".parse().unwrap()]
         );
         let target = vetted_download_target("https://93.184.216.34/media.mp4").unwrap();
+        assert_eq!(target.url, "https://93.184.216.34/media.mp4");
         assert_eq!(target.host, "93.184.216.34");
         assert_eq!(target.port, 443);
         assert_eq!(target.addrs, vec!["93.184.216.34:443".parse().unwrap()]);

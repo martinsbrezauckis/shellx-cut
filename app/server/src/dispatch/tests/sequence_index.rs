@@ -3,6 +3,8 @@ use crate::dispatch::dispatch;
 use crate::state::AppState;
 use serde_json::json;
 
+mod editorial;
+
 #[tokio::test]
 async fn searches_all_sequences_without_mutating_history() {
     let dir = tempfile::tempdir().unwrap();

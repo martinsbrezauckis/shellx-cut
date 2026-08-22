@@ -28,6 +28,7 @@ import { openCutManual } from '../../lib/manual'
 import type { DoctorReport } from '../../lib/doctor'
 import { Icon } from '../../icons'
 import { useOfflineMedia } from '../../app/OfflineMediaContext'
+import type { SourceNavigationState } from '../../app/useSourceNavigationController'
 import { libraryMembershipBatches } from './libraryMembership'
 import { assetReadiness, mediaCapabilitiesFromDoctor, summarizeMediaReadiness, type MediaReadinessAsset } from './mediaReadiness'
 import SourceMonitor, { type SourceMonitorAsset } from './SourceMonitor'
@@ -39,6 +40,10 @@ export interface AssetsProps {
   doctor: DoctorReport | null
   /** Live playhead (timeline ms) — the target for the "Insert" button. */
   playheadMs: number
+  /** Refresh the active sequence after cross-sequence Source Monitor navigation. */
+  onProjectChanged?: () => void | Promise<void>
+  /** Exact registered asset requested by a timeline or Source Monitor occurrence. */
+  sourceNavigation?: SourceNavigationState | null
 }
 
 /** The fields we read off an asset's `probe` (media.probe result — see
@@ -175,7 +180,7 @@ function AssetThumb({ assetId, kind, film }: { assetId: string; kind?: string; f
   )
 }
 
-export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
+export default function Assets({ project, doctor, playheadMs, onProjectChanged, sourceNavigation }: AssetsProps) {
   const [busy, setBusy] = useState<string | null>(null) // assetId currently inserting
   const [note, setNote] = useState<string | null>(null)
   const [sourceMonitorId, setSourceMonitorId] = useState<string | null>(null)
@@ -236,14 +241,14 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
 
   const sourceMonitorAsset = useMemo<SourceMonitorAsset | null>(() => {
     const row = sourceMonitorId ? assetRows.find((asset) => asset.id === sourceMonitorId) : null
-    if (!row || (row.probe.kind !== 'video' && row.probe.kind !== 'audio')) return null
+    if (!row || (row.probe.kind !== 'video' && row.probe.kind !== 'audio' && row.probe.kind !== 'image')) return null
     return {
       id: row.id,
       name: mediaBasename(row.path),
       kind: row.probe.kind,
       durationMs: Math.max(0, row.probe.duration_ms ?? 0),
       hasAudio: row.probe.kind === 'video' && !!row.probe.has_audio,
-      proxy: row.proxy,
+      proxy: row.probe.kind === 'image' ? undefined : row.proxy,
     }
   }, [assetRows, sourceMonitorId])
 
@@ -252,7 +257,7 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
       const request = event instanceof CustomEvent ? sourceMonitorRequest(event.detail) : null
       if (!request) return
       const row = assetRows.find((asset) => asset.id === request.asset)
-      if (!row || (row.probe.kind !== 'video' && row.probe.kind !== 'audio')) return
+      if (!row || (row.probe.kind !== 'video' && row.probe.kind !== 'audio' && row.probe.kind !== 'image')) return
       if (offline.has(row.id)) {
         setNote(`Cannot open "${mediaBasename(row.path)}": source file is offline`)
         return
@@ -440,6 +445,39 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
       })
       .sort((x, y) => x.id.localeCompare(y.id))
   }, [activeBinMatchIds, assetRows, filterText, filterKind, filterUnused, filterLarge, filterOffline, filterRecent, filterNeedsAction, modifiedMs, offline, readinessById, usage])
+
+  const revealedAssetId = sourceNavigation?.destination === 'project' ? sourceNavigation.assetId : null
+
+  // A reveal deliberately clears all local filters/smart-bin state: a truthful
+  // exact result is more useful than leaving the registered asset hidden.
+  useEffect(() => {
+    if (!revealedAssetId) return
+    const exists = assetRows.some((asset) => asset.id === revealedAssetId)
+    if (!exists) {
+      setNote('This source is no longer registered in Project Assets')
+      return
+    }
+    setFilterText('')
+    setFilterKind('')
+    setFilterUnused(false)
+    setFilterLarge(false)
+    setFilterOffline(false)
+    setFilterRecent(false)
+    setFilterNeedsAction(false)
+    setActiveBin(null)
+    setNote('Revealed the registered source in Project Assets')
+  }, [assetRows, revealedAssetId, sourceNavigation?.nonce])
+
+  useEffect(() => {
+    if (!revealedAssetId || !items.some((asset) => asset.id === revealedAssetId)) return
+    const frame = window.requestAnimationFrame(() => {
+      const card = Array.from(document.querySelectorAll<HTMLElement>('[data-cut-asset-card]'))
+        .find((element) => element.dataset.cutAssetCard === revealedAssetId)
+      card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      card?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [items, revealedAssetId, sourceNavigation?.nonce])
 
   /** Import media INTO the project AND mirror it into the GLOBAL library, marked as a
    *  project asset (upload inside the asset bar adds to the global library and
@@ -849,8 +887,9 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
               return (
                 <li
                   key={id}
-                  className={`assets__card${isOffline ? ' assets__card--offline' : ''}${readiness?.needsAction ? ' assets__card--attention' : ''}`}
+                  className={`assets__card${id === revealedAssetId ? ' assets__card--selected' : ''}${isOffline ? ' assets__card--offline' : ''}${readiness?.needsAction ? ' assets__card--attention' : ''}`}
                   data-cut-asset-card={id}
+                  {...(id === revealedAssetId ? { 'data-cut-asset-selected': id } : {})}
                   data-cut-asset-kind={probe.kind ?? 'video'}
                   data-cut-asset-readiness={readiness?.level}
                   {...(isOffline ? { 'data-cut-asset-offline': id } : {})}
@@ -862,6 +901,7 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
                     setAssetMenu({ x: event.clientX, y: event.clientY, assetId: id })
                   }}
                   onDragStart={preventNativeDrag}
+                  tabIndex={id === revealedAssetId ? -1 : undefined}
                   title={
                     isOffline
                       ? `${path}\nSOURCE FILE MISSING — renders will fail. Relink to its new location.`
@@ -904,7 +944,7 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
                       {busy === id || relinkingAssetId === id ? '…' : 'Relink…'}
                     </button>
                   )}
-                  {(probe.kind === 'video' || probe.kind === 'audio') && !isOffline && (
+                  {(probe.kind === 'video' || probe.kind === 'audio' || probe.kind === 'image') && !isOffline && (
                     <button
                       type="button"
                       className="assets__source-monitor"
@@ -1010,6 +1050,7 @@ export default function Assets({ project, doctor, playheadMs }: AssetsProps) {
         project={project}
         playheadMs={playheadMs}
         initialMs={sourceMonitorAtMs}
+        onProjectChanged={onProjectChanged}
         onClose={closeSourceMonitor}
       />
     )}

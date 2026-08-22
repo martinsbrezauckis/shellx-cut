@@ -35,7 +35,11 @@ use std::process::Stdio;
 #[cfg(test)]
 use std::time::Duration;
 
-pub(crate) const ENV_CANVAS_BIN: &str = "SHELLX_CANVAS_BIN";
+/// Backward-compatibility executable override for installations that still use
+/// the historical Canvas packaging. Cut calls the product ShellX Motion.
+pub(crate) const LEGACY_CANVAS_BIN_ENV: &str = "SHELLX_CANVAS_BIN";
+const LEGACY_CANVAS_PROGRAM_NAMES_WINDOWS: &[&str] = &["shellx-canvas.exe", "ShellX Canvas.exe"];
+const LEGACY_CANVAS_PROGRAM_NAMES_UNIX: &[&str] = &["shellx-canvas", "shellx-canvas-app"];
 const DEFAULT_TEMPLATE_ALIAS: &str = "editable-lower-third";
 const MOTION_IMPORT_PLAN_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -649,11 +653,13 @@ pub(crate) async fn motion_link_edit(
         ));
     }
     let source_revision = motion_package_revision(&source_path)?;
-    let program = resolve_canvas_program().ok_or_else(|| {
+    let program = resolve_motion_editor_program().ok_or_else(|| {
         CutError::new(
             error_codes::NOT_FOUND,
-            "ShellX Canvas executable is not available",
-            format!("set {ENV_CANVAS_BIN} or install shellx-canvas on PATH"),
+            "ShellX Motion editor is not available",
+            format!(
+                "install ShellX Motion or set {LEGACY_CANVAS_BIN_ENV} for a backward-compatible executable override"
+            ),
         )
     })?;
     let return_request = crate::motion_edit_return::create_request(
@@ -677,7 +683,7 @@ pub(crate) async fn motion_link_edit(
         .map_err(|error| {
             CutError::new(
                 error_codes::SIDECAR,
-                "ShellX Canvas could not be launched",
+                "ShellX Motion could not be launched",
                 format!("{program}: {error}"),
             )
         })?;
@@ -695,21 +701,21 @@ pub(crate) async fn motion_link_edit(
     })))
 }
 
-pub(crate) fn canvas_available() -> bool {
-    resolve_canvas_program().is_some()
+pub(crate) fn motion_editor_available() -> bool {
+    resolve_motion_editor_program().is_some()
 }
 
-fn resolve_canvas_program() -> Option<String> {
-    if let Ok(program) = std::env::var(ENV_CANVAS_BIN) {
+fn resolve_motion_editor_program() -> Option<String> {
+    if let Ok(program) = std::env::var(LEGACY_CANVAS_BIN_ENV) {
         let value = program.trim();
         if !value.is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control) {
             return Some(value.to_string());
         }
     }
     let names: &[&str] = if cfg!(windows) {
-        &["shellx-canvas.exe", "ShellX Canvas.exe"]
+        LEGACY_CANVAS_PROGRAM_NAMES_WINDOWS
     } else {
-        &["shellx-canvas", "shellx-canvas-app"]
+        LEGACY_CANVAS_PROGRAM_NAMES_UNIX
     };
     if let Some(found) = std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)

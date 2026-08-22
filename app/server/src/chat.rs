@@ -18,7 +18,7 @@
 //! spawn (with a timeout) lives in dispatch.rs `agent_chat`. Honest degradation:
 //! no CLI / an un-wired agent → `ok:false` with a clear reason, never a fake reply.
 //!
-//! Claude keeps its pinned contained capability contract. Codex uses the user's
+//! Claude keeps its contained capability contract. Codex uses the user's
 //! normal native policy. Grok receives an isolated disposable config/home with
 //! only the live project's filtered MCP server while retaining its login file in
 //! place.
@@ -574,8 +574,9 @@ mod tests {
         assert!(c.args.windows(2).any(|w| w == ["--setting-sources", ""]));
         assert!(c.args.contains(&"--disable-slash-commands".to_string()));
         assert!(c.args.contains(&"--strict-mcp-config".to_string()));
-        // Claude 2.1.224 keeps the explicit MCP server alive only when its
-        // tool allowlist, rather than `--tools ""`, limits the native set.
+        // The contained Claude contract keeps the explicit MCP server alive
+        // only when its tool allowlist, rather than `--tools ""`, limits the
+        // native set.
         assert!(c
             .args
             .windows(2)
@@ -824,10 +825,10 @@ mod tests {
     }
 
     #[test]
-    fn security_posture_reports_the_per_agent_floor() {
+    fn security_posture_reports_each_agent_contract() {
         assert_eq!(
             security_posture("claude"),
-            Some("contained: pinned Claude Code 2.1.224")
+            Some(crate::chat::broker::CONTAINED_CLAUDE_CAPABILITY_POSTURE)
         );
         assert_eq!(
             security_posture("grok"),

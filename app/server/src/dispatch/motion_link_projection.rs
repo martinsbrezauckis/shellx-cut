@@ -103,7 +103,7 @@ fn revalidate_link(mut link: Value) -> Value {
                 "fallback": fallback_available,
                 "canRefresh": source_available,
                 "canRelink": true,
-                "canEditInMotion": source_available && crate::motion_bridge::canvas_available(),
+                "canEditInMotion": source_available && crate::motion_bridge::motion_editor_available(),
             }),
         );
         if source_available {

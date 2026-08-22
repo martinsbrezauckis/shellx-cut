@@ -683,6 +683,7 @@ mod window_tests {
     //! invariants here are what keep a segmented render frame-identical to the
     //! whole-graph render at window seams.
     use super::*;
+    use crate::edit::make_media_clip;
     use crate::types::{ClipFade, FadeKind};
 
     /// A base-track media segment [tl_in,tl_out) ← src[src_in,src_out), speed.
@@ -724,6 +725,44 @@ mod window_tests {
     fn one(edl: &Edl) -> &EdlSegment {
         assert_eq!(edl.segments.len(), 1, "expected exactly one segment");
         &edl.segments[0]
+    }
+
+    #[test]
+    fn crossfades_pull_later_clip_starts_into_laid_time() {
+        let mut project = Project::new("laid-layout", crate::types::ProjectSettings::default());
+        let track = project.track_mut("v1").expect("default video track");
+        track
+            .clips
+            .push(Clip::Media(make_media_clip("lead", "a1", 0, 1000)));
+        let mut middle = make_media_clip("middle", "a2", 0, 1000);
+        middle.xfade_in_ms = 300;
+        track.clips.push(Clip::Media(middle));
+        let mut target = make_media_clip("target", "a3", 0, 1000);
+        target.xfade_in_ms = 200;
+        track.clips.push(Clip::Media(target));
+
+        let edl = edl_from_project(&project);
+        let ranges: Vec<_> = edl
+            .track_segments("v1")
+            .map(|segment| {
+                (
+                    segment.clip_id.as_deref(),
+                    segment.timeline_in_ms,
+                    segment.timeline_out_ms,
+                )
+            })
+            .collect();
+        assert_eq!(
+            ranges,
+            vec![
+                (Some("lead"), 0, 1000),
+                (Some("middle"), 700, 1700),
+                // This start includes both the 300 ms upstream overlap and
+                // the target's own 200 ms overlap: nominal 2000 ms is wrong.
+                (Some("target"), 1500, 2500),
+            ]
+        );
+        assert_eq!(edl.duration_ms, 2500);
     }
 
     #[test]

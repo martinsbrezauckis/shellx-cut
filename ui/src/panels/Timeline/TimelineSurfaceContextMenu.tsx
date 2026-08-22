@@ -60,7 +60,11 @@ export default function TimelineSurfaceContextMenu({
     const paste = pasteState(track, !!clipboardClipId, clipboardKind)
     const canSetIn = durationMs - menu.atMs >= 50
     const canSetOut = menu.atMs >= 50
-    return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-timeline-empty-menu" backdropId="data-cut-timeline-ctx-backdrop" onClose={onClose}>
+    return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-timeline-empty-menu" backdropId="data-cut-timeline-ctx-backdrop" onClose={onClose} menuAttributes={{
+      'data-cut-timeline-context-kind': 'empty',
+      'data-cut-timeline-context-track': track?.id ?? '',
+      'data-cut-timeline-context-at-ms': String(Math.round(menu.atMs)),
+    }}>
       <span className="tl-ctx__label" aria-hidden="true">Timeline</span>
       <Item action="empty-seek" title="Move the playhead to this exact timeline position" onClick={() => { onSeek(menu.atMs); onClose() }}><Icon name="marker" size={14} /> Seek here</Item>
       <Item action="empty-paste" disabled={!paste.enabled} title={paste.reason} onClick={() => {
@@ -84,7 +88,11 @@ export default function TimelineSurfaceContextMenu({
     const source = clipboardClipId ? allItems.find((candidate) => candidate.id === clipboardClipId) ?? null : null
     const fit = gapFillState(gap, track, source)
     const paste = pasteState(track, !!clipboardClipId, clipboardKind)
-    return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-gap-menu" backdropId="data-cut-timeline-ctx-backdrop" onClose={onClose}>
+    return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-gap-menu" backdropId="data-cut-timeline-ctx-backdrop" onClose={onClose} menuAttributes={{
+      'data-cut-timeline-context-kind': 'gap',
+      'data-cut-timeline-context-track': track.id,
+      'data-cut-timeline-context-at-ms': String(Math.round(gap.editorialStartMs)),
+    }}>
       <span className="tl-ctx__label" aria-hidden="true">Gap · {Math.round(gap.durMs)}ms</span>
       <Item action="gap-seek" title="Move the playhead to the start of this exact gap" onClick={() => { onSeek(gap.startMs); onClose() }}><Icon name="marker" size={14} /> Seek to gap start</Item>
       <Item action="gap-paste" disabled={!paste.enabled} title={paste.reason} onClick={() => {

@@ -94,10 +94,29 @@ fn isolated_environment_keeps_auth_in_place_and_drops_parent_state() {
 #[test]
 fn capability_contract_is_flag_based_and_fails_closed() {
     let help = REQUIRED_HELP_TOKENS.join(" ");
-    assert!(verify_capability_contract("grok 1.0.0", &help).is_ok());
-    assert!(verify_capability_contract("other 1.0.0", &help).is_err());
-    let incomplete = help.replace("--deny", "");
-    assert!(verify_capability_contract("grok 1.0.0", &incomplete)
-        .unwrap_err()
-        .contains("--deny"));
+    for version in ["", "other CLI", "current Grok build"] {
+        assert!(
+            verify_capability_contract(&help).is_ok(),
+            "version text must not gate a capable Grok CLI: {version:?}"
+        );
+    }
+    for missing in REQUIRED_HELP_TOKENS {
+        let incomplete = REQUIRED_HELP_TOKENS
+            .iter()
+            .copied()
+            .filter(|token| token != missing)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let error = verify_capability_contract(&incomplete)
+            .expect_err("each isolated Agent Chat flag must be mandatory");
+        assert!(
+            error.contains(missing),
+            "missing flag must be named: {missing}"
+        );
+    }
+    assert!(
+        verify_capability_contract(&help.replacen("--model", "--model-v2", 1))
+            .unwrap_err()
+            .contains("--model")
+    );
 }

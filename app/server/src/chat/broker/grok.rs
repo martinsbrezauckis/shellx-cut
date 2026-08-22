@@ -1,6 +1,6 @@
 //! Grok Build CLI argument and project-MCP construction for Agent Chat.
 
-use super::LaunchEnvironment;
+use super::{missing_required_help_tokens, LaunchEnvironment};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
@@ -227,18 +227,8 @@ pub(crate) fn isolated_environment(
     isolated_environment_from(std::env::vars_os(), workspace, proxy_addr, proxy_actor)
 }
 
-pub(crate) fn verify_capability_contract(version: &str, help: &str) -> Result<(), String> {
-    if !version.to_ascii_lowercase().contains("grok") {
-        return Err(format!(
-            "the resolved Grok executable returned an unexpected version string: {:?}",
-            version.trim()
-        ));
-    }
-    let missing: Vec<&str> = REQUIRED_HELP_TOKENS
-        .iter()
-        .copied()
-        .filter(|token| !help.contains(token))
-        .collect();
+pub(crate) fn verify_capability_contract(help: &str) -> Result<(), String> {
+    let missing = missing_required_help_tokens(help, REQUIRED_HELP_TOKENS);
     if !missing.is_empty() {
         return Err(format!(
             "the installed Grok CLI does not advertise required isolated Agent Chat flags: {}",

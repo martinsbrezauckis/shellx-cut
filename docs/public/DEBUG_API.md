@@ -53,7 +53,7 @@ authentication boundary:
 - Shared/multi-user machines, untrusted local apps/services, containers sharing
   host networking, and exposed ports are outside the supported default. Native
   per-caller/per-user capability authentication is future hardening; it is not
-  in v0.6.109. Under this documented deployment assumption, its absence is
+  in v0.6.110. Under this documented deployment assumption, its absence is
   **NOT A DEFECT**.
 
 `cutd mcp` is a stdio transport that proxies the running server; it has no
@@ -137,7 +137,7 @@ repair action.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 264 schemas once at startup and applies the selected schema at the shared
+all 265 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -220,7 +220,7 @@ undoable timeline edit. The generated dispatcher target is not a caller option;
 it makes the schema name-to-handler route exhaustively checked at build time.
 
 Release installers include the start-here guide, agent rules, public feature and
-Debug API docs, verb schema, feature workflow, Motion boundary, and the complete
+Debug API docs, verb schema, feature-surface contract, Motion boundary, and the complete
 ShellX Cut skill directory (reference plus every craft guide). Package checks
 verify that every served `/api/agent-doc/*path` file is
 byte-identical to the candidate source, preventing a stale or partial docs bundle.
@@ -275,7 +275,7 @@ and finite Screen Record ffmpeg work. The shared foreground budget is 30 minutes
 unless a shorter probe budget is documented by its caller; JSON sidecar stdin is
 written under that same cancellation/deadline boundary, and perception progress
 lines are streamed while bounded diagnostics are drained. The only intentionally
-independent process is `motion.open`, which hands ShellX Canvas to the desktop
+independent process is `motion.open`, which hands ShellX Motion to the desktop
 rather than starting a Cut job. Screen Record export/raw mux retain the recorder
 crate's separately implemented 30-minute owner because `record-render` cannot
 depend on the server job crate; it has the equivalent deadline/cancellation,
@@ -353,6 +353,48 @@ and timeline span, both clips change atomically and one undo restores the pair.
 Pass `linked:false` only for a deliberate independent move or trim, such as a
 split edit. Ambiguous or locked counterparts are rejected instead of silently
 desynchronizing media.
+
+## Atomic overwrite edit
+
+`edit.overwrite` is the fixed-time overwrite operation. It is deliberately not
+`edit.insert {ripple:false}`: insert still splices and moves the target track;
+overwrite replaces `[at_ms, at_ms + source_duration)` and leaves all later
+timeline coordinates unchanged. Choose `video_track`, `audio_track`, or both.
+Supplying both commits one linked A/V operation, undoable and replayable as one
+unit; supplying one is an intentional video-only or audio-only overwrite.
+
+`at_ms` is **editorial** time: the cumulative duration of clips on each target
+track, like `edit.insert`, `edit.split`, and `edit.move`. A crossfade shortens
+the rendered playhead without changing that editorial clock, so callers reading
+a visible playhead must convert it through the target track's crossfade layout.
+For one atomic V+A overwrite, both selected tracks must resolve the visible
+position to the same editorial value; otherwise overwrite each track separately
+or align their transitions first.
+
+The engine refuses an overwrite that would shorten, remove, or otherwise lose a
+live right-owned crossfade: its rendered overlap is part of the fixed-time
+layout. Move the edge outside that transition owner, or rebuild the transition
+deliberately in a separate edit; a rejected linked edit leaves every target
+unchanged.
+
+A rendered point inside the overlap itself is multiply covered by both sides of
+the dissolve. Source Monitor treats that as an ambiguous overwrite start and
+disables overwrite rather than choosing the left clip's editorial clock: that
+choice could move the dissolve and change pixels before the visible playhead.
+Move to either non-overlapped side first.
+
+The source window may be explicit (`src_range_ms`) or Source Monitor marks
+(`source_in_ms` plus `source_out_ms`). Every overlapping clip or gap on each
+chosen track is consumed; partial boundary clips are trimmed, and an overwrite
+beyond a track tail uses only the needed preceding gap/tail extension. Captions,
+markers, duck windows, and unselected tracks do not move. The receipt lists the
+new clip and exactly which clips/gaps/tail interval each target consumed.
+
+```bash
+curl -sS http://127.0.0.1:6161/api/verb/edit.overwrite \
+  -H 'content-type: application/json' \
+  -d '{"asset":"a2","at_ms":12000,"video_track":"v1","audio_track":"a1t","source_in_ms":1500,"source_out_ms":4500}'
+```
 
 ```bash
 curl -sS http://127.0.0.1:6161/api/verb/edit.move \
@@ -532,6 +574,11 @@ curl -sS http://127.0.0.1:6161/api/verb/project.sequence_index \
   -d '{"status":"issues","limit":500}'
 ```
 
+For an exact per-asset occurrence list, pass `asset` instead of relying on a
+text match. That filter is applied before `limit`; returned `at_ms` and
+`end_ms` use the laid layout shared by rendering and
+`ui.playhead`, including upstream crossfade overlap.
+
 `status` accepts `all`, `issues`, `offline`, `gaps`, `effects`, `hidden`,
 `locked`, or `muted`. `issues` combines offline media and explicit timeline
 gaps. Offline state is computed from the filesystem for the call; effect and
@@ -580,9 +627,10 @@ The server validates every ID against the open project, rejects duplicates, and
 caps each turn at eight attachments. The response echoes the validated IDs in
 `result.attachments` on both the success and structured no-edit paths.
 
-Headless editing supports installed Claude Code, Codex, Grok, and Antigravity CLIs. Claude uses the
-pinned 2.1.224 contained contract: Cut verifies its version and policy flags,
-uses a disposable cwd and sanitized environment, and disables native CLI tools.
+Headless editing supports installed Claude Code, Codex, Grok, and Antigravity CLIs. Provider version
+text is informational only; Cut verifies each route's required policy flags before every turn. Claude uses a
+contained capability contract with a disposable cwd and
+sanitized environment, and disables native CLI tools.
 Codex keeps the user's normal configuration, native sandbox, and permissions;
 Cut adds the live project's MCP server and does not copy or rewrite Codex login
 files. Grok receives a disposable config/home with native tools disabled and
@@ -753,7 +801,7 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
 (`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
-read-only check proves protocol negotiation, ping, all 264 tools, and that the
+read-only check proves protocol negotiation, ping, all 265 tools, and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use

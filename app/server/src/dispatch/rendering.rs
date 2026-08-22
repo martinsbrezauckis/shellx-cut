@@ -1641,19 +1641,6 @@ pub(super) async fn render_final(
         loudness_target,
     };
     let (project, edl, dir, at_op) = snapshot(state).await?;
-    // render_id = next receipts/render_*.json index (unique per project).
-    let receipts = dir.join("receipts");
-    std::fs::create_dir_all(&receipts)?;
-    // Count only the CANONICAL receipt files `render_NNN.json` — NOT the
-    // `render_NNN.output.perception.json` sidecar each render also writes (which
-    // also starts with "render_" and ends ".json"). Counting both double-counted
-    // every render, so ids skipped (001 → 003 → 005); this keeps them sequential.
-    let (render_id, render_reservation) = if a.dry_run {
-        (next_receipt_id_preview(&receipts, "render"), None)
-    } else {
-        let (id, marker) = reserve_receipt_id(&receipts, "render")?;
-        (id, Some(marker))
-    };
     // Quality tier (draft|standard|high) — validate up front so an unknown name
     // errors BEFORE any encode. It shifts the rate knob within the chosen codec.
     let quality = a.preset.as_deref().unwrap_or("standard");
@@ -1682,6 +1669,22 @@ pub(super) async fn render_final(
             "h264 = universal mp4 (default), hevc = ~30-50% smaller, vp9 = web/webm, prores = pro/mov, av1 = highest quality (slow without a GPU)",
         )
     })?;
+    // An explicit path is part of the public request boundary, not render
+    // setup. In particular, the automatic hardware tier below can run ffmpeg
+    // capability probes, so reject an escaping path before starting that work
+    // (or reserving a render receipt).
+    let explicit_out = a
+        .path
+        .as_deref()
+        .map(|path| {
+            fence_output_path(
+                &dir,
+                Some(path),
+                &format!("exports/render.{ext}"),
+                OutputPathPolicy::exact(ext),
+            )
+        })
+        .transpose()?;
     // GPU/HARDWARE encoder tier: use the GPU when the
     // desktop has one). "auto" (default) swaps in the detected HW encoder for the
     // codec — much faster (and AV1-HW is the quality ceiling); "off" forces the
@@ -1798,12 +1801,28 @@ pub(super) async fn render_final(
         })?;
         audio_args = cut_media::render::set_audio_bitrate(audio_args, akbps);
     }
-    let out = fence_output_path(
-        &dir,
-        a.path.as_deref(),
-        &format!("exports/{render_id}.{ext}"),
-        OutputPathPolicy::exact(ext),
-    )?;
+    // render_id = next receipts/render_*.json index (unique per project).
+    let receipts = dir.join("receipts");
+    std::fs::create_dir_all(&receipts)?;
+    // Count only the CANONICAL receipt files `render_NNN.json` — NOT the
+    // `render_NNN.output.perception.json` sidecar each render also writes (which
+    // also starts with "render_" and ends ".json"). Counting both double-counted
+    // every render, so ids skipped (001 → 003 → 005); this keeps them sequential.
+    let (render_id, render_reservation) = if a.dry_run {
+        (next_receipt_id_preview(&receipts, "render"), None)
+    } else {
+        let (id, marker) = reserve_receipt_id(&receipts, "render")?;
+        (id, Some(marker))
+    };
+    let out = match explicit_out {
+        Some(path) => path,
+        None => fence_output_path(
+            &dir,
+            None,
+            &format!("exports/{render_id}.{ext}"),
+            OutputPathPolicy::exact(ext),
+        )?,
+    };
     // The receipt records the encoder that actually produced the output (e.g.
     // "standard" for the default software h264, "standard/hevc_nvenc" for a HW
     // HEVC render) — honest about software vs hardware + the exact codec.

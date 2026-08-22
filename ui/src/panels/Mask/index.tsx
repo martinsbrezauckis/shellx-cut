@@ -32,6 +32,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callVerb, type Project } from '../../lib/client'
+import { baseVideoTrackId } from '../../lib/layerStack'
 import { layoutTrack } from '../Timeline/layout'
 import type { MaskShape, MaskGeometry } from '../Preview/MaskOverlay'
 import { Icon } from '../../icons'
@@ -101,10 +102,13 @@ export default function MaskDrawer({ project, clipId, playheadMs, onSeek, onClos
   const [err, setErr] = useState<string | null>(null)
   const [result, setResult] = useState<Result | null>(null)
 
-  // Resolve the BASE (first) video track + whether the selection sits on it — masks
+  // Resolve the renderer-owned BASE (first non-empty) video track + whether the selection sits on it — masks
   // render on the base track only (the engine refuses an overlay clip with a clear
   // error, so we gate up front rather than fail on Apply).
-  const baseTrack = useMemo(() => project?.tracks.find((t) => t.kind === 'video') ?? null, [project])
+  const baseTrack = useMemo(() => {
+    const id = baseVideoTrackId(project?.tracks ?? [])
+    return id ? project?.tracks.find((track) => track.id === id) ?? null : null
+  }, [project])
   const baseClipIds = useMemo(() => {
     const s = new Set<string>()
     for (const c of baseTrack?.clips ?? []) if ('id' in c) s.add(c.id)

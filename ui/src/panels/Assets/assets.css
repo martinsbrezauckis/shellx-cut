@@ -90,6 +90,11 @@
 }
 .assets__card:hover { background: var(--surface-3); border-color: var(--hairline-2); }
 .assets__card:active { cursor: grabbing; }
+.assets__card--selected {
+  border-color: var(--cut);
+  box-shadow: 0 0 0 1px var(--cut-dim), inset 3px 0 0 var(--cut);
+  background: var(--surface-3);
+}
 
 .assets__icon {
   flex: none;

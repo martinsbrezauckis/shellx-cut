@@ -1,8 +1,9 @@
 import type { Dispatch, SetStateAction } from 'react'
 import type { Project } from '../../lib/client'
+import { useOfflineMedia } from '../../app/OfflineMediaContext'
 import ContextMenuFrame from '../../components/ContextMenuFrame'
 import { Icon } from '../../icons'
-import { linkedSiblings, type LaidItem } from './layout'
+import { linkedSiblings, sourceFrameMatch, type LaidItem } from './layout'
 import GeneratedOverlayContextMenu from './GeneratedOverlayContextMenu'
 import {
   adjacentGapSlot,
@@ -12,6 +13,7 @@ import {
   isContiguousRun,
 } from './ClipContextMenuModel'
 import { AudioSection, ClipboardSection, SourceSection, SpeedSection, TransitionsSection } from './ClipContextMenuSections'
+import { openMatchedSource, sourceRevealActions } from './sourceRevealActions'
 
 export type ClipMenuState = { x: number; y: number; itemId: string; atMs: number }
 export type { AssetPickMode } from './ClipContextMenuModel'
@@ -20,6 +22,7 @@ interface ClipContextMenuProps {
   menu: ClipMenuState
   project: Project | null
   allItems: LaidItem[]
+  playheadMs?: number
   selectedClipIds: string[]
   assetPick: AssetPickMode | null
   setAssetPick: Dispatch<SetStateAction<AssetPickMode | null>>
@@ -54,6 +57,7 @@ export default function ClipContextMenu({
   menu,
   project,
   allItems,
+  playheadMs = 0,
   selectedClipIds,
   assetPick,
   setAssetPick,
@@ -83,6 +87,7 @@ export default function ClipContextMenu({
   fitToFillAdjacent,
   nestSelection,
 }: ClipContextMenuProps) {
+  const { offlineAssetIds } = useOfflineMedia()
   const it = allItems.find((i) => i.id === menu.itemId)
   if (!it) return null
   const contract = clipContextMenuContract(it, project, allItems)
@@ -132,9 +137,23 @@ export default function ClipContextMenu({
   const canFit = !!fitSlot && sourceAssets.length > 0
   const nestSel = allItems.filter((i) => selectedClipIds.includes(i.id) && (i.kind === 'video' || i.kind === 'audio'))
   const canNest = isContiguousRun(nestSel, allItems)
+  const mappedFrame = contract.isFootage
+    ? sourceFrameMatch(project, playheadMs, { clipId: it.id })
+    : null
+  const matchFrame = mappedFrame?.source && offlineAssetIds.has(mappedFrame.source.asset)
+    ? { source: null, reason: 'Relink this source before matching a frame' }
+    : mappedFrame
+  const { sourceAssetId, sourceRevealReason, sourceFileDisabledReason, revealInSurface, revealSourceFile } = sourceRevealActions({
+    allowsSourceEdits: contract.allowsSourceEdits,
+    clipAssetId: it.asset,
+    isRegistered: !!it.asset && !!project?.assets[it.asset],
+    offline: !!it.asset && offlineAssetIds.has(it.asset),
+    onClose,
+  })
+  const openMatchFrame = () => openMatchedSource(matchFrame, onClose)
 
   if (isCaption) {
-    return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-clip-menu" backdropId="data-cut-ctx-backdrop" menuAttributes={{ 'data-cut-clip-kind': 'caption' }} ariaLabel="Caption menu" onClose={onClose}>
+    return <ContextMenuFrame x={menu.x} y={menu.y} menuId="data-cut-clip-menu" backdropId="data-cut-ctx-backdrop" menuAttributes={{ 'data-cut-clip-kind': 'caption', 'data-cut-context-clip': menu.itemId }} ariaLabel="Caption menu" onClose={onClose}>
           <span className="tl-ctx__label" aria-hidden="true">Caption</span>
           <button className="tl-ctx__item" data-cut-ctx="caption-edit" role="menuitem"
             title="Edit this caption’s text & style in the Inspector"
@@ -249,6 +268,10 @@ export default function ClipContextMenu({
           canNest={canNest}
           nestCount={nestSel.length}
           fitDurationMs={fitSlot?.duration_ms ?? null}
+          matchFrame={matchFrame}
+          sourceAssetId={sourceAssetId}
+          sourceRevealReason={sourceRevealReason}
+          sourceFileDisabledReason={sourceFileDisabledReason}
           itemId={menu.itemId}
           sourceAssets={sourceAssets}
           assetPick={assetPick}
@@ -256,6 +279,10 @@ export default function ClipContextMenu({
           onReplace={replaceClipSource}
           onFit={fitToFillAdjacent}
           onNest={nestSelection}
+          onMatchFrame={openMatchFrame}
+          onRevealInProject={() => revealInSurface('project')}
+          onRevealInLibrary={() => revealInSurface('library')}
+          onRevealSourceFile={revealSourceFile}
           onClose={onClose}
         />
 

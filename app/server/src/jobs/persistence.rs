@@ -4,13 +4,21 @@
 //! directory, synced, and atomically promoted. Invalid records are moved aside
 //! instead of being silently ignored; `jobs.list` exposes the recovery notice.
 
+mod cleanup;
+mod retry;
+
 use super::{outcome::restart_interrupted, JobRecord};
 use cut_core::CutError;
+use retry::write_atomically_with;
+#[cfg(test)]
+use retry::{
+    is_transient_windows_replace_error, platform_replace_retry_delays, promote_temporary,
+    write_atomically_with_retry, write_atomically_with_retry_and_cleanup, PromotionFailure,
+};
 use serde::Serialize;
 use std::collections::HashSet;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct JobPersistenceNotice {
@@ -135,34 +143,13 @@ pub(super) fn persist(path: &Path, record: &JobRecord) -> Result<(), CutError> {
         CutError::new(
             cut_core::error::codes::IO,
             format!("could not persist job '{}'", record.job_id),
-            format!("{}: {error}", path.display()),
+            format!("job record write failed: {error}"),
         )
     })
 }
 
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomically_with(path, bytes, |_| Ok(()))
-}
-
-fn write_atomically_with(
-    path: &Path,
-    bytes: &[u8],
-    before_replace: impl FnOnce(&Path) -> io::Result<()>,
-) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "job record has no parent"))?;
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary.write_all(bytes)?;
-    temporary.as_file().sync_all()?;
-    before_replace(temporary.path())?;
-    temporary.persist(path).map_err(|error| error.error)?;
-    // Directory sync is unavailable on some Windows filesystems. The replace
-    // remains atomic; this is best-effort extra crash durability there.
-    if let Ok(directory) = std::fs::File::open(parent) {
-        let _ = directory.sync_all();
-    }
-    Ok(())
 }
 
 fn sequence_from_filename(filename: &str) -> Option<u64> {
@@ -216,5 +203,7 @@ fn quarantine(
     })
 }
 
+#[cfg(test)]
+mod cleanup_tests;
 #[cfg(test)]
 mod tests;

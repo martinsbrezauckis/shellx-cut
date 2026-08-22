@@ -54,6 +54,7 @@ mod name_policy;
 mod open_health;
 #[cfg(test)]
 mod open_health_tests;
+mod overwrite;
 mod snapshots;
 #[cfg(test)]
 mod speed_ramp_replay_tests;
@@ -3005,6 +3006,7 @@ pub fn apply_edit_verb_pinned(
                 pin_split.as_deref(),
             )
         }
+        "edit.overwrite" => overwrite::apply(project, args, pinned),
         "edit.duplicate" => {
             #[derive(serde::Deserialize)]
             struct A {

@@ -29,7 +29,7 @@ interface OfflineMediaContextValue {
 
 const EMPTY_IDS = new Set<string>()
 const EMPTY_MODIFIED = new Map<string, number>()
-const OfflineMediaContext = createContext<OfflineMediaContextValue>({
+export const OfflineMediaContext = createContext<OfflineMediaContextValue>({
   offlineAssetIds: EMPTY_IDS,
   modifiedMs: EMPTY_MODIFIED,
   checking: false,

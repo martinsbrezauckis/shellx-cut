@@ -30,6 +30,8 @@ interface AppRightRailProps {
   setLayout: Dispatch<SetStateAction<LayoutState>>
   dragRail: (clientX: number, clientY: number) => void
   project: Project | null
+  /** Ephemeral project.state revision; do not fold it into durable Project. */
+  projectRevision?: string | null
   doctor: DoctorReport | null
   ops: OpRecord[]
   receipts: RenderReceipt[]
@@ -93,6 +95,7 @@ export default function AppRightRail({
   setLayout,
   dragRail,
   project,
+  projectRevision,
   doctor,
   ops,
   receipts,
@@ -304,6 +307,7 @@ export default function AppRightRail({
                     {activeTab === 'properties' && (
                       <Inspector
                         project={project}
+                        projectRevision={projectRevision}
                         selectedClipId={selectedClipId}
                         playheadMs={playheadMs}
                         doctor={doctor}

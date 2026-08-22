@@ -5,10 +5,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-> **Engine v0.6.109.** Synced to the contract (`schema/verbs.json` — the single
+> **Engine v0.6.110.** Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **264 verbs across 32 domains** under the public verb contract.
-> **`reference.md` is the full 264-verb table —
+> the file): **265 verbs across 32 domains** under the public verb contract.
+> **`reference.md` is the full 265-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -28,9 +28,14 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   added as a NEW audio track; reuses `transcript.translate` + the OmniVoice TTS
 >   service). `transcript.translate` / `captions.translate` are TEXT-only
 >   translation (CLI-primary, local Opus-MT/MADLAD fallback — no dubbing).
+> - **Kinetic captions** — `captions.kinetic` defaults to animated caption
+>   lines and requires caption cues from `captions.generate`; pass
+>   `per_word:true` to animate EDL-mapped transcript words instead, without a
+>   caption track. Both forms return the placed overlay and cue count.
 > - **Agent chat (natural-language editing)** — `agent.chat` launches the user's
->   installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's pinned `2.1.224`
->   contained contract. Codex keeps the user's normal configuration, native
+>   installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's
+>   version-independent contained capability contract. Provider version text is
+>   informational only and each route's required containment flags are verified before every turn. Codex keeps the user's normal configuration, native
 >   sandbox, and permissions; Cut adds its filtered MCP server without copying or
 >   rewriting Codex login files. Grok receives a disposable config/home with
 >   native tools disabled and only Cut's MCP route, while retaining its existing
@@ -115,7 +120,7 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   with `generate.describe`, prove a non-mutating frame with `generate.preview`,
 >   then call `generate.insert` only after review. The default package-local
 >   sample media is safe for preview; replace production scene/subject media in
->   Canvas Motion Studio through **Edit in Motion**, then refresh the same linked
+>   ShellX Motion through **Edit in Motion**, then refresh the same linked
 >   Cut clip. Fog, water, keying, matte cleanup, and tracked-callout motion remain
 >   Motion-owned rendered effects rather than fake native Cut controls.
 >   Rendered Motion imports retain a stable `motion_link` on the live Cut clip:
@@ -124,7 +129,7 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   timeline `M` badge and Inspector link section expose this state; do not imply
 >   rain, water, snow, shaders, 3D, particles, Motion blur, or film controls are
 >   native Cut edits. Open those controls and their curves through
->   `motion.link.edit`, render the edited copy-on-write revision in Canvas, then use
+>   `motion.link.edit`, render the edited copy-on-write revision in ShellX Motion, then use
 >   `motion.link.refresh` to update the same Cut clip. Cut creates a path-private
 >   return request for the launch; Canvas publishes an immutable ready descriptor
 >   only after a verified render, and refresh rechecks identity plus source revision
@@ -133,9 +138,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   package/motion identity matches. Use `motion.link.refresh` to render a new
 >   immutable project-owned artifact and atomically replace the same Cut clip;
 >   receipt/digest/source races fail without disturbing the last good render.
->   `motion.link.edit` opens that same identity in Canvas Motion Studio through
+>   `motion.link.edit` opens that same identity in ShellX Motion through
 >   its `--motion-package` host intake and trusted `--motion-cut-return-request`
->   handback; configure `SHELLX_CANVAS_BIN` if needed. Never invent or expose either
+>   handback; `SHELLX_CANVAS_BIN` is a backward-compatible executable override if
+>   needed. Never invent or expose either
 >   filesystem path in an agent response.
 >   Inspect `project.state` first: `motion_link.effects` reports bounded keyed,
 >   animated-roto, and tracked-roto counts plus safe layer summaries without
@@ -157,7 +163,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   plan hash makes retries idempotent, and undo/revert removes the plan-owned
 >   clips and assets together. Keep this distinct
 >   from `assets.generate`, which imports provider-backed media from the user's
->   own generation CLI. Generation accepts up to four registered image/video
+>   own generation CLI. `assets.generate` supports Codex images, Grok Imagine
+>   images/video, and Antigravity (`agy`) images only; Antigravity uses its
+>   native sandboxed non-interactive contract with its existing login/settings
+>   left in place. Generation accepts up to four registered image/video
 >   references and an explicit variation label; `assets.generated_list` exposes
 >   a path-light, integrity-checked project history for reference and retry.
 > - **Recipe layer** — `recipe.list` / `recipe.describe` / `recipe.run`:
@@ -349,7 +358,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 264 tools, and same-engine
+the final proof of protocol negotiation, ping, all 265 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -462,12 +471,15 @@ render slices, but its bounded requested detail is retained and returns when a
 later format permits it; old projects with no frame-aware ramp timebase retain
 their historical millisecond behavior.
 
-For multi-sequence projects, use `project.sequence_index {query?, kind?,
+For multi-sequence projects, use `project.sequence_index {query?, asset?, kind?,
 sequence?, track_kind?, status?, limit?}` to search clips and markers across
 active and inactive timelines without switching through them. `status` can
 isolate `issues`, `offline`, `gaps`, `effects`, `hidden`, `locked`, or `muted`;
 offline is checked live, and issue rows never reveal source paths. Results carry
-stable sequence/track/item ids, timeline ranges, effect names, and track state.
+stable sequence/track/item ids, laid timeline ranges, effect names,
+and track state. `at_ms` uses the same post-crossfade layout as the renderer and
+`ui.playhead`; `asset` is an exact media-id filter applied before `limit` for
+complete bounded per-asset occurrence navigation.
 In the app, Find → Sequence exposes the same filters, copies the currently shown
 bounded rows as spreadsheet-safe CSV, and opens a result by switching sequence
 when needed and moving the playhead to `at_ms`.
@@ -516,6 +528,31 @@ existing overlay lane, or `edit.add_track {kind:"video"}` followed by
 `edit.insert {track:<overlay>, ripple:false}`. Linked audio for a placed video
 lands on an audio track; the video insert owns the base ripple so the linked
 audio is inserted into the opened gap without a second ripple.
+
+**Overwrite is its own edit, never `edit.insert {ripple:false}`.** Use
+`edit.overwrite {asset, at_ms, video_track?, audio_track?, src_range_ms?}` to
+replace the fixed source-duration interval without moving downstream material.
+Choose both destinations for one atomic linked A/V overwrite, or only one for
+an intentional video-only/audio-only edit. Source Monitor In/Out may be sent
+as `source_in_ms` + `source_out_ms` instead of `src_range_ms`; every overlapping
+clip/gap on the chosen tracks is consumed, partial clips are boundary-trimmed,
+and a short tail is gap-padded/extended. Captions, markers, duck windows, and
+unselected tracks stay at their existing timeline times. For stills, use
+`duration_ms` on a video destination. The receipt names each overwritten track,
+its new clip, consumed clips/gaps, and tail extension.
+`at_ms` is the cumulative **editorial** coordinate, not the shorter rendered
+playhead after a crossfade. Convert a visible position through the selected
+track layout first. A linked V+A overwrite is valid only when both targets map
+that visible point to the same editorial position; otherwise target one track
+or align their transitions.
+An overwrite that would shorten or remove a live right-owned crossfade is
+refused before any target changes, because that overlap fixes downstream
+rendered positions. Place the edge outside the transition owner, or rebuild
+the transition deliberately in a separate edit.
+A visible playhead inside the rendered dissolve overlap is multiply covered,
+so Source Monitor disables overwrite rather than choosing the left clip's
+editorial time and potentially changing pixels before the playhead. Move to a
+non-overlapped point first.
 To preview an unused timed asset before placement, open its **Source monitor**
 from Assets, seek and mark In/Out, then choose **Insert range**. The monitor
 prefers a ready editing proxy so large or host-unsupported source codecs stay
@@ -523,6 +560,27 @@ auditionable, with an explicit keyboard-accessible Play/Pause control. This
 uses one source range for both picture and linked audio at
 the current timeline playhead; it does not change Program playback while
 auditioning the source.
+An online still image opens in that same monitor as an image preview. Choose a
+bounded `duration_ms` on one unlocked video destination for **Overwrite still**
+at the live playhead; the still surface has no source In/Out, transport, range
+insert, or audio destination.
+For UI-only source navigation, choose **Match Frame** from a selected footage
+clip or a video track-header menu at the live playhead. It opens Source Monitor
+on the exact normal/reverse/freeze source frame. Do not represent a speed-ramp
+frame as exact: the action stays disabled until the UI has authoritative ramp
+segments; missing/offline sources likewise disclose a relink reason. A
+track-header target also stays disabled when multiple video clips cover the
+playhead; select one clip directly to disambiguate. Source
+Monitor **All uses** queries the existing `project.sequence_index` with the
+stable asset id, then uses `project.sequence_switch` and `ui.playhead` for the
+human-selected occurrence. It is not a new verb, makes no ramp-exact claim,
+and visibly labels a 500-row bound.
+The human-only Source Monitor and footage clip menu can also **Reveal in
+Project** or **Reveal in Library** for the exact registered asset. They clear
+local filters and select that existing UI row/card; no new agent verb exists.
+**Reveal Source File** is likewise a desktop UI affordance, not an agent path:
+the native shell resolves the live registered asset itself and refuses browser,
+missing, offline, or non-file cases without exposing a raw source path.
 Find moment results are source-relative. Use the result's **Timeline** action to
 jump to the nearest real occurrence after trims, gaps, reuse, constant speed, or
 reverse; use **Source** to inspect the indexed frame directly. An unused asset or
@@ -581,7 +639,7 @@ Both removal verbs are timeline-wide by default; `asset`/`track` narrows
 so AV stays in sync.
 Each removed span = **one operation** in the log, so a human can skim
 accept/reject them individually in the Review rail. Raw-timeline verbs
-(`edit.split`, `edit.ripple_delete`, `edit.trim`, `edit.move`, `edit.insert`,
+(`edit.split`, `edit.ripple_delete`, `edit.trim`, `edit.move`, `edit.insert`, `edit.overwrite`,
 `edit.gain`, `edit.speed` (per-clip retime / slow-mo, pitch-preserved, 0.25–4×),
 `edit.grade` (color), `edit.add_marker`, `edit.remove_marker`,
 `edit.move_marker`) exist for non-speech work — but if the cut is about *what

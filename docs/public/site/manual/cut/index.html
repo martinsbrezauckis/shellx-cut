@@ -17,8 +17,8 @@
       href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..700,0..100&family=JetBrains+Mono:wght@400;500&family=Onest:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="../manual.css?v=13" />
-    <script src="../manual.js?v=21" defer></script>
+    <link rel="stylesheet" href="../manual.css?v=16" />
+    <script src="../manual.js?v=24" defer></script>
   </head>
   <body class="manual-body">
     <header class="manual-topbar">
@@ -29,7 +29,7 @@
       <nav class="manual-topnav" aria-label="Docs products">
         <a href="./">Cut</a>
         <a href="https://docs.theshellx.com/manual/canvas/">Design Studio</a>
-        <a href="https://docs.theshellx.com/manual/drive/">Drive</a>
+        <span class="manual-muted">Drive</span>
         <a href="https://docs.theshellx.com/manual/vault/">Vault</a>
         <span class="manual-muted">Browser</span>
       </nav>
@@ -43,7 +43,7 @@
                automated release check.
                Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
                visible text on this span whenever the manual is updated for a release. -->
-          <span class="manual-version" data-app-version="0.6.109">0.6.109</span>
+          <span class="manual-version" data-app-version="0.6.110">0.6.110</span>
         </div>
         <input
           class="manual-search"
@@ -216,6 +216,17 @@
           <button class="manual-node" data-feature-id="cut.timeline.base_overlay">Base track and overlays</button>
           <button class="manual-node" data-feature-id="cut.timeline.save_assets">Save to Assets and GIF</button>
 
+          <div class="manual-tree-subgroup">Context menus</div>
+          <button class="manual-node" data-feature-id="cut.context.menu">Using context menus</button>
+          <button class="manual-node" data-feature-id="cut.context.assets">Assets: item menu</button>
+          <button class="manual-node" data-feature-id="cut.context.library">Library: item and folder menus</button>
+          <button class="manual-node" data-feature-id="cut.context.projects">Projects: recent-project menu</button>
+          <button class="manual-node" data-feature-id="cut.context.preview">Preview: More actions</button>
+          <button class="manual-node" data-feature-id="cut.context.timeline_clip">Timeline: clip menu</button>
+          <button class="manual-node" data-feature-id="cut.context.timeline_surface">Timeline: empty lane and gap menu</button>
+          <button class="manual-node" data-feature-id="cut.context.timeline_track">Timeline: track menu</button>
+          <button class="manual-node" data-feature-id="cut.context.timeline_marker">Timeline: marker menu</button>
+
           <div class="manual-tree-subgroup">Inspector and review</div>
           <button class="manual-node" data-feature-id="cut.inspector.properties">Properties tab</button>
           <button class="manual-node" data-feature-id="cut.inspector.color">Color tab</button>
@@ -297,12 +308,12 @@
         <section class="manual-section" id="interface-map">
           <p class="manual-eyebrow">Interface map</p>
           <h2>Click a feature to see where it lives.</h2>
-          <div class="manual-surface" aria-label="ShellX Cut interface map">
+          <div class="manual-surface" data-manual-surface="editor" aria-label="ShellX Cut interface map">
             <img
               src="../assets/cut/cut-main-editor-current.png?v=edc5c37d-editor"
               alt="ShellX Cut editor with the Assets tab, editing-readiness summary, preview, and timeline tracks visible"
             />
-            <div class="manual-highlight" data-manual-highlight data-label="Assets"></div>
+            <div class="manual-highlight" data-manual-highlight="editor" data-label="Assets" aria-hidden="true"></div>
             <div class="manual-popover" data-manual-popover hidden></div>
           </div>
 
@@ -334,11 +345,12 @@
         <section class="manual-section" id="recording-studio">
           <p class="manual-eyebrow">Recording Studio</p>
           <h2>Record your screen, and keep the raw streams.</h2>
-          <div class="manual-surface" aria-label="ShellX Cut Recording Studio surface">
+          <div class="manual-surface" data-manual-surface="recording" aria-label="ShellX Cut Recording Studio surface">
             <img
               src="../assets/cut/cut-recording-studio-current.png?v=73b4fd9f-record"
               alt="ShellX Cut Record workspace with an explicit desktop-session readiness notice, source and audio settings, raw-stream controls, and a safely disabled Start recording control"
             />
+            <div class="manual-highlight" data-manual-highlight="recording" data-label="Recording Studio" aria-hidden="true" hidden></div>
           </div>
           <div class="manual-grid">
             <article class="manual-card">

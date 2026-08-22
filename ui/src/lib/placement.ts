@@ -67,6 +67,8 @@ export interface PlaceOptions {
   /** Timed-media source selection. The same range is applied to both halves of
    * a linked video/audio placement so their source clocks stay aligned. */
   src_range_ms?: [number, number]
+  /** Optional shared history identity for the linked A/V inserts. */
+  groupId?: string
   /** Explicit video track (overlay placement); default = base video track. */
   videoTrack?: string
   /** Explicit audio track for the linked audio; default = base audio track. */
@@ -101,6 +103,91 @@ export interface PlaceResult {
   videoTrack?: string
   audioTrack?: string
   error?: string
+}
+
+/** Editable video/audio destinations offered by the compact Source Monitor
+ * overwrite control. Locked tracks stay inspectable in the timeline but are
+ * never offered as a mutation destination. */
+export interface SourceOverwriteTrackTargets {
+  video: string[]
+  audio: string[]
+}
+
+export function sourceOverwriteTrackTargets(project: Project | null): SourceOverwriteTrackTargets {
+  const targets = (kind: 'video' | 'audio') => project?.tracks
+    .filter((track) => track.kind === kind && !track.locked)
+    .map((track) => track.id) ?? []
+  return { video: targets('video'), audio: targets('audio') }
+}
+
+export interface OverwriteSourceRangeOptions {
+  asset: string
+  atMs: number
+  sourceRangeMs: [number, number]
+  videoTrack?: string | null
+  audioTrack?: string | null
+  rationale?: string
+}
+
+/** Source Monitor keeps still-image edits practical and bounded: a tenth of a
+ * second is the shortest useful visual hold, while one hour avoids an
+ * accidental effectively-unbounded timeline replacement. */
+export const STILL_OVERWRITE_MIN_DURATION_MS = 100
+export const STILL_OVERWRITE_MAX_DURATION_MS = 3_600_000
+export const STILL_OVERWRITE_DEFAULT_DURATION_MS = 3_000
+
+export interface OverwriteStillOptions {
+  asset: string
+  atMs: number
+  videoTrack?: string | null
+  durationMs: number
+  rationale?: string
+}
+
+/** A still has no source clock. It can overwrite an unlocked video destination
+ * only, so omit timed-media range and audio arguments entirely. */
+export async function overwriteSourceStill(opts: OverwriteStillOptions) {
+  if (!opts.videoTrack) {
+    return {
+      ok: false,
+      error: { code: 'invalid_args', message: 'Choose a video destination before overwriting.' },
+    }
+  }
+  const durationMs = Math.round(opts.durationMs)
+  if (!Number.isFinite(durationMs) || durationMs < STILL_OVERWRITE_MIN_DURATION_MS || durationMs > STILL_OVERWRITE_MAX_DURATION_MS) {
+    return {
+      ok: false,
+      error: { code: 'invalid_args', message: 'Set a still duration from 0.1 to 3,600 seconds before overwriting.' },
+    }
+  }
+  const args: VerbArgs['edit.overwrite'] = {
+    asset: opts.asset,
+    at_ms: Math.max(0, Math.round(opts.atMs)),
+    video_track: opts.videoTrack,
+    duration_ms: durationMs,
+    rationale: opts.rationale,
+  }
+  return callVerb('edit.overwrite', args)
+}
+
+/** One atomic source-to-timeline overwrite. The engine receives whichever V/A
+ * destinations are selected; it owns linked A/V atomicity and range semantics. */
+export async function overwriteSourceRange(opts: OverwriteSourceRangeOptions) {
+  if (!opts.videoTrack && !opts.audioTrack) {
+    return {
+      ok: false,
+      error: { code: 'invalid_args', message: 'Choose a V or A destination before overwriting.' },
+    }
+  }
+  const args: VerbArgs['edit.overwrite'] = {
+    asset: opts.asset,
+    at_ms: Math.max(0, Math.round(opts.atMs)),
+    src_range_ms: opts.sourceRangeMs,
+    rationale: opts.rationale,
+  }
+  if (opts.videoTrack) args.video_track = opts.videoTrack
+  if (opts.audioTrack) args.audio_track = opts.audioTrack
+  return callVerb('edit.overwrite', args)
 }
 
 function fmtS(ms: number): string {
@@ -235,9 +322,15 @@ export async function placeLinkedAV(opts: PlaceOptions): Promise<PlaceResult> {
   // Video / image → the video track is the primary clip.
   const primaryRipple = opts.ripple ?? true
   const vTrack = opts.videoTrack ?? firstTrackId(project, 'video') ?? 'v1'
+  // A muxed placement is one user gesture even though it needs two engine
+  // inserts. Keep its video and audio halves in one undo-history step.
+  const linkedGroupId = opts.kind === 'video' && assetHasAudio(project, opts.asset)
+    ? (opts.groupId ?? `linked-av-${crypto.randomUUID()}`)
+    : undefined
   const vArgs: InsertArgs = {
     asset: opts.asset, track: vTrack, at_ms: opts.at_ms,
     src_range_ms: opts.src_range_ms, ripple: primaryRipple, rationale,
+    ...(linkedGroupId ? { group_id: linkedGroupId } : {}),
   }
   if (opts.kind === 'image' && opts.duration_ms) vArgs.duration_ms = opts.duration_ms
   const vr = await callVerb('edit.insert', vArgs)
@@ -258,6 +351,7 @@ export async function placeLinkedAV(opts: PlaceOptions): Promise<PlaceResult> {
         asset: opts.asset, track: aTrack, at_ms: opts.at_ms,
         src_range_ms: opts.src_range_ms, ripple: linkedAudioRipple,
         rationale: `linked audio: ${opts.asset} → ${aTrack}`,
+        ...(linkedGroupId ? { group_id: linkedGroupId } : {}),
       })
       audioLinked = ar.ok
     }

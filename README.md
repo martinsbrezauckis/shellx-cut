@@ -10,7 +10,7 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-> **STATUS — 0.6.109 release line.** The public contract is 264 verbs across 32
+> **STATUS — 0.6.110 release line.** The public contract is 265 verbs across 32
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -30,9 +30,10 @@ AI output as an opaque final file.
 | ![ShellX Cut Agent Chat with Codex ready beside the Nordic road-film edit](docs/public/assets/github/shellx-cut-agent-chat.png) | ![ShellX Cut Agent Control settings for its local Debug API and MCP proxy](docs/public/assets/github/shellx-cut-agent-control.png) |
 
 Agent Chat supports the user's installed Claude Code, Codex, Grok, or
-Antigravity CLI. Antigravity is available on every platform when its resolved
-CLI advertises the sandbox and non-interactive flags verified before each turn.
-Claude uses Cut's pinned contained route. Codex uses the user's normal Codex
+Antigravity CLI. Provider version text is informational only; each resolved
+CLI must advertise Cut's required Agent Chat flags before every turn.
+Claude uses Cut's contained capability route with its required containment flags;
+Codex uses the user's normal Codex
 configuration, native sandbox, and permissions. Grok runs from a disposable
 config and home with native tools disabled and only Cut's MCP route available.
 Antigravity keeps the user's normal settings, sandbox, and permissions while
@@ -44,10 +45,10 @@ integrations.
 
 ## Quickstart
 
-> **Installing 0.6.109:** download and run the installer or package from the
+> **Installing 0.6.110:** download and run the installer or package from the
 > GitHub release. Users already on 0.6.107 can use the in-app update when it is
 > offered. Versions older than 0.6.107 must install 0.6.107 manually before
-> using the in-app update, or install 0.6.109 directly.
+> using the in-app update, or install 0.6.110 directly.
 
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
@@ -101,6 +102,28 @@ clicked row identity. Native custom speed accepts the engine's 0.25–4× range
 without prompt parsing or menu-only rounding. All new menus clamp to the
 viewport and dismiss with Escape.
 
+For source navigation, select a footage clip or open a video track-header menu
+at the playhead and choose **Match Frame**. It opens the Source Monitor on the
+exact source frame for normal, reverse, and freeze playback; speed ramps and
+offline/missing sources remain disabled with a reason. A track header also
+stays disabled where more than one video clip overlaps the playhead; select a
+clip directly to choose its exact frame. In Source Monitor,
+**All uses** is UI-only navigation over the existing per-asset Sequence Index:
+choose a listed occurrence to switch sequence and seek its clip start. It does
+not promise ramp-exact source matching; each listed `at_ms` is the laid clip
+start after any upstream crossfades, and its exact asset filter applies before
+the 500-occurrence cap. Assets can also open an online still image in that same
+monitor. It previews the actual image and offers a bounded duration plus an
+unlocked video destination or Off for **Overwrite still** at the visible
+playhead; it never presents that still as timed media or offers an audio target.
+Both that monitor and a footage clip menu can **Reveal in Project** or **Reveal
+in Library**, clearing local filters and selecting the exact registered asset in
+the existing surface. **Reveal Source File** is desktop-only: the shell resolves
+the current server-registered asset identity itself before handing a local
+regular file to Finder, File Explorer, or the Linux file manager. Browsers,
+missing/offline/non-file sources, and removed registrations refuse with a
+reason; source paths are not displayed or accepted from the UI.
+
 Run model/source checks with `npm --prefix ui exec tsx
 public-tests/clip-context-menu.test.ts` and `npm --prefix ui exec tsx
 public-tests/context-menu-surfaces.test.ts`.
@@ -123,7 +146,7 @@ Cut. See
 [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
 for the supported deployment and residual risk.
 
-## Verb API (264 verbs, 32 domains — `schema/verbs.json` is the contract)
+## Verb API (265 verbs, 32 domains — `schema/verbs.json` is the contract)
 
 Envelope: `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}`.
 Every mutating verb takes optional `rationale`. Long tasks return `{job_id}`.
@@ -132,25 +155,25 @@ Every verb also advertises shared optional `request_id` and
 reject stale revisions atomically, and return the original durable response for
 an identical lost-response retry; changed payloads conflict.
 Representative verbs per domain below — `skill/shellx-cut/reference.md` is the
-full 264-verb table.
+full 265-verb table.
 
 | Domain | Verbs | Notes |
 |---|---|---|
 | **project** | create · open · save · state · **health** · **sequence_list · sequence_index · sequence_create · sequence_switch · sequence_rename · sequence_delete** · ops · checkpoint · revert · **undo · redo** · diff · **rename · brand** · close · **list** · **forget** · **delete** | each project can hold independent sequences with scoped undo/checkpoints while sharing media; **health is a read-only, revision-bound, path-free Health & Recovery page for journal recovery evidence and registered source/proxy/filmstrip checks; aggregate all pages before calling the project healthy, and continue only while `has_more` supplies `next_cursor`. Settings reads capture recovery separately through `screen_record.recovery_status`, then labels all of this evidence as reported in that check rather than a timeless snapshot**; **sequence_index searches path-light clip/marker metadata across every active and inactive timeline, filters live offline media/gaps/effects/hidden/locked/muted tracks, copies the bounded table as spreadsheet-safe CSV, and navigates results from Find → Sequence**; checkpoint/revert/undo/redo are append-only ops; revert appends one materialized target-timeline result, never rewrites; rename and brand are durable non-timeline metadata ops; **brand stores delivery constraints used automatically by verify.brand and render.bundle**; **list = recent-projects index (~/.shellx-cut/projects.json), reopen by path; forget drops the index entry (≠ delete); delete PERMANENTLY removes the `.cutproj` dir + forgets it (guardrailed: only `*.cutproj`, never the open project)** |
 | **library** | **list · add · remove · move · tag · favorite · use · add_to_project · folder_add · folder_rename · folder_remove** | global cross-project media library (~/.shellx-cut/library/): video/audio/image, folders + tags. HYBRID storage (link original by path, or copy:true → content-addressed stored copy); kind is ffprobe-derived; add_to_project reuses media.import. Assets is project-local; human Assets imports mirror explicitly, while agent imports use `library.add {asset}` only when cross-project reuse is intended. Blobs served fenced via /api/library-blob |
-| **assets** | providers · search · fetch · generate · generated_list | local/provider media discovery and immutable generated-take history; optional provider calls use the user's configured CLI and normal project import paths |
+| **assets** | providers · search · fetch · generate · generated_list | Find media reads the matching server's source catalog (local folders, Openverse, Internet Archive, Wikimedia, NASA, and offline built-in stickers), shows each source's valid kinds plus license/credit before import, and keeps normal project import paths; network sources are contacted when you search or import a result |
 | **media** | import · **remove** · probe · transcribe · perception · waveform · **filmstrip** | import kicks probe→proxy→filmstrip→**ready-to-edit** (fast); transcribe+perception run as a separate background **enrich** job (`enrich_job` in the result) so slow transcription never blocks editing; first import auto-places onto an empty timeline; filmstrip = per-clip timeline thumbnails; **remove = the inverse of import — drop an asset from the open project + unlink its regenerable proxy/thumbnails (source file kept, replay-safe; refuses while clips still use it)**; the Assets tray includes Media Health for missing sources, proxy/source playback state, and one-click relink |
 | **jobs** | status · list · cancel | one job model for transcribe/perception/render/judge, with explicit cancellation for active tasks |
-| **edit** | split · ripple_delete · trim · move · insert · gain · **speed** · **grade** · **grade_stack** · **color_match** · **auto_balance** · crop · transform · fade · crossfade · duck · **auto_zoom** · multicam_sync · **multicam_switch** · add_track · split_at_scenes · mark_scenes · trim_edges · add/remove/move_marker · restore | linked imported picture/sound move and trim atomically by default (`linked:false` deliberately separates them); restore = undo/reject (tip or rebase); speed = per-clip retime; grade = color; **grade_stack** = LAYERED grading (a node-stack of grade layers applied in order on one clip — a serial grading workflow; empty/single-layer stays byte-identical to a plain grade); **color_match** = match a clip's colour to a reference clip (derives + applies a grade); **auto_balance** = one-click REFERENCE-FREE auto white-balance + exposure (the "Auto Color" sibling — neutralises the clip's own cast, no reference; derives + applies a grade); **auto_zoom** = emphasis-driven punch-in zooms (loud beats / sentence starts → scale keyframes); multicam_sync = audio-align angles, **multicam_switch** = auto-cut the program to the active-speaker (loudest) angle over time |
+| **edit** | split · ripple_delete · trim · move · insert · **overwrite** · gain · **keyframe** · **speed** · **grade** · **grade_stack** · **color_match** · **auto_balance** · crop · transform · fade · crossfade · duck · **auto_zoom** · multicam_sync · **multicam_switch** · add_track · split_at_scenes · mark_scenes · trim_edges · add/remove/move_marker · restore | linked imported picture/sound move and trim atomically by default (`linked:false` deliberately separates them); **overwrite** replaces a source-duration interval on explicit video/audio targets without shifting downstream time (both targets are one atomic A/V edit; it is not `insert {ripple:false}`); **keyframe** is the replay-safe clip automation primitive; the audio Inspector exposes volume control points in clip seconds (dispatched as exact ms) while the Layer drawer owns picture motion; the compact point editor is not a full timeline lane, which remains future work; restore = undo/reject (tip or rebase); speed = per-clip retime; grade = color; **grade_stack** = LAYERED grading (a node-stack of grade layers applied in order on one clip — a serial grading workflow; empty/single-layer stays byte-identical to a plain grade); **color_match** = match a clip's colour to a reference clip (derives + applies a grade); **auto_balance** = one-click REFERENCE-FREE auto white-balance + exposure (the "Auto Color" sibling — neutralises the clip's own cast, no reference; derives + applies a grade); **auto_zoom** = emphasis-driven punch-in zooms (loud beats / sentence starts → scale keyframes); multicam_sync = audio-align angles, **multicam_switch** = auto-cut the program to the active-speaker (loudest) angle over time |
 | **effects** | list | read the built-in effect catalog used by Inspector and agent workflows |
 | **transitions** | list | read the supported transition catalog before applying timeline transitions |
 | **grade** | **save · apply · list** | grade GALLERY (the grade gallery — "copy a look between shots"). **save** snapshots a clip's current grade as a named project preset; **apply** copies a saved look onto a target clip (lowers to a replay-safe `edit.grade`); **list** reads the gallery. Pure data — `save` is a non-timeline metadata op, `apply` is the undoable per-clip grade |
 | **audio** | add_music · cleanup_voice · **dub** | music bed + auto-duck under speech + beat:N markers; **dub = native AI dubbing — re-voice an asset's speech into another language in a cloned voice, time-fit to the original, added as a NEW audio track (original kept); reuses transcript.translate, synthesizes via the OmniVoice TTS service (CUT_DUB_ENDPOINT)** |
 | **transcript** | get · cut_words · **ignore_words** · remove_silences · remove_fillers · search · assemble | text-based editing; never cuts inside a word; `ignore_words` hides selected source words from transcript-derived captions/reels without cutting or muting; `aggressiveness` REQUIRED on remove_silences; assemble builds a highlight reel |
-| **captions** | generate · add_text · **kinetic** · set_style · set_range · shift · reflow | static burn-in + animated (kinetic); reflow satisfies verify.captions |
+| **captions** | generate · add_text · **kinetic** · set_style · set_range · shift · reflow | static burn-in + animated kinetic captions: Lines uses caption cues; One word at a time uses a timeline transcript; reflow satisfies verify.captions |
 | **title** | **add** | native motion-graphics title (resvg, in-house) — animated, distinct from captions.add_text's static card |
 | **shape** | update | update a placed native shape without recreating its clip identity |
-| **generate** | **list · describe · preview · insert · from_prompt · storyboard** | native editable Generate workspace beside Library: built-in templates, Motion-backed rendered templates through `motion.template_to_cut`, scripted-video renders through `motion.script_to_cut`, and attested/idempotent connector plans through `motion.map_import` / `motion.apply_import`; current SDK renders carry verified two-/five-hash package lineage and replay-backed path-free origin attestations, while an optional current package is independently reported as `exact`, `changed`, or `unavailable` and older connector plans are labeled `legacy-unverified`. Motion receipt `warning` is accepted as successful with deduplicated advisories; failed receipts are rejected. Supported Motion backgrounds/text/shapes plus opacity and x/y position automation arrive as normal editable Cut objects with stable source-layer bindings and changed plans update those objects in place, while unsupported constructs retain rendered-media fallback. Background apply is cancellable through `jobs.*`; distinct from `assets.generate`, which imports provider-backed media from the user's own generation CLI |
+| **generate** | **list · describe · preview · insert · from_prompt · storyboard** | native editable Generate workspace beside Library: built-in templates, Motion-backed rendered templates through `motion.template_to_cut`, scripted-video renders through `motion.script_to_cut`, and attested/idempotent connector plans through `motion.map_import` / `motion.apply_import`; current SDK renders carry verified two-/five-hash package lineage and replay-backed path-free origin attestations, while an optional current package is independently reported as `exact`, `changed`, or `unavailable` and older connector plans are labeled `legacy-unverified`. Motion receipt `warning` is accepted as successful with deduplicated advisories; failed receipts are rejected. Supported Motion backgrounds/text/shapes plus opacity and x/y position automation arrive as normal editable Cut objects with stable source-layer bindings and changed plans update those objects in place, while unsupported constructs retain rendered-media fallback. Background apply is cancellable through `jobs.*`; distinct from `assets.generate`, which imports provider-backed media through the user's Codex image, Grok Imagine image/video, or Antigravity (`agy`) image CLI; Antigravity retains its native sandbox/non-interactive contract and is not advertised for video |
 | **motion** | **job.get · job.list** · link.refresh · link.relink · link.edit · **link.tracking.inventory/request/inspect/apply/verify/detach** | Motion-backed renders can be named with `job_id` and observed live from another request without exposing cross-caller scope: `pending` is waiting for capacity, `running` is active, and polling stops when `pollAfterMs` disappears. Linked Motion clips keep a last-good rendered Cut fallback while Canvas owns rich source editing. Cut supplies a stable path-private workspace caller id, distinguishes deliberate render cancellation from retryable machine-busy queue timeouts, and retains the supported on-disk Motion render receipt path on refresh. The Inspector exposes bounded path-free keying/roto facts, can run local point/planar analysis on package footage, compile stabilization to ordinary Motion keyframes, verify or detach it, and only updates pixels after an explicit receipt-verified refresh. Tracking uses normalized seeds, copy-on-write packages, fixed argv, and identity/race checks |
 | **render** | preview · frame · final · **reframe** · storyboard · **bundle** · **queue** | `frame` = agent's eyes; `final` auto-runs verify.checks → RenderReceipt; `final` does multi-format STATIC geometry (`aspect`/`width`/`height`, centre-crop) + `format` (h264/hevc/vp9/prores/av1) + GPU `hardware` tier + rate-targeted `bitrate`/`rate_control` (vbr/cbr) + `normalize_loudness`; **`reframe` = subject-aware auto-reframe (local CV detect+track → moving crop that FOLLOWS the subject; honest lossy-crop receipt) — the honest alternative to a static centre-crop**; **bundle = social repurposing: one window → publish-ready pack per platform (reframe + windowed captions srt/vtt + thumb + receipt)**; **queue = BATCH DELIVERY (a batch render queue): fan the current timeline out into N renders with per-entry settings (`output`/format/preset/bitrate/geometry/loudness), run SEQUENTIALLY through the same `render.final` path (memory-safe — N at once would multiply peak RSS); a pure delivery orchestrator (no op, no checkpoint), entries validated up front by a dry_run; per-entry job_ids + receipts land in the queue job result** |
 | **clip** | **candidates** | rank the windows most likely to work as standalone short-form clips (honest heuristic: opening-hook + retention proxy) — read-only, feeds render.bundle |
@@ -225,7 +248,7 @@ ui/   Vite + React + TS — an API client, NOTHING more. Zero local mutation:
       every interaction dispatches a verb; state arrives over WS. Panels:
       Timeline · Preview · project-local Projects/Assets/Generate/Transcript tabs ·
       dedicated cross-project Library workspace · Review rail · status bar.
-      Design follows the ShellX Cut feature workflow and the local UI rules:
+      Design follows the public feature-surface contract and the local UI rules:
       compact operational panels, stable selectors, wired controls, and
       advanced diagnostics hidden until needed.
 ```

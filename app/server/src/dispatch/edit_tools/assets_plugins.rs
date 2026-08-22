@@ -645,8 +645,8 @@ async fn agent_chat_turn_review(
 }
 
 /// agent.chat{message, attachments?, agent?, model?, timeout_ms?} — natural-language timeline
-/// editing (the headline agent-chat feature). Claude uses its pinned contained
-/// contract; Codex uses the user's normal native CLI configuration and sandbox;
+/// editing (the headline agent-chat feature). Claude uses its contained
+/// capability contract; Codex uses the user's normal native CLI configuration and sandbox;
 /// Grok uses a disposable home/config with only Cut's MCP route and its existing
 /// login file retained in place. Antigravity uses its native sandbox and user
 /// permission policy with a workspace-local Cut MCP entry. All run from a fresh disposable cwd connected
@@ -1957,7 +1957,7 @@ async fn assets_generate_run(
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             format!("unknown generation provider '{}'", a.provider),
-            "provider is codex (gpt-image) | grok (grok-imagine)",
+            "provider is codex (gpt-image) | grok (grok-imagine) | antigravity (image)",
         ));
     }
     if !crate::gen::supports_kind(&a.provider, &kind) {
@@ -2154,38 +2154,69 @@ async fn assets_generate_run(
         Some(format!("running the {} provider", a.provider)),
     );
 
-    // grok takes the prompt via a file (substitute the placeholder); codex via stdin.
+    // Codex takes the prompt on stdin, Grok through a prompt file, and
+    // Antigravity through its final non-interactive --print argument.
     let mut prompt_file: Option<PathBuf> = None;
-    let resolved_args: Vec<String> = if cmd.via_stdin {
-        cmd.args.clone()
-    } else {
-        let pf = ws.join("prompt.txt");
-        std::fs::write(&pf, &prompt)
-            .map_err(|e| CutError::new(error_codes::IO, "write prompt file", e.to_string()))?;
-        let pfs = pf.to_string_lossy().into_owned();
-        prompt_file = Some(pf);
-        cmd.args
+    let resolved_args: Vec<String> = match cmd.prompt_transport {
+        crate::gen::PromptTransport::Stdin => cmd.args.clone(),
+        crate::gen::PromptTransport::PromptFile => {
+            let pf = ws.join("prompt.txt");
+            std::fs::write(&pf, &prompt)
+                .map_err(|e| CutError::new(error_codes::IO, "write prompt file", e.to_string()))?;
+            let pfs = pf.to_string_lossy().into_owned();
+            prompt_file = Some(pf);
+            cmd.args
+                .iter()
+                .map(|x| {
+                    if x == "__PROMPT_FILE__" {
+                        pfs.clone()
+                    } else {
+                        x.clone()
+                    }
+                })
+                .collect()
+        }
+        crate::gen::PromptTransport::Argument => cmd
+            .args
             .iter()
             .map(|x| {
-                if x == "__PROMPT_FILE__" {
-                    pfs.clone()
+                if x == "__PROMPT_TEXT__" {
+                    prompt.clone()
                 } else {
                     x.clone()
                 }
             })
-            .collect()
+            .collect(),
     };
 
     // --- spawn the agent CLI (bounded) ----------------------------------------
     // Spawn the RESOLVED path, not the bare provider name: gen::detect now uses the
     // full resolve_agent ladder (process PATH first, THEN the off-PATH install dirs
-    // incl. grok's self-managed ~/.grok/bin), so a detected-but-off-PATH grok must be
-    // launched BY its resolved absolute path or `Command::new("grok")` would ENOENT.
+    // incl. grok's self-managed ~/.grok/bin), so a detected-but-off-PATH provider must be
+    // launched BY its resolved absolute path or `Command::new` would ENOENT.
     // detect already proved it resolves ⇒ Some here; fall back to the bare name
-    // defensively. An on-PATH codex/grok resolves to itself ⇒ behavior is unchanged.
+    // defensively. An on-PATH provider resolves to itself ⇒ behavior is unchanged.
     let agent_path = crate::gen::resolve_agent(&cmd.cmd)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| cmd.cmd.clone());
+    // Reuse the existing Antigravity capability probe before a potentially paid
+    // request. It only runs `agy --help` under the user's
+    // normal CLI environment; Cut does not inspect, copy, or mutate auth/settings.
+    if a.provider == "antigravity" {
+        let environment = crate::chat::broker::native_environment("", "");
+        if let Err(reason) = crate::chat::broker::verify_installed_agent(
+            "antigravity",
+            std::path::Path::new(&agent_path),
+            &environment,
+            &ws,
+        )
+        .await
+        {
+            return degrade(format!(
+                "the 'agy' CLI does not meet ShellX Cut's safe non-interactive contract: {reason}"
+            ));
+        }
+    }
     let mut command =
         crate::gen::agent_tokio_command(std::path::Path::new(&agent_path), &resolved_args)
             .map_err(|e| {
@@ -2199,7 +2230,8 @@ async fn assets_generate_run(
     let control = ProcessControl::for_operation(timeout);
     let out = run_owned(
         &mut command,
-        cmd.via_stdin.then_some(prompt.as_bytes()),
+        matches!(cmd.prompt_transport, crate::gen::PromptTransport::Stdin)
+            .then_some(prompt.as_bytes()),
         &control,
     )
     .await;
@@ -2396,6 +2428,22 @@ pub(in crate::dispatch) async fn assets_fetch(
         None
     };
 
+    // An import has one project owner from source resolution through durable
+    // admission. Hold the same ownership-transition lock used by project.open
+    // / create / close / delete across provider I/O: otherwise an A request
+    // could resolve while A is open, then record the result into B after a
+    // project switch. This intentionally makes a workspace transition wait
+    // for the bounded fetch instead of silently retargeting or losing it.
+    // RAII releases the guard on every provider/file/project error below.
+    let _project_import_transition = state.project_transition.lock().await;
+    let proj_dir = {
+        let guard = state.project.read().await;
+        let store = guard.as_ref().ok_or_else(no_project)?;
+        store.dir.clone()
+    };
+    #[cfg(test)]
+    wait_for_assets_fetch_project_transition_gate_after_pin(&a.id).await;
+
     // Resolve the authoritative hit (download URL + license) — blocking.
     let (provider, id, kind_c) = (
         a.provider.clone(),
@@ -2411,14 +2459,6 @@ pub(in crate::dispatch) async fn assets_fetch(
             .map_err(|e| {
                 CutError::new(error_codes::IO, "resolve task panicked", e.to_string())
             })??;
-
-    // The project dir (download target for network providers) — and the project
-    // must be open to import into.
-    let proj_dir = {
-        let guard = state.project.read().await;
-        let store = guard.as_ref().ok_or_else(no_project)?;
-        store.dir.clone()
-    };
 
     // Determine the local source path: local_folder + stickers import in place (the
     // sticker is rendered to a local PNG at resolve time); a network provider
@@ -2451,11 +2491,12 @@ pub(in crate::dispatch) async fn assets_fetch(
             .join(format!("{safe_id}.{ext}"));
         let url = hit.download_url.clone();
         let dest_c = dest.clone();
-        let n = tokio::task::spawn_blocking(move || crate::providers::download_to(&url, &dest_c))
-            .await
-            .map_err(|e| {
-                CutError::new(error_codes::IO, "download task panicked", e.to_string())
-            })??;
+        let target = crate::providers::prepare_download_target(url).await?;
+        let n = tokio::task::spawn_blocking(move || {
+            crate::providers::download_vetted_to(target, &dest_c)
+        })
+        .await
+        .map_err(|e| CutError::new(error_codes::IO, "download task panicked", e.to_string()))??;
         tracing::info!("assets.fetch downloaded {n} bytes for {}", hit.id);
         dest
     };
@@ -2493,6 +2534,8 @@ pub(in crate::dispatch) async fn assets_fetch(
     let op_id = op.op_id.clone();
     state.events.publish(Event::OpApplied { op: op.clone() });
     let job = spawn_plain_import_chain(state.clone(), asset_id.clone(), src, hash, true);
+    #[cfg(test)]
+    wait_for_assets_fetch_project_transition_gate_after_admission(&a.id).await;
     Ok(VerbResult::ok_with_ops(
         json!({
             "asset_id": asset_id,
@@ -2508,6 +2551,83 @@ pub(in crate::dispatch) async fn assets_fetch(
         }),
         vec![op_id],
     ))
+}
+
+/// Test-only deterministic barrier for the project-owner race regression.
+/// Production builds contain neither the barrier nor its global registration.
+#[cfg(test)]
+#[derive(Clone)]
+pub(in crate::dispatch) struct AssetsFetchProjectTransitionGate {
+    fetch_id: String,
+    pub project_pinned: std::sync::Arc<tokio::sync::Notify>,
+    pub continue_after_pin: std::sync::Arc<tokio::sync::Notify>,
+    pub import_admitted: std::sync::Arc<tokio::sync::Notify>,
+    pub continue_after_admission: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+impl AssetsFetchProjectTransitionGate {
+    pub(in crate::dispatch) fn new(fetch_id: impl Into<String>) -> Self {
+        Self {
+            fetch_id: fetch_id.into(),
+            project_pinned: std::sync::Arc::new(tokio::sync::Notify::new()),
+            continue_after_pin: std::sync::Arc::new(tokio::sync::Notify::new()),
+            import_admitted: std::sync::Arc::new(tokio::sync::Notify::new()),
+            continue_after_admission: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+static ASSETS_FETCH_PROJECT_TRANSITION_GATE: std::sync::OnceLock<
+    std::sync::Mutex<Option<AssetsFetchProjectTransitionGate>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn assets_fetch_project_transition_gate(
+) -> &'static std::sync::Mutex<Option<AssetsFetchProjectTransitionGate>> {
+    ASSETS_FETCH_PROJECT_TRANSITION_GATE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(in crate::dispatch) fn install_assets_fetch_project_transition_gate(
+    gate: Option<AssetsFetchProjectTransitionGate>,
+) {
+    *assets_fetch_project_transition_gate()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = gate;
+}
+
+#[cfg(test)]
+fn current_assets_fetch_project_transition_gate(
+    fetch_id: &str,
+) -> Option<AssetsFetchProjectTransitionGate> {
+    assets_fetch_project_transition_gate()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .filter(|gate| gate.fetch_id == fetch_id)
+        .cloned()
+}
+
+#[cfg(test)]
+async fn wait_for_assets_fetch_project_transition_gate_after_pin(fetch_id: &str) {
+    let Some(gate) = current_assets_fetch_project_transition_gate(fetch_id) else {
+        return;
+    };
+    // notify_one retains a permit when the test has not polled its waiter yet.
+    gate.project_pinned.notify_one();
+    gate.continue_after_pin.notified().await;
+}
+
+#[cfg(test)]
+async fn wait_for_assets_fetch_project_transition_gate_after_admission(fetch_id: &str) {
+    let Some(gate) = current_assets_fetch_project_transition_gate(fetch_id) else {
+        return;
+    };
+    // Keep this milestone observable even if the test has not polled yet.
+    gate.import_admitted.notify_one();
+    gate.continue_after_admission.notified().await;
 }
 
 fn resolve_local_folder_fetch_path(id: &str, dir: Option<&str>) -> Result<PathBuf, CutError> {

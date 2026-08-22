@@ -75,6 +75,7 @@ const WEBDRIVER_TEST_BUILD_MARKER: &str = "shellx-cut/webdriver-test-enabled@1";
 #[allow(unused_imports)]
 use tauri::Emitter;
 
+mod source_reveal;
 mod tools;
 mod update_handoff;
 mod update_identity;
@@ -228,6 +229,74 @@ fn engine_status(state: tauri::State<'_, EngineStatus>) -> serde_json::Value {
     }
 }
 
+/// Reveal one file-manager entry for an asset that is still registered in the
+/// live cutd project. The renderer can name only `asset_id`; it cannot provide
+/// a path, URL, receipt path, or command. The shell independently re-reads the
+/// authoritative project snapshot before the platform-specific reveal.
+#[tauri::command]
+async fn reveal_registered_source(
+    asset_id: String,
+    state: tauri::State<'_, EngineStatus>,
+) -> Result<source_reveal::SourceRevealReply, String> {
+    let url = match &*state.0.lock().unwrap() {
+        EngineState::Wired { url, .. } => url.clone(),
+        EngineState::Unwired { .. } => {
+            return Ok(source_reveal::SourceRevealReply::refused(
+                "The desktop engine is not available to resolve this source",
+            ))
+        }
+    };
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        reveal_registered_source_blocking(url, asset_id)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        source_reveal::SourceRevealReply::refused(
+            "The desktop shell could not reveal the registered source",
+        )
+    }))
+}
+
+/// Blocking half of the identity-only reveal. It is intentionally separate
+/// from the Tauri command so loopback I/O, filesystem metadata, and the OS
+/// process spawn never occupy the webview command executor.
+fn reveal_registered_source_blocking(
+    url: String,
+    asset_id: String,
+) -> source_reveal::SourceRevealReply {
+    let origin = match validated_engine_origin(&url) {
+        Ok(origin) => origin,
+        Err(_) => {
+            return source_reveal::SourceRevealReply::refused(
+                "The desktop engine is not available to resolve this source",
+            )
+        }
+    };
+    let addr = origin.trim_start_matches("http://");
+    let raw = match http_post_json(addr, "/api/verb/project.state", "{}") {
+        Ok(raw) => raw,
+        Err(_) => {
+            return source_reveal::SourceRevealReply::refused(
+                "The desktop engine could not resolve the registered source",
+            )
+        }
+    };
+    let envelope: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(_) => {
+            return source_reveal::SourceRevealReply::refused(
+                "The desktop engine returned an invalid source response",
+            )
+        }
+    };
+    let Some(project) = envelope.get("result") else {
+        return source_reveal::SourceRevealReply::refused(
+            "Open a project with the registered source before revealing its file",
+        );
+    };
+    source_reveal::reveal_registered_source(project, &asset_id)
+}
+
 /// Detailed tool doctor for the bootstrap UI / agent. Reports, per heavy
 /// dependency, whether it resolved and from where, plus the actionable hint.
 /// Mirrors the engine-side `cut_media::toolpath::doctor_media` philosophy but
@@ -270,6 +339,32 @@ fn http_get(addr: &str, path: &str, timeout: Duration) -> Result<String, String>
     let mut buf = Vec::new();
     stream.read_to_end(&mut buf).map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Blocking loopback POST for a desktop-only, read-only project-state lookup.
+/// The caller already validates `addr` from the shell-owned engine URL; the
+/// function deliberately returns response bytes only to the native shell.
+fn http_post_json(addr: &str, path: &str, body: &str) -> Result<String, String> {
+    let sock_addr: std::net::SocketAddr = addr.parse().map_err(|e| format!("bad addr: {e}"))?;
+    let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(3))
+        .map_err(|e| e.to_string())?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).map_err(|e| e.to_string())?;
+    if http_status(&raw) != Some(200) {
+        return Err("project state was unavailable".to_string());
+    }
+    raw.split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .ok_or_else(|| "project state response was malformed".to_string())
 }
 
 /// True when a LIVE cutd answers on `addr`. We GET /api/verbs — cutd serves
@@ -540,6 +635,10 @@ fn grant_engine_origin_capability(app: &tauri::App, url: &str) -> Result<(), Str
         .permission("dialog:allow-message")
         .permission("core:event:allow-listen")
         .permission("core:event:allow-unlisten")
+        // Source-file reveal is a custom identity-only command. It resolves the
+        // path inside the shell from current cutd state, then opens the native
+        // file manager; the remote webview never receives the raw source path.
+        .permission("allow-reveal-registered-source")
         // Preview fullscreen fallback for WKWebView/WebKitGTK. The remote UI
         // receives only this window mutation plus the matching read-back; it
         // cannot move, resize, close, hide, or otherwise control the shell.
@@ -723,6 +822,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine_status,
             tools_doctor,
+            reveal_registered_source,
             update_settings::get_update_preferences,
             update_settings::set_update_preferences,
             update_state::get_update_state,

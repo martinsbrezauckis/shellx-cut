@@ -45,6 +45,7 @@ register('./lib/css-module-loader.mjs', import.meta.url)
 const { createElement } = await import('react')
 const { renderToStaticMarkup } = await import('react-dom/server')
 const { default: ClipContextMenu } = await import('../src/panels/Timeline/ClipContextMenu')
+const { OfflineMediaContext } = await import('../src/app/OfflineMediaContext')
 const { layoutTrack } = await import('../src/panels/Timeline/layout')
 const { clipContextMenuContract, exactTimelineAudioTarget } = await import('../src/panels/Timeline/ClipContextMenuModel')
 type Project = import('../src/lib/client').Project
@@ -102,11 +103,19 @@ function nonMedia(
 }
 
 const noop = () => {}
-function renderMenu(allItems: LaidItem[], itemId: string, atMs = 100, selectedClipIds: string[] = []): string {
-  return renderToStaticMarkup(createElement(ClipContextMenu, {
+function renderMenu(
+  allItems: LaidItem[],
+  itemId: string,
+  atMs = 100,
+  selectedClipIds: string[] = [],
+  menuProject: Project = project,
+  offlineAssetIds?: ReadonlySet<string>,
+): string {
+  const menu = createElement(ClipContextMenu, {
     menu: { x: 0, y: 0, itemId, atMs },
-    project,
+    project: menuProject,
     allItems,
+    playheadMs: atMs,
     selectedClipIds,
     assetPick: null,
     setAssetPick: noop,
@@ -135,7 +144,18 @@ function renderMenu(allItems: LaidItem[], itemId: string, atMs = 100, selectedCl
     replaceClipSource: noop,
     fitToFillAdjacent: noop,
     nestSelection: noop,
-  }))
+  })
+  if (!offlineAssetIds) return renderToStaticMarkup(menu)
+  return renderToStaticMarkup(createElement(OfflineMediaContext.Provider, {
+    value: {
+      offlineAssetIds,
+      modifiedMs: new Map(),
+      checking: false,
+      relinkingAssetId: null,
+      refresh: async () => undefined,
+      relinkAsset: async () => false,
+    },
+  }, menu))
 }
 
 /** Full <button …> open tag for one data-cut-ctx key, or null when absent. */
@@ -146,6 +166,59 @@ function btn(html: string, key: string): string | null {
 const present = (html: string, key: string) => btn(html, key) !== null
 /** renderToStaticMarkup emits the boolean attribute as `disabled=""`. */
 const isDisabled = (tag: string) => /\sdisabled(=""|\s|>)/.test(tag)
+
+// Match Frame consumes the shared offline-media authority rather than guessing
+// from a path. An offline source stays visible (so the user can learn why),
+// but its exact navigation action is disabled with a relink reason.
+{
+  const matched = clip('match-frame', 'video', 'v1', 'muxed', 0, 1000)
+  const matchProject = {
+    ...project,
+    tracks: project.tracks.map((track) => track.id === 'v1'
+      ? { ...track, clips: [{ id: 'match-frame', asset: 'muxed', src_in_ms: 0, src_out_ms: 1000 }] }
+      : track),
+  }
+  const online = renderMenu([matched], matched.id, 100, [], matchProject)
+  const onlineTag = btn(online, 'match-frame')
+  assert.ok(onlineTag && !isDisabled(onlineTag), 'an available footage source exposes Match Frame')
+
+  const offline = renderMenu([matched], matched.id, 100, [], matchProject, new Set(['muxed']))
+  const offlineTag = btn(offline, 'match-frame')
+  assert.ok(offlineTag && isDisabled(offlineTag), 'an offline Match Frame stays visible but cannot silently navigate')
+  assert.match(offline, /Relink this source before matching a frame/, 'the offline Match Frame control gives a concise recovery reason')
+}
+
+// The three source-reveal IDs have two owners (Source Monitor and this clip
+// menu). Keep the clip-context instance explicit: a unique-ID manifest cannot
+// catch a regression where this owner stops rendering or routes a raw path.
+{
+  const footage = clip('source-reveal-footage', 'video', 'v1', 'muxed', 0, 1000)
+  const footageHtml = renderMenu([footage], footage.id)
+  for (const action of ['reveal-source-project', 'reveal-source-library', 'reveal-source-file']) {
+    const tag = btn(footageHtml, action)
+    assert.ok(tag && !isDisabled(tag), `clip context owns enabled ${action} for an exact registered asset`)
+    assert.match(tag!, new RegExp(`data-cut-action="${action}"`), `clip context keeps stable action ownership for ${action}`)
+  }
+
+  const offlineHtml = renderMenu([footage], footage.id, 100, [], project, new Set(['muxed']))
+  const offlineFile = btn(offlineHtml, 'reveal-source-file')
+  assert.ok(offlineFile && isDisabled(offlineFile), 'offline clip source refuses only native file reveal')
+  assert.match(offlineHtml, /Relink this source before revealing its file/, 'offline clip file reveal gives a truthful recovery reason')
+
+  const unregistered = clip('source-reveal-unregistered', 'video', 'v1', 'gone', 0, 1000)
+  const unregisteredHtml = renderMenu([unregistered], unregistered.id)
+  for (const action of ['reveal-source-project', 'reveal-source-library', 'reveal-source-file']) {
+    const tag = btn(unregisteredHtml, action)
+    assert.ok(tag && isDisabled(tag), `clip context refuses ${action} without a registered asset identity`)
+  }
+
+  const sourceSectionSource = readFileSync(new URL('../src/panels/Timeline/ClipContextMenuSections.tsx', import.meta.url), 'utf8')
+  const clipMenuSource = readFileSync(new URL('../src/panels/Timeline/ClipContextMenu.tsx', import.meta.url), 'utf8')
+  assert.match(sourceSectionSource, /function SourceSection[\s\S]*sourceAssetId[\s\S]*onRevealInProject[\s\S]*onRevealInLibrary[\s\S]*onRevealSourceFile/,
+    'SourceSection owns the three identity-only clip context routes')
+  assert.match(clipMenuSource, /sourceRevealActions\([\s\S]*clipAssetId: it\.asset[\s\S]*<SourceSection[\s\S]*onRevealInProject[\s\S]*onRevealInLibrary[\s\S]*onRevealSourceFile/,
+    'ClipContextMenu derives source actions from the exact clip asset before handing them to SourceSection')
+}
 
 // A preserved two-clip context target must reach the visible result that found
 // the macOS regression: Nest selection remains enabled for adjacent clips.

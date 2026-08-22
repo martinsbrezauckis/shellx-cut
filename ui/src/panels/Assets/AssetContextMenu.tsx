@@ -42,7 +42,7 @@ function Item({ action, disabled = false, title, danger = false, children, onCli
  * class/precondition invalid rather than being guessed from another card. */
 export default function AssetContextMenu({ menu, asset, busy, onOpenSource, onAddAtPlayhead, onRelink, onRemove, onClose }: AssetContextMenuProps) {
   if (!asset) return null
-  const supportsSource = asset.kind === 'video' || asset.kind === 'audio'
+  const supportsSource = asset.kind === 'video' || asset.kind === 'audio' || asset.kind === 'image'
   const addReason = asset.offline ? 'Relink this source before adding it to the timeline' : 'Add this exact asset at the current playhead'
   const removeReason = asset.used > 0
     ? `Remove its ${asset.used} timeline clip${asset.used === 1 ? '' : 's'} first`

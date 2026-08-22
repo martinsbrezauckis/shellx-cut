@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import {
@@ -121,6 +122,15 @@ test('dependency audit covers both Rust locks plus separate runtime and tooling 
 test('dependency audit uses npm.cmd on Windows', () => {
   const plan = dependencyAuditPlan('/repo', 'win32')
   assert.equal(plan.at(-1).command, 'npm.cmd')
+})
+
+test('WDIO tooling resolves the recursion-bounded deepmerge-ts security release', () => {
+  const packageJson = JSON.parse(readFileSync(new URL('../../ui/package.json', import.meta.url), 'utf8'))
+  const packageLock = JSON.parse(readFileSync(new URL('../../ui/package-lock.json', import.meta.url), 'utf8'))
+  const locked = packageLock.packages?.['node_modules/deepmerge-ts']
+  assert.equal(packageJson.overrides?.['deepmerge-ts'], '8.0.1')
+  assert.equal(locked?.version, '8.0.1')
+  assert.match(locked?.resolved || '', /deepmerge-ts-8[.]0[.]1[.]tgz$/)
 })
 
 test('checked-in warning policy is exact, owned, and expiry-bound', () => {

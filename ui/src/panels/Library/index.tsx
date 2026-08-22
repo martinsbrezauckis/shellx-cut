@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callVerb, type LibItem, type Project } from '../../lib/client'
 import { libraryIdFromAssetHash } from '../../lib/mediaPath'
+import type { SourceNavigationState } from '../../app/useSourceNavigationController'
 import { confirmAction, isTauri, pickMedia } from '../../lib/tauri'
 import { Icon } from '../../icons'
 import { LibraryBulkBar } from './LibraryBulkBar'
@@ -19,6 +20,7 @@ import { libraryDetailItem, type LibraryCollection, type SortKey, type TypeFilte
 import { useLibraryQuery } from './useLibraryQuery'
 import { useLibraryKeyboardNavigation } from './useLibraryKeyboardNavigation'
 import { useLibraryRelink } from './useLibraryRelink'
+import { useLibrarySourceReveal } from './useLibrarySourceReveal'
 import '../drawer.css'
 import './library.css'
 export interface LibraryPanelProps {
@@ -30,14 +32,10 @@ export interface LibraryPanelProps {
   active: boolean
   /** Live editor playhead used by the workspace's explicit Insert action. */
   playheadMs?: number
+  sourceNavigation?: SourceNavigationState | null
 }
 
-export default function LibraryPanel({
-  project,
-  onAddedToProject,
-  active,
-  playheadMs = 0,
-}: LibraryPanelProps) {
+export default function LibraryPanel({ project, onAddedToProject, active, playheadMs = 0, sourceNavigation }: LibraryPanelProps) {
   const hasProject = !!project
   const [actionErr, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -50,6 +48,7 @@ export default function LibraryPanel({
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<SortKey>('added')
   const [collection, setCollection] = useState<LibraryCollection>('all')
+  const revealedLibraryId = sourceNavigation?.destination === 'library' ? libraryIdFromAssetHash(project?.assets[sourceNavigation.assetId]?.hash) : null
   const {
     items,
     folders,
@@ -64,6 +63,7 @@ export default function LibraryPanel({
     pageCount,
     qDebounced,
     queryKey,
+    loadedQueryKey,
     reload: reloadQuery,
     previousPage,
     nextPage,
@@ -75,6 +75,7 @@ export default function LibraryPanel({
     search: q,
     sort,
     collection,
+    ids: revealedLibraryId ? [revealedLibraryId] : undefined,
   })
   const visibleItems = items
   const itemIds = useMemo(() => visibleItems.map((item) => item.id), [visibleItems])
@@ -120,6 +121,8 @@ export default function LibraryPanel({
     setNote(msg)
     setTimeout(() => setNote(null), 3000)
   }, [])
+
+  useLibrarySourceReveal({ sourceNavigation, revealedLibraryId, loading, queryError, loadedQueryKey, queryKey, visibleItems, flash, setType, setFolder, setTagFilter, setQ, setSort, setCollection, setSelected, setAnchorId })
 
   const selectionFilterKey = `${queryKey}\u0000${offset}`
   const previousSelectionFilterKey = useRef(selectionFilterKey)

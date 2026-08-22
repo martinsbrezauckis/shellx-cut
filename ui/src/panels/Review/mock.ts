@@ -706,12 +706,14 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
       }
     }
     case 'captions.kinetic': {
+      const cueCount = args.per_word === true ? TRANSCRIPT.words.length : 2
+      const clearedStatic = args.replace_static === true && MOCK_KINETIC ? 2 : 0
       const o = op({
         actor: human,
         verb: name,
         args,
         rationale: typeof args.rationale === 'string' ? args.rationale : undefined,
-        effects: [{ track: 'kinetic_mock', cue_count: 2 }],
+        effects: [{ track: 'kinetic_mock', cue_count: cueCount }],
       })
       applyOp(o)
       return {
@@ -721,8 +723,8 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
           title_track: 'kinetic_mock',
           asset_id: 'kinetic_asset_mock',
           clip_id: 'kinetic_clip_mock',
-          cue_count: 2,
-          cleared_static: args.replace_static === true ? 2 : 0,
+          cue_count: cueCount,
+          cleared_static: clearedStatic,
           range_ms: [0, 2500],
         },
       }

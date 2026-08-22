@@ -1351,6 +1351,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "reversible",
     "facets": []
   },
+  "edit.overwrite": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "edit_overwrite",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
   "edit.detach_audio": {
     "mutation_class": "timeline",
     "side_effects": {

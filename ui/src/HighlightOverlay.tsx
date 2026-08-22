@@ -34,6 +34,15 @@ export interface HighlightSpec {
 
 interface Box { top: number; left: number; width: number; height: number }
 
+function isInsideViewport(r: DOMRect): boolean {
+  return r.width > 0
+    && r.height > 0
+    && r.left >= 0
+    && r.top >= 0
+    && r.right <= window.innerWidth
+    && r.bottom <= window.innerHeight
+}
+
 /** Build the CSS selector for a spec (selector wins, then clip, then panel). */
 function specSelector(s: HighlightSpec): string | null {
   if (s.selector) return s.selector
@@ -52,8 +61,11 @@ export default function HighlightOverlay({ spec, onClear }: { spec: HighlightSpe
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClear()
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    // Capture before Timeline's bubble-phase Escape shortcut clears selection and
+    // re-renders. Do not prevent or stop the event: the normal editor Escape
+    // behavior must still run after the highlight has dismissed.
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [spec, onClear])
 
   useEffect(() => {
@@ -72,10 +84,14 @@ export default function HighlightOverlay({ spec, onClear }: { spec: HighlightSpe
     if (spec.scroll !== false) el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
 
     // Follow the target: re-measure on a rAF tick (covers timeline scroll, drawer
-    // animations, layout shifts) — cheap, only while a highlight is active.
+    // animations, layout shifts) — cheap, only while a highlight is active. Do
+    // not paint a chip/ring until the target has actually arrived in the viewport:
+    // smooth timeline scrolling otherwise leaves a visible chip pointing at an
+    // off-screen, clipped ring.
     const measure = () => {
       const r = el.getBoundingClientRect()
-      setBox({ top: r.top, left: r.left, width: r.width, height: r.height })
+      if (isInsideViewport(r)) setBox({ top: r.top, left: r.left, width: r.width, height: r.height })
+      else setBox(null)
       rafRef.current = requestAnimationFrame(measure)
     }
     measure()

@@ -101,7 +101,7 @@ const items = [media, gap, lockedMedia]
   )
   assert.deepEqual(
     resolveTimelineContextTarget({ itemId: lockedMedia.id, gapId: null, trackId: 'locked-v', headerTrackId: 'locked-v', x: 8, y: 9, atMs: 10, items, tracks }),
-    { kind: 'track', x: 8, y: 9, trackId: 'locked-v' },
+    { kind: 'track', x: 8, y: 9, trackId: 'locked-v', atMs: 10 },
     'the track header owns its own context menu even when the track is locked',
   )
   assert.equal(
@@ -127,9 +127,10 @@ const items = [media, gap, lockedMedia]
   const project = { tracks } as unknown as import('../src/lib/client').Project
   const common = { project, allItems: items, onSelect: () => {}, onRemoveTrack: () => {}, onClose: () => {} }
   const renderTrack = (trackId: string) => renderToStaticMarkup(createElement(TimelineTrackContextMenu, {
-    ...common, menu: { kind: 'track', x: 20, y: 30, trackId },
+    ...common, menu: { kind: 'track', x: 20, y: 30, trackId, atMs: 0 },
   }))
   const baseVideo = renderTrack('v1')
+  assert.match(baseVideo, /data-cut-action="match-frame-track"/, 'video headers expose Match Frame at their exact playhead target')
   assert.match(baseVideo, /data-cut-track-ctx="lock"/, 'a header exposes track lock')
   assert.match(baseVideo, /data-cut-track-ctx="visibility"/, 'video headers own visibility')
   assert.doesNotMatch(baseVideo, /data-cut-track-ctx="remove"/, 'base video removal stays hidden, not merely disabled')
@@ -139,6 +140,7 @@ const items = [media, gap, lockedMedia]
   assert.match(overlay, /data-cut-track-ctx="remove"/, 'non-base tracks own their confirmed removal action')
 
   const audio = renderTrack('a1')
+  assert.doesNotMatch(audio, /data-cut-action="match-frame-track"/, 'audio headers never claim a video source-frame mapping')
   assert.match(audio, /data-cut-track-ctx="mute"/, 'audio headers own mute')
   assert.match(audio, /data-cut-track-ctx="solo"/, 'audio headers own solo')
   assert.doesNotMatch(audio, /data-cut-track-ctx="visibility"/, 'audio headers do not acquire video visibility')
@@ -146,6 +148,27 @@ const items = [media, gap, lockedMedia]
 
   const captions = renderTrack('cap1')
   assert.match(captions, /data-cut-track-ctx="visibility"/, 'caption headers retain their existing visibility control')
+
+  const crossfadeProject = {
+    tracks: [{
+      id: 'v-crossfade',
+      kind: 'video',
+      clips: [
+        { id: 'crossfade-left', asset: 'crossfade-left-source', src_in_ms: 0, src_out_ms: 5_000 },
+        { id: 'crossfade-right', asset: 'crossfade-right-source', src_in_ms: 5_000, src_out_ms: 10_000, xfade_in_ms: 1_000 },
+      ],
+    }],
+  } as unknown as import('../src/lib/client').Project
+  const crossfadeHeader = renderToStaticMarkup(createElement(TimelineTrackContextMenu, {
+    project: crossfadeProject,
+    allItems: [],
+    menu: { kind: 'track', x: 20, y: 30, trackId: 'v-crossfade', atMs: 4_500 },
+    onSelect: () => {},
+    onRemoveTrack: () => {},
+    onClose: () => {},
+  }))
+  assert.match(crossfadeHeader, /data-cut-action="match-frame-track"[^>]*disabled/, 'an ambiguous track-header Match Frame stays visible but disabled')
+  assert.match(crossfadeHeader, /aria-description="More than one video clip covers this playhead; select one clip to match its exact frame"/, 'the disabled track-header Match Frame explains how to resolve the crossfade ambiguity')
 }
 
 // Contextual paste binds to the resolved timeline lane and position. A mismatch
@@ -307,6 +330,8 @@ assert.match(read('src/components/ContextMenuFrame.tsx'), /event\.key (?:!==|===
 assert.match(read('src/components/ContextMenuFrame.tsx'), /tabIndex=\{-1\}/, 'new menus take keyboard focus for menu navigation')
 assert.match(read('src/components/ContextMenuFrame.tsx'), /ArrowDown[\s\S]*ArrowUp[\s\S]*Home[\s\S]*End/, 'the shared frame provides practical menu-key navigation')
 const contextMenuFrame = read('src/components/ContextMenuFrame.tsx')
+const contextMenuBrowserVerify = read('public-tests/context-menu-surfaces-verify.mjs')
+const reverseMatchFrameVerify = read('public-tests/lib/contextMenuReverseMatchFrame.mjs')
 assert.match(contextMenuFrame, /function revealExpandedMenuGroup[\s\S]*clampMenu[\s\S]*scrollTop/, 'expanded groups re-clamp and scroll their owned menu')
 assert.match(contextMenuFrame, /MutationObserver[\s\S]*attributeFilter: \['aria-expanded'\]/, 'descendant disclosure changes trigger the native-viewport repair')
 const timelineContextCoverage = read('public-tests/lib/fullCoverageTimelineContextActions.mjs')
@@ -324,6 +349,12 @@ assert.match(read('src/panels/Library/LibraryActions.tsx'), /data-cut-library-me
 assert.match(read('src/panels/Assets/index.tsx'), /data-cut-asset-menu-button[\s\S]*aria-haspopup="menu"/, 'Assets expose a visible menu button')
 assert.match(read('src/panels/Timeline/index.tsx'), /TimelineContextMenuLayer/, 'Timeline delegates context-menu rendering to its bounded owner')
 assert.match(read('src/panels/Timeline/TimelineContextMenuLayer.tsx'), /ClipContextMenu[\s\S]*TimelineSurfaceContextMenu[\s\S]*TimelineTrackContextMenu/, 'the bounded owner preserves every timeline context surface')
+assert.match(contextMenuBrowserVerify, /verifyReverseMatchFrameAtStart/, 'the real-browser context verifier retains the reverse Match Frame boundary row')
+assert.match(reverseMatchFrameVerify, /edit\.reverse[\s\S]*enabled: true[\s\S]*ui\.playhead', \{ at_ms: 0 \}/, 'reverse Match Frame setup uses a real reverse clip at its first timeline instant')
+assert.match(reverseMatchFrameVerify, /isReverseMatchFrameFixtureAnchored\(anchored, view\)/, 'reverse Match Frame setup accepts a verified already-at-start no-op')
+assert.match(reverseMatchFrameVerify, /const expectedSourceMs = sourceOutMs - 1[\s\S]*data-cut-source-current/, 'reverse Match Frame expects the final included source millisecond in Source Monitor')
+assert.match(reverseMatchFrameVerify, /finally[\s\S]*edit\.reverse[\s\S]*enabled: false[\s\S]*ui\.state/, 'reverse Match Frame restores the normal fixture state before later browser rows')
+assert.match(contextMenuBrowserVerify, /Track Match Frame refuses an ambiguous crossfade/, 'the real-browser context verifier retains a crossfade ambiguity row for track-header Match Frame')
 assert.match(read('src/panels/Library/index.tsx'), /LibraryContextMenuLayer/, 'Library delegates context-menu wiring to its bounded owner')
 assert.match(read('src/panels/Library/LibraryContextMenuLayer.tsx'), /LibraryContextMenus/, 'the bounded Library layer preserves its established menu owner')
 assert.match(read('src/panels/Library/LibraryContextMenus.tsx'), /data-cut-library-card-move[\s\S]*No folder/, 'Library cards expose their own compact move-to-folder submenu')

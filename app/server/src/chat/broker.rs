@@ -1,6 +1,6 @@
 //! Launch policies for the local subscription CLIs used by `agent.chat`.
 //!
-//! Claude uses Cut's pinned, contained contract. Codex deliberately keeps its
+//! Claude uses Cut's contained capability contract. Codex deliberately keeps its
 //! normal user configuration and native sandbox/permission policy; Cut adds its
 //! own MCP server without redefining the user's machine permissions.
 
@@ -17,6 +17,17 @@ pub(crate) use antigravity::{
 #[path = "broker/codex.rs"]
 mod codex;
 pub(crate) use codex::args as codex_args;
+#[path = "broker/flags.rs"]
+mod flags;
+pub(crate) use flags::missing_required_help_tokens;
+#[path = "broker/claude.rs"]
+mod claude;
+#[cfg(test)]
+pub(crate) use claude::REQUIRED_CONTAINED_CLAUDE_HELP_TOKENS;
+pub(crate) use claude::{
+    verify_capability_contract as verify_claude_capability_contract,
+    CONTAINED_CLAUDE_CAPABILITY_POSTURE,
+};
 #[path = "broker/grok.rs"]
 mod grok;
 pub(crate) use grok::{
@@ -26,22 +37,6 @@ pub(crate) use grok::{
 };
 #[path = "broker/verify.rs"]
 mod verify;
-pub const SUPPORTED_CLAUDE_VERSION: &str = "2.1.224";
-
-const REQUIRED_HELP_TOKENS: &[&str] = &[
-    "--print",
-    "--output-format",
-    "--mcp-config",
-    "--setting-sources",
-    "--disable-slash-commands",
-    "--allowedTools",
-    "--strict-mcp-config",
-    "--disallowedTools",
-    "--permission-mode",
-    "--no-session-persistence",
-    "--model",
-];
-
 const REQUIRED_CODEX_EXEC_HELP_TOKENS: &[&str] = &[
     "--config",
     "--json",
@@ -50,8 +45,12 @@ const REQUIRED_CODEX_EXEC_HELP_TOKENS: &[&str] = &[
     "--model",
 ];
 
-const NATIVE_TOOL_DENIES: &str =
-    "Read,Write,Edit,NotebookEdit,Bash,BashOutput,KillShell,Task,WebFetch,WebSearch,Skill,mcp__cutd__agent_chat";
+const CLAUDE_CAPABILITY_HELP_ARGS: &[&str] = &["--help"];
+const CODEX_CAPABILITY_HELP_ARGS: &[&str] = &["exec", "--help"];
+const GROK_CAPABILITY_HELP_ARGS: &[&str] = &["--help"];
+const ANTIGRAVITY_CAPABILITY_HELP_ARGS: &[&str] = &["--help"];
+
+const NATIVE_TOOL_DENIES: &str = "Read,Write,Edit,NotebookEdit,Bash,BashOutput,KillShell,Task,WebFetch,WebSearch,Skill,mcp__cutd__agent_chat";
 
 /// A private, empty, disposable current directory for one agent turn.
 pub struct IsolatedWorkspace(tempfile::TempDir);
@@ -202,7 +201,7 @@ pub fn supported_headless_agent(agent: &str) -> bool {
 
 pub fn security_posture(agent: &str) -> Option<&'static str> {
     match agent {
-        "claude" => Some("contained: pinned Claude Code 2.1.224"),
+        "claude" => Some(CONTAINED_CLAUDE_CAPABILITY_POSTURE),
         "codex" => Some("native CLI: uses your Codex settings and permissions"),
         "grok" => Some("isolated turn: only Cut MCP, existing Grok login"),
         "antigravity" => {
@@ -212,7 +211,7 @@ pub fn security_posture(agent: &str) -> Option<&'static str> {
     }
 }
 
-/// Build the fixed CLI flags for the pinned Claude contract.
+/// Build the fixed CLI flags for the contained Claude capability contract.
 pub fn claude_args(mcp_config_path: &str, model: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "--print".into(),
@@ -241,43 +240,8 @@ pub fn claude_args(mcp_config_path: &str, model: Option<&str>) -> Vec<String> {
     args
 }
 
-pub fn is_supported_claude_version(version: &str) -> bool {
-    version.split_whitespace().next() == Some(SUPPORTED_CLAUDE_VERSION)
-}
-
-pub fn verify_claude_capability_contract(version: &str, help: &str) -> Result<(), String> {
-    let found = version.split_whitespace().next().unwrap_or_default();
-    if !is_supported_claude_version(version) {
-        return Err(format!(
-            "contained Agent Chat requires Claude Code {SUPPORTED_CLAUDE_VERSION}; found {found:?}. Cut refuses to launch an unverified CLI capability contract."
-        ));
-    }
-    let missing: Vec<&str> = REQUIRED_HELP_TOKENS
-        .iter()
-        .copied()
-        .filter(|token| !help.contains(token))
-        .collect();
-    if !missing.is_empty() {
-        return Err(format!(
-            "Claude Code {SUPPORTED_CLAUDE_VERSION} did not advertise required containment flags: {}. Cut refuses the turn.",
-            missing.join(", ")
-        ));
-    }
-    Ok(())
-}
-
-pub fn verify_codex_capability_contract(version: &str, exec_help: &str) -> Result<(), String> {
-    if !version.to_ascii_lowercase().contains("codex") {
-        return Err(format!(
-            "the resolved Codex executable returned an unexpected version string: {:?}",
-            version.trim()
-        ));
-    }
-    let missing: Vec<&str> = REQUIRED_CODEX_EXEC_HELP_TOKENS
-        .iter()
-        .copied()
-        .filter(|token| !exec_help.contains(token))
-        .collect();
+pub fn verify_codex_capability_contract(exec_help: &str) -> Result<(), String> {
+    let missing = missing_required_help_tokens(exec_help, REQUIRED_CODEX_EXEC_HELP_TOKENS);
     if !missing.is_empty() {
         return Err(format!(
             "the installed Codex CLI does not advertise required Agent Chat flags: {}",
@@ -285,6 +249,29 @@ pub fn verify_codex_capability_contract(version: &str, exec_help: &str) -> Resul
         ));
     }
     Ok(())
+}
+
+/// Exact help invocation used to verify one resolved local Agent Chat route.
+pub(crate) fn capability_help_args(agent: &str) -> Option<&'static [&'static str]> {
+    match agent {
+        "claude" => Some(CLAUDE_CAPABILITY_HELP_ARGS),
+        "codex" => Some(CODEX_CAPABILITY_HELP_ARGS),
+        "grok" => Some(GROK_CAPABILITY_HELP_ARGS),
+        "antigravity" => Some(ANTIGRAVITY_CAPABILITY_HELP_ARGS),
+        _ => None,
+    }
+}
+
+/// Version banners are informational only. Admission depends exclusively on the
+/// resolved executable's successful required-help output and exact flag contract.
+pub(crate) fn verify_agent_capability_contract(agent: &str, help: &str) -> Result<(), String> {
+    match agent {
+        "claude" => verify_claude_capability_contract(help),
+        "codex" => verify_codex_capability_contract(help),
+        "grok" => verify_grok_capability_contract(help),
+        "antigravity" => verify_antigravity_capability_contract(help),
+        _ => Err(format!("agent '{agent}' has no Agent Chat launch contract")),
+    }
 }
 
 pub async fn verify_installed_agent(

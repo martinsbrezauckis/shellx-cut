@@ -7,15 +7,10 @@
 //! network — those live in cut-media / cut-perception / server.
 //! Primary callers: cut-media, cut-perception, server (cutd), tests.
 //!
-//! Module map:
-//! - types     — Project/Track/Clip/Marker/CaptionStyle/Checkpoint (project.json)
-//! - ops       — OpRecord/Actor/OpEffect/OpLog (ops.jsonl)
-//! - edl       — Edl/EdlSegment + edl_from_project (render + checks input)
-//! - edit      — the only timeline mutators (split/ripple_delete/trim/...)
-//! - diff      — DiffSummary + diff(a,b) over checkpoints
-//! - store     — ProjectStore: .cutproj dir lifecycle, replay, hashing
-//! - receipt   — CheckResult + RenderReceipt ("done requires evidence")
-//! - error     — CutError (actionable) + VerbResult (universal envelope)
+//! Module ownership is declared authoritatively immediately below: `pub mod`
+//! exposes a module from `cut_core`, while `mod` keeps it implementation-private.
+//! Each module documents its own responsibility in its rustdoc header, so adding,
+//! removing, or changing a module's visibility updates this map at the source.
 
 pub mod auto_zoom;
 pub mod beatsync;
@@ -28,6 +23,7 @@ mod journal;
 pub mod multicam;
 mod mutation_request;
 pub mod ops;
+pub mod overwrite_edit;
 pub mod rebase;
 pub mod receipt;
 mod speed_ramp_timing;

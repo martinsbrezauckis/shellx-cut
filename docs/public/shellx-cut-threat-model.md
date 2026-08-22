@@ -2,7 +2,7 @@
 
 ## Executive summary
 
-This is the v0.6.109 deployment contract for the local Debug API, WebSocket
+This is the v0.6.110 deployment contract for the local Debug API, WebSocket
 endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
 one trusted interactive environment**. Its unauthenticated loopback listener is
 a whole-machine trust boundary, not same-user or per-process isolation. Under
@@ -23,7 +23,7 @@ and `app/server/src/chat.rs` (separate contained-Claude capability broker).
 | Browser mitigation | Reject a non-loopback `Origin` or `Host`, plus a no-Origin `Sec-Fetch-Site: cross-site` browser request; this mitigates browser cross-origin and DNS-rebinding requests only. |
 | Native callers | Can omit `Origin` and forge `Origin`/`Host`; headers are not authentication. |
 | Remote listening | Native LAN/public binding is unsupported and refused by default. `SHELLX_CUT_ALLOW_NON_LOCAL=1` changes only the bind check and provides no Cut authentication. |
-| Future hardening | A native remote mode must introduce and verify per-caller/per-user capability authentication. It is not implemented in v0.6.109. |
+| Future hardening | A native remote mode must introduce and verify per-caller/per-user capability authentication. It is not implemented in v0.6.110. |
 
 Remote use is supported only through an SSH/VPN/external ShellX broker or
 equivalent transport that independently authenticates and authorizes the
@@ -55,7 +55,7 @@ browser from another origin ─────> Origin/Host/Fetch-Metadata guard (r
 | Off-machine browser reaching loopback through DNS rebinding or no-CORS subresource load | Browser supplies a hostile Origin/Host or no-Origin `Sec-Fetch-Site: cross-site`. | `guard_local_origin` rejects those browser signals before routing. | A native local client is not a browser and is not authenticated by this guard. |
 | Default `127.0.0.1`/`::1` listener | Local process/account connects directly with no Origin or forged headers. | Accepted by design only inside the whole-machine trusted deployment. | On a shared or compromised machine it can operate the editor. |
 | `cutd mcp` stdio proxy | A configured local MCP client invokes generated tools. | Proxy reaches the same running engine; it adds no caller authentication. | It inherits the machine-wide API trust boundary. |
-| Claude `agent.chat` | Hostile prompt/attachment attempts native or unrelated Cut actions. | Pinned CLI, native-tool denial, and Cut capability filtering limit that provider route. | Not an OS sandbox and does not protect the unauthenticated REST/MCP surface. |
+| Claude `agent.chat` | Hostile prompt/attachment attempts native or unrelated Cut actions. | Contained capability contract, native-tool denial, and Cut capability filtering limit that provider route. | Not an OS sandbox and does not protect the unauthenticated REST/MCP surface. |
 | Codex `agent.chat` | A selected local Codex turn uses its configured native tools and integrations. | Cut adds only its filtered MCP surface and records every resulting Cut verb for review/revert. | Codex retains the user's native sandbox, permissions, rules, and configured tools; select it only when that local CLI is trusted. |
 | `SHELLX_CUT_ALLOW_NON_LOCAL=1` | LAN/public client connects or forges headers. | Default refuses this bind; the opt-in is unsupported as a Cut remote mode. | Cut adds no remote auth; direct exposure grants the full surface. |
 
@@ -91,7 +91,7 @@ and use its checkpoint/revert controls as recovery tools.
 For a future supported remote or multi-principal deployment, Cut must add a
 native, verified per-caller/per-user capability authentication mechanism and
 test it at the server boundary. That hardening is intentionally not silently
-claimed or partially implemented in v0.6.109.
+claimed or partially implemented in v0.6.110.
 
 ## Verification hooks
 

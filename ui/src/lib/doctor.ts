@@ -249,7 +249,9 @@ export interface ChatAgentState {
   wired: boolean
   authenticated: 'yes' | 'no' | 'unknown'
   auth_detail: string
-  version_supported: boolean
+  /** The resolved executable successfully advertised every required Agent Chat
+   * capability flag. Provider version text is informational only. */
+  capability_verified: boolean
   ready: boolean
   posture: string | null
 }
@@ -290,11 +292,11 @@ export function chatAgentBadge(name: ChatAgentName, state: ChatAgentState | null
   if (!state || !state.installed) {
     return { kind: 'install', label: 'Install', hint: `${name} is not installed on this machine` }
   }
-  if (!state.wired || !state.version_supported) {
+  if (!state.wired || !state.capability_verified) {
     return {
       kind: 'disabled',
       label: 'Disabled',
-      hint: `${name} cannot enforce Cut's native-tool denial contract or supported version`,
+      hint: `${name} cannot enforce Cut's native-tool denial contract`,
     }
   }
   // PRESENT. Only surface "Needs login" when the session is CONFIRMED absent

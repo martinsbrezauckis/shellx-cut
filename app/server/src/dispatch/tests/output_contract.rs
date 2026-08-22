@@ -9,6 +9,7 @@ use super::test_actor;
 use crate::state::AppState;
 use cut_core::error_codes;
 use serde_json::json;
+use std::time::{Duration, Instant};
 
 async fn create_project(state: &AppState, dir: &tempfile::TempDir) {
     let created = dispatch(
@@ -45,6 +46,41 @@ async fn render_final_path_must_match_the_selected_container() {
     )
     .await;
     assert!(result.ok, "{:?}", result.error);
+}
+
+/// An explicit path outside the authorized output roots must be refused before
+/// the automatic hardware-encoder capability probe. That probe runs ffmpeg at
+/// the selected output dimensions, so running it for a path the public fence
+/// will reject needlessly blocks the server's request loop.
+#[tokio::test]
+async fn render_final_rejects_outside_path_before_hardware_probe() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    create_project(&state, &dir).await;
+    let outside = dir.path().parent().unwrap().join("outside.mp4");
+
+    let started = Instant::now();
+    let result = dispatch(
+        &state,
+        "render.final",
+        json!({"path": outside}),
+        test_actor(),
+    )
+    .await;
+
+    assert!(!result.ok, "outside output path must be refused");
+    assert_eq!(result.error.unwrap().code, error_codes::INVALID_ARGS);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "outside path must fail before the hardware capability probe; elapsed: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        !dir.path()
+            .join("p.cutproj/receipts/.render_001.reserved")
+            .exists(),
+        "a rejected output path must not reserve a render receipt id"
+    );
 }
 
 #[tokio::test]

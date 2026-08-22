@@ -1,6 +1,6 @@
 import {
   callVerb,
-  type VerbArgs,
+  type ControlledVerbArgs,
   type VerbName,
   type VerbResult,
 } from './client'
@@ -75,7 +75,7 @@ export function publishUserActionFailure<N extends VerbName>(
  */
 export async function runUserVerb<N extends VerbName>(
   name: N,
-  args: VerbArgs[N],
+  args: ControlledVerbArgs<N>,
   fallback: string,
 ) {
   try {

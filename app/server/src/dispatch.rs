@@ -260,6 +260,7 @@ async fn dispatch_validated(
         DispatchTarget::EditSpeedRamp => edit_speed_ramp(state, args, actor).await.into(),
         DispatchTarget::EditMove => edit_move(state, args, actor).await.into(),
         DispatchTarget::EditInsert => edit_insert(state, args, actor).await.into(),
+        DispatchTarget::EditOverwrite => edit_overwrite(state, args, actor).await.into(),
         DispatchTarget::EditDuplicate => edit_duplicate(state, args, actor).await.into(),
         DispatchTarget::EditNest => edit_nest(state, args, actor).await.into(),
         DispatchTarget::EditReplace => edit_replace(state, args, actor).await.into(),
@@ -832,6 +833,30 @@ fn shape_core_result(verb: &str, op: &OpRecord, include_legacy_inverse: bool) ->
                 .filter_map(|e| e.track.clone())
                 .collect::<Vec<_>>(),
         }),
+        "edit.overwrite" => json!({
+            "at_ms": op.args["at_ms"],
+            "src_range_ms": op.args["src_range_ms"],
+            "duration_ms": op.args["src_range_ms"][1].as_u64()
+                .zip(op.args["src_range_ms"][0].as_u64())
+                .map(|(end, start)| end.saturating_sub(start))
+                .unwrap_or(0),
+            "linked_av": op.args.get("video_track").and_then(Value::as_str).is_some()
+                && op.args.get("audio_track").and_then(Value::as_str).is_some(),
+            "tracks": op.effects.iter().filter_map(|effect| {
+                let track = effect.track.clone()?;
+                Some(json!({
+                    "track": track,
+                    "clip_id": effect.detail.get("added_clip").cloned().unwrap_or(Value::Null),
+                    "added_ms": effect.detail.get("added_ms").cloned().unwrap_or(Value::Null),
+                    "overwritten_existing_ms": effect.detail.get("overwritten_existing_ms").cloned().unwrap_or(Value::Null),
+                    "overlapped_clip_ids": effect.detail.get("overlapped_clip_ids").cloned().unwrap_or_else(|| json!([])),
+                    "removed_clip_ids": effect.detail.get("removed_clip_ids").cloned().unwrap_or_else(|| json!([])),
+                    "overwritten_gap_ms": effect.detail.get("overwritten_gap_ms").cloned().unwrap_or_else(|| json!(0)),
+                    "tail_gap_ms": effect.detail.get("tail_gap_ms").cloned().unwrap_or_else(|| json!(0)),
+                    "tail_extended_ms": effect.detail.get("tail_extended_ms").cloned().unwrap_or_else(|| json!(0)),
+                }))
+            }).collect::<Vec<_>>(),
+        }),
         // detail: {added_clip, source_clip, added_ms, ripple} on the first effect;
         // the effect's own `track` field carries the host track id. `rippled_tracks`
         // (ripple:true) lists siblings that received the gap (effects after the
@@ -1201,14 +1226,14 @@ use edit_tools::{
     edit_eq, edit_fade, edit_fit_to_fill, edit_freeze, edit_gain, edit_grade, edit_grade_stack,
     edit_grade_window, edit_insert, edit_keyframe, edit_mark_scenes, edit_matte, edit_move,
     edit_move_marker, edit_multicam_switch, edit_multicam_sync, edit_mute, edit_mute_range,
-    edit_nest, edit_pan, edit_paste, edit_redact, edit_remove_marker, edit_remove_track,
-    edit_reorder_track, edit_replace, edit_restore, edit_reverse, edit_ripple_delete, edit_roll,
-    edit_seek_marker, edit_slide, edit_slide_edit, edit_slip, edit_solo, edit_speed,
-    edit_speed_ramp, edit_split, edit_split_at_scenes, edit_split_edit, edit_stabilize, edit_track,
-    edit_track_lock, edit_track_visible, edit_transform, edit_trim, edit_trim_edges,
-    edit_update_marker, effects_list, grade_apply, grade_list, grade_save, media_index,
-    media_index_status, media_search, plugins_call, plugins_enable, plugins_list, shape_update,
-    title_add, title_templates, title_update, transitions_list,
+    edit_nest, edit_overwrite, edit_pan, edit_paste, edit_redact, edit_remove_marker,
+    edit_remove_track, edit_reorder_track, edit_replace, edit_restore, edit_reverse,
+    edit_ripple_delete, edit_roll, edit_seek_marker, edit_slide, edit_slide_edit, edit_slip,
+    edit_solo, edit_speed, edit_speed_ramp, edit_split, edit_split_at_scenes, edit_split_edit,
+    edit_stabilize, edit_track, edit_track_lock, edit_track_visible, edit_transform, edit_trim,
+    edit_trim_edges, edit_update_marker, effects_list, grade_apply, grade_list, grade_save,
+    media_index, media_index_status, media_search, plugins_call, plugins_enable, plugins_list,
+    shape_update, title_add, title_templates, title_update, transitions_list,
 };
 pub(crate) use edit_tools::{build_shape_spec, build_title_spec, ShapeArgs, TitleArgs};
 

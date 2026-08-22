@@ -28,6 +28,46 @@ export function isTauri(): boolean {
   return !!tauri()
 }
 
+/** A deliberately small reply from the identity-bound desktop source reveal. */
+export interface RegisteredSourceRevealReply {
+  status: 'revealed' | 'refused'
+  /** User-facing result text. It never contains the registered source path. */
+  message: string
+}
+
+function validRegisteredSourceRevealReply(value: unknown): value is RegisteredSourceRevealReply {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<RegisteredSourceRevealReply>
+  return (candidate.status === 'revealed' || candidate.status === 'refused')
+    && typeof candidate.message === 'string'
+}
+
+/**
+ * Ask the installed shell to reveal a source file by its registered asset id.
+ *
+ * This bridge intentionally has no path argument. The desktop process reads
+ * the live server-owned project registry again, validates the resulting local
+ * file, and gives the platform file manager only that resolved file. Browser
+ * builds make no native call and return an explicit refusal instead.
+ */
+export async function revealRegisteredSource(assetId: string): Promise<RegisteredSourceRevealReply> {
+  const id = assetId.trim()
+  if (!id) {
+    return { status: 'refused', message: 'Choose a registered source before revealing its file' }
+  }
+  const t = tauri()
+  if (!t) {
+    return { status: 'refused', message: 'Open the desktop app to reveal the registered source file' }
+  }
+  try {
+    const value = await t.core.invoke<unknown>('reveal_registered_source', { assetId: id })
+    if (validRegisteredSourceRevealReply(value)) return value
+    return { status: 'refused', message: 'The desktop shell returned an invalid source-reveal result' }
+  } catch {
+    return { status: 'refused', message: 'The desktop shell could not reveal the registered source' }
+  }
+}
+
 export interface LaunchUpdatePreference {
   schema: 'shellx-cut/update-preferences/1'
   check_on_launch: boolean

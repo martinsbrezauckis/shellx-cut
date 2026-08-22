@@ -6,8 +6,8 @@
 // Callers: panels/Timeline/index.tsx. Dependencies: lib/client types + source mapping.
 
 import { isIdentityTransform, type Clip, type ClipFade, type ClipGrade, type ClipTransform, type Marker, type MotionClipLink, type Project, type Track, type TrackKind } from '../../lib/client'
-import { sourceAtPlayheadForLayout, sourceTimelineOccurrencesForLayout, type SourceAt, type SourceTimelineOccurrence } from './sourceMapping'
-export type { SourceAt, SourceTimelineOccurrence } from './sourceMapping'
+import { sourceAtPlayheadForLayout, sourceFrameMatchForLayout, sourceTimelineOccurrencesForLayout, type SourceAt, type SourceFrameMatch, type SourceTimelineOccurrence } from './sourceMapping'
+export type { SourceAt, SourceFrameMatch, SourceTimelineOccurrence } from './sourceMapping'
 
 // ---------------------------------------------------------------------------
 // Constants (adjust only with a reason)
@@ -316,6 +316,15 @@ export function sourceAtPlayhead(project: Project | null, timelineMs: number): S
   return sourceAtPlayheadForLayout(project, timelineMs, layoutTrack)
 }
 
+/** Exact source-frame route for one selected video clip or track at playhead. */
+export function sourceFrameMatch(
+  project: Project | null,
+  timelineMs: number,
+  target: { clipId?: string; trackId?: string },
+): SourceFrameMatch {
+  return sourceFrameMatchForLayout(project, timelineMs, target, layoutTrack)
+}
+
 /** Timeline content duration = max end across tracks + markers; min 60s. */
 export function projectDurationMs(project: Project | null): number {
   if (!project) return 60_000
@@ -507,7 +516,10 @@ export function trackSeams(items: LaidItem[]): Seam[] {
  * - Inside an item: editorial start + the same within-item offset (within-item
  *   deltas are identical in both bases).
  * - Inside a crossfade overlap (two items cover the position): resolves into
- *   the LEFT clip's tail (first covering item in track order).
+ *   the LEFT clip's tail (first covering item in track order). That remains
+ *   useful for the timeline's single-track interactions, but does NOT make
+ *   the multiply-covered rendered point a safe Source Monitor overwrite
+ *   start; `laidToSharedEditorialPosition` refuses that ambiguity.
  * - Past the last item: editorial end + the overshoot.
  * - Empty track / before the first item: identity (the clocks start aligned).
  */
@@ -522,6 +534,44 @@ export function laidToEditorialMs(items: LaidItem[], laidMs: number): number {
     return last.editorialStartMs + last.durMs + (laidMs - (last.startMs + last.durMs))
   }
   return laidMs
+}
+
+/** The one `at_ms` accepted by an atomic multi-track cumulative edit. Every
+ * selected track must map the same visible playhead to it; otherwise choosing
+ * one track's clock would silently desynchronize the other target. */
+export type SharedEditorialPosition =
+  | { ok: true; atMs: number }
+  | { ok: false; error: string }
+
+export function laidToSharedEditorialPosition(
+  project: Project,
+  laidMs: number,
+  trackIds: Array<string | null | undefined>,
+): SharedEditorialPosition {
+  const selected = trackIds.flatMap((trackId) => {
+    if (!trackId) return []
+    const track = project.tracks.find((candidate) => candidate.id === trackId)
+    return track ? [track] : []
+  })
+  const layouts = selected.map((track) => layoutTrack(track))
+  const overlapsAtPlayhead = layouts.some((items) =>
+    items.filter((item) => laidMs >= item.startMs && laidMs < item.startMs + item.durMs).length > 1,
+  )
+  if (overlapsAtPlayhead) {
+    return {
+      ok: false,
+      error: 'A selected overwrite target has a live crossfade at this visible playhead. Move outside the overlap or edit the transition first.',
+    }
+  }
+  const positions = layouts.map((items) => Math.round(laidToEditorialMs(items, laidMs)))
+  const [atMs] = positions
+  if (atMs === undefined || positions.every((position) => position === atMs)) {
+    return { ok: true, atMs: atMs ?? Math.max(0, Math.round(laidMs)) }
+  }
+  return {
+    ok: false,
+    error: 'Selected V/A tracks resolve this visible playhead to different editorial positions because their crossfades differ. Overwrite one track at a time or align the transitions first.',
+  }
 }
 
 // ---------------------------------------------------------------------------

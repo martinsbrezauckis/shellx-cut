@@ -5,7 +5,7 @@ Use these files first:
 2. skill/shellx-cut/reference.md
 3. schema/verbs.json
 4. docs/public/DEBUG_API.md
-5. docs/public/FEATURE_CHANGE_WORKFLOW.md
+5. docs/public/FEATURE_SURFACE_CONTRACT.md
 6. docs/public/SHELLX_MOTION_BOUNDARY.md
 7. docs/public/FEATURES.md
 8. docs/public/shellx-cut-threat-model.md

@@ -4,7 +4,8 @@ import { Icon } from '../../icons'
 import { confirmAction } from '../../lib/tauri'
 import type { Project } from '../../lib/client'
 import { runUserVerb } from '../../lib/userActionFeedback'
-import type { LaidItem } from './layout'
+import { useOfflineMedia } from '../../app/OfflineMediaContext'
+import { sourceFrameMatch, type LaidItem } from './layout'
 import { removeTrackState, type TimelineSurfaceMenuState } from './TimelineSurfaceMenuModel'
 
 interface TimelineTrackContextMenuProps {
@@ -45,6 +46,7 @@ export default function TimelineTrackContextMenu({
   onRemoveTrack,
   onClose,
 }: TimelineTrackContextMenuProps) {
+  const { offlineAssetIds } = useOfflineMedia()
   const track = project?.tracks.find((candidate) => candidate.id === menu.trackId) ?? null
   if (!track) return null
   const remove = removeTrackState(track, project?.tracks ?? [])
@@ -67,6 +69,22 @@ export default function TimelineTrackContextMenu({
     ? allItems.find((candidate) => candidate.id === menu.itemId) ?? null
     : null
   const label = menu.kind === 'locked' ? `Locked track · ${track.id}` : `Track · ${track.id}`
+  const mappedFrame = track.kind === 'video'
+    ? sourceFrameMatch(project, menu.atMs, { trackId: track.id })
+    : null
+  const matchFrame = mappedFrame?.source && offlineAssetIds.has(mappedFrame.source.asset)
+    ? { source: null, reason: 'Relink this source before matching a frame' }
+    : mappedFrame
+  const openMatchFrame = () => {
+    if (!matchFrame?.source) return
+    const source = matchFrame.source
+    onClose()
+    requestAnimationFrame(() => {
+      document.dispatchEvent(new CustomEvent('cut:open-source-monitor', {
+        detail: { asset: source.asset, at_ms: source.srcMs },
+      }))
+    })
+  }
   return <ContextMenuFrame
     x={menu.x}
     y={menu.y}
@@ -76,6 +94,16 @@ export default function TimelineTrackContextMenu({
     ariaLabel={label}
   >
     <span className="tl-ctx__label" aria-hidden="true">{label}</span>
+    {matchFrame && <button
+      className="tl-ctx__item"
+      data-cut-action="match-frame-track"
+      data-cut-track-ctx="match-frame"
+      role="menuitem"
+      disabled={!matchFrame.source}
+      title={matchFrame.source ? `Open ${track.id}'s exact source frame at the playhead` : matchFrame.reason}
+      aria-description={!matchFrame.source ? matchFrame.reason : undefined}
+      onClick={openMatchFrame}
+    ><Icon name="screenPlay" size={14} /> Match Frame</button>}
     {item && <Item action="inspect" title="Select this locked clip for inspection; no edit is dispatched" onClick={() => {
       onSelect([item.id])
       document.dispatchEvent(new CustomEvent('cut:open-ui-surface', { detail: { id: 'properties' } }))
