@@ -235,11 +235,10 @@ fn version_line(prog: &std::ffi::OsStr, args: &[&str], timeout: Duration) -> Opt
 /// callers must inspect the advertised capability tokens before reporting ready.
 fn successful_command_output(
     prog: &std::ffi::OsStr,
-    args: &[&str],
+    args: &[String],
     timeout: Duration,
 ) -> Option<String> {
-    let owned_args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-    let mut command = crate::gen::agent_std_command(Path::new(prog), &owned_args).ok()?;
+    let mut command = crate::gen::agent_std_command(Path::new(prog), args).ok()?;
     let output = run_doctor_command(&mut command, timeout, "doctor capability probe").ok()?;
     if !output.status.success() {
         return None;
@@ -950,10 +949,16 @@ fn chat_auth_state(agent: &str, resolved: Option<&Path>) -> (&'static str, Strin
                 )
             }
         }
-        "antigravity" => auth_file_fallback(
-            "antigravity",
-            &[".gemini/antigravity-cli/antigravity-oauth-token"],
-            &[],
+        // Antigravity has no stable, non-interactive auth-status contract and
+        // its canonical credential layout is provider-owned. Do not pin Doctor
+        // readiness to one historical token-file path. A resolved, capable CLI
+        // is reported as unconfirmed; the bounded real turn remains the only
+        // authentication validator and surfaces an auth error if relogin is
+        // actually needed.
+        "antigravity" => (
+            "unknown",
+            "Antigravity authentication cannot be confirmed non-interactively; the existing canonical CLI session is validated by the real turn."
+                .into(),
         ),
         _ => ("unknown", "no auth probe for this agent.".into()),
     }
@@ -1023,11 +1028,13 @@ fn judge_card(
     let capability_verified = resolved
         .as_ref()
         .and_then(|path| {
-            crate::chat::broker::capability_help_args(provider).and_then(|arguments| {
-                successful_command_output(path.as_os_str(), arguments, Duration::from_secs(15))
-            })
+            crate::chat::broker::capability_probe_args(provider, Path::new(".")).and_then(
+                |arguments| {
+                    successful_command_output(path.as_os_str(), &arguments, Duration::from_secs(15))
+                },
+            )
         })
-        .map(|help| crate::chat::broker::verify_agent_capability_contract(provider, &help).is_ok())
+        .map(|output| crate::chat::broker::verify_agent_capability_probe(provider, &output).is_ok())
         .unwrap_or(false);
     let status = if !found {
         CardStatus::Missing
@@ -1842,6 +1849,13 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn antigravity_auth_is_capability_driven_not_credential_path_pinned() {
+        let (state, detail) = chat_auth_state("antigravity", Some(std::path::Path::new("agy")));
+        assert_eq!(state, "unknown");
+        assert!(detail.contains("real turn"));
     }
 
     #[test]

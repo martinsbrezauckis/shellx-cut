@@ -89,6 +89,14 @@ fn isolated_environment_keeps_auth_in_place_and_drops_parent_state() {
     assert!(!vars.contains_key(&OsString::from("CUT_AGENT_SENTINEL")));
     assert!(workspace.path().join("os-home").is_dir());
     assert!(workspace.path().join("grok-home").is_dir());
+    assert_eq!(
+        vars.get(&OsString::from("HOME")),
+        Some(&workspace.path().join("os-home").into_os_string())
+    );
+    assert_eq!(
+        vars.get(&OsString::from("GROK_HOME")),
+        Some(&workspace.path().join("grok-home").into_os_string())
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@ import test from 'node:test'
 
 import { prepareWindowsQualificationEnvironment } from '../lib/windows-installed-qualification.mjs'
 
-test('Windows signed-final generation mode stages only Claude so Codex, Grok, and Antigravity resolve from base PATH', async () => {
+test('Windows signed-final generation mode stages no provider executable so every CLI resolves canonically', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shellx-cut-windows-live-generation-env-'))
   const fixtureDir = join(root, 'stage')
   await mkdir(join(root, 'scripts/release/fixtures'), { recursive: true })
@@ -18,6 +18,9 @@ test('Windows signed-final generation mode stages only Claude so Codex, Grok, an
     'agent-chat-provider-fixture.mjs', 'agent-edit-fixture.mjs',
   ]
   for (const name of providerArtifacts) await writeFile(join(root, 'scripts/release/fixtures', name), name)
+  for (const name of ['comment-draft-adapter.py', 'judge-adapter.py']) {
+    await writeFile(join(root, 'scripts/release/fixtures', name), name)
+  }
   await writeFile(join(root, 'ui/public-tests/fixtures', 'generate-prompt-adapter.py'), 'prompt')
   await writeFile(join(root, 'ui/public-tests/fixtures', 'generate-storyboard-adapter.py'), 'storyboard')
   try {
@@ -25,25 +28,26 @@ test('Windows signed-final generation mode stages only Claude so Codex, Grok, an
       root,
       fixtureDir,
       fixtureWin: 'C:\\stage',
-      fixtureProviders: ['claude'],
+      fixtureProviders: [],
       harnessFfmpegWin: 'C:\\tools\\ffmpeg\\bin\\ffmpeg.exe',
       windowsBasePath: 'C:\\canonical-provider-bin;C:\\Windows\\System32',
       adapterPythonWin: 'C:\\perception\\python.exe',
       stageWin: 'C:\\candidate',
     })
-    for (const name of ['claude', 'claude.cmd', 'agent-edit-fixture.mjs']) {
+    for (const name of ['comment-draft-adapter.py', 'judge-adapter.py']) {
       assert.equal(await readFile(join(fixtureDir, name), 'utf8'), name)
     }
     for (const name of [
-      'codex', 'codex.cmd', 'grok', 'grok.cmd', 'agy', 'agy.cmd',
-      'agy-windows-launcher.rs', 'agy.exe', 'agent-chat-provider-fixture.mjs',
+      'claude', 'claude.cmd', 'codex', 'codex.cmd', 'grok', 'grok.cmd',
+      'agy', 'agy.cmd', 'agy-windows-launcher.rs', 'agy.exe',
+      'agent-chat-provider-fixture.mjs', 'agent-edit-fixture.mjs',
     ]) {
       await assert.rejects(readFile(join(fixtureDir, name), 'utf8'), `${name} must not shadow the canonical generation CLI`)
     }
     assert.equal(
       env.PATH,
       'C:\\stage;C:\\tools\\ffmpeg\\bin;C:\\canonical-provider-bin;C:\\Windows\\System32',
-      'the first PATH directory can provide only Claude; Codex/Grok/agy must resolve from the canonical base PATH',
+      'the staged adapter directory contains no provider executable; every CLI must resolve from the canonical base PATH or its registered install rung',
     )
   } finally {
     await rm(root, { recursive: true, force: true })

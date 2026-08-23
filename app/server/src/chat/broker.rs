@@ -262,6 +262,43 @@ pub(crate) fn capability_help_args(agent: &str) -> Option<&'static [&'static str
     }
 }
 
+/// Side-effect-free executable admission for one resolved Agent Chat route.
+/// Most providers publish every required flag in help. Grok 1.0.5 still parses
+/// the complete contained argv but hides compatibility flags such as
+/// `--no-memory`; appending `--version` makes that exact parser invocation exit
+/// before reading the prompt, login, model, MCP, memory, or session state.
+pub(crate) fn capability_probe_args(agent: &str, workspace: &Path) -> Option<Vec<String>> {
+    if agent == "grok" {
+        let mut arguments = grok_args(
+            &workspace.to_string_lossy(),
+            Some("__shellx_cut_capability_probe__"),
+        );
+        arguments.push("--version".into());
+        return Some(arguments);
+    }
+    capability_help_args(agent).map(|arguments| {
+        arguments
+            .iter()
+            .map(|argument| (*argument).to_string())
+            .collect()
+    })
+}
+
+/// Validate the output of [`capability_probe_args`]. For Grok, successful
+/// parsing of the complete contained argv is the capability proof and the
+/// banner only binds that success to the expected executable identity. Other
+/// providers retain exact advertised-help token verification.
+pub(crate) fn verify_agent_capability_probe(agent: &str, output: &str) -> Result<(), String> {
+    if agent == "grok" {
+        let normalized = output.to_ascii_lowercase();
+        if missing_required_help_tokens(&normalized, &["grok"]).is_empty() {
+            return Ok(());
+        }
+        return Err("the installed Grok capability probe did not identify Grok".into());
+    }
+    verify_agent_capability_contract(agent, output)
+}
+
 /// Version banners are informational only. Admission depends exclusively on the
 /// resolved executable's successful required-help output and exact flag contract.
 pub(crate) fn verify_agent_capability_contract(agent: &str, help: &str) -> Result<(), String> {

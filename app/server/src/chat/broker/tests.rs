@@ -177,6 +177,28 @@ fn codex_capability_contract_is_flag_based() {
 }
 
 #[test]
+fn grok_capability_probe_parses_the_complete_contained_argv_without_a_turn() {
+    let workspace = std::path::Path::new("C:\\CutProbe");
+    let arguments = capability_probe_args("grok", workspace).unwrap();
+    for required in [
+        "--prompt-file",
+        "--no-memory",
+        "--no-subagents",
+        "--no-plan",
+        "--verbatim",
+        "--version",
+    ] {
+        assert!(
+            arguments.contains(&required.to_string()),
+            "missing {required}"
+        );
+    }
+    assert_eq!(arguments.last().map(String::as_str), Some("--version"));
+    assert!(verify_agent_capability_probe("grok", "grok 1.0.5 (current)").is_ok());
+    assert!(verify_agent_capability_probe("grok", "another provider").is_err());
+}
+
+#[test]
 fn workspace_starts_empty_and_supported_providers_are_explicit() {
     let workspace = IsolatedWorkspace::create().unwrap();
     assert!(std::fs::read_dir(workspace.path())

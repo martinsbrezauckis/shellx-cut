@@ -1,20 +1,16 @@
 //! Bounded executable capability probes for Agent Chat providers.
 
-use super::{capability_help_args, verify_agent_capability_contract, LaunchEnvironment};
+use super::{capability_probe_args, verify_agent_capability_probe, LaunchEnvironment};
 use std::path::Path;
 
 async fn probe(
     agent: &str,
     executable: &Path,
-    arguments: &[&str],
+    arguments: &[String],
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<String, String> {
-    let args = arguments
-        .iter()
-        .map(|argument| (*argument).to_string())
-        .collect::<Vec<_>>();
-    let mut command = crate::gen::agent_tokio_command(executable, &args)
+    let mut command = crate::gen::agent_tokio_command(executable, arguments)
         .map_err(|error| format!("cannot probe {agent} CLI: {error}"))?;
     environment.apply(&mut command);
     command.current_dir(workspace);
@@ -55,10 +51,10 @@ async fn verify_capability_contract(
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<(), String> {
-    let arguments = capability_help_args(agent)
+    let arguments = capability_probe_args(agent, workspace)
         .ok_or_else(|| format!("agent '{agent}' has no Agent Chat launch contract"))?;
-    let help = probe(display_name, executable, arguments, environment, workspace).await?;
-    verify_agent_capability_contract(agent, &help)
+    let output = probe(display_name, executable, &arguments, environment, workspace).await?;
+    verify_agent_capability_probe(agent, &output)
 }
 
 pub(super) async fn installed_agent(
