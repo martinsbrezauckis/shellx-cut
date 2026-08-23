@@ -149,14 +149,7 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
 
     // ---- 2. standalone CPython (uv-managed; no system python dependency) -----
     progress(0.22, "installing Python runtime");
-    run_streaming(
-        &uv,
-        &["python", "install", PYTHON_VERSION],
-        "uv python install",
-        progress,
-        0.22,
-        0.40,
-    )?;
+    install_managed_python_if_missing(&uv, progress, 0.22, 0.40)?;
 
     // ---- 3. create the venv on that interpreter ------------------------------
     progress(0.42, "creating venv");
@@ -470,14 +463,7 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
 
     // ---- 2. standalone CPython 3.12 (MatAnyone2 runtime) ---------------------
     progress(0.10, "installing Python runtime");
-    run_streaming(
-        &uv,
-        &["python", "install", PYTHON_VERSION],
-        "uv python install",
-        progress,
-        0.10,
-        0.16,
-    )?;
+    install_managed_python_if_missing(&uv, progress, 0.10, 0.16)?;
 
     // ---- 3. the isolated venv (clean rebuild) --------------------------------
     progress(0.17, "creating premium venv");
@@ -667,6 +653,55 @@ fn uv_exe() -> &'static str {
     } else {
         "uv"
     }
+}
+
+/// Reuse an exact uv-managed interpreter when it is already installed.
+///
+/// This is more than an optimization on Windows. Older uv releases could leave
+/// the floating `cpython-3.12-windows-*` alias as a plain directory when the
+/// account could not create a junction. A later `uv python install 3.12.13`
+/// then tries to replace that alias and fails with `ERROR_NOT_A_REPARSE_POINT`,
+/// even though the exact patch interpreter is complete and usable. The bounded
+/// lookup disables downloads and accepts only uv-managed Python; fresh machines
+/// still take the normal sha-pinned install path.
+fn install_managed_python_if_missing(
+    uv: &Path,
+    progress: &ProgressFn,
+    band_lo: f32,
+    band_hi: f32,
+) -> Result<(), CutError> {
+    let mut probe = Command::new(uv);
+    probe.args([
+        "python",
+        "find",
+        "--managed-python",
+        "--no-python-downloads",
+        "--no-project",
+        PYTHON_VERSION,
+    ]);
+    let installed =
+        crate::dispatch::run_bounded_foreground_command(&mut probe, "managed Python lookup")
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| managed_python_path(&String::from_utf8_lossy(&output.stdout)))
+            .filter(|path| path.is_file());
+    if installed.is_some() {
+        progress(band_hi, "Python runtime already installed");
+        return Ok(());
+    }
+    run_streaming(
+        uv,
+        &["python", "install", PYTHON_VERSION],
+        "uv python install",
+        progress,
+        band_lo,
+        band_hi,
+    )
+}
+
+fn managed_python_path(stdout: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(stdout.trim());
+    (!path.as_os_str().is_empty()).then_some(path)
 }
 
 /// Run a command, streaming its stderr lines to `progress` (frac pinned at
@@ -920,6 +955,15 @@ mod tests {
             parts.iter().all(|part| part.parse::<u16>().is_ok()),
             "managed Python pin must contain only numeric version components"
         );
+    }
+
+    #[test]
+    fn managed_python_lookup_requires_one_nonempty_path() {
+        assert_eq!(
+            managed_python_path("  C:\\uv\\cpython-3.12.13\\python.exe\r\n"),
+            Some(PathBuf::from("C:\\uv\\cpython-3.12.13\\python.exe"))
+        );
+        assert_eq!(managed_python_path(" \r\n\t"), None);
     }
 
     /// Network drops are the most common real cause of a half-finished download.
