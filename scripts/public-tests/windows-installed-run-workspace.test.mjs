@@ -17,7 +17,12 @@ import {
 test('Windows runner workspace provisions C:-local runtime state while preserving WSL evidence output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shellx-cut-windows-run-workspace-'))
   const scene = join(root, 'scene.mp4')
-  const linuxPath = (windowsPath) => join(root, 'mapped', windowsPath.replaceAll(':', '_').replaceAll('\\', '_'))
+  const mappedWindowsPaths = new Map()
+  const linuxPath = (windowsPath) => {
+    const mapped = join(root, 'mapped', windowsPath.replaceAll(':', '_').replaceAll('\\', '_'))
+    mappedWindowsPaths.set(resolve(mapped), windowsPath)
+    return mapped
+  }
   const copies = []
   try {
     await writeFile(scene, 'scene')
@@ -33,7 +38,14 @@ test('Windows runner workspace provisions C:-local runtime state while preservin
       finalResumeRequest: null,
       assertFinalResumeOutput: () => {},
       roleArgs: { scene },
-      windowsPath: (path) => String.raw`\\wsl.localhost\Ubuntu-24.04${resolve(path).replaceAll('/', '\\')}`,
+      windowsPath: (path) => {
+        const requested = resolve(path)
+        for (const [mapped, windows] of mappedWindowsPaths) {
+          if (requested === mapped) return windows
+          if (requested.startsWith(`${mapped}/`)) return `${windows}\\${requested.slice(mapped.length + 1).replaceAll('/', '\\')}`
+        }
+        return String.raw`\\wsl.localhost\Ubuntu-24.04${requested.replaceAll('/', '\\')}`
+      },
       linuxPath,
       captureSync: (_command, args) => args.includes('$env:LOCALAPPDATA') ? 'C:\\Users\\Test\\AppData\\Local' : 'C:\\Windows\\System32',
       hash: () => 'a'.repeat(64),
@@ -42,8 +54,8 @@ test('Windows runner workspace provisions C:-local runtime state while preservin
         artifacts: artifactsWin,
         directories,
       }),
-      copyWindowsFile: ({ source, destinationWin }) => {
-        copies.push({ source, destinationWin })
+      copyWindowsFile: ({ source, destinationWin, ownedRootWin }) => {
+        copies.push({ source, destinationWin, ownedRootWin })
         return { path: destinationWin, sha256: 'a'.repeat(64) }
       },
       stamp: () => '2026-08-21T12-00-00-000Z',
@@ -54,7 +66,13 @@ test('Windows runner workspace provisions C:-local runtime state while preservin
     assert.equal(workspace.staged.scene, 'C:\\CutQ\\shellx-cut\\runs\\windows-installed-candidate-test\\media\\scene.mp4')
     assert.equal(workspace.nativeCompileWin, 'C:\\CutQ\\shellx-cut\\runs\\windows-installed-candidate-test\\app-home\\native-fixture-compile')
     assert.deepEqual(workspace.mediaIdentity, { scene: { sha256: 'a'.repeat(64) } })
-    assert.deepEqual(copies, [{ source: scene, destinationWin: workspace.staged.scene }])
+    assert.deepEqual(copies, [{ source: scene, destinationWin: workspace.staged.scene, ownedRootWin: workspace.stageWin }])
+    workspace.copyOwnedFile(scene, join(workspace.stage, 'installer', 'candidate.exe'))
+    workspace.copyOwnedArtifactFile(scene, join(workspace.artifacts, 'candidate.exe'))
+    assert.deepEqual(copies.slice(1), [
+      { source: scene, destinationWin: 'C:\\CutQ\\shellx-cut\\runs\\windows-installed-candidate-test\\installer\\candidate.exe', ownedRootWin: workspace.stageWin },
+      { source: scene, destinationWin: 'C:\\CutQ\\shellx-cut\\artifacts\\windows-installed-candidate-test\\candidate.exe', ownedRootWin: workspace.artifactsWin },
+    ])
     assert.equal(workspace.out, join(root, '.scratch', 'windows-installed-evidence', 'windows-installed-candidate-test'))
     for (const path of [workspace.runtimeHomeWin, workspace.projectsWin, workspace.exportWin, workspace.verifierTempWin]) {
       assert.match(path, /^[A-Za-z]:\\/)
