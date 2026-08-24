@@ -506,6 +506,21 @@ pub struct GenJson {
 /// (`item.completed` → `agent_message.text` → JSON). Returns None if no result JSON
 /// is present.
 pub fn parse_output_json(stdout: &str) -> Option<GenJson> {
+    fn generic_unavailable_reason(reason: &str) -> bool {
+        matches!(
+            reason.trim().to_ascii_lowercase().as_str(),
+            "real media generation is unavailable in this cli session"
+                | "image generation is unavailable for this session"
+                | "image generation is unavailable in this cli session"
+        )
+    }
+    fn concrete_outer_error(v: &serde_json::Value) -> Option<String> {
+        v.get("error")
+            .or_else(|| v.get("message"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(String::from)
+    }
     fn from_value(v: &serde_json::Value) -> Option<GenJson> {
         if let Some(ok) = v.get("ok").and_then(|value| value.as_bool()) {
             return Some(GenJson {
@@ -557,7 +572,23 @@ pub fn parse_output_json(stdout: &str) -> Option<GenJson> {
             .and_then(|x| x.as_str())
             .or_else(|| v.get("response").and_then(|x| x.as_str()))
         {
-            if let Some(inner) = loose(t).as_ref().and_then(from_value) {
+            if let Some(mut inner) = loose(t).as_ref().and_then(from_value) {
+                // The generation prompt supplies a generic honest-failure JSON
+                // fallback. AGY can return that fallback inside `response` while
+                // retaining the concrete image-backend failure (for example a
+                // 429 RESOURCE_EXHAUSTED with its model) in the outer `error`.
+                // Prefer that actionable provider detail, while preserving any
+                // already-specific structured inner reason.
+                if !inner.ok
+                    && inner
+                        .reason
+                        .as_deref()
+                        .is_some_and(generic_unavailable_reason)
+                {
+                    if let Some(detail) = concrete_outer_error(&v) {
+                        inner.reason = Some(detail);
+                    }
+                }
                 return Some(inner);
             }
         }
@@ -938,6 +969,21 @@ mod tests {
         assert_eq!(
             g.reason.as_deref(),
             Some("Image generation model quota exhausted (429 RESOURCE_EXHAUSTED)")
+        );
+    }
+
+    #[test]
+    fn prefers_antigravity_concrete_outer_error_over_generic_prompt_fallback() {
+        let g = parse_output_json(
+            r#"{"status":"ERROR","response":"Waiting for quota reset.\n```json\n{\"ok\":false,\"reason\":\"real media generation is unavailable in this CLI session\"}\n```","error":"failed to generate content: 429 Too Many Requests (RESOURCE_EXHAUSTED; model=gemini-3.1-flash-image)"}"#,
+        )
+        .unwrap();
+        assert!(!g.ok);
+        assert_eq!(
+            g.reason.as_deref(),
+            Some(
+                "failed to generate content: 429 Too Many Requests (RESOURCE_EXHAUSTED; model=gemini-3.1-flash-image)"
+            )
         );
     }
 }
