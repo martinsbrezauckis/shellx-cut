@@ -545,11 +545,12 @@ pub fn parse_output_json(stdout: &str) -> Option<GenJson> {
         }
         serde_json::from_str(&s[start..=end]).ok()
     }
-    // 1. direct JSON / last-object.
+    // 1. direct JSON / last-object. Provider envelopes can themselves contain
+    // the requested `{ok,...}` payload in a text field. Prefer that structured
+    // inner result before treating the outer Antigravity ERROR response as an
+    // opaque reason; otherwise progress chatter such as "Waiting for quota
+    // reset" hides the precise final provider failure.
     if let Some(v) = loose(stdout) {
-        if let Some(g) = from_value(&v) {
-            return Some(g);
-        }
         // 2. {text:"...json..."} / Antigravity {response:"...json..."} wrapper.
         if let Some(t) = v
             .get("text")
@@ -559,6 +560,9 @@ pub fn parse_output_json(stdout: &str) -> Option<GenJson> {
             if let Some(inner) = loose(t).as_ref().and_then(from_value) {
                 return Some(inner);
             }
+        }
+        if let Some(g) = from_value(&v) {
+            return Some(g);
         }
     }
     // 3. codex NDJSON: item.completed → agent_message.text → JSON.
@@ -921,6 +925,19 @@ mod tests {
         assert_eq!(
             g.reason.as_deref(),
             Some("image generation is unavailable for this session")
+        );
+    }
+
+    #[test]
+    fn prefers_antigravity_structured_failure_over_progress_chatter() {
+        let g = parse_output_json(
+            r#"{"status":"ERROR","response":"Waiting for quota reset.\n```json\n{\"ok\":false,\"reason\":\"Image generation model quota exhausted (429 RESOURCE_EXHAUSTED)\"}\n```","error":"429 Too Many Requests"}"#,
+        )
+        .unwrap();
+        assert!(!g.ok);
+        assert_eq!(
+            g.reason.as_deref(),
+            Some("Image generation model quota exhausted (429 RESOURCE_EXHAUSTED)")
         );
     }
 }
