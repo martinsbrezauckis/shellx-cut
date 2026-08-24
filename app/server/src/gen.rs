@@ -382,7 +382,14 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
         }
         "antigravity" => {
             let mut args = vec![
+                "--new-project".into(),
                 "--sandbox".into(),
+                // Native image generation is a tool call. In print mode AGY
+                // cannot display a permission prompt, so use the same bounded
+                // headless approval contract as Agent Chat. The provider is
+                // still confined to this create-only generation workspace by
+                // the native sandbox and the exact-output prompt.
+                "--dangerously-skip-permissions".into(),
                 "--output-format".into(),
                 "json".into(),
                 "--print-timeout".into(),
@@ -835,7 +842,11 @@ mod tests {
         let c = build_command("antigravity", "/scratch", Some("Gemini 3.5 Flash")).unwrap();
         assert_eq!(c.cmd, "agy");
         assert_eq!(c.prompt_transport, PromptTransport::Argument);
+        assert!(c.args.contains(&"--new-project".to_string()));
         assert!(c.args.contains(&"--sandbox".to_string()));
+        assert!(c
+            .args
+            .contains(&"--dangerously-skip-permissions".to_string()));
         assert!(!c.args.contains(&"--disable-slash-commands".to_string()));
         assert!(c.args.windows(2).any(|w| w == ["--output-format", "json"]));
         assert_eq!(&c.args[c.args.len() - 2..], ["--print", "__PROMPT_TEXT__"]);
