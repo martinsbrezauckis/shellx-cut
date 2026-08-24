@@ -49,8 +49,11 @@ pub(crate) fn project_config(cutd_exe: &str, proxy_addr: &str, proxy_actor: &str
 
 /// Build a single, non-persistent Grok turn. Built-in tools are removed and
 /// only the disposable project's `cutd` MCP server is allowed. The isolated
-/// home is deleted with the turn, so this does not depend on version-specific
-/// native-tool deny names or a deprecated `--no-memory` flag.
+/// home is deleted with the turn. `--trust` applies only to this Cut-created
+/// empty workspace and is required for Grok to start its project-scoped Cut MCP
+/// server; it does not trust the user's project or normal Grok home. This does
+/// not depend on version-specific native-tool deny names or a deprecated
+/// `--no-memory` flag.
 pub(crate) fn args(workspace: &str, model: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "--prompt-file".into(),
@@ -59,6 +62,7 @@ pub(crate) fn args(workspace: &str, model: Option<&str>) -> Vec<String> {
         "json".into(),
         "--cwd".into(),
         workspace.into(),
+        "--trust".into(),
         "--permission-mode".into(),
         "dontAsk".into(),
         "--tools".into(),

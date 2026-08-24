@@ -12,6 +12,7 @@ fn command_contract_removes_native_tools_and_allows_only_cut_mcp() {
         assert!(args.windows(2).any(|window| window == pair));
     }
     for flag in [
+        "--trust",
         "--disable-web-search",
         "--no-subagents",
         "--no-plan",

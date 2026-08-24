@@ -73,7 +73,7 @@ fn main() {
         return;
     }
     if args.iter().any(|arg| arg == "--help") {
-        println!("--print --output-format --disable-slash-commands --sandbox --log-file --print-timeout --model");
+        println!("--print --output-format --disable-slash-commands --sandbox --log-file --print-timeout --model --new-project --dangerously-skip-permissions");
         return;
     }
     let mut prompt = String::new();

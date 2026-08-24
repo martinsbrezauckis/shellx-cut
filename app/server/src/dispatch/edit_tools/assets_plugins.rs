@@ -2147,8 +2147,11 @@ async fn assets_generate_run(
         })?;
     let prompt =
         crate::gen::build_prompt(&a.provider, &kind, &a.prompt, &out_str, &reference_paths);
-    let timeout =
-        std::time::Duration::from_millis(a.timeout_ms.unwrap_or(240_000).clamp(10_000, 1_800_000));
+    let timeout = std::time::Duration::from_millis(
+        a.timeout_ms
+            .unwrap_or_else(|| crate::gen::default_timeout_ms(&a.provider))
+            .clamp(10_000, 1_800_000),
+    );
 
     state.jobs.progress(
         generation_job_id,

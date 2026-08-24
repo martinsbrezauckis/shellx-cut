@@ -283,6 +283,19 @@ pub fn supports_kind(provider: &str, kind: &str) -> bool {
     }
 }
 
+/// Default generation deadline when callers do not provide `timeout_ms`.
+/// Image providers can legitimately spend several minutes in their native
+/// generation flow. Antigravity's outer deadline stays one minute beyond its
+/// own ten-minute CLI deadline so Cut can collect the provider's terminal
+/// result instead of racing it.
+pub fn default_timeout_ms(provider: &str) -> u64 {
+    match provider {
+        "grok" => 600_000,
+        "antigravity" => 660_000,
+        _ => 240_000,
+    }
+}
+
 /// The default output filename for a kind (extension drives nothing — ffprobe
 /// validates the bytes — but a sensible name helps the agent CLI).
 pub fn output_filename(kind: &str) -> &'static str {
@@ -787,6 +800,10 @@ mod tests {
         assert!(supports_kind("antigravity", "image"));
         assert!(!supports_kind("antigravity", "video"));
         assert!(!supports_kind("nope", "image"));
+        assert_eq!(default_timeout_ms("codex"), 240_000);
+        assert_eq!(default_timeout_ms("grok"), 600_000);
+        assert_eq!(default_timeout_ms("antigravity"), 660_000);
+        assert_eq!(default_timeout_ms("nope"), 240_000);
     }
 
     #[test]

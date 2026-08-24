@@ -264,7 +264,9 @@ route to the same surface registry.
   containment flags are verified before each turn. Codex keeps the user's normal configuration, native sandbox, and
   permissions; Cut neither copies nor rewrites its login files. Grok receives a
   disposable config/home with native tools disabled and only Cut's filtered MCP
-  route, while its existing login file remains in place. Antigravity keeps its
+  route, while its existing login file remains in place. Cut grants trust only
+  to that newly created empty workspace for the duration of the turn so Grok
+  can start its project-scoped Cut MCP server. Antigravity keeps its
   normal settings and login while Cut creates a new disposable sandboxed project
   containing one Cut-only MCP plugin. Headless approval is bounded by that empty
   workspace and Cut's filtered server-side verb policy; the resolved CLI's full

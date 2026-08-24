@@ -39,7 +39,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   sandbox, and permissions; Cut adds its filtered MCP server without copying or
 >   rewriting Codex login files. Grok receives a disposable config/home with
 >   native tools disabled and only Cut's MCP route, while retaining its existing
->   login file in place. Antigravity keeps its normal settings, sandbox, and
+>   login file in place. Cut trusts only that newly created empty workspace for
+>   the turn so Grok can start the project-scoped Cut MCP server. Antigravity
+>   keeps its normal settings, sandbox, and
 >   login with a new disposable project containing one Cut-only MCP plugin.
 >   Its headless approval mode is bounded by that empty sandbox and Cut's filtered
 >   server-side verb policy; the resolved CLI's complete launch contract is
@@ -167,7 +169,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   own generation CLI. `assets.generate` supports Codex images, Grok Imagine
 >   images/video, and Antigravity (`agy`) images only; Antigravity uses its
 >   native sandboxed non-interactive contract with its existing login/settings
->   left in place. Generation accepts up to four registered image/video
+>   left in place. Omitted generation deadlines are 4m for Codex, 10m for Grok,
+>   and 11m for Antigravity; explicit values remain bounded to 10s–30m.
+>   Generation accepts up to four registered image/video
 >   references and an explicit variation label; `assets.generated_list` exposes
 >   a path-light, integrity-checked project history for reference and retry.
 > - **Recipe layer** — `recipe.list` / `recipe.describe` / `recipe.run`:

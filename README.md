@@ -35,7 +35,9 @@ CLI must advertise Cut's required Agent Chat flags before every turn.
 Claude uses Cut's contained capability route with its required containment flags;
 Codex uses the user's normal Codex
 configuration, native sandbox, and permissions. Grok runs from a disposable
-config and home with native tools disabled and only Cut's MCP route available.
+config and home with native tools disabled and only Cut's MCP route available;
+Cut trusts only that newly created empty workspace for the duration of the turn
+so Grok can start its project-scoped Cut MCP server.
 Antigravity keeps the user's normal settings and login while
 Cut starts a new disposable project containing one Cut-only MCP plugin. Its
 headless approval mode is bounded by that empty sandbox and Cut's filtered
