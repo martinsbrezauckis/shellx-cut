@@ -2527,7 +2527,7 @@ mod tests {
         assert_eq!(mid.len() as u32, lt.width * lt.height * 4);
         // Some pixel is opaque at the hold (the bar/text are visible).
         assert!(
-            mid.chunks_exact(4).any(|p| p[3] > 0),
+            mid.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
             "lower_third has visible pixels mid-hold"
         );
 
@@ -2564,7 +2564,7 @@ mod tests {
             let mid = render_frame(&spec, frame_count(&spec) / 2).expect("preset renders");
             assert_eq!(mid.len() as u32, spec.width * spec.height * 4);
             assert!(
-                mid.chunks_exact(4).any(|p| p[3] > 0),
+                mid.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
                 "preset has visible pixels"
             );
         }
@@ -2600,12 +2600,15 @@ mod tests {
         // First cue visible early (frame 5 ≈ 0.16), third cue NOT yet.
         let early = render_frame(&spec, 5).expect("early frame");
         assert!(
-            early.chunks_exact(4).any(|p| p[3] > 0),
+            early.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
             "cue 'one' visible early"
         );
         // Late in the title (frame 85 ≈ 0.94) something is visible (cue 'three').
         let late = render_frame(&spec, 85).expect("late frame");
-        assert!(late.chunks_exact(4).any(|p| p[3] > 0), "a cue visible late");
+        assert!(
+            late.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
+            "a cue visible late"
+        );
         // A very short cue must not produce a degenerate (equal-t) keyframe pair.
         let short = kinetic(
             &[(0.5, 0.51, "x".into())],
@@ -2698,7 +2701,7 @@ mod tests {
         // A mid frame (peak opacity) renders SOME opaque text pixels.
         let mid = render_frame(&spec, 15).expect("mid frame renders");
         assert!(
-            mid.chunks_exact(4).any(|p| p[3] > 0),
+            mid.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
             "free title text is visible"
         );
 
@@ -2787,7 +2790,7 @@ mod tests {
                 .unwrap_or_else(|_| unreachable!("template {} mid frame renders", info.name));
             assert_eq!(mid.len() as u32, spec.width * spec.height * 4);
             assert!(
-                mid.chunks_exact(4).any(|p| p[3] > 0),
+                mid.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
                 "template {} has visible pixels mid-hold",
                 info.name
             );
@@ -2821,7 +2824,9 @@ mod tests {
         // which a pure white/grey base could never produce.
         let f = render_frame(&spec, frame_count(&spec) / 2).expect("emphasis frame");
         let red = f
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[3] > 120 && p[0] > 170 && p[1] < 90 && p[2] < 90);
         assert!(red, "the emphasized word renders in the accent color");
     }
@@ -2866,7 +2871,9 @@ mod tests {
         let opaque = |f: u32| {
             render_frame(&spec, f)
                 .unwrap()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|p| p[3] > 40)
                 .count()
         };
@@ -2888,7 +2895,7 @@ mod tests {
     #[test]
     fn typewriter_reveals_progressively() {
         let spec = tpl_typewriter("HELLO WORLD", 1280, 720, 30, 3000, "#FFFFFF", 80.0);
-        let opaque = |buf: &[u8]| buf.chunks_exact(4).filter(|p| p[3] > 40).count();
+        let opaque = |buf: &[u8]| buf.as_chunks::<4>().0.iter().filter(|p| p[3] > 40).count();
         let early = render_frame(&spec, frame_count(&spec) / 10).expect("early frame");
         let late = render_frame(&spec, frame_count(&spec) * 65 / 100).expect("late frame");
         assert!(
@@ -3026,7 +3033,7 @@ mod tests {
             let mid = render_frame(&spec, frame_count(&spec) / 2)
                 .unwrap_or_else(|_| unreachable!("shape {kind} renders"));
             assert!(
-                mid.chunks_exact(4).any(|p| p[3] > 0),
+                mid.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
                 "shape {kind} has visible pixels"
             );
         }
@@ -3057,7 +3064,7 @@ mod tests {
         .unwrap();
         let f = render_frame(&o, frame_count(&o) / 2).expect("outline renders");
         assert!(
-            f.chunks_exact(4).any(|p| p[3] > 0),
+            f.as_chunks::<4>().0.iter().any(|p| p[3] > 0),
             "outline border visible"
         );
     }
@@ -3088,7 +3095,9 @@ mod tests {
         let ink = |s: &TitleSpec| {
             render_frame(s, frame_count(s) / 2)
                 .unwrap()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|px| px[3] > 40)
                 .count()
         };
@@ -3099,7 +3108,9 @@ mod tests {
         // The head is red (#FF0000) — present in the arrow frame.
         let f = render_frame(&arrow, frame_count(&arrow) / 2).unwrap();
         assert!(
-            f.chunks_exact(4)
+            f.as_chunks::<4>()
+                .0
+                .iter()
                 .any(|px| px[3] > 120 && px[0] > 170 && px[1] < 80 && px[2] < 80),
             "arrow renders in the stroke color"
         );
@@ -3192,7 +3203,9 @@ mod tests {
         assert_eq!(max_alpha(&buf), 255, "opaque rect should produce alpha 255");
         // And it should be red where painted: find a pixel with high R, low G/B.
         let red_pixel = buf
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[3] == 255 && p[0] > 200 && p[1] < 40 && p[2] < 40);
         assert!(red_pixel, "expected a solid red opaque pixel from the rect");
     }

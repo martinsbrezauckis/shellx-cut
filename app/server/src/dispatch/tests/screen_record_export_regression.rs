@@ -135,7 +135,9 @@ fn audio_rms(path: &Path, start_s: f64) -> f64 {
     );
     let samples: Vec<f64> = output
         .stdout
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f64)
         .collect();
     assert!(!samples.is_empty(), "expected decoded audio samples");

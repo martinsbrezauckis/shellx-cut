@@ -69,7 +69,7 @@ fn record_packet(
         .writer
         .as_mut()
         .ok_or_else(|| "system-audio WAV writer was unavailable".to_string())?;
-    for sample in bytes.chunks_exact(2) {
+    for sample in bytes.as_chunks::<2>().0 {
         writer
             .write_sample(i16::from_le_bytes([sample[0], sample[1]]))
             .map_err(|error| error.to_string())?;

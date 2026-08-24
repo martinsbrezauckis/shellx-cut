@@ -261,7 +261,7 @@ fn random_base64url_128() -> io::Result<String> {
     getrandom::getrandom(&mut bytes)
         .map_err(|error| io::Error::other(format!("obtain staging randomness: {error}")))?;
     let mut token = String::with_capacity(WINDOWS_WGC_STAGE_TOKEN_LEN);
-    for chunk in bytes[..15].chunks_exact(3) {
+    for chunk in bytes[..15].as_chunks::<3>().0 {
         token.push(ALPHABET[usize::from(chunk[0] >> 2)] as char);
         token.push(ALPHABET[usize::from((chunk[0] & 0x03) << 4 | chunk[1] >> 4)] as char);
         token.push(ALPHABET[usize::from((chunk[1] & 0x0f) << 2 | chunk[2] >> 6)] as char);

@@ -240,7 +240,9 @@ fn decode_process_loopback_packet(
         })?;
 
     Ok(data[..expected]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
         .collect())
 }
