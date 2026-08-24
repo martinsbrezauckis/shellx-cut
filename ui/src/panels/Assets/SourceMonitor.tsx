@@ -47,6 +47,7 @@ function formatTime(ms: number): string {
 export default function SourceMonitor({ asset, project, playheadMs, initialMs = 0, onProjectChanged, onClose }: SourceMonitorProps) {
   const mediaRef = useRef<HTMLMediaElement | null>(null)
   const overwriteButtonRef = useRef<HTMLButtonElement | null>(null)
+  const overwriteFocusPending = useRef(false)
   const backdropArmedAt = useRef(Date.now() + 500)
   const overlay = useBlockingOverlay<HTMLElement>(onClose)
   const initialSeekApplied = useRef(false)
@@ -199,6 +200,15 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
           ? 'Overwrite is running'
           : ''
 
+  useEffect(() => {
+    if (operation !== null || !overwriteFocusPending.current) return
+    // Effects run after React has committed the enabled button. Focusing from
+    // the async handler's finally block can race that commit and silently
+    // leave focus on document.body in native WebView2/WKWebView.
+    overwriteFocusPending.current = false
+    overwriteButtonRef.current?.focus({ preventScroll: true })
+  }, [operation])
+
   const overwrite = async () => {
     const sourceIn = Math.max(0, Math.round(inMs))
     const sourceOut = Math.min(durationMs, Math.round(outMs))
@@ -233,11 +243,8 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
     } catch {
       setNote('Overwrite failed: the editor did not respond')
     } finally {
+      overwriteFocusPending.current = true
       setOperation(null)
-      // Keep the keyboard route in the modal after the async engine response.
-      // Without this, a rejected verb can leave focus on document.body and make
-      // the normal Escape-to-close behavior unavailable until the user tabs in.
-      requestAnimationFrame(() => overwriteButtonRef.current?.focus({ preventScroll: true }))
     }
   }
 

@@ -234,6 +234,10 @@ test('Windows run cleanup accepts only its exact direct C: child and rejects rep
   assert.match(cleanupScript, /GetDirectoryName/)
   assert.match(cleanupScript, /FileAttributes]::ReparsePoint/)
   assert.match(cleanupScript, /\[System[.]IO[.]Directory\]::Delete/)
+  assert.match(cleanupScript, /Remove-OwnedTreeTolerant/)
+  assert.match(cleanupScript, /catch \[System[.]IO[.]DirectoryNotFoundException\] \{\}/)
+  assert.match(cleanupScript, /owned directory contains a reparse entry/)
+  assert.match(cleanupScript, /if\(\$null -eq \$remaining\)\{break\}/)
   assert.doesNotMatch(cleanupScript, /Remove-Item/)
   assert.throws(
     () => removeWindowsInstalledRunDirectory({
