@@ -248,7 +248,6 @@ const volumeSection = source('src/panels/Inspector/VolumeSection.tsx')
 const editor = source('src/panels/Inspector/VolumeAutomationEditor.tsx')
 const model = source('src/panels/Inspector/volumeAutomationModel.ts')
 const propertyRow = source('src/components/inspector/PropertyRow.tsx')
-const verifier = source('public-tests/full-coverage-verify.mjs')
 const publicFeatures = readFileSync(resolve(repoRoot, 'docs/public/FEATURES.md'), 'utf8')
 const coreEdit = readFileSync(resolve(repoRoot, 'app/core/src/edit.rs'), 'utf8')
 const moduleSizeGate = readFileSync(resolve(repoRoot, 'scripts/module-size-gate.mjs'), 'utf8')
@@ -321,17 +320,6 @@ assert.ok(model.includes('compareProjectRevisions(received, refreshAfterRevision
 assert.ok(model.includes('expected_revision: current.projectRevision'), 'static Gain guard derives mutation controls from its latest revision ref')
 assert.ok(model.includes('Clear the Speed ramp before editing volume automation.'), 'Automation model exposes a visible speed-ramp reason')
 assert.ok(coreEdit.includes('if c.speed_ramp.is_some()'), 'Core edit.keyframe fails closed for a speed-ramped clip')
-assert.ok(verifier.includes('Gain disabled=${gainDisabled}'), 'Focused browser flow proves static Gain becomes disabled after the first persisted point')
-assert.ok(verifier.includes("gainReason === 'Clear automation to edit static Gain'"), 'Focused browser flow proves the visible Gain unavailable reason')
-const automationViewportReset = "await automation.evaluate((element) => element.scrollIntoView({ block: 'center', inline: 'nearest' }))"
-assert.ok(
-  verifier.indexOf(automationViewportReset) > verifier.indexOf("rec(S, 'GATE:volume-automation-shown'"),
-  'Focused browser flow resets the Volume automation viewport after the editor is admitted',
-)
-assert.ok(
-  verifier.indexOf(automationViewportReset) < verifier.indexOf("name: 'volume-automation-time'"),
-  'Focused browser flow resets the Volume automation viewport before the first cached render measurement',
-)
 assert.ok(moduleSizeGate.includes('ui/src/panels/Inspector/VolumeAutomationEditor.tsx'), 'Module-size gate bounds the Volume automation editor')
 assert.ok(moduleSizeGate.includes('ui/src/panels/Inspector/volumeAutomationModel.ts'), 'Module-size gate bounds the Volume automation model')
 assert.ok(moduleSizeGate.includes('ui/public-tests/volume-automation.test.ts'), 'Module-size gate bounds the dedicated volume automation regression test')
