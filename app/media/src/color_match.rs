@@ -99,7 +99,7 @@ impl ChannelStats {
         let (mut sr2, mut sg2, mut sb2) = (0.0_f64, 0.0_f64, 0.0_f64);
         let (mut sy, mut sy2) = (0.0_f64, 0.0_f64);
         let (mut sc, mut sc2) = (0.0_f64, 0.0_f64);
-        for px in buf.chunks_exact(3) {
+        for px in buf.as_chunks::<3>().0 {
             let (r, g, b) = (px[0] as f64, px[1] as f64, px[2] as f64);
             sr += r;
             sg += g;
@@ -428,12 +428,13 @@ fn highlight_neutral_warmth(buf: &[u8]) -> Option<f64> {
         return None;
     }
     let luma = |px: &[u8]| 0.299 * px[0] as f64 + 0.587 * px[1] as f64 + 0.114 * px[2] as f64;
-    let max_luma = buf.chunks_exact(3).map(luma).fold(0.0_f64, f64::max);
+    let pixels = buf.as_chunks::<3>().0;
+    let max_luma = pixels.iter().map(|px| luma(px)).fold(0.0_f64, f64::max);
     let luma_hi = max_luma * 0.85;
     const CHROMA_MAX: f64 = 25.0;
     const MIN_PIXELS: usize = 16;
     let (mut sr, mut sb, mut n) = (0.0_f64, 0.0_f64, 0usize);
-    for px in buf.chunks_exact(3) {
+    for px in pixels {
         let (r, g, b) = (px[0] as f64, px[1] as f64, px[2] as f64);
         let y = 0.299 * r + 0.587 * g + 0.114 * b;
         if y < luma_hi {
