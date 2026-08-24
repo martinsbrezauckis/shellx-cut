@@ -76,8 +76,10 @@ browser from another origin ─────> Origin/Host/Fetch-Metadata guard (r
 4. Hostile project content tries to steer `agent.chat` through native tools or
    broader Cut MCP verbs. Every brokered route forwards an attributed restricted
    MCP marker, so the server filters Cut verbs at both discovery and invocation.
-   Claude and Grok also restrict native tools; Codex and Antigravity intentionally
-   keep their normal user-configured native capabilities. None of these routes
+   Claude and Grok also restrict native tools; Codex keeps its normal
+   user-configured native capabilities. Antigravity retains its native toolset
+   but runs in a new empty sandboxed project with only Cut's filtered MCP plugin
+   added; unattended approval is bounded to that disposable turn. None of these routes
    turns local TCP into authenticated per-user access.
 
 ## Residual risk and operator guidance

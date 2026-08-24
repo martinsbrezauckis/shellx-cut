@@ -648,8 +648,8 @@ async fn agent_chat_turn_review(
 /// editing (the headline agent-chat feature). Claude uses its contained
 /// capability contract; Codex uses the user's normal native CLI configuration and sandbox;
 /// Grok uses a disposable home/config with only Cut's MCP route and its existing
-/// login file retained in place. Antigravity uses its native sandbox and user
-/// permission policy with a workspace-local Cut MCP entry. All run from a fresh disposable cwd connected
+/// login file retained in place. Antigravity uses a new sandboxed project with
+/// one disposable Cut-only MCP plugin and bounded headless approval. All run from a fresh disposable cwd connected
 /// to THIS running serve (the same open project the UI shows). The op-log is the receipt
 /// for every reversible Cut verb the selected agent applies.
 /// NO model is hosted; the CLI's logged-in subscription does the reasoning. The
@@ -922,8 +922,10 @@ pub(in crate::dispatch) async fn agent_chat(
             None,
         );
     };
-    // Providers may declare an additional workspace-local config file.
-    if let Some((rel, contents)) = &cmd.config_file {
+    // Providers may declare workspace-local config files. Antigravity uses a
+    // disposable plugin marker plus its MCP configuration; no global provider
+    // configuration or login material is changed.
+    for (rel, contents) in &cmd.config_files {
         let cfg_path = ws.join(rel);
         if let Some(parent) = cfg_path.parent() {
             let _ = std::fs::create_dir_all(parent);

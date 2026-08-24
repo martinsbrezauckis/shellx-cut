@@ -102,8 +102,8 @@ pub struct ChatCommand {
     /// Claude and Codex receive the prompt on STDIN; other providers use a
     /// provider-specific placeholder that dispatch resolves after prompt build.
     pub via_stdin: bool,
-    /// Optional provider-specific workspace-local config file.
-    pub config_file: Option<(String, String)>,
+    /// Provider-specific workspace-local config files, when required.
+    pub config_files: Vec<(String, String)>,
 }
 
 /// Build the chat-CLI invocation for `agent`.
@@ -122,13 +122,13 @@ pub fn build_command(
             cmd: agent_path.into(),
             args: broker::claude_args(mcp_config_path, model),
             via_stdin: true,
-            config_file: None,
+            config_files: vec![],
         }),
         "codex" => Some(ChatCommand {
             cmd: agent_path.into(),
             args: broker::codex_args(cutd_exe, proxy_addr, proxy_actor, model),
             via_stdin: true,
-            config_file: None,
+            config_files: vec![],
         }),
         "grok" => {
             let workspace = std::path::Path::new(mcp_config_path).parent()?;
@@ -137,10 +137,10 @@ pub fn build_command(
                 cmd: agent_path.into(),
                 args: broker::grok_args(&workspace, model),
                 via_stdin: false,
-                config_file: Some((
+                config_files: vec![(
                     ".grok/config.toml".into(),
                     broker::grok_project_config(cutd_exe, proxy_addr, proxy_actor),
-                )),
+                )],
             })
         }
         "antigravity" => {
@@ -150,10 +150,16 @@ pub fn build_command(
                 cmd: agent_path.into(),
                 args: broker::antigravity_args(&workspace, model),
                 via_stdin: false,
-                config_file: Some((
-                    ".agents/mcp_config.json".into(),
-                    broker::antigravity_project_config(cutd_exe, proxy_addr, proxy_actor),
-                )),
+                config_files: vec![
+                    (
+                        ".agents/plugins/shellx-cut/plugin.json".into(),
+                        broker::antigravity_plugin_manifest(),
+                    ),
+                    (
+                        ".agents/plugins/shellx-cut/mcp_config.json".into(),
+                        broker::antigravity_project_config(cutd_exe, proxy_addr, proxy_actor),
+                    ),
+                ],
             })
         }
         _ => None,
@@ -563,7 +569,7 @@ mod tests {
         assert_eq!(c.cmd, "/opt/homebrew/bin/claude");
         assert!(c.via_stdin);
         assert!(
-            c.config_file.is_none(),
+            c.config_files.is_empty(),
             "claude wires MCP inline via --mcp-config"
         );
         // points the agent at OUR mcp config
@@ -626,7 +632,7 @@ mod tests {
         .unwrap();
         assert_eq!(command.cmd, "/usr/local/bin/codex");
         assert!(command.via_stdin);
-        assert!(command.config_file.is_none());
+        assert!(command.config_files.is_empty());
         assert!(command.args.starts_with(&[
             "exec".into(),
             "-".into(),
@@ -679,7 +685,7 @@ mod tests {
             .args
             .windows(2)
             .any(|w| w == ["--model", "grok-code-fast-1"]));
-        let (path, contents) = command.config_file.unwrap();
+        let (path, contents) = command.config_files.into_iter().next().unwrap();
         assert_eq!(path, ".grok/config.toml");
         assert!(contents.contains("[mcp_servers.cutd]"));
         assert!(contents.contains("command = \"/opt/shellx/cutd\""));
@@ -705,8 +711,12 @@ mod tests {
             &command.args[command.args.len() - 2..],
             ["--print", "__PROMPT_TEXT__"]
         );
-        let (path, contents) = command.config_file.unwrap();
-        assert_eq!(path, ".agents/mcp_config.json");
+        assert_eq!(command.config_files.len(), 2);
+        let (manifest_path, manifest) = &command.config_files[0];
+        assert_eq!(manifest_path, ".agents/plugins/shellx-cut/plugin.json");
+        assert!(manifest.contains("shellx-cut"));
+        let (path, contents) = &command.config_files[1];
+        assert_eq!(path, ".agents/plugins/shellx-cut/mcp_config.json");
         assert!(contents.contains("\"cutd\""));
         assert!(contents.contains("agent:chat-test:agent.chat"));
         assert!(contents.contains("SHELLX_CUT_AGENT_CONTAINED"));
@@ -843,7 +853,7 @@ mod tests {
         );
         assert_eq!(
             security_posture("antigravity"),
-            Some("native CLI: verifies its sandbox and non-interactive flags before each turn")
+            Some("sandboxed unattended turn: disposable Cut-only MCP plugin")
         );
         // A non-chat agent (the antigravity judge rung, or anything unknown) has none.
         assert_eq!(security_posture("agy"), None);

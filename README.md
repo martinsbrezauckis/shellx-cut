@@ -36,9 +36,10 @@ Claude uses Cut's contained capability route with its required containment flags
 Codex uses the user's normal Codex
 configuration, native sandbox, and permissions. Grok runs from a disposable
 config and home with native tools disabled and only Cut's MCP route available.
-Antigravity keeps the user's normal settings, sandbox, and permissions while
-Cut adds a workspace-local MCP entry. Cut does not copy or rewrite provider
-login files. Each route can inspect the
+Antigravity keeps the user's normal settings and login while
+Cut starts a new disposable project containing one Cut-only MCP plugin. Its
+headless approval mode is bounded by that empty sandbox and Cut's filtered
+server-side verb policy. Cut does not copy or rewrite provider login files. Each route can inspect the
 open project and make reversible in-project edits. Review every resulting edit,
 especially when selecting a local CLI that retains its own native tools and
 integrations.

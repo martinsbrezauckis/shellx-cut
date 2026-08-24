@@ -1808,7 +1808,7 @@ mod tests {
             ),
             (
                 "judge.antigravity",
-                "native CLI: verifies its sandbox and non-interactive flags before each turn",
+                "sandboxed unattended turn: disposable Cut-only MCP plugin",
             ),
         ] {
             let c = cards.iter().find(|c| c.id == id).expect("chat-agent card");

@@ -73,13 +73,17 @@ capabilities and `--help` flags, and refuses it when that provider's required
 launch contract is absent.
 Every provider's version text is informational only; required containment flags
 decide admission. Claude uses a contained capability contract; Codex and Grok are likewise
-capability-verified; Antigravity must advertise Cut's sandbox and
-non-interactive launch flags on every platform, including Windows. An upstream
+capability-verified; Antigravity must advertise Cut's sandbox, new-project,
+non-interactive, and unattended-approval launch flags on every platform, including Windows. An upstream
 CLI must not silently weaken a selected route's policy.
 
 Each supported turn starts in a new empty disposable directory. Claude and
-Grok use provider-specific restricted environments; Codex and Antigravity keep
-their normal user configuration, sandbox, permissions, and login routing. Each
+Grok use provider-specific restricted environments; Codex keeps its normal user
+configuration, sandbox, permissions, and login routing. Antigravity keeps its
+normal settings and login but starts a new sandboxed project with a disposable
+Cut-only MCP plugin. Because headless Antigravity cannot prompt for MCP calls,
+Cut enables its unattended mode for that turn; the empty workspace, prompt
+policy, and server-side filtered Cut MCP surface bound that approval. Each
 route passes an attributed restricted marker only to its spawned `cutd mcp`
 child. The server requires both that marker and the `agent:*:agent.chat` actor
 before it filters Cut tools at discovery and invocation; a normal
@@ -112,10 +116,11 @@ checkpoint, and guarded-revert review.
 
 Grok uses a disposable config/home with native tools disabled and only the
 live Cut MCP child while leaving its existing login file in place. Codex and
-Antigravity intentionally retain their provider-native capabilities according
-to the user's own configuration, but their Cut MCP child receives the same
-server-enforced restricted tool surface as Claude and Grok. Review every edit,
-especially for a native-policy provider.
+Antigravity intentionally retain provider-native capabilities, but Antigravity
+runs them inside its empty sandboxed project and only Cut's filtered MCP plugin
+is added. Their Cut MCP child receives the same server-enforced restricted tool
+surface as Claude and Grok. Review every edit, especially for a native-policy
+provider.
 
 This is a provider capability policy, not an operating-system sandbox. Each
 CLI process still runs as the user's account and contacts its provider; Cut

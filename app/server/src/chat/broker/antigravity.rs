@@ -10,11 +10,21 @@ const REQUIRED_HELP_TOKENS: &[&str] = &[
     "--log-file",
     "--print-timeout",
     "--model",
+    "--new-project",
+    "--dangerously-skip-permissions",
 ];
 
+/// Marker for a workspace-local plugin. Antigravity only discovers MCP
+/// configuration from its global config or an enabled plugin; the disposable
+/// plugin keeps Cut's MCP route scoped to this one isolated turn.
+pub(crate) fn plugin_manifest() -> String {
+    serde_json::to_string_pretty(&serde_json::json!({ "name": "shellx-cut" }))
+        .expect("Antigravity plugin manifest is serializable")
+}
+
 /// Add only the live Cut MCP server to this turn's disposable workspace.
-/// Antigravity keeps its normal login, settings, sandbox, and permission policy;
-/// Cut neither copies credentials nor rewrites global MCP configuration.
+/// Antigravity keeps its normal login and settings; Cut neither copies
+/// credentials nor rewrites global MCP configuration.
 pub(crate) fn project_config(cutd_exe: &str, proxy_addr: &str, proxy_actor: &str) -> String {
     let environment = serde_json::Map::from_iter([
         (
@@ -49,7 +59,13 @@ pub(crate) fn project_config(cutd_exe: &str, proxy_addr: &str, proxy_actor: &str
 /// after all provider-independent prompt construction is complete.
 pub(crate) fn args(workspace: &str, model: Option<&str>) -> Vec<String> {
     let mut args = vec![
+        "--new-project".into(),
         "--sandbox".into(),
+        // Headless Antigravity cannot show MCP confirmations and otherwise
+        // soft-denies every tool call. This broad provider flag is bounded by
+        // the empty disposable workspace, native sandbox, prompt policy, and
+        // the plugin's single server-side-filtered Cut MCP surface.
+        "--dangerously-skip-permissions".into(),
         "--disable-slash-commands".into(),
         "--output-format".into(),
         "json".into(),
@@ -89,6 +105,8 @@ mod tests {
     fn command_uses_native_sandbox_and_prompt_is_last() {
         let args = args("/tmp/cut-chat", Some("Gemini 3.5 Flash"));
         assert!(args.contains(&"--sandbox".into()));
+        assert!(args.contains(&"--new-project".into()));
+        assert!(args.contains(&"--dangerously-skip-permissions".into()));
         assert!(args.contains(&"--disable-slash-commands".into()));
         assert!(args
             .windows(2)
@@ -97,11 +115,12 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--model", "Gemini 3.5 Flash"]));
         assert_eq!(&args[args.len() - 2..], ["--print", "__PROMPT_TEXT__"]);
-        assert!(!args.contains(&"--dangerously-skip-permissions".into()));
     }
 
     #[test]
     fn workspace_config_contains_only_the_live_cut_mcp() {
+        let manifest: serde_json::Value = serde_json::from_str(&plugin_manifest()).unwrap();
+        assert_eq!(manifest["name"], "shellx-cut");
         let config = project_config(
             "C:\\Program Files\\ShellX Cut\\cutd.exe",
             "127.0.0.1:6161",

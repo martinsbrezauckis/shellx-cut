@@ -635,10 +635,11 @@ Codex keeps the user's normal configuration, native sandbox, and permissions;
 Cut adds the live project's MCP server and does not copy or rewrite Codex login
 files. Grok receives a disposable config/home with native tools disabled and
 only the live Cut MCP server; its existing auth file remains in place and is
-never copied or rewritten. Antigravity keeps its normal settings, native
-sandbox, permissions, and login while Cut adds a workspace-local MCP entry;
-the resolved CLI must advertise Cut's required sandbox and non-interactive flags
-before each turn, including on Windows. See [SECURITY.md](../../SECURITY.md).
+never copied or rewritten. Antigravity keeps its normal settings and login while
+Cut creates a new disposable sandboxed project containing one Cut-only MCP
+plugin. Its headless approval mode is bounded by that empty workspace and Cut's
+filtered server-side verb policy; the resolved CLI must advertise the complete
+launch contract before each turn, including on Windows. See [SECURITY.md](../../SECURITY.md).
 
 Every launched turn also returns a review contract:
 
@@ -748,7 +749,7 @@ replace it with the value shown by `/api/agent` or Settings > Agent control.
 | Claude Code | `claude mcp add --scope user shellx-cut -- "/absolute/path/to/cutd" mcp` | `claude mcp get shellx-cut` or `claude mcp list` health-checks approved servers | Claude defaults to `local`; the shown `user` scope makes Cut available across projects. `project` is also supported. |
 | Codex | `codex mcp add shellx-cut -- "/absolute/path/to/cutd" mcp` | `codex mcp get shellx-cut --json` or `codex mcp list --json` confirms the stored configuration | Codex stores the entry in `~/.codex/config.toml`; its add command has no scope flag. Configuration presence alone is not a live handshake. |
 | Grok Build | `grok mcp add --scope user shellx-cut -- "/absolute/path/to/cutd" mcp` | `grok mcp doctor shellx-cut` performs command, handshake, and tool-discovery checks | Grok defaults to `user` and also supports `project`. |
-| Antigravity CLI | Add the `mcpServers` block below to `~/.gemini/config/mcp_config.json` or the workspace's `.agents/mcp_config.json` | Open `/mcp` to inspect status, reload the server, and read connection logs | The client has no `agy mcp add` subcommand. Global and workspace-local JSON configuration are supported. |
+| Antigravity CLI | `agy mcp add shellx-cut /absolute/path/to/cutd mcp` | `agy mcp list` confirms configuration; open `/mcp` for live status and connection logs | The command writes the user-level `~/.gemini/config/mcp_config.json` entry. Configuration presence alone is not a live handshake. |
 
 Claude Code may alternatively use a project `.mcp.json`:
 
@@ -761,8 +762,8 @@ Claude Code may alternatively use a project `.mcp.json`:
 ```
 
 Claude Desktop (`claude_desktop_config.json`) uses the same `mcpServers` block.
-Antigravity CLI uses the same JSON shape. For the global or workspace-local
-file, configure the exact packaged executable rather than relying on `PATH`:
+Antigravity CLI stores the same JSON shape in its global user configuration.
+If configuring that file directly, use the exact packaged executable rather than relying on `PATH`:
 
 ```json
 {

@@ -11,7 +11,8 @@ use std::path::Path;
 #[path = "broker/antigravity.rs"]
 mod antigravity;
 pub(crate) use antigravity::{
-    args as antigravity_args, project_config as antigravity_project_config,
+    args as antigravity_args, plugin_manifest as antigravity_plugin_manifest,
+    project_config as antigravity_project_config,
     verify_capability_contract as verify_antigravity_capability_contract,
 };
 #[path = "broker/codex.rs"]
@@ -205,9 +206,7 @@ pub fn security_posture(agent: &str) -> Option<&'static str> {
         "claude" => Some(CONTAINED_CLAUDE_CAPABILITY_POSTURE),
         "codex" => Some("native CLI: disposable workspace with automatic approval review"),
         "grok" => Some("isolated turn: only Cut MCP, existing Grok login"),
-        "antigravity" => {
-            Some("native CLI: verifies its sandbox and non-interactive flags before each turn")
-        }
+        "antigravity" => Some("sandboxed unattended turn: disposable Cut-only MCP plugin"),
         _ => None,
     }
 }

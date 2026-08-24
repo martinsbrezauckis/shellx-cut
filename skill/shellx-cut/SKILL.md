@@ -40,9 +40,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   rewriting Codex login files. Grok receives a disposable config/home with
 >   native tools disabled and only Cut's MCP route, while retaining its existing
 >   login file in place. Antigravity keeps its normal settings, sandbox, and
->   permissions with a workspace-local Cut MCP entry and verifies the resolved
->   CLI's sandbox and non-interactive flags before each turn on every supported
->   platform. Every Cut verb applied by these routes is a normal
+>   login with a new disposable project containing one Cut-only MCP plugin.
+>   Its headless approval mode is bounded by that empty sandbox and Cut's filtered
+>   server-side verb policy; the resolved CLI's complete launch contract is
+>   verified before each turn on every supported platform. Every Cut verb applied by these routes is a normal
 >   reversible op.
 >   `attachments` can carry up to eight registered project asset IDs as references;
 >   the server validates them against the open project and exposes no arbitrary
@@ -347,11 +348,9 @@ Register that same proxy with the exact packaged executable reported by
 - Grok Build: `grok mcp add --scope user shellx-cut -- "/absolute/path/to/cutd" mcp`.
   Grok defaults to user scope; `grok mcp doctor shellx-cut` checks the command,
   handshake, and tool discovery.
-- Antigravity CLI currently has no `agy mcp add`
-  subcommand. Add
-  `{"mcpServers":{"shellx-cut":{"command":"/absolute/path/to/cutd","args":["mcp"]}}}`
-  to `~/.gemini/config/mcp_config.json` or `.agents/mcp_config.json`, then use
-  `/mcp` to inspect or reload it. Headless `agy --print` auto-denies permission
+- Antigravity CLI: `agy mcp add shellx-cut /absolute/path/to/cutd mcp`. This is
+  a user-level entry in `~/.gemini/config/mcp_config.json`; `agy mcp list`
+  confirms configuration and `/mcp` exposes live status. Headless `agy --print` auto-denies permission
   prompts; put only exact unattended grants such as
   `mcp(shellx-cut/system_mcp_test)` under `permissions.allow` in
   `~/.gemini/antigravity-cli/settings.json`. Do not use a global MCP wildcard or

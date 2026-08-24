@@ -265,9 +265,10 @@ route to the same surface registry.
   permissions; Cut neither copies nor rewrites its login files. Grok receives a
   disposable config/home with native tools disabled and only Cut's filtered MCP
   route, while its existing login file remains in place. Antigravity keeps its
-  normal settings, sandbox, and permissions while Cut adds a workspace-local MCP
-  entry and verifies the resolved CLI's sandbox and non-interactive flags before
-  each turn on every supported platform. Each route can inspect
+  normal settings and login while Cut creates a new disposable sandboxed project
+  containing one Cut-only MCP plugin. Headless approval is bounded by that empty
+  workspace and Cut's filtered server-side verb policy; the resolved CLI's full
+  launch contract is verified before each turn on every supported platform. Each route can inspect
   the open project and apply reversible in-project edits. Review every resulting
   edit, especially when using a local CLI that retains its own native tools and
   integrations.
