@@ -14,6 +14,7 @@ export function createTimelineContextActionCoverage({
   sleep,
   freshProject,
   closeOverlays,
+  selectClipPair,
   nativeOsActionsEnabled = false,
   rec,
 }) {
@@ -490,7 +491,7 @@ export function createTimelineContextActionCoverage({
 
   async function run(page) {
     const audit = createTimelineContextAuditCoverage({
-      probe, verb, state, waitForState, captureVerbResp, sleep, freshProject, closeOverlays,
+      probe, verb, state, waitForState, captureVerbResp, sleep, freshProject, closeOverlays, selectClipPair,
     })
     // A stable e2e audit ID is an explicit focused run: do not require unrelated
     // legacy context rows to establish their own fixtures before this bounded proof.
