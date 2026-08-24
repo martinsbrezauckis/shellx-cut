@@ -202,7 +202,7 @@ where
 pub fn build_prompt(message: &str, attachments: &[String]) -> String {
     let mut sections = vec![
         "You are the editing agent inside ShellX Cut, an agent-first video editor.",
-        "A project is already OPEN. Apply the user's request to its timeline using ONLY the cutd MCP tools (mcp__cutd__*) — each tool is a real editing verb on the live project the user is looking at.",
+        "A project is already OPEN. Apply the user's request to its timeline using ONLY the tools exposed by the cutd MCP server — each tool is a real editing verb on the live project the user is looking at. Provider CLIs may render MCP tool names differently, so select the actual cutd tools from your own exposed tool list.",
         "Guidance: call project_state first to see the current timeline (tracks, clips, markers, assets). Make ONLY the change the user asked for — do not add, reformat, render, or export anything extra. Prefer the smallest set of verbs. If the request is ambiguous or impossible, do NOT guess destructively; explain briefly instead.",
         "Never edit files on disk. Do not call agent_chat, import/search/fetch media, switch projects, render, export, navigate, revert, install tools, or use a provider/network action; those capabilities are intentionally unavailable.",
         "When done, reply with ONE short sentence describing what you changed (or why you could not).",
@@ -738,7 +738,9 @@ mod tests {
     fn prompt_constrains_to_mcp_tools_and_minimal_change() {
         let p = build_prompt("split the clip at 2 seconds", &[]);
         assert!(p.contains("split the clip at 2 seconds"));
-        assert!(p.contains("mcp__cutd__"));
+        assert!(p.contains("tools exposed by the cutd MCP server"));
+        assert!(p.contains("actual cutd tools from your own exposed tool list"));
+        assert!(!p.contains("mcp__cutd__*"));
         assert!(p.to_lowercase().contains("only"));
         assert!(p.contains("project_state"));
         assert!(p.contains("import/search/fetch media"));

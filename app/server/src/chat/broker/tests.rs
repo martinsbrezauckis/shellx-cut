@@ -195,7 +195,7 @@ fn grok_capability_probe_parses_the_complete_contained_argv_without_a_turn() {
     assert!(!arguments.contains(&"--no-memory".to_string()));
     assert!(!arguments.contains(&"--deny".to_string()));
     assert_eq!(arguments.last().map(String::as_str), Some("--version"));
-    assert!(verify_agent_capability_probe("grok", "grok 1.0.5 (current)").is_ok());
+    assert!(verify_agent_capability_probe("grok", "Grok fixture-current").is_ok());
     assert!(verify_agent_capability_probe("grok", "another provider").is_err());
 }
 

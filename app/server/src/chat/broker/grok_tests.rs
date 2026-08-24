@@ -5,7 +5,7 @@ fn command_contract_removes_native_tools_and_allows_only_cut_mcp() {
     let args = args("/tmp/cut-chat", Some("grok-code-fast-1"));
     for pair in [
         ["--tools", ""],
-        ["--allow", "mcp(cutd/*)"],
+        ["--allow", "MCPTool(cutd__*)"],
         ["--permission-mode", "dontAsk"],
         ["--model", "grok-code-fast-1"],
     ] {

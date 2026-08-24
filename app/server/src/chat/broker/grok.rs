@@ -64,7 +64,7 @@ pub(crate) fn args(workspace: &str, model: Option<&str>) -> Vec<String> {
         "--tools".into(),
         String::new(),
         "--allow".into(),
-        "mcp(cutd/*)".into(),
+        "MCPTool(cutd__*)".into(),
         "--disable-web-search".into(),
         "--no-subagents".into(),
         "--no-plan".into(),

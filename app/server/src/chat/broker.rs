@@ -264,10 +264,10 @@ pub(crate) fn capability_help_args(agent: &str) -> Option<&'static [&'static str
 }
 
 /// Side-effect-free executable admission for one resolved Agent Chat route.
-/// Most providers publish every required flag in help. Grok 1.0.5 parses the
-/// complete contained argv but does not publish every compatibility flag;
-/// appending `--version` makes that exact parser invocation exit before reading
-/// the prompt, login, model, MCP, or session state.
+/// Most providers publish every required flag in help. Grok parses the complete
+/// contained argv but does not publish every compatibility flag; appending
+/// `--version` makes that exact parser invocation exit before reading the prompt,
+/// login, model, MCP, or session state. Admission never depends on a version pin.
 pub(crate) fn capability_probe_args(agent: &str, workspace: &Path) -> Option<Vec<String>> {
     if agent == "grok" {
         let mut arguments = grok_args(
