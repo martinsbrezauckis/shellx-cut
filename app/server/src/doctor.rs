@@ -1800,7 +1800,7 @@ mod tests {
             ),
             (
                 "judge.codex",
-                "native CLI: uses your Codex settings and permissions",
+                "native CLI: disposable workspace with automatic approval review",
             ),
             (
                 "judge.grok",

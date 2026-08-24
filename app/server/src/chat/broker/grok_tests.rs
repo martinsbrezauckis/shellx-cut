@@ -11,21 +11,8 @@ fn command_contract_removes_native_tools_and_allows_only_cut_mcp() {
     ] {
         assert!(args.windows(2).any(|window| window == pair));
     }
-    for permission in [
-        "read_file(*)",
-        "write_file(*)",
-        "command(*)",
-        "read_url(*)",
-        "execute_url(*)",
-        "unsandboxed(*)",
-    ] {
-        assert!(args
-            .windows(2)
-            .any(|window| window == ["--deny", permission]));
-    }
     for flag in [
         "--disable-web-search",
-        "--no-memory",
         "--no-subagents",
         "--no-plan",
         "--verbatim",
@@ -34,6 +21,8 @@ fn command_contract_removes_native_tools_and_allows_only_cut_mcp() {
     }
     assert!(!args.contains(&"--always-approve".to_string()));
     assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+    assert!(!args.contains(&"--deny".to_string()));
+    assert!(!args.contains(&"--no-memory".to_string()));
 }
 
 #[test]

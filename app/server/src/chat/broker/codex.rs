@@ -5,10 +5,12 @@ fn toml_str(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// Build a normal Codex `exec` turn. Cut does not override Codex's sandbox,
-/// approval policy, rules, or user config. The explicit MCP entry only connects
-/// this turn to the open Cut project; the turn itself is ephemeral so Agent Chat
-/// does not clutter the user's resumable Codex sessions.
+/// Build a normal Codex `exec` turn in Cut's disposable workspace. Automatic
+/// approval review lets the headless turn request the restricted Cut MCP edit
+/// without silently failing on an interactive approval prompt. Codex still
+/// loads the user's configuration, rules, and safeguards; Cut does not bypass
+/// them. The turn is ephemeral so Agent Chat does not clutter resumable Codex
+/// sessions.
 pub(crate) fn args(
     cutd_exe: &str,
     proxy_addr: &str,
@@ -21,6 +23,7 @@ pub(crate) fn args(
         "--json".into(),
         "--skip-git-repo-check".into(),
         "--ephemeral".into(),
+        "--approve-for-me".into(),
         "-c".into(),
         format!("mcp_servers.cutd.command={}", toml_str(cutd_exe)),
         "-c".into(),

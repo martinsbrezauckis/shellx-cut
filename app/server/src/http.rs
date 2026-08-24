@@ -612,6 +612,8 @@ mod tests {
         // 12..=15 spell "stub"); register it as asset a1 in the open project.
         let src = dir.path().join("clip.mp4");
         std::fs::write(&src, b"\x00\x00\x00\x18ftypmp42stub").unwrap();
+        let still = dir.path().join("still.png");
+        std::fs::write(&still, b"\x89PNG\r\n\x1a\nsource-still").unwrap();
         {
             let mut guard = state.project.write().await;
             let store = guard.as_mut().expect("project open");
@@ -627,11 +629,23 @@ mod tests {
                     filmstrip: None,
                 },
             );
+            store.project.assets.insert(
+                "a2".to_string(),
+                cut_core::types::Asset {
+                    path: still.to_string_lossy().to_string(),
+                    hash: "sha256:still".into(),
+                    probe: None,
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+            );
         }
 
         let server = spawn_test_server(build_router(state, None)).await;
 
-        fn get_range(url: &str, range: &str) -> (u16, String, Vec<u8>) {
+        fn get_range(url: &str, range: &str) -> (u16, String, String, Vec<u8>) {
             match ureq::get(url).header("Range", range).call() {
                 Ok(mut r) => {
                     let cr = r
@@ -640,18 +654,24 @@ mod tests {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("")
                         .to_string();
+                    let content_type = r
+                        .headers()
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
                     let st = r.status().as_u16();
                     let body = r.body_mut().read_to_vec().unwrap_or_default();
-                    (st, cr, body)
+                    (st, cr, content_type, body)
                 }
-                Err(ureq::Error::StatusCode(c)) => (c, String::new(), Vec::new()),
+                Err(ureq::Error::StatusCode(c)) => (c, String::new(), String::new(), Vec::new()),
                 Err(e) => unreachable!("transport: {e}"),
             }
         }
         let base = server.base_url.clone();
 
         // Registered asset, satisfiable range → 206 + exact slice.
-        let (st, cr, body) = tokio::task::spawn_blocking({
+        let (st, cr, content_type, body) = tokio::task::spawn_blocking({
             let u = format!("{base}/api/source/a1");
             move || get_range(&u, "bytes=4-9")
         })
@@ -669,9 +689,23 @@ mod tests {
             body, b"ftypmp",
             "body is exactly the requested byte slice of the SOURCE"
         );
+        assert_eq!(content_type, "video/mp4");
+
+        // Source Monitor also uses this fenced route for registered stills.
+        // Never label an image as video/mp4: WebKitGTK will refuse to decode it.
+        let (st_i, cr_i, content_type_i, body_i) = tokio::task::spawn_blocking({
+            let u = format!("{base}/api/source/a2");
+            move || get_range(&u, "bytes=0-7")
+        })
+        .await
+        .unwrap();
+        assert_eq!(st_i, 206);
+        assert_eq!(cr_i, "bytes 0-7/20");
+        assert_eq!(content_type_i, "image/png");
+        assert_eq!(body_i, b"\x89PNG\r\n\x1a\n");
 
         // Suffix range (moov-at-end seek) → last 4 bytes.
-        let (st_s, cr_s, body_s) = tokio::task::spawn_blocking({
+        let (st_s, cr_s, _, body_s) = tokio::task::spawn_blocking({
             let u = format!("{base}/api/source/a1");
             move || get_range(&u, "bytes=-4")
         })
@@ -688,7 +722,7 @@ mod tests {
         );
 
         // Unknown asset id → 404 (fenced to the registry, never an arbitrary path).
-        let (st_u, _, _) = tokio::task::spawn_blocking({
+        let (st_u, _, _, _) = tokio::task::spawn_blocking({
             let u = format!("{base}/api/source/nope");
             move || get_range(&u, "bytes=0-3")
         })
@@ -1506,6 +1540,17 @@ async fn serve_source(
         .to_ascii_lowercase()
         .as_str()
     {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "m4a" | "aac" => "audio/mp4",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "opus" | "ogg" => "audio/ogg",
         "webm" => "video/webm",
         "mov" => "video/quicktime",
         "mkv" => "video/x-matroska",

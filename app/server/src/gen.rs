@@ -302,8 +302,9 @@ pub enum PromptTransport {
 }
 
 /// A resolved CLI invocation: the command, its args, and the provider's prompt
-/// transport. Antigravity uses the exact non-interactive `--print` contract that
-/// Agent Chat already verifies.
+/// transport. Antigravity uses its native non-interactive `--print` contract but
+/// keeps generation skill expansion enabled, unlike the Cut-MCP-only Agent Chat
+/// route.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenCommand {
     pub cmd: String,
@@ -320,11 +321,11 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
                 "exec".into(),
                 "-".into(),
                 "--json".into(),
-                "--sandbox".into(),
-                "workspace-write".into(),
                 "-C".into(),
                 workspace.into(),
                 "--skip-git-repo-check".into(),
+                "--approve-for-me".into(),
+                "--ephemeral".into(),
             ];
             if let Some(m) = model.filter(|m| !m.is_empty()) {
                 args.push("-m".into());
@@ -351,28 +352,49 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
                 "bypassPermissions".into(),
                 "--always-approve".into(),
                 "--disable-web-search".into(),
-                "--no-memory".into(),
+                "--no-subagents".into(),
+                "--no-plan".into(),
                 "--max-turns".into(),
                 "20".into(),
             ];
-            args.push("--model".into());
-            args.push(
-                model
-                    .filter(|m| !m.is_empty())
-                    .unwrap_or("grok-build")
-                    .into(),
-            );
+            if let Some(model) = model.filter(|model| !model.is_empty()) {
+                args.push("--model".into());
+                args.push(model.into());
+            }
             Some(GenCommand {
                 cmd: "grok".into(),
                 args,
                 prompt_transport: PromptTransport::PromptFile,
             })
         }
-        "antigravity" => Some(GenCommand {
-            cmd: "agy".into(),
-            args: crate::chat::broker::antigravity_args(workspace, model),
-            prompt_transport: PromptTransport::Argument,
-        }),
+        "antigravity" => {
+            let mut args = vec![
+                "--sandbox".into(),
+                "--output-format".into(),
+                "json".into(),
+                "--print-timeout".into(),
+                "10m0s".into(),
+                "--log-file".into(),
+                Path::new(workspace)
+                    .join("antigravity-generation.log")
+                    .to_string_lossy()
+                    .into_owned(),
+            ];
+            if let Some(model) = model.filter(|model| !model.is_empty()) {
+                args.push("--model".into());
+                args.push(model.into());
+            }
+            // Generation intentionally keeps slash/skill expansion enabled.
+            // Agent Chat disables it because that route exposes only Cut MCP,
+            // while assets.generate needs Antigravity's native image skill.
+            args.push("--print".into());
+            args.push("__PROMPT_TEXT__".into());
+            Some(GenCommand {
+                cmd: "agy".into(),
+                args,
+                prompt_transport: PromptTransport::Argument,
+            })
+        }
         _ => None,
     }
 }
@@ -418,19 +440,19 @@ pub fn build_prompt(
         lines.push("Use the references for subject, composition, palette, or motion continuity as implied by the user description. Do not overwrite them.".to_string());
     }
     if provider == "codex" {
-        lines.push("Use real image-generation tooling available to Codex, such as image_gen or the OpenAI Image API. If this CLI session has no such tool, fail honestly.".to_string());
+        lines.push("Load the installed image-generation skill and use Codex's built-in image_gen tool. Generate first, then copy the selected real image into the exact workspace output path. If this CLI session has no such tool, fail honestly.".to_string());
     } else if provider == "antigravity" {
-        lines.push("Use a real image-generation capability already available to this Antigravity CLI session. If no real image-generation capability is available, fail honestly without writing a substitute file.".to_string());
+        lines.push("Load and use the native Antigravity image-generation skill or connected image tool. Keep skill expansion enabled, generate one real image, and copy it into the exact workspace output path. If no real image-generation capability is available, fail honestly without writing a substitute file.".to_string());
     } else if kind == "video" {
         lines.push(format!(
-            "Use Grok Build's native Imagine flow: /imagine {}.",
+            "Load and use Grok Build's native Imagine skill for this request: {}.",
             serde_json::to_string(&format!("video: {description}")).unwrap_or_default()
         ));
         lines.push("If Grok exposes native video tools, use image_to_video or reference_to_video. A fixed 6 or 10 second clip is acceptable.".to_string());
         lines.push("If this Grok CLI session cannot complete a video-capable Imagine request, fail honestly without writing a fake file.".to_string());
     } else {
         lines.push(format!(
-            "Use Grok Build's native Imagine flow. Prefer the slash command /imagine {}.",
+            "Load and use Grok Build's native Imagine skill to generate this real image: {}.",
             serde_json::to_string(description).unwrap_or_default()
         ));
     }
@@ -773,7 +795,9 @@ mod tests {
         assert_eq!(c.cmd, "codex");
         assert_eq!(c.prompt_transport, PromptTransport::Stdin);
         assert!(c.args.contains(&"exec".to_string()));
-        assert!(c.args.contains(&"workspace-write".to_string()));
+        assert!(c.args.contains(&"--approve-for-me".to_string()));
+        assert!(c.args.contains(&"--ephemeral".to_string()));
+        assert!(!c.args.contains(&"--sandbox".to_string()));
         assert!(c.args.windows(2).any(|w| w == ["-m", "gpt-image-1"]));
     }
 
@@ -783,17 +807,19 @@ mod tests {
         assert_eq!(c.cmd, "grok");
         assert_eq!(c.prompt_transport, PromptTransport::PromptFile);
         assert!(c.args.contains(&"__PROMPT_FILE__".to_string()));
-        // default model.
-        assert!(c.args.windows(2).any(|w| w == ["--model", "grok-build"]));
+        assert!(!c.args.contains(&"--model".to_string()));
+        assert!(c.args.contains(&"--no-subagents".to_string()));
+        assert!(c.args.contains(&"--no-plan".to_string()));
+        assert!(!c.args.contains(&"--no-memory".to_string()));
     }
 
     #[test]
-    fn antigravity_command_reuses_the_native_safe_print_contract() {
+    fn antigravity_generation_keeps_native_image_skill_expansion_enabled() {
         let c = build_command("antigravity", "/scratch", Some("Gemini 3.5 Flash")).unwrap();
         assert_eq!(c.cmd, "agy");
         assert_eq!(c.prompt_transport, PromptTransport::Argument);
         assert!(c.args.contains(&"--sandbox".to_string()));
-        assert!(c.args.contains(&"--disable-slash-commands".to_string()));
+        assert!(!c.args.contains(&"--disable-slash-commands".to_string()));
         assert!(c.args.windows(2).any(|w| w == ["--output-format", "json"]));
         assert_eq!(&c.args[c.args.len() - 2..], ["--print", "__PROMPT_TEXT__"]);
     }

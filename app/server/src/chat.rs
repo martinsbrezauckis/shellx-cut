@@ -633,6 +633,7 @@ mod tests {
             "--json".into(),
             "--skip-git-repo-check".into(),
             "--ephemeral".into(),
+            "--approve-for-me".into(),
         ]));
         assert!(command
             .args
@@ -836,7 +837,7 @@ mod tests {
         );
         assert_eq!(
             security_posture("codex"),
-            Some("native CLI: uses your Codex settings and permissions")
+            Some("native CLI: disposable workspace with automatic approval review")
         );
         assert_eq!(
             security_posture("antigravity"),

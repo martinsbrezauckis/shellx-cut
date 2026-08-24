@@ -182,7 +182,6 @@ fn grok_capability_probe_parses_the_complete_contained_argv_without_a_turn() {
     let arguments = capability_probe_args("grok", workspace).unwrap();
     for required in [
         "--prompt-file",
-        "--no-memory",
         "--no-subagents",
         "--no-plan",
         "--verbatim",
@@ -193,6 +192,8 @@ fn grok_capability_probe_parses_the_complete_contained_argv_without_a_turn() {
             "missing {required}"
         );
     }
+    assert!(!arguments.contains(&"--no-memory".to_string()));
+    assert!(!arguments.contains(&"--deny".to_string()));
     assert_eq!(arguments.last().map(String::as_str), Some("--version"));
     assert!(verify_agent_capability_probe("grok", "grok 1.0.5 (current)").is_ok());
     assert!(verify_agent_capability_probe("grok", "another provider").is_err());
@@ -225,6 +226,7 @@ fn codex_args_keep_native_policy_and_add_cut_mcp() {
         "--json".into(),
         "--skip-git-repo-check".into(),
         "--ephemeral".into(),
+        "--approve-for-me".into(),
     ]));
     assert!(args
         .iter()
@@ -237,6 +239,7 @@ fn codex_args_keep_native_policy_and_add_cut_mcp() {
     assert!(args
         .windows(2)
         .any(|pair| pair == ["--model", "gpt-5.6-codex"]));
+    assert!(args.contains(&"--approve-for-me".to_string()));
     for forbidden in [
         "danger-full-access",
         "--ignore-user-config",

@@ -1,8 +1,8 @@
 //! Launch policies for the local subscription CLIs used by `agent.chat`.
 //!
-//! Claude uses Cut's contained capability contract. Codex deliberately keeps its
-//! normal user configuration and native sandbox/permission policy; Cut adds its
-//! own MCP server without redefining the user's machine permissions.
+//! Claude uses Cut's contained capability contract. Codex keeps the user's
+//! configuration, rules, and safeguards while routing headless approval prompts
+//! through its native automatic reviewer in Cut's disposable workspace.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -42,6 +42,7 @@ const REQUIRED_CODEX_EXEC_HELP_TOKENS: &[&str] = &[
     "--json",
     "--skip-git-repo-check",
     "--ephemeral",
+    "--approve-for-me",
     "--model",
 ];
 
@@ -202,7 +203,7 @@ pub fn supported_headless_agent(agent: &str) -> bool {
 pub fn security_posture(agent: &str) -> Option<&'static str> {
     match agent {
         "claude" => Some(CONTAINED_CLAUDE_CAPABILITY_POSTURE),
-        "codex" => Some("native CLI: uses your Codex settings and permissions"),
+        "codex" => Some("native CLI: disposable workspace with automatic approval review"),
         "grok" => Some("isolated turn: only Cut MCP, existing Grok login"),
         "antigravity" => {
             Some("native CLI: verifies its sandbox and non-interactive flags before each turn")
@@ -263,10 +264,10 @@ pub(crate) fn capability_help_args(agent: &str) -> Option<&'static [&'static str
 }
 
 /// Side-effect-free executable admission for one resolved Agent Chat route.
-/// Most providers publish every required flag in help. Grok 1.0.5 still parses
-/// the complete contained argv but hides compatibility flags such as
-/// `--no-memory`; appending `--version` makes that exact parser invocation exit
-/// before reading the prompt, login, model, MCP, memory, or session state.
+/// Most providers publish every required flag in help. Grok 1.0.5 parses the
+/// complete contained argv but does not publish every compatibility flag;
+/// appending `--version` makes that exact parser invocation exit before reading
+/// the prompt, login, model, MCP, or session state.
 pub(crate) fn capability_probe_args(agent: &str, workspace: &Path) -> Option<Vec<String>> {
     if agent == "grok" {
         let mut arguments = grok_args(

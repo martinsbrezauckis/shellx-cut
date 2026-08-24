@@ -12,9 +12,7 @@ const REQUIRED_HELP_TOKENS: &[&str] = &[
     "--permission-mode",
     "--tools",
     "--allow",
-    "--deny",
     "--disable-web-search",
-    "--no-memory",
     "--no-subagents",
     "--no-plan",
     "--verbatim",
@@ -49,9 +47,10 @@ pub(crate) fn project_config(cutd_exe: &str, proxy_addr: &str, proxy_actor: &str
     )
 }
 
-/// Build a single, non-persistent Grok turn. Built-in tools are removed, every
-/// native permission family is denied defensively, and only the disposable
-/// project's `cutd` MCP server is allowed.
+/// Build a single, non-persistent Grok turn. Built-in tools are removed and
+/// only the disposable project's `cutd` MCP server is allowed. The isolated
+/// home is deleted with the turn, so this does not depend on version-specific
+/// native-tool deny names or a deprecated `--no-memory` flag.
 pub(crate) fn args(workspace: &str, model: Option<&str>) -> Vec<String> {
     let mut args = vec![
         "--prompt-file".into(),
@@ -66,20 +65,7 @@ pub(crate) fn args(workspace: &str, model: Option<&str>) -> Vec<String> {
         String::new(),
         "--allow".into(),
         "mcp(cutd/*)".into(),
-        "--deny".into(),
-        "read_file(*)".into(),
-        "--deny".into(),
-        "write_file(*)".into(),
-        "--deny".into(),
-        "command(*)".into(),
-        "--deny".into(),
-        "read_url(*)".into(),
-        "--deny".into(),
-        "execute_url(*)".into(),
-        "--deny".into(),
-        "unsandboxed(*)".into(),
         "--disable-web-search".into(),
-        "--no-memory".into(),
         "--no-subagents".into(),
         "--no-plan".into(),
         "--verbatim".into(),
