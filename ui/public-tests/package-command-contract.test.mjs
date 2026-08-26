@@ -10,6 +10,15 @@ const here = dirname(fileURLToPath(import.meta.url))
 const uiRoot = resolve(here, '..')
 const repoRoot = resolve(uiRoot, '..')
 const packageJson = JSON.parse(readFileSync(join(uiRoot, 'package.json'), 'utf8'))
+const ciWorkflow = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
+const playwrightInstallCommand = 'npx playwright install --with-deps chromium'
+const playwrightInstallIndex = ciWorkflow.indexOf(playwrightInstallCommand)
+const libraryTestIndex = ciWorkflow.indexOf('- name: UI library tests')
+
+assert.notEqual(playwrightInstallIndex, -1, 'fresh-runner CI must install Playwright Chromium')
+assert.notEqual(libraryTestIndex, -1, 'fresh-runner CI must retain the UI library test step')
+assert.ok(playwrightInstallIndex < libraryTestIndex, 'fresh-runner CI must install Playwright Chromium before UI library tests')
+
 const contracts = [
   {
     id: 'LLA-008',

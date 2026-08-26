@@ -43,6 +43,12 @@ jobs:
         run: npm run build
         working-directory: ui
 
+      - name: Install Playwright Chromium
+        # package-command-contract runs the real layout verifier. A fresh
+        # runner has the Playwright package after npm ci, but no browser binary.
+        run: npx playwright install --with-deps chromium
+        working-directory: ui
+
       - name: UI library tests
         run: npm run test:lib
         working-directory: ui

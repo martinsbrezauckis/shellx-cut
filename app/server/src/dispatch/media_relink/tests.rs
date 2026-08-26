@@ -1,5 +1,7 @@
 use super::plan::accepted_changes;
-use super::scan::{full_sha256, scan_folder};
+use super::scan::full_sha256;
+#[cfg(unix)]
+use super::scan::scan_folder;
 use super::*;
 use cut_core::store::is_exact_sha256;
 use std::fs;
@@ -71,6 +73,11 @@ async fn request_guarded_apply_writes_one_receipt_and_reopens_without_jobs() {
     fs::create_dir(&recovery).unwrap();
     let candidate = recovery.join("restored.bin");
     fs::write(&candidate, b"B5 exact offline fixture").unwrap();
+    let canonical_candidate = candidate
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let expected_hash = full_sha256(&candidate).unwrap();
     let project_dir = root.path().join("bulk-relink.cutproj");
     let state = AppState::new();
@@ -141,7 +148,7 @@ async fn request_guarded_apply_writes_one_receipt_and_reopens_without_jobs() {
     let (dir, op_count) = {
         let guard = state.project.read().await;
         let store = guard.as_ref().unwrap();
-        assert_eq!(store.project.assets["a1"].path, candidate.to_string_lossy());
+        assert_eq!(store.project.assets["a1"].path, canonical_candidate);
         assert_eq!(
             store.project.assets["a1"].proxy.as_deref(),
             Some("proxies/a1.mp4")
@@ -169,8 +176,5 @@ async fn request_guarded_apply_writes_one_receipt_and_reopens_without_jobs() {
     );
     let reopened = ProjectStore::open(&dir).unwrap();
     assert_eq!(reopened.log.read_all().unwrap().len(), op_count);
-    assert_eq!(
-        reopened.project.assets["a1"].path,
-        candidate.to_string_lossy()
-    );
+    assert_eq!(reopened.project.assets["a1"].path, canonical_candidate);
 }
