@@ -126,8 +126,7 @@ async fn screen_record_stop_validates_camera_artifact_integrity_and_containment(
     assert_eq!(escaped.error.unwrap().code, error_codes::INVALID_ARGS);
 }
 
-#[tokio::test]
-async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track() {
+async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_case() {
     use sha2::{Digest, Sha256};
 
     let dir = tempfile::tempdir().unwrap();
@@ -262,4 +261,26 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track() {
         placement_ms, 500,
         "camera clip must retain CaptureClock offset"
     );
+}
+
+#[test]
+fn screen_record_polish_places_camera_artifact_on_its_own_offset_track() {
+    // Windows test-harness threads have a smaller stack than the large async
+    // camera-polish fixture needs. Keep the larger stack scoped to this test;
+    // a global RUST_MIN_STACK would also alter compiler and unrelated workers.
+    let test = std::thread::Builder::new()
+        .name("screen-record-camera-polish-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(
+                    screen_record_polish_places_camera_artifact_on_its_own_offset_track_case(),
+                );
+        })
+        .expect("camera polish test thread must start");
+    test.join()
+        .expect("camera polish test thread must complete without panicking");
 }
