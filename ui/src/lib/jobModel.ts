@@ -3,6 +3,16 @@
 
 import type { CutError } from './clientModel'
 
+export interface JobRetryProjection {
+  /** Engine-authored eligibility. UI must never infer this from an error text. */
+  eligible: boolean
+  reason?: string
+  root_job_id: string
+  attempt: number
+  retry_of?: string
+  retried_by?: string
+}
+
 export interface JobRecord {
   job_id: string
   kind: string
@@ -20,6 +30,8 @@ export interface JobRecord {
   queue?: { resource: string; max_running: number }
   /** Active child job currently awaited by an orchestrator. */
   waiting_on?: { job_id: string; kind: string }
+  /** Durable engine-owned retry eligibility and lineage; absent on legacy jobs. */
+  retry?: JobRetryProjection
   created_ts: string
   updated_ts: string
   result?: unknown

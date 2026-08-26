@@ -54,8 +54,12 @@ import { useAppSurfaceEvents } from './app/useAppSurfaceEvents'
 import { useUiCommandController } from './app/useUiCommandController'
 import { useUiStatePublisher } from './app/useUiStatePublisher'
 import { preferredProjectLeftTab, shouldReturnToProjectsAfterResync } from './app/model'
+import { useManualFrontendBridge } from './manual/useManualFrontendBridge'
+import LocalManualPanel from './manual/LocalManualPanel'
+import { isEmbeddedManualFrontend } from './manual/protocol'
 import UserActionFeedback from './components/UserActionFeedback'
 import { runUserVerb } from './lib/userActionFeedback'
+import type { AgentChatPrefill } from './lib/evidenceAttachments'
 import { OfflineMediaProvider } from './app/OfflineMediaContext'
 import { createStockImportCoordinator, type StockImportCoordinator } from './panels/Stock/importCoordinator'
 
@@ -71,6 +75,11 @@ function SurfaceLoading({ label = 'Loading' }: { label?: string }) {
 }
 
 export default function App() {
+  // The manual shell already owns the documentation rail around its embedded
+  // real editor. A nested local panel there would be redundant and obscure the
+  // exact control the outer manual is revealing.
+  const embeddedManualFrontend = isEmbeddedManualFrontend()
+  const [localManualOpen, setLocalManualOpen] = useState(false)
   // The Find-media panel is intentionally remounted as its Find sub-surface
   // changes, and AppWorkspace itself swaps for Library/Record. Keep the one
   // active import coordinator here, at the app lifetime, so a remount cannot
@@ -103,7 +112,7 @@ export default function App() {
   const projectSessionRef = useRef(0)
   const [generateTab, setGenerateTab] = useState<GenerateWorkspaceTab>('templates')
   const agentChatPromptSeq = useRef(0)
-  const [agentChatPrefill, setAgentChatPrefill] = useState<{ prompt: string; nonce: number } | null>(null)
+  const [agentChatPrefill, setAgentChatPrefill] = useState<AgentChatPrefill | null>(null)
   // The right-side control drawers (Music, Title, Kinetic captions, Grade) —
   // each a one-verb-convenience scrim modal launched from its natural home
   // (Music/Title from the topbar, Kinetic from the transcript, Grade from the
@@ -189,9 +198,13 @@ export default function App() {
     setEnvOpen,
     setEnvCategory,
     onRefreshDoctor: () => refreshDoctor(true),
+    onOpenManual: () => {
+      if (!embeddedManualFrontend) setLocalManualOpen(true)
+    },
     agentChatPromptSeq,
     setAgentChatPrefill,
   })
+  useManualFrontendBridge({ openSurface: openUiSurface })
   const uiStateRef = useUiStatePublisher({
     layout,
     generateTab,
@@ -667,6 +680,10 @@ export default function App() {
           setEnvCategory('overview')
           setEnvOpen(true)
         }}
+        onOpenManual={() => {
+          if (!embeddedManualFrontend) setLocalManualOpen((open) => !open)
+        }}
+        manualOpen={!embeddedManualFrontend && localManualOpen}
       />
 
       <div
@@ -766,6 +783,11 @@ export default function App() {
       {/* Agent-driven element highlight (ui.highlight) — an outline + description
           chip over whatever control the agent is driving (guided demos / debug). */}
       <HighlightOverlay spec={highlight} onClear={() => setHighlight(null)} />
+
+      <LocalManualPanel
+        open={!embeddedManualFrontend && localManualOpen}
+        onClose={() => setLocalManualOpen(false)}
+      />
 
       {/* Desktop drag-drop media import (Tauri only). With no project, the first
           supported file creates one and becomes its timeline. */}

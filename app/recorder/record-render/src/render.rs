@@ -114,7 +114,8 @@ pub fn render_video_audio_with_control_progress(
                 if frames.is_empty() {
                     return None;
                 }
-                let idx = ((t_ms as f64 * fps / 1000.0) as usize).min(frames.len() - 1);
+                let wc = plan.webcam.as_ref()?;
+                let idx = webcam_frame_index(wc, t_ms, fps, frames.len())?;
                 let s = IntSize::from_wh(*bp, *bp)?;
                 Pixmap::from_vec(frames[idx].clone(), s)
             });
@@ -124,6 +125,31 @@ pub fn render_video_audio_with_control_progress(
             frame
         },
     )
+}
+
+/// Resolve a decoded camera-frame index without fabricating a frame for an
+/// unrecorded interval. CameraArtifact@1 supplies an optional shared-clock
+/// range; legacy webcam plans retain a zero origin but still never clamp their
+/// last decoded frame over an unknown tail.
+pub(crate) fn webcam_frame_index(
+    webcam: &record_core::WebcamOverlay,
+    t_ms: u64,
+    fps: f64,
+    frame_count: usize,
+) -> Option<usize> {
+    if frame_count == 0 || !fps.is_finite() || fps <= 0.0 {
+        return None;
+    }
+    let camera_ms = if let Some(clock) = webcam.camera_clock {
+        if t_ms < clock.first_frame_offset_ms || t_ms >= clock.end_frame_offset_ms {
+            return None;
+        }
+        t_ms - clock.first_frame_offset_ms
+    } else {
+        t_ms
+    };
+    let index = (camera_ms as f64 * fps / 1000.0).floor() as usize;
+    (index < frame_count).then_some(index)
 }
 
 /// Render a SINGLE composed frame to a PNG (no encode — fast visual/golden check).
@@ -154,7 +180,37 @@ pub fn render_frame_png(
 
 #[cfg(test)]
 mod tests {
-    use record_core::{fixtures, Ease, EditPlan, ZoomKey};
+    use record_core::{
+        fixtures, Anchor, CameraClockRange, Ease, EditPlan, WebcamOverlay, WebcamShape, ZoomKey,
+    };
+
+    #[test]
+    fn camera_clock_never_fills_before_first_or_after_last_frame() {
+        let webcam = WebcamOverlay {
+            source: "camera.mp4".into(),
+            shape: WebcamShape::Circle,
+            anchor: Anchor::BottomRight,
+            margin: 0.04,
+            size: 0.22,
+            camera_clock: Some(CameraClockRange {
+                first_frame_offset_ms: 500,
+                end_frame_offset_ms: 1_500,
+            }),
+            timeline: vec![],
+        };
+        assert_eq!(super::webcam_frame_index(&webcam, 499, 30.0, 30), None);
+        assert_eq!(super::webcam_frame_index(&webcam, 500, 30.0, 30), Some(0));
+        assert_eq!(
+            super::webcam_frame_index(&webcam, 1_000, 30.0, 30),
+            Some(15)
+        );
+        assert_eq!(
+            super::webcam_frame_index(&webcam, 1_499, 30.0, 30),
+            Some(29)
+        );
+        assert_eq!(super::webcam_frame_index(&webcam, 1_500, 30.0, 30), None);
+        assert_eq!(super::webcam_frame_index(&webcam, 1_499, 30.0, 5), None);
+    }
 
     fn ffmpeg_present() -> bool {
         std::process::Command::new(

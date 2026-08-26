@@ -92,11 +92,8 @@ pub(crate) fn list_windows() -> Vec<WindowInfo> {
             continue; // never offer our own windows (cutd or the owning Tauri shell)
         }
         let app_name = app.map(|a| a.application_name()).unwrap_or_default();
-        let Some(id) = one_based_index(out.len()) else {
-            break;
-        };
         out.push(WindowInfo {
-            id,
+            id: crate::window_target::macos_window_id(w.window_id()),
             title,
             app: app_name,
         });
@@ -250,16 +247,25 @@ impl Capture for MacCapture {
             .map_err(|e| cap_err("SCShareableContent::get", format!("{e:?}")))?;
 
         // Build the filter via the PER-ELEMENT accessors (NOT the batched snapshot(), which
-        // panics on real content in v8.0.0): a specific window (matched by title, like
-        // the Windows path) or the chosen display, plus a fallback point size.
+        // panics on real content in v8.0.0): a specific native window identity or
+        // the chosen display, plus a fallback point size. Title is display-only.
         let windows = content.windows();
         let displays = content.displays();
         let (filter, fb_w, fb_h, surface) = if let Some(ref want) = cfg.window {
+            let want_id = crate::window_target::parse_macos_window_id(want).ok_or_else(|| {
+                cap_err(
+                    "find the window to capture",
+                    "the selected window id is malformed; reopen the source picker",
+                )
+            })?;
             let win = windows
                 .iter()
-                .find(|w| w.title().is_some_and(|t| t.contains(want.as_str())))
+                .find(|w| w.window_id() == want_id)
                 .ok_or_else(|| {
-                    cap_err("find the window to capture", "no window matches the title")
+                    cap_err(
+                        "find the window to capture",
+                        "the selected window is no longer available; reopen the source picker",
+                    )
                 })?;
             let fr = win.frame();
             (
@@ -568,6 +574,7 @@ impl Capture for MacCapture {
         Ok(CaptureOutput {
             source_video: source_path,
             events,
+            camera_artifact: None,
             webcam_video: None,
             audio,
             settings: Settings {

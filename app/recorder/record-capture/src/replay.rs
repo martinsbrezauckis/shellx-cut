@@ -51,6 +51,7 @@ impl Capture for ReplayCapture {
         Ok(CaptureOutput {
             source_video: self.video_path.clone(),
             events,
+            camera_artifact: None,
             webcam_video: None,
             audio: None,
             settings,

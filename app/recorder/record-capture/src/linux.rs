@@ -31,60 +31,16 @@ use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, S
 use ashpd::desktop::PersistMode;
 use enumflags2::BitFlags;
 
-use record_core::{error_codes, EventTrack, Monitor as RMonitor, RecordError, Result, Settings};
+use record_core::{EventTrack, Monitor as RMonitor, Result, Settings};
 
 use crate::linux_capture_state::{CapPhase, CapturedInput, RecordedInput};
 use crate::linux_media::probe_dims;
+use crate::linux_portal;
+use crate::linux_runtime::{cap_err, ffmpeg_bin, ffprobe_bin, gst_bin, shared_runtime};
 use crate::linux_token::{read_token, write_token};
 use crate::{
     checkpoint::Checkpoints, cursor_correlation, input, Capture, CaptureConfig, CaptureOutput,
 };
-
-fn ffmpeg_bin() -> String {
-    std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
-}
-fn ffprobe_bin() -> String {
-    std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".to_string())
-}
-fn gst_bin() -> String {
-    std::env::var("SHELLX_RECORD_GST").unwrap_or_else(|_| "gst-launch-1.0".to_string())
-}
-
-fn cap_err(ctx: &str, e: impl std::fmt::Display) -> RecordError {
-    RecordError::new(error_codes::CAPTURE, ctx, e.to_string()).with_action(
-        "ensure a desktop session is logged in with xdg-desktop-portal + PipeWire, \
-         the user session bus is reachable (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS), \
-         and gst-launch-1.0 + the pipewire plugin are installed (gstreamer1.0-pipewire)",
-    )
-}
-
-/// Process-global tokio runtime that drives ALL portal / D-Bus work.
-///
-/// MUST be shared across captures — NOT rebuilt per call. ashpd caches the session-bus
-/// `zbus::Connection` in a process-global `static OnceLock` (ashpd `proxy.rs`), and with
-/// the `zbus/tokio` feature that connection's socket-reader task is spawned via
-/// `tokio::task::spawn` onto whatever runtime is current the FIRST time the connection is
-/// built (zbus `abstractions/executor.rs`). If `capture()` built a fresh runtime per call
-/// and dropped it (the old code), dropping runtime #1 ABORTS that reader task — leaving the
-/// globally-cached connection with a dead I/O driver. The 2nd capture in the same process
-/// then reuses the dead connection and its first D-Bus call never gets a reply → the portal
-/// wedge. One long-lived runtime keeps the reader alive for the whole process, so
-/// every later capture reuses a LIVE connection. (Pairs with the explicit `session.close()`
-/// below, which frees the server-side ScreenCast session so mutter's concurrent-session cap
-/// is never hit.)
-fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    if let Some(rt) = RT.get() {
-        return Ok(rt);
-    }
-    // Build outside get_or_init (init is fallible). On a lost init race our runtime is
-    // dropped unused — harmless, since no zbus connection was bound to it yet.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| cap_err("tokio runtime", e))?;
-    Ok(RT.get_or_init(|| rt))
-}
 
 /// Live Linux capture backend (ScreenCast portal + GStreamer + rdevin + cpal).
 pub struct LinuxCapture;
@@ -136,13 +92,30 @@ impl Capture for LinuxCapture {
         let ff_for_async = ffmpeg_bin();
 
         let phase: Result<CapPhase> = rt.block_on(async move {
-            let proxy = Screencast::new()
-                .await
-                .map_err(|e| cap_err("connect ScreenCast portal", e))?;
-            let session = proxy
-                .create_session(Default::default())
-                .await
-                .map_err(|e| cap_err("create portal session", e))?;
+            let portal_deadline = linux_portal::pre_first_frame_deadline();
+            let proxy = linux_portal::await_pre_first_frame(
+                "connect ScreenCast portal",
+                stop_async.as_ref(),
+                portal_deadline,
+                async {
+                    Screencast::new()
+                        .await
+                        .map_err(|e| cap_err("connect ScreenCast portal", e))
+                },
+            )
+            .await?;
+            let session = linux_portal::await_pre_first_frame(
+                "create portal session",
+                stop_async.as_ref(),
+                portal_deadline,
+                async {
+                    proxy
+                        .create_session(Default::default())
+                        .await
+                        .map_err(|e| cap_err("create portal session", e))
+                },
+            )
+            .await?;
 
             let mut opts = SelectSourcesOptions::default()
                 // Wayland-pw needs the cursor as METADATA; the gst path hides it (we
@@ -167,17 +140,51 @@ impl Capture for LinuxCapture {
                 // set_restore_token copies internally, so the borrow need only last the call.
                 opts = opts.set_restore_token(tok.as_str());
             }
-            proxy
-                .select_sources(&session, opts)
-                .await
-                .map_err(|e| cap_err("select portal sources", e))?;
+            if let Err(error) = linux_portal::await_pre_first_frame(
+                "select portal sources",
+                stop_async.as_ref(),
+                portal_deadline,
+                async {
+                    proxy
+                        .select_sources(&session, opts)
+                        .await
+                        .map_err(|e| cap_err("select portal sources", e))
+                },
+            )
+            .await
+            {
+                linux_portal::close_session(&session).await;
+                return Err(error);
+            }
 
-            let streams = proxy
-                .start(&session, None, Default::default())
-                .await
-                .map_err(|e| cap_err("start portal cast (consent)", e))?
-                .response()
-                .map_err(|e| cap_err("portal cast response", e))?;
+            let streams = match linux_portal::await_pre_first_frame(
+                "start portal cast (consent)",
+                stop_async.as_ref(),
+                portal_deadline,
+                async {
+                    proxy
+                        .start(&session, None, Default::default())
+                        .await
+                        .map_err(|e| cap_err("start portal cast (consent)", e))
+                },
+            )
+            .await
+            {
+                Ok(request) => match request
+                    .response()
+                    .map_err(|e| cap_err("portal cast response", e))
+                {
+                    Ok(streams) => streams,
+                    Err(error) => {
+                        linux_portal::close_session(&session).await;
+                        return Err(error);
+                    }
+                },
+                Err(error) => {
+                    linux_portal::close_session(&session).await;
+                    return Err(error);
+                }
+            };
             let sv = streams.streams();
             let stream = sv
                 .first()
@@ -199,12 +206,25 @@ impl Capture for LinuxCapture {
             // SPA_META_Cursor from the node (gst connects on its own, so the gst path
             // doesn't need this).
             let mut pw_fd = if wayland_pw {
-                Some(
-                    proxy
-                        .open_pipe_wire_remote(&session, Default::default())
-                        .await
-                        .map_err(|e| cap_err("open pipewire remote", e))?,
+                match linux_portal::await_pre_first_frame(
+                    "open PipeWire stream",
+                    stop_async.as_ref(),
+                    portal_deadline,
+                    async {
+                        proxy
+                            .open_pipe_wire_remote(&session, Default::default())
+                            .await
+                            .map_err(|e| cap_err("open pipewire remote", e))
+                    },
                 )
+                .await
+                {
+                    Ok(fd) => Some(fd),
+                    Err(error) => {
+                        linux_portal::close_session(&session).await;
+                        return Err(error);
+                    }
+                }
             } else {
                 None
             };
@@ -433,9 +453,7 @@ impl Capture for LinuxCapture {
             // mutter's concurrent-ScreenCast-session cap. Best-effort: a failed close must
             // never fail an otherwise-good capture. (The capture window is already over —
             // gst/pipewire have released the node — so closing here is safe.)
-            if let Err(e) = session.close().await {
-                eprintln!("warning: portal session close failed (non-fatal): {e}");
-            }
+            linux_portal::close_session(&session).await;
             // session drops here — capture is done.
             Ok(CapPhase {
                 w: sw,
@@ -523,6 +541,7 @@ impl Capture for LinuxCapture {
         Ok(CaptureOutput {
             source_video: path,
             events,
+            camera_artifact: None,
             webcam_video: None,
             audio: phase.audio,
             settings: Settings {

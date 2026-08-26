@@ -2,6 +2,8 @@ use super::*;
 use std::io::Read;
 use std::path::Path;
 
+mod camera_foundation;
+
 // ---------------------------------------------------------------------------
 // screen_record.* — integrated Cut recorder orchestration. Low-level recorder
 // calls live in screen_record.rs; polish/export orchestration lives here because
@@ -87,17 +89,18 @@ fn capture_file_error(path: &Path, stage: &str, error: std::io::Error) -> CutErr
 /// `screen_record::stop_capture(capture_id)` to set the running capture's external
 /// stop flag — for an OPEN-ENDED capture this is what ends the recording (the
 /// backend's poll loop sees the flag and finalizes the mp4 + EventTrack). It then
-/// polls for the finalized `project.json` and reads it. (If cutd restarted mid-
-/// capture the in-memory flag is gone — the file poll still recovers a capture that
-/// finalized on its own deadline.) Pipeline:
+/// polls for the finalized `project.json` or a typed terminal capture failure and
+/// reads it. (If cutd restarted mid-capture the in-memory flag is gone — the file
+/// poll still recovers a capture that finalized on its own deadline.) Pipeline:
 ///   1. resolve `<cutproj>/cache/screen_record/<capture_id>/`; missing → NOT_FOUND.
 ///   1b. SIGNAL stop (`stop_capture`) so an open-ended capture ends now.
 ///   2. read the local `.capture.json` only for `duration_ms`; the project is
 ///      always the exact local `<capture>/project.json`.
 ///   3. POLL for that local `project.json` to exist AND be non-empty (the capture finalized),
-///      using a finite wait derived from declared or journal-observed capture work
-///      (two spans plus 15s, 45s minimum, 15min maximum), sleeping 300ms between
-///      checks. Never appears → a clean CutError.
+///      or a recorder-written typed terminal failure, using a finite wait derived
+///      from declared or journal-observed capture work (two spans plus 15s, 45s
+///      minimum, 15min maximum), sleeping 300ms between checks. Never appears →
+///      a clean CutError.
 ///   4. parse the RecordingProject → extract `source_video`, `audio?`, and the
 ///      embedded `events` EventTrack; write the events object to
 ///      `<dir>/events.json` (pretty) so it feeds the existing
@@ -188,6 +191,9 @@ pub(super) async fn screen_record_stop(
         if local_regular_file_nonempty(&project_path, "inspect capture project")? {
             finalized = true;
             break;
+        }
+        if let Some(error) = crate::screen_record::capture_terminal_failure(&dir, &a.capture_id)? {
+            return Err(crate::screen_record::record_err(error));
         }
         tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
@@ -304,15 +310,32 @@ pub(super) async fn screen_record_stop(
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let camera_artifact = proj
+        .get("camera_artifact")
+        .cloned()
+        .map(serde_json::from_value::<record_core::CameraArtifact>)
+        .transpose()
+        .map_err(|error| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "capture project.json camera_artifact is invalid",
+                error.to_string(),
+            )
+            .with_suggested_action(
+                "discard the incomplete camera artifact or retry recording before requesting screen_record.stop",
+            )
+        })?;
     let audio = proj.get("audio").and_then(|v| v.as_str()).map(String::from);
     let artifacts = crate::screen_record::resolve_stop_artifacts(
         &out_dir,
         source_video_raw,
+        camera_artifact,
         webcam_video_raw,
         audio.as_deref(),
     )?;
     let source_video = artifacts.source_video.display().to_string();
     let webcam = artifacts.webcam.clone();
+    let camera_artifact = artifacts.camera.as_ref().map(|camera| &camera.artifact);
     let events = proj.get("events").cloned().unwrap_or(Value::Null);
 
     // Count clicks/cursor samples straight off the parsed arrays (lengths, not data).
@@ -434,6 +457,7 @@ pub(super) async fn screen_record_stop(
         "project": project_path,
         "source": source_video,
         "webcam": webcam,
+        "camera_artifact": camera_artifact,
         "audio": audio,
         "events": events_path,
         "studio_events": studio_events,
@@ -546,6 +570,10 @@ pub(super) async fn screen_record_polish(
             "the recording source must remain inside a project-local directory",
         )
     })?;
+    // CameraArtifact@1 is discovered only beside this already-contained screen
+    // source. It remains absent for legacy/screen-only recordings, so this does
+    // not alter the existing unavailable-camera behavior.
+    let camera_artifact = crate::screen_record::camera_artifact_for_capture(source_dir)?;
     let mic_wav = crate::screen_record::optional_plain_file_in_dir(
         source_dir,
         "mic.wav",
@@ -742,6 +770,15 @@ pub(super) async fn screen_record_polish(
             .and_then(|r| r["clip_id"].as_str())
             .map(String::from)
     };
+
+    let camera_placement = camera_foundation::place_camera_artifact(
+        state,
+        &actor,
+        camera_artifact
+            .as_ref()
+            .map(|camera| (camera.video_path.as_path(), &camera.artifact)),
+    )
+    .await?;
 
     // Place the recording's DESKTOP/SYSTEM audio (captured to <capture>/system.wav by
     // screen_record.start{system_audio:true}) on its OWN audio track, so the game/app sound
@@ -942,6 +979,11 @@ pub(super) async fn screen_record_polish(
     Ok(VerbResult::ok(json!({
         "clip_id": clip_id,
         "asset_id": asset_id,
+        "camera_artifact_id": camera_artifact.as_ref().map(|camera| &camera.artifact.artifact_id),
+        "camera_asset_id": camera_placement.asset_id,
+        "camera_clip_id": camera_placement.clip_id,
+        "camera_track_id": camera_placement.track_id,
+        "camera_first_frame_offset_ms": camera_artifact.as_ref().map(|camera| camera.artifact.clock.first_frame_offset_ms),
         "system_clip_id": system_clip_id,
         "system_warnings": system_warnings,
         "baked": baked,

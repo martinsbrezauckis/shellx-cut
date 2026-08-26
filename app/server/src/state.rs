@@ -13,6 +13,7 @@ use crate::jobs::JobManager;
 use crate::registry::VerbRegistry;
 use crate::ui_bridge::UiBridge;
 use cut_core::ProjectStore;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
@@ -40,6 +41,14 @@ pub struct AppState {
     /// Serializes caller-controlled idempotency preflight through durable
     /// response-receipt publication. Legacy calls keep their existing locks.
     pub request_gate: Arc<Mutex<()>>,
+    /// Cooperating cache producers take a shared lease while publishing a
+    /// proxy/filmstrip and its ownership ledger record. A purge takes the
+    /// exclusive lease; it refuses to run instead of racing an active writer.
+    pub cache_lifecycle_lease: Arc<RwLock<()>>,
+    /// The one opaque, server-issued cleanup plan that may be confirmed. A
+    /// plan is consumed before its background job starts, preventing replay.
+    pub cache_purge_plan: Arc<Mutex<Option<crate::cache_lifecycle::CachePurgePlan>>>,
+    pub cache_purge_plan_seq: Arc<AtomicU64>,
     /// Background jobs (transcribe/perception/render).
     pub jobs: JobManager,
     /// WS event fan-out.
@@ -78,6 +87,9 @@ impl AppState {
             project: Arc::new(RwLock::new(None)),
             project_transition: Arc::new(Mutex::new(())),
             request_gate: Arc::new(Mutex::new(())),
+            cache_lifecycle_lease: Arc::new(RwLock::new(())),
+            cache_purge_plan: Arc::new(Mutex::new(None)),
+            cache_purge_plan_seq: Arc::new(AtomicU64::new(0)),
             jobs: JobManager::new(events.clone()),
             events: events.clone(),
             registry: VerbRegistry::shared(),

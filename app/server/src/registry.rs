@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(reg.schema, "shellx-cut/verbs/1");
         assert_eq!(
             reg.verbs.len(),
-            265,
+            277,
             "verb count is a deliberate-contract tripwire: bump this AND README + \
              skill/shellx-cut/reference.md when verbs.json changes"
         );
@@ -270,6 +270,7 @@ mod tests {
             "jobs.status",
             "jobs.list",
             "jobs.cancel",
+            "jobs.retry",
             "edit.split",
             "edit.duplicate",
             "edit.nest",
@@ -413,15 +414,20 @@ mod tests {
         // domain.verb. The established
         // Motion connectors keep explicit motion.link.* and motion.job.*
         // namespaces so linked-asset lifecycle and upstream job observation
-        // cannot be confused with native Cut edits or jobs.*.
+        // cannot be confused with native Cut edits or jobs.*. B5 likewise
+        // defines the two fixed media.relink.* receipt phases.
         for v in &reg.verbs {
             let segments: Vec<_> = v.name.split('.').collect();
             assert_eq!(segments.first().copied(), Some(v.domain.as_str()));
             if segments.len() != 2 {
                 assert!(
                     segments.len() >= 3
-                        && matches!(segments[..2], ["motion", "link"] | ["motion", "job"]),
-                    "{} must be domain.verb or an established motion.link.* / motion.job.* connector verb",
+                        && (matches!(segments[..2], ["motion", "link"] | ["motion", "job"])
+                            || matches!(
+                                v.name.as_str(),
+                                "media.relink.preview" | "media.relink.apply"
+                            )),
+                    "{} must be domain.verb or an established connector / B5 receipt-phase verb",
                     v.name
                 );
             }

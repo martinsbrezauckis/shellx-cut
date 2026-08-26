@@ -465,6 +465,7 @@ mod tests {
             anchor: Anchor::BottomRight,
             margin: 0.04,
             size: 0.20,
+            camera_clock: None,
             timeline: vec![WebcamKeyframe {
                 t_ms: 1000,
                 visible: Some(true),
@@ -500,6 +501,7 @@ mod tests {
             anchor: Anchor::BottomRight,
             margin: 0.04,
             size: 0.30,
+            camera_clock: None,
             timeline: vec![
                 WebcamKeyframe {
                     t_ms: 0,

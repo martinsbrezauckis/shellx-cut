@@ -337,6 +337,90 @@
       }
     },
     {
+      "name": "project.cache_preview",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.cache_purge",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_purge",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.package_plan",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_package_plan",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.package_create",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_package_create",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
       "name": "project.sequence_delete",
       "behavior": {
         "mutation_class": "project_metadata",
@@ -1282,6 +1366,48 @@
       }
     },
     {
+      "name": "media.relink_preview",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_relink_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.relink_apply",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_relink_apply",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
       "name": "media.index_status",
       "behavior": {
         "mutation_class": "read",
@@ -1439,6 +1565,27 @@
           "ui": false
         },
         "dispatch": "jobs_cancel",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_applicable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.retry",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_retry",
         "project_state": "required",
         "idempotency": "request_key",
         "replayability": "not_applicable",
@@ -5633,6 +5780,111 @@
         "ui_exposure": "internal",
         "agent_chat": "deny",
         "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_status",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_status",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_rebuild",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_rebuild",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_search",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_search",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "inspect.media",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "inspect_media",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "inspect.range",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "inspect_range",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "inspect",
+        "risk": "none",
         "facets": []
       }
     }

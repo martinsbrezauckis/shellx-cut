@@ -678,6 +678,182 @@
       }
     },
     {
+      "name": "project.cache_preview",
+      "domain": "project",
+      "description": "Read a path-free, fail-closed cleanup preview for the open project's rebuildable editing cache. It inventories only flat proxy and filmstrip files that have a matching durable ShellX Cut ownership-ledger entry, excludes referenced or recently changed files, and never deletes. A symlink, unexpected directory/file, malformed/missing ownership state, stale ledger record, oversized root, unavailable clock, journal drift, or active cooperating cache producer blocks the preview rather than guessing. Sources, exports, captures, receipts, and all other project files are outside this verb's roots and are never inspected for deletion.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{schema:'shellx-cut/cache-purge-preview/1',status:'ready',plan_id,minimum_age_ms,inventory:{files,bytes},purgeable:{files,bytes},categories:[{kind:'proxies'|'thumbnails',files,bytes,purgeable_files,purgeable_bytes}],blocked_reasons:[]}. This is a read-only preview; filenames and paths are never returned.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.cache_purge",
+      "domain": "project",
+      "description": "Start one confirmed, cancellable cache-purge job from the exact opaque plan returned by project.cache_preview. The plan is single-use. Before each deletion the job reacquires the exclusive cache lease and revalidates project revision, flat roots, ownership ledger, file identity, age, and unreferenced status. It removes only aged, unreferenced, ledger-owned proxy or filmstrip files. It fails closed without deleting a source, export, capture, receipt, foreign/unowned/legacy file, symlink, partial root, or file changed after preview.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "plan_id",
+          "confirm"
+        ],
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "pattern": "^cache_plan_[0-9]+$",
+            "description": "Opaque single-use id returned by the current project.cache_preview."
+          },
+          "confirm": {
+            "const": true,
+            "description": "Must be literal true after the person has reviewed the preview."
+          }
+        }
+      },
+      "result": "{job_id,status:'queued'}. Observe jobs.status, cancel with jobs.cancel, then call project.cache_preview again to remeasure. The job never returns paths or filenames.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_purge",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.package_plan",
+      "domain": "project",
+      "description": "Agent-only B6 dry-run for a Cut-native portable package. It hashes every referenced media source with full SHA-256, includes tracks from every sequence, refuses offline/symlinked media and unsupported Motion-linked provenance, and returns a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; when supplied it must be immutable, journal-backed, and match the current source revision exactly.",
+      "args": {
+        "type": "object",
+        "required": [
+          "destination",
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing plain local parent directory for the new <name>.cutproj package. Symlink and reparse-point destinations refuse."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Cross-platform package name: ASCII letters, digits, spaces, hyphens, or underscores; becomes <name>.cutproj."
+          },
+          "b5_receipt": {
+            "type": "object",
+            "description": "Optional immutable shellx-cut/media-relink-receipt/1 returned by B5 for media repaired before packaging. It is validated against the source journal but its source paths are not emitted in the package."
+          }
+        }
+      },
+      "result": "{plan:shellx-cut/portable-package-plan/1:{project_identity,project_revision,destination,name,target,b5_receipt_sha256?,assets:[{asset,bytes,sha256,package_path}],total_source_bytes,total_package_bytes,source_file_count,unique_media_count,policy},plan_hash:'sha256:<full>'} — a dry-run only; duplicate full-content media are represented once in total_package_bytes",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_package_plan",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.package_create",
+      "domain": "project",
+      "description": "Agent-only B6 Pack project publication. Recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
+      "args": {
+        "type": "object",
+        "required": [
+          "destination",
+          "name",
+          "plan_hash"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The same existing plain local parent directory used by project.package_plan."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The same package name used by project.package_plan."
+          },
+          "plan_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Unchanged plan_hash returned by project.package_plan."
+          },
+          "b5_receipt": {
+            "type": "object",
+            "description": "The same optional immutable B5 receipt supplied to project.package_plan."
+          }
+        }
+      },
+      "result": "{job_id,plan_hash,source_revision,target,status:'queued'} — poll jobs.status; successful result is {status:'published'|'published_with_warnings',destination,manifest_sha256,source_revision,file_count,bytes,warnings?}. The warning status is only possible after final publication, when a post-publication durability or private-stage cleanup warning is retained for the operator. Existing destinations, stale plan/source/B5 evidence, offline media, checksums, cancellation, and unsupported hosts fail without publishing a final package.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_package_create",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
       "name": "project.sequence_delete",
       "domain": "project",
       "description": "Delete an inactive sequence from the open project. The active sequence is protected; switch first. Shared project assets are never deleted.",
@@ -2747,6 +2923,100 @@
       }
     },
     {
+      "name": "media.relink_preview",
+      "domain": "media",
+      "description": "Bounded, symlink-safe recovery preview for every OFFLINE asset in the open project. It scans one chosen folder without following symlinks, hashes at most 512 regular files, and returns an opaque plan_hash. Only a unique candidate whose COMPLETE sha256 digest exactly equals an asset's stored complete sha256 identity is eligible. Duplicate exact hashes, sampled/missing source hashes, and constrained filename/kind/duration metadata matches are diagnostics only and cannot be applied. This read never changes project, Library, derived assets, or jobs.",
+      "args": {
+        "type": "object",
+        "required": [
+          "root"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "root": {
+            "type": "string",
+            "description": "Existing local folder to scan. Symlinks, paths outside its canonical root, depth over 16, and more than 512 regular files refuse the preview."
+          }
+        }
+      },
+      "result": "shellx-cut/media-relink-preview/1: {schema,project_identity,project_revision,plan_hash,scan:{status,files,directories,reason?},assets:[{asset,expected_hash,display_name,disposition,candidates?}]} — disposition eligible_exact_hash is the ONLY selectable outcome; all paths remain receipt-only and are not rendered by the UI",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_relink_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.relink_apply",
+      "domain": "media",
+      "description": "Apply selected exact-hash rows from a fresh media.relink_preview. Requires request_id, expected_revision, and plan_hash; it rescans and fully rehashes before one all-or-nothing, project-local metadata journal op. It refuses ambiguity and metadata-only evidence. The exact source hash, chosen path, disposition, project identity, revisions, plan hash, and grouped operation id are returned in an immutable versioned result and request receipt for B6 portable packaging. It changes ONLY asset.path: no Library transaction, no import/proxy/enrichment job, no derived-state deletion, and no Ctrl-Z promise.",
+      "args": {
+        "type": "object",
+        "required": [
+          "root",
+          "plan_hash",
+          "accept"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "root": {
+            "type": "string",
+            "description": "The same recovery folder used for the preview; it is rescanned under the bounded symlink-safe policy."
+          },
+          "plan_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Opaque full SHA-256 of the exact preview. A mismatch refuses all selected rows."
+          },
+          "accept": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Asset ids selected from eligible_exact_hash preview rows only."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "shellx-cut/media-relink-receipt/1 immutable result: {schema,immutable,project_identity,pre_revision,post_revision,plan_hash,grouped_op_id,assets:[{asset,expected_hash,chosen,disposition:'relinked'}]} — generic shellx-cut/mutation-request/1 receipt is atomically persisted per request_id",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_relink_apply",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
       "name": "media.index_status",
       "domain": "media",
       "description": "Read VISUAL-SEARCH index status for the current project without running the SigLIP2 indexer. Used by the Find moment UI and agents to tell which imported assets already have persisted embeddings under embeddings/<asset>.json after reopening a project. Model/runtime-free: reports existing indexes only; use media.index to build one.",
@@ -3034,6 +3304,43 @@
           "ui": false
         },
         "dispatch": "jobs_cancel",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_applicable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.retry",
+      "domain": "jobs",
+      "description": "Admit one fresh durable child for an eligible failed default-output screen_record.export job. This is not generic historical request replay: Cut validates the persisted recorder-export descriptor against the active project's exact revision and SHA-256 fingerprints of the source, EditPlan, and recorder audio inputs before reserving a fresh default output lease. The source job is consumed and linked to exactly one child atomically; a second retry returns conflict. Explicit Save As exports, cancellations, successes, superseded jobs, legacy records, changed inputs, and changed project revisions are ineligible and must start a new export.",
+      "args": {
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Eligible failed default-output screen_record.export job id"
+          }
+        }
+      },
+      "result": "{job_id, retry_of, root_job_id, attempt, path, format:'mp4'|'gif', status:'queued'} — a newly admitted linked child with a fresh fenced default destination; poll jobs.status for progress and terminal result.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_retry",
         "project_state": "required",
         "idempotency": "request_key",
         "replayability": "not_applicable",
@@ -6231,7 +6538,7 @@
     {
       "name": "agent.chat",
       "domain": "agent",
-      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Provider version text is informational only; required containment flags are verified before every turn. Claude uses Cut's contained capability contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place; Cut grants session-scoped trust only to that newly created empty workspace so Grok can start the project-scoped Cut MCP server. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional attachments are registered project asset IDs only (maximum 8): Cut validates them against the open project and the agent resolves them through project_state. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
+      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Provider version text is informational only; required containment flags are verified before every turn. Claude uses Cut's contained capability contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place; Cut grants session-scoped trust only to that newly created empty workspace so Grok can start the project-scoped Cut MCP server. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional media attachments are registered project asset IDs only (maximum 8). Optional cited-moment attachments are up to 12 opaque evidence IDs plus their exact MediaEvidenceIndex@1 snapshot: Cut resolves them through inspect.range before launch and the agent must inspect that same current evidence rather than trust copied prompt prose. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
       "args": {
         "type": "object",
         "required": [
@@ -6253,6 +6560,21 @@
             },
             "description": "Optional registered asset IDs from the currently open project. Source paths are not accepted; cutd validates every ID before launching the agent."
           },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 12,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^ev_[a-f0-9]{24}$"
+            },
+            "description": "Optional opaque cited-moment ids from media.intelligence_search. Non-empty evidence_ids requires evidence_index_id; Cut resolves every id through current inspect.range before launch."
+          },
+          "evidence_index_id": {
+            "type": "string",
+            "pattern": "^idx_[a-f0-9]{24}$",
+            "description": "Exact MediaEvidenceIndex@1 snapshot for evidence_ids. Refused when the index or an authority changed after selection."
+          },
           "agent": {
             "type": "string",
             "enum": [
@@ -6273,7 +6595,7 @@
           }
         }
       },
-      "result": "{ok, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], plan:{request,reference_ids,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachments echoes validated project IDs; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
+      "result": "{ok, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment fields echo validated current identities; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -6296,7 +6618,7 @@
     {
       "name": "assets.generate",
       "domain": "assets",
-    "description": "Queue image/video generation through the USER'S OWN agent CLI and import it as a project asset — NO model is hosted (the Openverse philosophy applied to generation). Returns a job handle immediately; provider runs are serialized behind the shared asset_generate limiter, visible through jobs.status/list, and cancellable through jobs.cancel. cutd DETECTS the CLI (codex = gpt-image; grok = grok-imagine; antigravity = agy image generation), spawns it in an isolated disposable run directory with a strict prompt to write the binary to an exact path, validates the result via the normal import probe, and publishes it immutably under assets/generated/<generation_id>.<ext> with a JSON provenance sidecar. Antigravity reuses its verified native sandbox/non-interactive CLI contract and keeps its normal login/settings in place; Cut never reads, copies, or rewrites provider auth/settings. Optional references are registered visual project asset IDs only (maximum four): cutd resolves, content-checks, and copies them into the isolated scratch workspace before the provider sees them, never accepting caller filesystem paths. family_id is content-addressed from provider/kind/model/prompt/reference content. The base generation_id remains backward-compatible with the original no-reference id; an explicit variation creates a distinct immutable take in the same family. Repeating the exact request reuses the unchanged project asset without running the provider CLI or consuming credits again. Different requests and variants never overwrite earlier generated sources. A job stays bound to the project open when submitted and fails on a project or reference change instead of importing against stale context. provider: 'codex' (image only) | 'grok' (image + video) | 'antigravity' (image only). HONEST degradation: empty prompt, invalid references, an unsupported kind, an unsupported Antigravity capability contract, or an absent/un-signed-in CLI fails with a reason (NEVER a fake asset). The spawn is bounded by timeout_ms and killed on timeout/drop/cancel; scratch files are removed before cancellation reports completion. Requires an open project. NOTE: this runs the user's generation CLI, which may incur provider cost / need sign-in; these CLIs do not report a price, so the completed job's result.generated.cost_usd is null with an honest cost_note.",
+      "description": "Queue image/video generation through the USER'S OWN agent CLI and import it as a project asset — NO model is hosted (the Openverse philosophy applied to generation). Returns a job handle immediately; provider runs are serialized behind the shared asset_generate limiter, visible through jobs.status/list, and cancellable through jobs.cancel. cutd DETECTS the CLI (codex = gpt-image; grok = grok-imagine; antigravity = agy image generation), spawns it in an isolated disposable run directory with a strict prompt to write the binary to an exact path, validates the result via the normal import probe, and publishes it immutably under assets/generated/<generation_id>.<ext> with a JSON provenance sidecar. Antigravity reuses its verified native sandbox/non-interactive CLI contract and keeps its normal login/settings in place; Cut never reads, copies, or rewrites provider auth/settings. Optional references are registered visual project asset IDs only (maximum four): cutd resolves, content-checks, and copies them into the isolated scratch workspace before the provider sees them, never accepting caller filesystem paths. family_id is content-addressed from provider/kind/model/prompt/reference content. The base generation_id remains backward-compatible with the original no-reference id; an explicit variation creates a distinct immutable take in the same family. Repeating the exact request reuses the unchanged project asset without running the provider CLI or consuming credits again. Different requests and variants never overwrite earlier generated sources. A job stays bound to the project open when submitted and fails on a project or reference change instead of importing against stale context. provider: 'codex' (image only) | 'grok' (image + video) | 'antigravity' (image only). HONEST degradation: empty prompt, invalid references, an unsupported kind, an unsupported Antigravity capability contract, or an absent/un-signed-in CLI fails with a reason (NEVER a fake asset). The spawn is bounded by timeout_ms and killed on timeout/drop/cancel; scratch files are removed before cancellation reports completion. Requires an open project. NOTE: this runs the user's generation CLI, which may incur provider cost / need sign-in; these CLIs do not report a price, so the completed job's result.generated.cost_usd is null with an honest cost_note.",
       "args": {
         "type": "object",
         "required": [
@@ -6312,12 +6634,12 @@
           },
           "provider": {
             "type": "string",
-        "enum": [
-          "codex",
-          "grok",
-          "antigravity"
-        ],
-        "description": "codex = gpt-image (image only); grok = grok-imagine (image + video); antigravity = agy (image only)."
+            "enum": [
+              "codex",
+              "grok",
+              "antigravity"
+            ],
+            "description": "codex = gpt-image (image only); grok = grok-imagine (image + video); antigravity = agy (image only)."
           },
           "kind": {
             "type": "string",
@@ -6325,7 +6647,7 @@
               "image",
               "video"
             ],
-        "description": "Media kind (default image). Video needs provider:grok; Antigravity is image-only."
+            "description": "Media kind (default image). Video needs provider:grok; Antigravity is image-only."
           },
           "model": {
             "type": "string",
@@ -11636,7 +11958,9 @@
       "description": "Re-run output-only checks against the exact existing render artifact named by render_id. This job fences the receipt output, verifies its full SHA-256 before the sidecar, before ffprobe, and before its separate result receipt, and shares one cancellation/deadline/process-tree owner across the sidecar and ffprobe. It never re-encodes, changes the timeline, or overwrites the source RenderReceipt. The result includes lufs, black_or_frozen_frames, uniform_border, silence_at_edges, and duration_matches_receipt only; timeline/source checks remain on the original receipt.",
       "args": {
         "type": "object",
-        "required": ["render_id"],
+        "required": [
+          "render_id"
+        ],
         "additionalProperties": false,
         "properties": {
           "render_id": {
@@ -14079,7 +14403,7 @@
     {
       "name": "screen_record.doctor",
       "domain": "screen_record",
-      "description": "Report the SCREEN RECORDER's capability cards (the recorder analog of system.doctor). IN-PROCESS: probes record_capture::doctor() directly — no sidecar binary, no spawn — and returns each capability as a card {name, status, detail}. A screen_capture `ok` means one bounded, discarded frame reached Cut; `unknown` means a backend was found but a non-disruptive proof would require an OS picker, permission prompt, or live stream, and is never ready. `degraded`/`missing` are evidenced failures. The probe stores no image or audio content and stops before returning. `ready` requires ffmpeg, screen_capture, and input_hook, plus platform-required cards when present (Linux gstreamer/pipewiresrc and the session input path). The separate optional `system_audio` card is deliberately `unknown` when its platform backend is compiled: Doctor never opens a loopback/tap stream, and on macOS therefore never triggers the separate Audio Capture prompt. This optional card does not gate ordinary screen recording. `start_allowed` is deliberately narrower: it is true only when `screen_record.start` may proceed; on Linux that includes the exact prompt-deferred XDG ScreenCast portal observation so the user-initiated action can show its source picker, while Doctor stays unknown/non-green. Any missing, degraded, or other unknown required card keeps it false. Camera capture is reported unavailable until a real backend is implemented and does not gate screen recording. Also returns `monitors` (the displays for the in-app picker; empty on Linux/headless), `windows` (the app windows for the in-app WINDOW picker — record one app, not the whole screen; Windows-only), and, when `warm_mic:true`, `mic_warm` (the microphone pre-warm). No project required. A build/OS with no live-capture backend reports honestly, never panics.",
+      "description": "Report the SCREEN RECORDER's capability cards (the recorder analog of system.doctor). IN-PROCESS: probes record_capture::doctor() directly — no sidecar binary, no spawn — and returns each capability as a card {name, status, detail}. A screen_capture `ok` means one bounded, discarded frame reached Cut; `unknown` means a backend was found but a non-disruptive proof would require an OS picker, permission prompt, or live stream, and is never ready. `degraded`/`missing` are evidenced failures. The probe stores no image or audio content and stops before returning. `ready` requires ffmpeg, screen_capture, and input_hook, plus platform-required cards when present (Linux gstreamer/pipewiresrc and the session input path). The separate optional `system_audio` card is deliberately `unknown` when its platform backend is compiled: Doctor never opens a loopback/tap stream, and on macOS therefore never triggers the separate Audio Capture prompt. This optional card does not gate ordinary screen recording. `start_allowed` is deliberately narrower: it is true only when `screen_record.start` may proceed; on Linux that includes the exact prompt-deferred XDG ScreenCast portal observation so the user-initiated action can show its source picker, while Doctor stays unknown/non-green. Any missing, degraded, or other unknown required card keeps it false. Camera capture is reported unavailable until a real backend is implemented and does not gate screen recording. Also returns `monitors` (the displays for the in-app picker; empty on Linux/headless), `windows` (the app windows for the in-app WINDOW picker on Windows and macOS; each `id` is an opaque live native identity, while `title` and `app` are display metadata), and, when `warm_mic:true`, `mic_warm` (the microphone pre-warm). No project required. A build/OS with no live-capture backend reports honestly, never panics.",
       "args": {
         "type": "object",
         "required": [],
@@ -14091,7 +14415,7 @@
           }
         }
       },
-      "result": "{cards:[{name, status:\"ok\"|\"missing\"|\"degraded\"|\"unknown\", detail}], ready, start_allowed, monitors:[{index,name,width,height,primary}], windows:[{id,title,app}], mic_warm?:{live,device,supported}} — screen_capture is ok only after a real discarded frame reached Cut; unknown never makes required readiness green and explains that doctor avoided a prompt- or stream-prone proof. The optional system_audio card stays unknown for a compiled backend until an actual recording proves packets and does not gate ordinary screen recording. ready iff the core capture cards and any platform-required cards are ok. start_allowed is the action-specific screen_record.start admission: it is false for missing, degraded, or arbitrary unknown required cards, and true on Linux only for the exact prompt-deferred XDG ScreenCast portal card so the user may choose a source. monitors + windows are empty on Linux/headless (the OS portal owns source choice) and populated on Windows (windows feeds the in-app app-window picker for screen_record.start{window}); mic_warm present only when warm_mic:true. not_found if no capture backend is compiled for this build/OS.",
+      "result": "{cards:[{name, status:\"ok\"|\"missing\"|\"degraded\"|\"unknown\", detail}], ready, start_allowed, monitors:[{index,name,width,height,primary}], windows:[{id,title,app}], mic_warm?:{live,device,supported}} — screen_capture is ok only after a real discarded frame reached Cut; unknown never makes required readiness green and explains that doctor avoided a prompt- or stream-prone proof. The optional system_audio card stays unknown for a compiled backend until an actual recording proves packets and does not gate ordinary screen recording. ready iff the core capture cards and any platform-required cards are ok. start_allowed is the action-specific screen_record.start admission: it is false for missing, degraded, or arbitrary unknown required cards, and true on Linux only for the exact prompt-deferred XDG ScreenCast portal card so the user may choose a source. monitors + windows are empty on Linux/headless (the OS portal owns source choice) and populated on Windows/macOS. `windows[].id` is the opaque live native identity that must be passed unchanged to screen_record.start{window}; title and app are display metadata only. mic_warm present only when warm_mic:true. not_found if no capture backend is compiled for this build/OS.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -14194,7 +14518,7 @@
     {
       "name": "screen_record.start",
       "domain": "screen_record",
-      "description": "Start one LIVE screen capture in the background (in-process recorder). OPEN-ENDED: when `duration_ms` is OMITTED the capture runs UNTIL screen_record.stop is called (no fixed window — 'record until I stop'); when `duration_ms` IS given it is an optional UPPER BOUND (whichever fires first — the deadline or stop — ends the capture). A second active capture returns conflict until the first capture and its audio worker finish. Required screen_record.doctor cards are checked before any worker starts; unavailable platform dependencies return not_found instead of an asynchronous failed recording. On Windows, the action preflights its exact compact WGC checkpoint output before any capture marker or worker: when it would exceed 260 UTF-16 code units including its terminator, it returns invalid_args synchronously with an instruction to use a shorter project path. On Linux, the action-specific preflight allows only the exact prompt-deferred XDG ScreenCast `screen_capture:unknown` card to reach the user-selected source picker; it never changes Doctor `ready`, and every missing, degraded, or other unknown required card still returns not_found. Before it reserves a new capture it scans prior project-local checkpoint manifests: only a dead owner with a contiguous independently playable finalized prefix is recovered, while live/ambiguous owners are deferred and corrupt journals fail closed. The capture runs on a background thread that, when it ends, writes project.json (a RecordingProject {settings, source_video, audio?, events}) + the source mp4 (+ a mic wav when `audio`, + system.wav when `system_audio`) under <project>/cache/screen_record/<capture_id>/. On Windows, system.wav starts at the first real WASAPI packet and a sibling system-audio.json sidecar {schema:'shellx-cut/system-audio-timing/1', first_packet_offset_ms} records its offset from capture start (null means no packet); older/no-sidecar captures retain zero-offset placement. An external stop flag is registered under capture_id so screen_record.stop can end the recording promptly. A local <dir>/.capture.json recovery marker {pid, duration_ms, open_ended, fps, audio, keys} is atomically published so screen_record.stop still recovers a completed capture even across a cutd restart (the in-memory stop flag is lost on restart, but a capture that finalized on its own bound is still read from the file). Marker metadata never selects an output path: stop always derives the exact local <capture_id>/project.json. cutd's OWN environment (WAYLAND_DISPLAY / XDG_RUNTIME_DIR / DBUS) reaches the recorder's ScreenCast portal. `monitor` is passed through (primary when omitted). Capture state is filesystem-based (no AppState change). Requires an open project.",
+      "description": "Start one LIVE screen capture in the background (in-process recorder). OPEN-ENDED: when `duration_ms` is OMITTED the capture runs UNTIL screen_record.stop is called (no fixed window — 'record until I stop'); when `duration_ms` IS given it is an optional UPPER BOUND (whichever fires first — the deadline or stop — ends the capture). A second active capture returns conflict until the first capture and its audio worker finish. Required screen_record.doctor cards are checked before any worker starts; unavailable platform dependencies return not_found instead of an asynchronous failed recording. On Windows, the action preflights its exact compact WGC checkpoint output before any capture marker or worker: when it would exceed 260 UTF-16 code units including its terminator, it returns invalid_args synchronously with an instruction to use a shorter project path. On Linux, the action-specific preflight allows only the exact prompt-deferred XDG ScreenCast `screen_capture:unknown` card to reach the user-selected source picker; it never changes Doctor `ready`, and every missing, degraded, or other unknown required card still returns not_found. Before it reserves a new capture it scans prior project-local checkpoint manifests: only a dead owner with a contiguous independently playable finalized prefix is recovered, while live/ambiguous owners are deferred and corrupt journals fail closed. The capture runs on a background thread that, when it ends, writes project.json (a RecordingProject {settings, source_video, audio?, events}) + the source mp4 (+ a mic wav when `audio`, + system.wav when `system_audio`) under <project>/cache/screen_record/<capture_id>/. On Windows, system.wav starts at the first real WASAPI packet and a sibling system-audio.json sidecar {schema:'shellx-cut/system-audio-timing/1', first_packet_offset_ms} records its offset from capture start (null means no packet); older/no-sidecar captures retain zero-offset placement. An external stop flag is registered under capture_id so screen_record.stop can end the recording promptly. A local <dir>/.capture.json recovery marker {pid, duration_ms, open_ended, fps, audio, keys} is atomically published so screen_record.stop still recovers a completed capture even across a cutd restart (the in-memory stop flag is lost on restart, but a capture that finalized on its own bound is still read from the file). Marker metadata never selects an output path: stop always derives the exact local <capture_id>/project.json. cutd's OWN environment (WAYLAND_DISPLAY / XDG_RUNTIME_DIR / DBUS) reaches the recorder's ScreenCast portal. `window`, when set on Windows/macOS, must be the opaque identity from the latest doctor enumeration and is revalidated exactly; titles are display-only and a vanished target fails explicitly. `monitor` is passed through (primary when omitted). Capture state is filesystem-based (no AppState change). Requires an open project.",
       "args": {
         "type": "object",
         "required": [],
@@ -14222,11 +14546,11 @@
           "monitor": {
             "type": "integer",
             "minimum": 0,
-            "description": "1-based monitor index to capture (Windows; from screen_record.doctor.monitors). None / 0 = primary. Ignored when `window` is set."
+            "description": "1-based monitor index to capture (Windows/macOS; from screen_record.doctor.monitors). None / 0 = primary. Ignored when `window` is set."
           },
           "window": {
             "type": "string",
-            "description": "Capture a single application WINDOW by title (Windows-only; pick from screen_record.doctor.windows). Takes precedence over `monitor`. None = whole monitor/screen."
+            "description": "Opaque live native identity from the latest screen_record.doctor.windows[].id enumeration (Windows/macOS). It is revalidated exactly at capture start; title text never selects a target, and a malformed, closed, or replaced target fails explicitly. Takes precedence over `monitor`. Omit for the whole monitor/screen."
           },
           "rationale": {
             "type": "string"
@@ -14293,7 +14617,7 @@
           }
         }
       },
-      "result": "{capture_id, project, source, audio, webcam, events, studio_events, raw_streams, plan, clicks, cursor_samples, cursor_correlation} — project = the finalized project.json path; source = the captured source_video; audio = the mic wav path or null; webcam = the optional captured webcam stream path; events = the written events.json path (feeds screen_record.autoedit); studio_events = the timed composition metadata path when present; raw_streams lists discovered screen/camera/mic/system/studio artifacts plus system_timing when the Windows WASAPI packet-offset sidecar exists; plan = the EditPlan path when autoedit:true (else null); clicks/cursor_samples = the lengths of the events arrays. cursor_correlation = {source, state: exact|approximate|unavailable, exact_clicks, approximate_clicks, unavailable_clicks, max_metadata_age_ms?, detail?}; its click counters are button transitions (press and release). Wayland evdev coordinates are approximate unless paired with fresh PipeWire cursor metadata; X11 and Windows/macOS monitor rdevin desktop coordinates are exact only after a validated capture-surface transform. Linux uses actual finalized video dimensions, and marks rdevin input unavailable if they cannot be established. Windows/macOS window capture has no timestamped rectangle stream, so its rdevin positions are unavailable rather than falsely exact after move or resize. No button transitions report unavailable rather than vacuous exactness. no_project if no project is open; not_found if the capture dir is absent; sidecar if the capture never finalized. RAW MODE adds raw_path (the standalone raw.mp4, null unless mux_raw:true) plus raw_has_mic/raw_has_system.",
+      "result": "{capture_id, project, source, audio, webcam, camera_artifact, events, studio_events, raw_streams, plan, clicks, cursor_samples, cursor_correlation} — project = the finalized project.json path; source = the captured source_video; audio = the mic wav path or null; webcam = the legacy-compatible optional camera path; camera_artifact = CameraArtifact@1 when a validated synchronized camera artifact exists ({schema, capture_id, artifact_id, video: relative capture leaf, clock:{first_frame_offset_ms,end_frame_offset_ms}, media:{width,height,fps_num,fps_den,frame_count,duration_ms,sha256}, terminal_state}), else null; events = the written events.json path (feeds screen_record.autoedit); studio_events = the timed composition metadata path when present; raw_streams lists discovered screen/camera/mic/system/studio artifacts plus system_timing when the Windows WASAPI packet-offset sidecar exists; plan = the EditPlan path when autoedit:true (else null); clicks/cursor_samples = the lengths of the events arrays. cursor_correlation = {source, state: exact|approximate|unavailable, exact_clicks, approximate_clicks, unavailable_clicks, max_metadata_age_ms?, detail?}; its click counters are button transitions (press and release). Wayland evdev coordinates are approximate unless paired with fresh PipeWire cursor metadata; X11 and Windows/macOS monitor rdevin desktop coordinates are exact only after a validated capture-surface transform. Linux uses actual finalized video dimensions, and marks rdevin input unavailable if they cannot be established. Windows/macOS window capture has no timestamped rectangle stream, so its rdevin positions are unavailable rather than falsely exact after move or resize. No button transitions report unavailable rather than vacuous exactness. no_project if no project is open; not_found if the capture dir is absent; sidecar if the capture never finalized. RAW MODE adds raw_path (the standalone raw.mp4, null unless mux_raw:true) plus raw_has_mic/raw_has_system.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -14458,13 +14782,17 @@
             "type": "string",
             "description": "Optional project-local path to the captured webcam stream. When present with studio_events, autoedit patches the EditPlan webcam overlay/timeline."
           },
+          "camera_artifact": {
+            "type": "object",
+            "description": "Optional internal CameraArtifact@1 from screen_record.stop. It preserves the shared CaptureClock first/end frame interval in the generated webcam overlay plan; callers must not synthesize it from device enumeration."
+          },
           "studio_events": {
             "type": "string",
             "description": "Optional project-local path to studio-events.json. Camera events are converted into EditPlan.webcam.timeline for polish replay."
           }
         }
       },
-      "result": "{plan, summary, config, studio_events, webcam} — plan = the written EditPlan path; summary = the auto-edit plan summary; config = the resolved EngineConfig used to generate the plan; studio_events/webcam echo the optional Studio inputs when applied.",
+      "result": "{plan, summary, config, studio_events, webcam, camera_clock} — plan = the written EditPlan path; summary = the auto-edit plan summary; config = the resolved EngineConfig used to generate the plan; studio_events/webcam echo the optional Studio inputs when applied; camera_clock is the optional validated CameraArtifact@1 first/end frame interval retained in the webcam overlay plan.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -14487,7 +14815,7 @@
     {
       "name": "screen_record.polish",
       "domain": "screen_record",
-      "description": "The recorder polish pipeline: bake the project-local recorder MP4 (source recording + EditPlan → zoom/speed/cursor polish) and DROP IT ONTO THE TIMELINE. ORCHESTRATOR (like assemble.broll / import.otio): records NO op of its own — wraps the work in an auto-checkpoint and dispatches media.import + edit.add_track + edit.insert as real, replay-safe ops. Pipeline: (1) CONTENT-ADDRESSED bake (the matte pattern) — cache key = source content hash + plan-bytes hash, baked mp4 at <project>/cache/screen_record/<key>.mp4; a hit returns cached:true and skips the bake, a miss renders through the integrated Cut recorder; (2) media.import the baked mp4 and wait for its import chain; (3) ensure the target track exists (default \"v1\"; an explicit absent `track` is created as a video track) then edit.insert at `at_ms` (default 0, no ripple). A sibling system.wav is imported on its own a_system track; when system-audio.json is present, it starts at first_packet_offset_ms after `at_ms` and is trimmed to the remaining video duration. Missing sidecars retain legacy zero-offset placement. Requires an open project.",
+      "description": "The recorder polish pipeline: bake the project-local recorder MP4 (source recording + EditPlan → zoom/speed/cursor polish) and DROP IT ONTO THE TIMELINE. ORCHESTRATOR (like assemble.broll / import.otio): records NO op of its own — wraps the work in an auto-checkpoint and dispatches media.import + edit.add_track + edit.insert as real, replay-safe ops. Pipeline: (1) CONTENT-ADDRESSED bake (the matte pattern) — cache key = source content hash + plan-bytes hash, baked mp4 at <project>/cache/screen_record/<key>.mp4; a hit returns cached:true and skips the bake, a miss renders through the integrated Cut recorder; (2) media.import the baked mp4 and wait for its import chain; (3) ensure the target track exists (default \"v1\"; an explicit absent `track` is created as a video track) then edit.insert at `at_ms` (default 0, no ripple). When the source capture directory contains a validated CameraArtifact@1, polish additionally imports its contained camera media onto a separate hidden v_camera video track at first_frame_offset_ms, with an explicit source range limited to the measured camera duration. It is editable but hidden to prevent duplicating the legacy baked webcam bubble until B7 adds the real visible-track/preview workflow. A sibling system.wav is imported on its own a_system track; when system-audio.json is present, it starts at first_packet_offset_ms after `at_ms` and is trimmed to the remaining video duration. Missing sidecars retain legacy zero-offset placement. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -14522,7 +14850,7 @@
           }
         }
       },
-      "result": "{clip_id, asset_id, system_clip_id, system_warnings, baked, cached} — baked = the cached mp4 path (polished, or stream-copied when raw:true); system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
+      "result": "{clip_id, asset_id, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable v_camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -14684,7 +15012,7 @@
           },
           "window": {
             "type": "string",
-            "description": "Capture just ONE application window by title substring (Windows-only; omit = whole display)."
+            "description": "Capture one application window by its opaque live native screen_record.doctor.windows[].id (Windows/macOS). The identity is revalidated at capture time; title text is never accepted. Omit for the whole display."
           },
           "inline": {
             "type": "boolean",
@@ -16096,6 +16424,281 @@
         "ui_exposure": "internal",
         "agent_chat": "deny",
         "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_status",
+      "domain": "media",
+      "description": "Read the current project's cited media-evidence coverage without running analysis. Reports whether the rebuildable MediaEvidenceIndex@1 is present and current for transcript, scene, beat, marker, metadata, and existing visual-index evidence. Every readiness claim is bound to the current asset hash and authoritative receipt/index hash; stale kinds are excluded by media.intelligence_search until rebuilt. No host paths are returned.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Optional exact project asset ids. Omit for all project media."
+          }
+        }
+      },
+      "result": "MediaIntelligenceStatus@1 {schema, index_id?, project_revision, complete, stale, entry_count, coverage:{transcript,visual,scene,beat,marker,metadata}, assets:[{asset_id,available,kinds:{kind:{source,indexed,state}}}]} — no paths",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_status",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_rebuild",
+      "domain": "media",
+      "description": "Durably rebuild the path-light MediaEvidenceIndex@1 from evidence Cut already owns: transcript words/speakers, perception scene/beat facts, current markers and media metadata, plus bindings to existing visual indexes. Returns a cancellable background job and runs behind the shared analysis limiter, so playback/render/record work is not given a second unbounded worker pool. This derivation does not transcribe media, run perception, or create missing visual embeddings; it names those missing sources in coverage instead of faking them. A changed project revision before publication refuses the stale snapshot.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Optional exact project asset ids. Omit to derive all project media."
+          },
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "transcript",
+                "visual",
+                "scene",
+                "beat",
+                "marker",
+                "metadata"
+              ]
+            },
+            "description": "Evidence kinds to derive. Omit for every currently supported kind."
+          }
+        }
+      },
+      "result": "{job_id}; jobs.status result becomes {schema:'shellx-cut/media-evidence-index/1', index_id, entry_count, assets, coverage, missing_sources} after atomic publication",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_rebuild",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_search",
+      "domain": "media",
+      "description": "Search the current, rebuildable MediaEvidenceIndex@1 and return cursor-bounded EvidenceHit@1 citations. Exact transcript, marker, and metadata matches remain distinct from structural scene/beat matches and semantic visual similarity; scores from different evidence systems are never presented as one universal confidence. Each hit carries an opaque evidence id, sanitized excerpt, exact source range/anchor, current availability, authoritative provenance hashes, and bounded live timeline occurrences. Stale evidence is excluded, not returned with a warning. Visual results use existing media.index embeddings and the local text encoder; non-visual results remain usable when visual coverage/runtime is absent. Read-only and never moves the playhead, inserts media, or sends an agent turn.",
+      "args": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "description": "Words spoken, a visual description, marker text, or media metadata to find."
+          },
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "transcript",
+                "visual",
+                "scene",
+                "beat",
+                "marker",
+                "metadata"
+              ]
+            }
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "all_project_media",
+              "this_sequence"
+            ],
+            "description": "Default all_project_media. this_sequence excludes assets with no current-sequence occurrence."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Page size, default 40."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Opaque next_cursor from the same query/index snapshot."
+          }
+        }
+      },
+      "result": "EvidenceSearchResult@1 {schema, query, index_id, complete, stale_excluded, warnings, count, hits:[EvidenceHit@1 {evidence_id, asset_id, source_start_ms, source_end_ms, anchor_ms, kind, excerpt, match, relevance?, provenance:{kind,sha256}, available, occurrence_count, occurrences:[{sequence_id,clip_id,track_id,timeline_start_ms,timeline_end_ms}]}], next_cursor?}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_search",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "inspect.media",
+      "domain": "inspect",
+      "description": "Inspect registered media in the open project through a bounded path-light read model. Returns current asset identity, availability, media shape, and cited-evidence coverage without source paths, provider data, analysis execution, UI navigation, or project mutation. This is the agent-facing projection of the same current project and MediaEvidenceIndex@1 authorities used by Find > Moment.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Optional exact registered project asset ids. Omit for all project media, bounded to the first 100 assets."
+          }
+        }
+      },
+      "result": "MediaInspection@1 {schema, project_revision, index_id?, count, assets:[{asset_id, content_hash, available, media_kind, duration_ms?, has_video, has_audio, evidence:{kind:{source,indexed,state}}}]} — current project/index authorities, no source paths",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "inspect_media",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "inspect.range",
+      "domain": "inspect",
+      "description": "Resolve up to 12 opaque EvidenceHit@1 ids against the current MediaEvidenceIndex@1 and current project authorities. Returns the exact current source ranges, provenance hashes, availability, and live bounded timeline occurrences in request order. An optional index_id makes a UI-selected attachment fail closed if the index changed before inspection. Missing, stale, foreign-project, or changed evidence is refused rather than summarized from an old prompt. Read-only: never opens media, moves the playhead, sends a chat turn, or edits the project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "evidence_ids"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "evidence_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^ev_[a-f0-9]{24}$"
+            },
+            "description": "Opaque evidence ids returned by media.intelligence_search."
+          },
+          "index_id": {
+            "type": "string",
+            "pattern": "^idx_[a-f0-9]{24}$",
+            "description": "Optional exact index snapshot expected by the caller. Evidence attachments always supply it."
+          }
+        }
+      },
+      "result": "EvidenceInspection@1 {schema, index_id, count, hits:[EvidenceHit@1]} — the same evidence identity and current source/timeline citations used by Find > Moment",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "inspect_range",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "inspect",
+        "risk": "none",
         "facets": []
       }
     }

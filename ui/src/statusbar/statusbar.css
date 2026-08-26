@@ -45,6 +45,13 @@
   color: var(--ink-4);
   opacity: .55;
 }
+.sb-job--retry { border-color: color-mix(in srgb, var(--orange) 45%, var(--hairline-2)); }
+.sb-job-retry {
+  all: unset; cursor: pointer; border-radius: 999px; padding: 2px 7px;
+  color: var(--orange); background: color-mix(in srgb, var(--orange) 12%, transparent);
+}
+.sb-job-retry:hover { background: color-mix(in srgb, var(--orange) 22%, transparent); }
+.sb-job-retry:disabled { cursor: wait; opacity: .55; }
 
 .sb-spacer { flex: 1; }
 

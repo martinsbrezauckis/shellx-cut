@@ -1257,6 +1257,10 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
         (kind, dur, asset.proxy.is_some(), asset.path.clone())
     };
     let film_dir = dir.join("filmstrip");
+    // A cleanup job takes this same lease exclusively. Hold it across output
+    // publication, durable ownership recording, and asset write-back so a
+    // cache plan can never race a cooperating filmstrip producer.
+    let _cache_write = state.cache_lifecycle_lease.read().await;
 
     // WINDOWED (zoom) mode — sample just the requested source window. Video only
     // (an image is one frame at every zoom); ephemeral (NOT stored on the asset),
@@ -1302,6 +1306,12 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
             "filmstrip/{}",
             path.file_name().unwrap_or_default().to_string_lossy()
         );
+        crate::cache_lifecycle::record_generated(
+            &dir,
+            crate::cache_lifecycle::CacheKind::Thumbnails,
+            &a.asset,
+            path.file_name().unwrap_or_default(),
+        )?;
         return Ok(VerbResult::ok(json!({
             "thumbs": rel,
             "range_ms": [t0, t1],
@@ -1342,6 +1352,12 @@ pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<Ver
         "filmstrip/{}",
         path.file_name().unwrap_or_default().to_string_lossy()
     );
+    crate::cache_lifecycle::record_generated(
+        &dir,
+        crate::cache_lifecycle::CacheKind::Thumbnails,
+        &a.asset,
+        path.file_name().unwrap_or_default(),
+    )?;
     update_asset(state, &a.asset, |asset| asset.filmstrip = Some(rel.clone())).await?;
     Ok(VerbResult::ok(json!({ "filmstrip": rel })))
 }
@@ -1403,6 +1419,7 @@ pub(super) fn spawn_import_chain(
             // photo icon) — reuses the `filmstrip` field/dir. Non-fatal.
             let film_dir = dir.join("filmstrip");
             let (s, fd, aid) = (src.clone(), film_dir, asset_id.clone());
+            let _cache_write = state.cache_lifecycle_lease.read().await;
             if let Ok(path) = run_blocking("media.image_thumb", move || {
                 cut_media::filmstrip::make_image_thumb(&s, &fd, &aid)
             })
@@ -1412,14 +1429,31 @@ pub(super) fn spawn_import_chain(
                     "filmstrip/{}",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
-                if let Err(e) = update_asset(&state, &asset_id, |a| a.filmstrip = Some(rel)).await
-                {
-                    return state.jobs.fail(
-                        &jid,
-                        e.with_suggested_action(
-                            "image thumbnail was created but project state could not be updated",
-                        ),
-                    );
+                match crate::cache_lifecycle::record_generated(
+                    &dir,
+                    crate::cache_lifecycle::CacheKind::Thumbnails,
+                    &asset_id,
+                    path.file_name().unwrap_or_default(),
+                ) {
+                    Ok(()) => {
+                        if let Err(e) = update_asset(&state, &asset_id, |a| a.filmstrip = Some(rel)).await
+                        {
+                            return state.jobs.fail(
+                                &jid,
+                                e.with_suggested_action(
+                                    "image thumbnail was created but project state could not be updated",
+                                ),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        return state.jobs.fail(
+                            &jid,
+                            error.with_suggested_action(
+                                "the thumbnail was left unowned; rebuild it with media.filmstrip after the cache issue is resolved",
+                            ),
+                        );
+                    }
                 }
             }
             state
@@ -1721,6 +1755,10 @@ fn spawn_proxy_chain(
     let jobs = state.jobs.clone();
     jobs.spawn_limited(&job_id, "proxy", PROXY_MAX_RUNNING, async move {
         let mut warnings: Vec<String> = Vec::new();
+        // Hold the shared lease from the first generated proxy through its
+        // filmstrip and both ledger records. An exclusive purge either starts
+        // before this chain or refuses while this producer is active.
+        let _cache_write = state.cache_lifecycle_lease.read().await;
         state.jobs.progress(
             &jid,
             0.05,
@@ -1745,10 +1783,24 @@ fn spawn_proxy_chain(
                     "proxies/{}",
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
-                match update_asset(&state, &asset_id, |a| a.proxy = Some(rel)).await {
-                    Ok(_) => true,
+                match crate::cache_lifecycle::record_generated(
+                    &dir,
+                    crate::cache_lifecycle::CacheKind::Proxies,
+                    &asset_id,
+                    path.file_name().unwrap_or_default(),
+                ) {
+                    Ok(()) => {
+                        match update_asset(&state, &asset_id, |a| a.proxy = Some(rel)).await {
+                            Ok(_) => true,
+                            Err(e) => {
+                                warnings
+                                    .push(format!("proxy write-back: {} ({})", e.message, e.cause));
+                                false
+                            }
+                        }
+                    }
                     Err(e) => {
-                        warnings.push(format!("proxy write-back: {} ({})", e.message, e.cause));
+                        warnings.push(format!("proxy ownership: {} ({})", e.message, e.cause));
                         false
                     }
                 }
@@ -1776,10 +1828,24 @@ fn spawn_proxy_chain(
                         "filmstrip/{}",
                         path.file_name().unwrap_or_default().to_string_lossy()
                     );
-                    if let Err(e) =
-                        update_asset(&state, &asset_id, |a| a.filmstrip = Some(rel)).await
-                    {
-                        warnings.push(format!("filmstrip write-back: {} ({})", e.message, e.cause));
+                    match crate::cache_lifecycle::record_generated(
+                        &dir,
+                        crate::cache_lifecycle::CacheKind::Thumbnails,
+                        &asset_id,
+                        path.file_name().unwrap_or_default(),
+                    ) {
+                        Ok(()) => {
+                            if let Err(e) =
+                                update_asset(&state, &asset_id, |a| a.filmstrip = Some(rel)).await
+                            {
+                                warnings.push(format!(
+                                    "filmstrip write-back: {} ({})",
+                                    e.message, e.cause
+                                ));
+                            }
+                        }
+                        Err(e) => warnings
+                            .push(format!("filmstrip ownership: {} ({})", e.message, e.cause)),
                     }
                 }
             }

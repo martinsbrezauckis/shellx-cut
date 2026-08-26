@@ -66,11 +66,22 @@ pub(crate) async fn screen_record_autoedit(
         track: String,
         config: Option<Value>,
         webcam: Option<String>,
+        camera_artifact: Option<record_core::CameraArtifact>,
         studio_events: Option<String>,
     }
     let a: Args = parse_args(args)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     let cache = screen_record_cache_dir(&dir)?;
+    let camera_clock = a
+        .camera_artifact
+        .as_ref()
+        .map(|artifact| {
+            artifact
+                .validate()
+                .map(|_| artifact.clock)
+                .map_err(crate::screen_record::record_err)
+        })
+        .transpose()?;
     let track_path = resolve_existing_project_file(
         &dir,
         &a.track,
@@ -105,7 +116,7 @@ pub(crate) async fn screen_record_autoedit(
         None
     };
     let mut studio_event_count = 0usize;
-    if webcam_path.is_some() || studio_events_path.is_some() {
+    if webcam_path.is_some() || studio_events_path.is_some() || camera_clock.is_some() {
         let log = if let Some(path) = studio_events_path.as_deref() {
             crate::screen_record_studio::read_studio_events(path)?
         } else {
@@ -115,6 +126,7 @@ pub(crate) async fn screen_record_autoedit(
         studio_event_count = crate::screen_record_studio::apply_studio_events_to_plan(
             &mut plan,
             webcam_path.as_ref().map(|path| path.display().to_string()),
+            camera_clock,
             &log,
         )?;
         std::fs::write(
@@ -146,6 +158,7 @@ pub(crate) async fn screen_record_autoedit(
         "summary": summary,
         "config": config,
         "webcam": webcam_path,
+        "camera_clock": camera_clock,
         "studio_events": studio_events_path,
         "studio_event_count": studio_event_count,
     })))

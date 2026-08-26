@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 mod autoedit_args;
 mod capture_artifacts;
 mod capture_files;
+mod capture_terminal;
 mod containment;
 mod export_audio;
 mod export_job;
@@ -48,20 +49,22 @@ pub(crate) mod finalization_budget;
 mod polish;
 mod raw_mux;
 pub(crate) mod recovery;
+mod screenshot;
 mod start_readiness;
 pub(crate) mod system_audio;
 pub(crate) mod system_audio_capture;
 mod windows_path;
 pub(crate) use autoedit_args::for_capture as autoedit_args_for_capture;
-pub(crate) use capture_artifacts::resolve_stop_artifacts;
+pub(crate) use capture_artifacts::{camera_artifact_for_capture, resolve_stop_artifacts};
 pub(crate) use capture_files::{
     optional_plain_file_in_dir, plain_existing_file_under_dir, plain_existing_file_under_project,
 };
+pub(crate) use capture_terminal::read_failure as capture_terminal_failure;
 pub(crate) use containment::{
     capture_file, create_capture_dir, existing_capture_dir, publish_marker,
 };
 pub(crate) use export_audio::{for_source as export_audio_for_source, CaptureExportAudio};
-pub(crate) use export_job::screen_record_export;
+pub(crate) use export_job::{retry_screen_record_export, screen_record_export};
 #[cfg(test)]
 use polish::{autoedit, parse_autoedit_config, read_bounded_json};
 pub(crate) use polish::{
@@ -70,6 +73,7 @@ pub(crate) use polish::{
 };
 pub(crate) use raw_mux::mux_raw_sources;
 pub(crate) use recovery::recovery_status_handler;
+pub use screenshot::capture_screenshot_png;
 
 /// OPEN-ENDED CAPTURE registry: process-global map from `capture_id` → the
 /// external stop flag for that running capture. `start_capture` inserts the flag
@@ -206,109 +210,6 @@ fn align_ffmpeg_env() {
     }
 }
 
-/// `debug.screenshot` (server-side): capture a single still of the primary display (or a
-/// chosen `monitor`/`window`) to `out_png`, returning `(width, height)`. Unlike
-/// `ui.screenshot` (which relays to a connected WebView and fails headless), this grabs the
-/// ACTUAL screen via the in-process OS recorder, so it works regardless of UI-client state —
-/// the tool for visually verifying the app, dialogs and menus while driving cutd over the
-/// debug API. Implementation: record a sub-second clip via the proven per-OS capture
-/// (ScreenCaptureKit / WGC / portal), then extract its FIRST frame to PNG. No audio, no input
-/// capture, cursor shown (debug shots want the pointer). Best-effort temp cleanup.
-pub fn capture_screenshot_png(
-    out_png: &Path,
-    monitor: Option<u32>,
-    window: Option<String>,
-) -> Result<(u32, u32), CutError> {
-    align_ffmpeg_env();
-    let cap = record_capture::live_capture().ok_or_else(|| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            "no screen-capture backend on this build/OS",
-            "debug.screenshot needs a desktop session built with the capture feature",
-        )
-    })?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let _reservation = reserve_capture(new_capture_id(), stop.clone())?;
-    // Unique scratch directory for this throwaway capture.
-    let uniq = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = std::env::temp_dir().join(format!("cutd_shot_{uniq}"));
-    std::fs::create_dir_all(&tmp).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            "create screenshot scratch dir",
-            e.to_string(),
-        )
-    })?;
-    let cfg = record_capture::CaptureConfig {
-        duration_ms: Some(220), // long enough for ≥1 frame on a static screen
-        fps: 4.0,
-        capture_cursor: true,
-        monitor,
-        window,
-        audio: false,
-        system_audio: false,
-        capture_keys: false,
-        out_dir: tmp.to_string_lossy().into_owned(),
-        checkpoint: None,
-        clock: None,
-    };
-    let capture_res = cap.capture(&cfg, stop).map_err(record_err);
-    let result = capture_res.and_then(|out| {
-        let src = &out.source_video;
-        // Extract frame 0 → PNG (resolved ffmpeg; Win/macOS keep ffmpeg in app-data, not PATH).
-        let mut command = std::process::Command::new(cut_media::toolpath::ffmpeg());
-        command
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-            .arg(src)
-            .args(["-frames:v", "1", "-update", "1"])
-            .arg(out_png);
-        let status = crate::dispatch::run_bounded_foreground_command(
-            &mut command,
-            "extract screen-record screenshot frame",
-        )?
-        .status;
-        if !status.success() || !out_png.is_file() {
-            return Err(CutError::new(
-                error_codes::IO,
-                "screenshot frame extract failed",
-                "ffmpeg could not write the PNG from the captured frame",
-            ));
-        }
-        // Probe the PNG dimensions (best-effort; 0×0 if ffprobe is unavailable).
-        let mut command = std::process::Command::new(cut_media::toolpath::ffprobe());
-        command
-            .args([
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height",
-                "-of",
-                "csv=p=0:s=x",
-            ])
-            .arg(out_png);
-        let dims = crate::dispatch::run_bounded_foreground_command(
-            &mut command,
-            "probe screen-record screenshot dimensions",
-        )
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| {
-            let s = s.trim();
-            let (w, h) = s.split_once('x')?;
-            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-        })
-        .unwrap_or((0u32, 0u32));
-        Ok(dims)
-    });
-    let _ = std::fs::remove_dir_all(&tmp);
-    result
-}
-
 /// One capability card (kept field-stable for the `screen_record.doctor` result
 /// the UI/agent already consume): `name` = the record card id, `status` verbatim
 /// (`ok`|`missing`|`degraded`|`unknown`), `detail` the human hint. `unknown`
@@ -344,11 +245,11 @@ pub struct MonitorInfo {
 }
 
 /// One application window the user can pick for the in-app WINDOW picker (mirror of
-/// `record_capture::WindowInfo`). The `title` is what `screen_record.start{window}`
-/// re-resolves at capture time (so the UI passes a `WindowInfo.title` straight back).
+/// `record_capture::WindowInfo`). `id` is the opaque live native identity consumed by
+/// `screen_record.start{window}`; `title` is display copy only.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct WindowInfo {
-    pub id: u32,
+    pub id: String,
     pub title: String,
     pub app: String,
 }
@@ -530,7 +431,9 @@ pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
 
 /// screen_record.start{duration_ms?, fps?, audio?, system_audio?, studio?,
 /// keys?, monitor?, window?, rationale?} —
-/// kick off a live, duration-bounded or open-ended capture in the background.
+/// kick off a live, duration-bounded or open-ended capture in the background. `window`
+/// accepts only an opaque id from the latest `screen_record.doctor.windows` enumeration;
+/// titles are display-only, and a vanished identity fails instead of falling back.
 pub(crate) async fn screen_record_start(
     state: &AppState,
     args: Value,
@@ -592,6 +495,7 @@ pub(crate) async fn screen_record_start(
         a.keys,
         a.monitor,
         a.window,
+        dir.clone(),
         out_dir.clone(),
         project_path.clone(),
         record_log,
@@ -666,6 +570,7 @@ fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_capture(
     capture_id: String,
     duration_ms: Option<u64>,
@@ -675,10 +580,55 @@ pub fn start_capture(
     keys: bool,
     monitor: Option<u32>,
     window: Option<String>,
+    project_dir: PathBuf,
     out_dir: PathBuf,
     project_path: PathBuf,
     log_path: PathBuf,
 ) -> Result<(), CutError> {
+    start_capture_with_backend(
+        capture_id,
+        duration_ms,
+        fps,
+        audio,
+        system_audio,
+        keys,
+        monitor,
+        window,
+        project_dir,
+        out_dir,
+        project_path,
+        log_path,
+        || {
+            record_capture::live_capture().ok_or_else(|| {
+                record_core::RecordError::new(
+                    "capture",
+                    "no live capture backend",
+                    "live_capture() returned None inside the capture thread",
+                )
+            })
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_capture_with_backend<F>(
+    capture_id: String,
+    duration_ms: Option<u64>,
+    fps: f64,
+    audio: bool,
+    system_audio: bool,
+    keys: bool,
+    monitor: Option<u32>,
+    window: Option<String>,
+    project_dir: PathBuf,
+    out_dir: PathBuf,
+    project_path: PathBuf,
+    log_path: PathBuf,
+    backend: F,
+) -> Result<(), CutError>
+where
+    F: FnOnce() -> record_core::Result<Box<dyn record_capture::Capture>> + Send + 'static,
+{
     align_ffmpeg_env();
     validate_capture_settings(duration_ms, fps)?;
     // Normalize the `\\?\` verbatim prefix off the capture dir BEFORE deriving
@@ -696,7 +646,7 @@ pub fn start_capture(
         fps,
         capture_cursor: false, // hide the OS cursor; polish re-renders a synthetic one
         monitor,
-        window, // capture one app window by title (Windows-only; None = whole screen)
+        window, // exact opaque app-window id from Doctor (None = whole screen)
         audio,
         // On macOS the SCK backend captures desktop/system audio inside the same
         // stream (the avfoundation `:default` loopback recorded the MIC, not system audio).
@@ -756,16 +706,10 @@ pub fn start_capture(
             } else {
                 None
             };
-            // Resolve the backend INSIDE the thread (the trait object isn't moved across
-            // threads — `cfg` is plain Send data).
+            // Resolve the backend INSIDE the thread (the trait object is not moved across
+            // threads; only this factory crosses the spawn boundary).
             let captured = (|| {
-                let cap = record_capture::live_capture().ok_or_else(|| {
-                    record_core::RecordError::new(
-                        "capture",
-                        "no live capture backend",
-                        "live_capture() returned None inside the capture thread",
-                    )
-                })?;
+                let cap = backend()?;
                 cap.capture(&cfg, stop_for_thread.clone())
             })();
             stop_for_thread.store(true, Ordering::Relaxed);
@@ -807,6 +751,13 @@ pub fn start_capture(
                         Ok(())
                     });
             if let Err(e) = result {
+                if let Err(terminal_error) =
+                    capture_terminal::publish_failure(&project_dir, &capture_id, &e)
+                {
+                    eprintln!(
+                        "warning: could not publish capture terminal failure: {terminal_error}"
+                    );
+                }
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -829,6 +780,43 @@ pub fn start_capture(
             )
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_capture_with_test_backend<F>(
+    capture_id: String,
+    duration_ms: Option<u64>,
+    fps: f64,
+    audio: bool,
+    system_audio: bool,
+    keys: bool,
+    monitor: Option<u32>,
+    window: Option<String>,
+    project_dir: PathBuf,
+    out_dir: PathBuf,
+    project_path: PathBuf,
+    log_path: PathBuf,
+    backend: F,
+) -> Result<(), CutError>
+where
+    F: FnOnce() -> record_core::Result<Box<dyn record_capture::Capture>> + Send + 'static,
+{
+    start_capture_with_backend(
+        capture_id,
+        duration_ms,
+        fps,
+        audio,
+        system_audio,
+        keys,
+        monitor,
+        window,
+        project_dir,
+        out_dir,
+        project_path,
+        log_path,
+        backend,
+    )
 }
 
 /// Normalize a legacy macOS source that still embeds system audio.

@@ -53,7 +53,7 @@ authentication boundary:
 - Shared/multi-user machines, untrusted local apps/services, containers sharing
   host networking, and exposed ports are outside the supported default. Native
   per-caller/per-user capability authentication is future hardening; it is not
-  in v0.6.110. Under this documented deployment assumption, its absence is
+  in v0.6.111. Under this documented deployment assumption, its absence is
   **NOT A DEFECT**.
 
 `cutd mcp` is a stdio transport that proxies the running server; it has no
@@ -133,11 +133,31 @@ check, not that it is a timeless snapshot. A malformed, partial, or failed
 inventory is attention, never a capture-health pass, and the page offers no
 repair action.
 
+### Confirmed rebuildable-cache cleanup
+
+`project.cache_preview {}` is a separate, read-only path-free check. It only
+accepts flat `proxies/` and `filmstrip/` entries that have matching durable
+ShellX Cut ownership-ledger records, are not referenced by current asset
+metadata, and have been unchanged for at least 24 hours. Any legacy/unowned or
+foreign file, symlink, unexpected directory, malformed/stale ledger, oversized
+root, journal drift, or cooperating producer makes the operation fail closed;
+it does not return a plan. It neither modifies `project.health` nor treats file
+age as last-use evidence.
+
+`project.cache_purge {plan_id, confirm:true}` consumes that one preview plan
+and returns a cancellable `cache_purge` job. The job takes an exclusive cache
+lease, rechecks journal/root/file identity before removal, removes only the
+previewed ledger-owned files, and updates the ledger durably after each removal.
+Use `jobs.status` for progress, `jobs.cancel` to request cooperative stop, and
+`project.cache_preview` again after the terminal record to remeasure. Source
+media, exports, captures, receipts, and every unowned path remain outside both
+verbs' deletion roots.
+
 ### Executable argument contract
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 265 schemas once at startup and applies the selected schema at the shared
+all 277 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -226,7 +246,11 @@ verify that every served `/api/agent-doc/*path` file is
 byte-identical to the candidate source, preventing a stale or partial docs bundle.
 
 Long-running verbs return `{job_id}` immediately — poll `jobs.status`, list via
-`jobs.list`, abort via `jobs.cancel`. Cancellation does not claim success until
+`jobs.list`, abort via `jobs.cancel`. An engine-eligible failed default-output
+`screen_record.export` can start exactly one linked child through `jobs.retry`;
+it validates the active revision, source/EditPlan/capture-audio SHA-256 inputs,
+and a fresh default-output lease rather than replaying raw old arguments.
+Explicit Save As jobs and changed inputs are refused. Cancellation does not claim success until
 tracked blocking workers and their synchronous child processes have finished.
 If that bounded drain is still in progress, `job_cancel_pending` asks the
 caller to wait and retry. A project switch uses the same fail-closed boundary:
@@ -441,6 +465,13 @@ path. The private WGC stage keeps 128-bit random base64url names; finalized deep
 audio/checkpoint files still use the existing durable no-replace publication contract
 through extended-length `MoveFileExW` paths.
 
+The Windows and macOS in-app window pickers use the live rows returned by
+`screen_record.doctor.windows`. Their `id` field is an opaque native identity;
+`title` and `app` exist only for display. Pass the `id` unchanged to
+`screen_record.start{window}` or `debug.screenshot{window}`. Capture revalidates
+that exact identity and returns a clear error if the window closed or was
+replaced; it never searches by title or silently falls back to a whole display.
+
 `screen_record.stop` waits with a bounded capture-work-derived budget: twice the
 marker-declared or journal-observed capture span plus 15 seconds, with a 45-second
 minimum and 15-minute maximum. That allows real checkpoint stitch/audio finalization
@@ -627,6 +658,23 @@ The server validates every ID against the open project, rejects duplicates, and
 caps each turn at eight attachments. The response echoes the validated IDs in
 `result.attachments` on both the success and structured no-edit paths.
 
+Find > Moment citations use a separate index-bound attachment contract. Resolve
+them provider-free first, then send the same ids and exact index snapshot:
+
+```bash
+curl -sS http://127.0.0.1:6161/api/verb/inspect.range \
+  -H 'content-type: application/json' \
+  -d '{"index_id":"idx_0123456789abcdef01234567","evidence_ids":["ev_0123456789abcdef01234567"]}'
+
+curl -sS http://127.0.0.1:6161/api/verb/agent.chat \
+  -H 'content-type: application/json' \
+  -d '{"message":"compare this cited moment","evidence_index_id":"idx_0123456789abcdef01234567","evidence_ids":["ev_0123456789abcdef01234567"]}'
+```
+
+Cut re-runs the same current-range validation before launching a provider. A
+changed index, missing asset, or stale authority refuses the attachment; prompt
+text is never treated as a substitute for current evidence.
+
 Headless editing supports installed Claude Code, Codex, Grok, and Antigravity CLIs. Provider version
 text is informational only; Cut verifies each route's required policy flags before every turn. Claude uses a
 contained capability contract with a disposable cwd and
@@ -802,7 +850,7 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
 (`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
-read-only check proves protocol negotiation, ping, all 265 tools, and that the
+read-only check proves protocol negotiation, ping, all 277 tools, and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use
@@ -826,3 +874,45 @@ Success reports `mode:"proxy"`, the exact executable and command, negotiated
 protocol version, tool count and payload size, `ping:true`, the resolved engine
 address, and `same_engine:true`. `--standalone` is an advanced testing mode
 with separate state and is refused while a served engine is running.
+
+## B5 bulk offline-media relink
+
+`media.relink_preview {root}` is a bounded, read-only, symlink-refusing folder
+scan for offline assets in the open project. Its `plan_hash` is only actionable
+for a unique candidate whose complete `sha256:` equals the asset's stored full
+SHA-256. Duplicate exact candidates, sampled/missing stored hashes, and
+filename/kind/duration metadata matches are disclosed but refused.
+
+`media.relink_apply {root, plan_hash, accept, request_id, expected_revision}`
+revalidates the exact plan and writes one replayable project-local metadata op.
+It returns immutable `shellx-cut/media-relink-receipt/1` data for B6 (project
+identity, pre/post revisions, plan hash, grouped op id, expected hash, chosen
+path, and disposition per accepted asset); the ordinary immutable mutation
+request receipt is retained too. Neither verb touches the global Library or
+starts import/proxy/enrichment work, and bulk recovery makes no Ctrl-Z promise.
+
+## B6 portable package (agent-only)
+
+`project.package_plan {destination, name, b5_receipt?}` is the required dry
+run. It walks every sequence, hashes only referenced source media with complete
+SHA-256, and returns a destination-bound `plan_hash`, byte/file totals, dedupe
+plan, and package-relative member names. Offline media, symlinks/reparse points,
+unsafe destinations, and Motion-linked provenance refuse. It never searches for
+or relinks media. If B5 repaired media, pass its exact immutable receipt: Cut
+checks its project identity, post-revision, grouped journal operation, exact
+hashes, and chosen paths before retaining only the receipt's canonical digest.
+
+`project.package_create {destination, name, plan_hash, b5_receipt?}` recomputes
+that plan, starts a `portable_package` job, copies each unique content digest
+into a private same-parent stage, clears all derived-cache pointers, writes a
+Cut-native replay baseline plus `package.manifest.json`, verifies every listed
+member checksum, and atomically publishes `<name>.cutproj` without replacement.
+Poll `jobs.status`; terminal success includes the destination and manifest
+SHA-256. `published_with_warnings` means publication completed but a
+post-publication parent-directory sync or private-stage cleanup warning was
+retained. The source project's log, cache, asset paths, and media remain intact
+(the normal persisted source-local job record is operational state, not a
+project operation). Linux, macOS, and Windows each publish through a native
+no-replace directory primitive; unknown targets fail closed. There is no Pack
+project UI yet, and Library “Keep a copy” remains a different global-Library
+action.

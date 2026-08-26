@@ -42,61 +42,10 @@ use cut_core::{
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-pub(crate) const ENV_ADAPTER_PYTHON: &str = "CUTD_ADAPTER_PYTHON";
-
-pub(crate) fn configured_adapter_python() -> Option<PathBuf> {
-    let explicit = std::env::var_os(ENV_ADAPTER_PYTHON)
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from);
-    adapter_python_for_platform(
-        explicit,
-        cut_perception::configured_sidecar_python(),
-        find_python_on_path(),
-        cfg!(target_os = "macos"),
-    )
-}
-
-fn adapter_python_for_platform(
-    explicit: Option<PathBuf>,
-    managed: Option<PathBuf>,
-    path_python: Option<PathBuf>,
-    is_macos: bool,
-) -> Option<PathBuf> {
-    if explicit.is_some() {
-        return explicit;
-    }
-    if managed.is_some() {
-        return managed;
-    }
-    if is_macos {
-        return None;
-    }
-    path_python
-}
-
-fn find_python_on_path() -> Option<PathBuf> {
-    find_executable_on_path(&["python3", "python"])
-}
-
-fn find_executable_on_path(names: &[&str]) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        for name in names {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            #[cfg(windows)]
-            {
-                let exe = dir.join(format!("{name}.exe"));
-                if exe.is_file() {
-                    return Some(exe);
-                }
-            }
-        }
-    }
-    None
-}
+mod adapter_python;
+#[cfg(test)]
+use adapter_python::{adapter_python_for_platform, find_python_on_path};
+pub(crate) use adapter_python::{configured_adapter_python, ENV_ADAPTER_PYTHON};
 
 /// Dispatch one verb. `actor` records who/which surface for the op-log.
 /// Returns the universal envelope; never panics on bad input.
@@ -170,8 +119,12 @@ async fn dispatch_validated(
         DispatchTarget::ProjectForget => project_forget(args).await.into(),
         DispatchTarget::ProjectDelete => project_delete(state, args).await.into(),
         DispatchTarget::ProjectSave => project_save(state).await.into(),
+        DispatchTarget::ProjectPackagePlan => project_package_plan(state, args).await.into(),
+        DispatchTarget::ProjectPackageCreate => project_package_create(state, args).await.into(),
         DispatchTarget::ProjectState => project_state(state, args).await.into(),
         DispatchTarget::ProjectHealth => project_health(state, args).await.into(),
+        DispatchTarget::ProjectCachePreview => project_cache_preview(state).await.into(),
+        DispatchTarget::ProjectCachePurge => project_cache_purge(state, args).await.into(),
         DispatchTarget::ProjectSequenceList => project_sequence_list(state).await.into(),
         DispatchTarget::ProjectSequenceIndex => project_sequence_index(state, args).await.into(),
         DispatchTarget::ProjectSequenceCreate => {
@@ -228,6 +181,8 @@ async fn dispatch_validated(
         DispatchTarget::MediaImport => media_import(state, args, actor).await.into(),
         DispatchTarget::MediaRemove => media_remove(state, args, actor).await.into(),
         DispatchTarget::MediaRelink => media_relink(state, args, actor).await.into(),
+        DispatchTarget::MediaRelinkPreview => media_relink_preview(state, args).await.into(),
+        DispatchTarget::MediaRelinkApply => media_relink_apply(state, args, actor).await.into(),
         DispatchTarget::MediaCheck => media_check(state, args).await.into(),
         DispatchTarget::MediaBinSave => media_bin_save(state, args, actor).await.into(),
         DispatchTarget::MediaBinDelete => media_bin_delete(state, args, actor).await.into(),
@@ -245,6 +200,7 @@ async fn dispatch_validated(
         DispatchTarget::JobsStatus => jobs_status(state, args).await.into(),
         DispatchTarget::JobsList => jobs_list(state).await.into(),
         DispatchTarget::JobsCancel => jobs_cancel(state, args).await.into(),
+        DispatchTarget::JobsRetry => jobs_retry(state, args).await.into(),
 
         // ------------------------------------------------------------------
         // edit.* — thin arg-parse wrappers over cut_core::edit, one op each
@@ -319,6 +275,17 @@ async fn dispatch_validated(
         DispatchTarget::MediaIndexStatus => media_index_status(state, args).await.into(),
         DispatchTarget::MediaSearch => media_search(state, args, actor).await.into(),
         DispatchTarget::MediaIndex => media_index(state, args, actor).await.into(),
+        DispatchTarget::MediaIntelligenceStatus => {
+            media_intelligence_status(state, args).await.into()
+        }
+        DispatchTarget::MediaIntelligenceRebuild => {
+            media_intelligence_rebuild(state, args).await.into()
+        }
+        DispatchTarget::MediaIntelligenceSearch => {
+            media_intelligence_search(state, args).await.into()
+        }
+        DispatchTarget::InspectMedia => inspect_media(state, args).await.into(),
+        DispatchTarget::InspectRange => inspect_range(state, args).await.into(),
         DispatchTarget::EffectsList => effects_list(state, args, actor).await.into(),
         DispatchTarget::TransitionsList => transitions_list(state, args, actor).await.into(),
         DispatchTarget::CaptionsKinetic => captions_kinetic(state, args, actor).await.into(),
@@ -1184,12 +1151,15 @@ use project_workspace::{
     comment_add, comment_apply, comment_draft, comment_list, comment_resolve, library_add,
     library_add_to_project, library_favorite, library_folder_add, library_folder_remove,
     library_folder_rename, library_list, library_move, library_relink, library_remove, library_tag,
-    library_use, project_brand, project_checkpoint, project_close, project_color, project_create,
-    project_delete, project_diff, project_forget, project_format, project_health, project_list,
-    project_open, project_ops, project_redo, project_rename, project_revert, project_save,
-    project_sequence_create, project_sequence_delete, project_sequence_list,
-    project_sequence_rename, project_sequence_switch, project_state, project_undo,
+    library_use, project_brand, project_cache_preview, project_cache_purge, project_checkpoint,
+    project_close, project_color, project_create, project_delete, project_diff, project_forget,
+    project_format, project_health, project_list, project_open, project_ops, project_redo,
+    project_rename, project_revert, project_save, project_sequence_create, project_sequence_delete,
+    project_sequence_list, project_sequence_rename, project_sequence_switch, project_state,
+    project_undo,
 };
+mod project_package;
+use project_package::{project_package_create, project_package_plan};
 mod sequence_index;
 use sequence_index::project_sequence_index;
 mod brand;
@@ -1205,6 +1175,8 @@ use media::{
     media_bin_delete, media_bin_list, media_bin_save, media_check, media_filmstrip,
     media_perception, media_probe, media_relink, media_remove, media_transcribe, media_waveform,
 };
+mod media_relink;
+use media_relink::{media_relink_apply, media_relink_preview};
 const RENDER_MAX_RUNNING: usize = 1;
 const RENDER_QUEUE_MAX_RUNNING: usize = 1;
 // ---------------------------------------------------------------------------
@@ -1212,7 +1184,13 @@ const RENDER_QUEUE_MAX_RUNNING: usize = 1;
 // ---------------------------------------------------------------------------
 
 mod jobs_handlers;
-use jobs_handlers::{jobs_cancel, jobs_list, jobs_status};
+use jobs_handlers::{jobs_cancel, jobs_list, jobs_retry, jobs_status};
+
+mod media_intelligence;
+use media_intelligence::{
+    inspect_media, inspect_range, media_intelligence_rebuild, media_intelligence_search,
+    media_intelligence_status,
+};
 
 mod edit_tools;
 #[cfg(test)]

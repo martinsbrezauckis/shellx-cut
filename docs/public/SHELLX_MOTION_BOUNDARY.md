@@ -5,6 +5,114 @@ Status: working integration contract.
 Purpose: keep ShellX Cut aligned with ShellX Motion without duplicating a second
 motion renderer or standalone motion editor inside Cut.
 
+## 2026-08-25 Self-Describing Discovery And Generic Lifecycle Checkpoint
+
+Motion MCI-1 is source-accepted at implementation commit
+`81bcaaa07e5daaba285f22e64fad197edb3d4eb6` and documentation checkpoint
+`06abe54cfed2a40bc23f6bf7045dde7960d6d282`. It adds three read-only CLI routes:
+`runtime-probe`, `connector catalog`, and `connector describe <capability-id>`.
+The accepted contract identities are:
+
+- `shellx-motion/runtime-probe@1` schema SHA-256
+  `ef43bbccc5fb58aa347bb72a2ab2a89187a14060b9410099c01d828b7f89b35a`;
+- `shellx-motion/capability-catalog@1` schema SHA-256
+  `d689c6b1f013cf8ea8c81d4a3825a13e1c5ee8ed188c6971931e3da0c303b066`;
+- current produced catalog fingerprint
+  `9f19e5e8f87ab9a5c4e5e7673814653463c3517bbe8cf6574a62b9fc90f3bdcf`.
+
+This checkpoint changes discovery, not Cut execution. Cut's existing blocking named connectors and
+`motion.job.get/list` remain unchanged. Every MCI-1 generic connector-job descriptor is
+`not-admitted`; Cut must not add submit/events/cancel/retry until Motion MCI-2/MCI-3 accepts one
+durable connector lifecycle and typed failure contract. Source and ordinary packed runtimes remain
+unmanaged and distribution-unverified. Scene3D, C6 physics, and C7 orchestration remain refused for
+Cut, while current P2A/P2B rendered-media routes retain their declared Linux-only limits.
+
+The future Cut consumer must branch on negotiated request, lifecycle, trust, artifact, receipt, and
+editor-operation classes, never on a growing list of capability IDs. A new Motion render, formula,
+template, or scene-orchestration operation requires no Cut code change when those protocol classes
+stay the same: Motion adds the descriptor, bounded request metadata, output roles, and documentation
+resource. Cut changes only for a protocol-major revision or a genuinely new interaction, authority,
+artifact, or editor-operation class. Until that generic Cut consumer is implemented and an exact
+Cut-plus-Motion process pair passes, catalog visibility is not Cut readiness or execution admission.
+
+Motion MCI-2 is now source-accepted at implementation commit
+`a96960a712a27ff770841bfd13249864db5d72d1`. Its current contract identities are:
+
+- `shellx-motion/capability-catalog@2` schema SHA-256
+  `0fa8bdb4606fa341a89e55cb7554bd365f783c8e4b63b370d054f10d92df787c`;
+- produced catalog fingerprint
+  `848014c36389ebece97712feb6b027380eacc8603814b1b0d67a21b99c564388`;
+- Template-to-Cut descriptor fingerprint
+  `e6f762650e0494e01d2f14adc997dcadb67263d17640d21532f624d25091df61`;
+- generic lifecycle identities `shellx-motion/capability-descriptor@2`,
+  `shellx-motion/connector-job@2`, and `shellx-motion/connector-job-binding@1`;
+- fixed authenticated coordinator command `motion.connector.submit`, followed by the shared
+  `motion.job.get`, `motion.job.list`, `motion.job.events`, `motion.job.cancel`, and
+  `motion.job.retry` controls advertised by the descriptor.
+
+Cut should integrate this as one generic adapter. It validates the runtime protocol, catalog,
+descriptor revision/fingerprint, closed request fields, lifecycle class, permission class, output
+roles, receipt schemas, and Cut import-plan class. It must not add a verb, dispatch branch, or source
+switch for each Motion capability id. When Motion publishes a later render, formula, template, or
+scene-orchestration descriptor using those same classes, that feature becomes discoverable and
+callable through catalog data without a Cut code change. Cut changes only for a new protocol major
+or a genuinely new request, interaction, authority, lifecycle, output, receipt, or editor-operation
+class.
+
+The host configures this generic path once with a stable authenticated caller, a caller-scoped
+opaque-reference authority, and an immutable binding journal. Connector requests carry opaque
+reference tokens and bounded scalar values, never paths or URLs. Motion journals the exact catalog,
+descriptor, request, caller, and job binding before queueing or resolving a token. Explicit retry
+may reconstruct only a terminal retryable failed binding; interrupted pending/running work and
+cancelled work are never automatically resurrected.
+
+The current v2 catalog admits Canvas-to-Cut, Script-to-Cut, Source-to-Cut, and Template-to-Cut to
+that generic lifecycle on their declared Linux route. Canvas bridge export, Canvas-to-MP4, and Cut
+Generate-to-Cut remain named compatibility routes. Scene3D, C6 physics, and C7 scene orchestration
+remain refused. The generic submit command stays discoverable when its host resolver/journal is not
+configured, but returns typed `capability_unavailable`; the route must not disappear and invite a
+feature-specific fallback.
+
+PC2 Linux x64 Node 24.18.0 and Mac arm64 Node 26.0.0 passed the focused lifecycle/refusal tests,
+affected package typechecks, and complete contract, argument, documentation, source-hygiene,
+architecture, packed-build, and pack gates on byte-identical source. This is Motion source/packed
+evidence, not installed Cut evidence.
+
+Motion MCI-3 is source-accepted at implementation commit
+`dc49ce1f1c66bd6719410180db7e83fc927664bd`. Its `job-status-contract@1` authority SHA-256 is
+`d729280cd1508f9df7680fe3c648ee55d02567cf719f039c8beac12ef5843e26`; the canonical
+render-job and prompt-job handoff schema hashes are
+`06051f3ccf862231d766236f00bc6a9223f7c9f7979afff66efce346b6bdaf01` and
+`68567a971866d23454c4eba9882bb965a54162eb5464d70e1b54938e1938b1d3`. The catalog schema,
+ten descriptors, produced catalog fingerprint and generic submit command remain unchanged.
+
+The Cut generic adapter must accept a bounded future Motion error code as an opaque string and
+preserve its `message`, `retryable`, optional `remedy`, `retryAfterMs`, and `suggestedAction` through
+its own job projection. It branches on this metadata, never on capability-specific error names;
+unknown codes are not translated to `invalid_args` or `connector_failed`. Canonical handoff state is
+`pending`, not `queued`. A terminal job's `outcome` is authoritative even when an artifact path is
+present, while `job_unknown`, `job_expired`, and `job_not_visible` describe lookup failure rather
+than render failure.
+
+PC2 and Mac independently passed the focused Core/connector/Debug/MCP/type gates and the complete
+contract, documentation, architecture, installed-bin and packed-package gates from the exact MCI-3
+source tree. Each packed 19 packages, 4,528 files, and 1,480 reachable shipping modules. This is
+Motion source/packed evidence, not an installed Cut process-pair result. The generic Cut consumer,
+exact Cut-server plus Motion-runtime process-pair test, managed/signed distribution, clean-host and
+Windows qualification, Scene3D/C6/C7 admission, and release qualification remain open.
+
+Cut now has a compiled, source-only structural consumer for this contract. It discovers the full
+truthful catalog, projects conditional/compatibility-only/refused availability, prepares only the
+admitted rendered-media import class, and uses one injected fixed connector/job transport. It does
+not add a Cut public verb, one-shot CLI lifecycle, managed installation claim, or process-pair
+claim. Scene3D/C6/C7 remain visible but unpreparable. Its path-free
+`shellx-cut/motion-connector-delivery@1` value is a Cut-owned trusted bridge seam for a later
+authenticated coordinator: after a succeeded `job-status@1`, that bridge resolves the private
+Motion receipt/output authority and returns only descriptor-bound artifacts, attestation, and a
+rendered-media Cut import plan. It is not a Motion command or public runtime protocol. Before a
+submit it re-describes the selected descriptor and refuses catalog/descriptor drift; explicit retry
+also re-negotiates the original bound runtime/catalog/descriptor identity without upgrading it.
+
 ## ShellX Motion Owns
 
 - MotionIR, TemplateIR, AssetIR, package manifests, and `.shellxmotion` package

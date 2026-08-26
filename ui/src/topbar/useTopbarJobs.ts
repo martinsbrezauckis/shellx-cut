@@ -12,6 +12,13 @@ export interface JobView {
   waiting_on?: { job_id: string; kind: string }
 }
 
+export interface RetryableJobView {
+  job_id: string
+  kind: string
+  attempt: number
+  root_job_id: string
+}
+
 export function isRenderBlockingJobKind(kind: string): boolean {
   return (
     kind === 'render' ||
@@ -55,9 +62,24 @@ export function activeJobViews(records: JobRecord[]): JobView[] {
   })
 }
 
+/** Failed-job retry controls are entirely driven by the durable engine
+ * projection. Clients do not reverse-engineer eligibility from kind/error. */
+export function retryableJobViews(records: JobRecord[]): RetryableJobView[] {
+  return records
+    .filter((job) => job.retry?.eligible === true)
+    .sort((left, right) => left.created_ts.localeCompare(right.created_ts) || left.job_id.localeCompare(right.job_id))
+    .map((job) => ({
+      job_id: job.job_id,
+      kind: job.kind,
+      attempt: job.retry!.attempt,
+      root_job_id: job.retry!.root_job_id,
+    }))
+}
+
 /** Tracks running jobs for the topbar chip and Render button disabled state. */
 export function useTopbarJobs() {
   const [jobs, setJobs] = useState<Record<string, JobView>>({})
+  const [retryJobs, setRetryJobs] = useState<Record<string, RetryableJobView>>({})
   const seedRequest = useRef(0)
 
   useEffect(() => {
@@ -68,6 +90,7 @@ export function useTopbarJobs() {
         if (request !== seedRequest.current) return
         const list = (r.ok && (r.result as { jobs?: JobRecord[] })?.jobs) || []
         setJobs(Object.fromEntries(activeJobViews(list).map((job) => [job.job_id, job])))
+        setRetryJobs(Object.fromEntries(retryableJobViews(list).map((job) => [job.job_id, job])))
       } catch {
         // Transport down: connection state is handled by the status bar.
       }
@@ -77,11 +100,14 @@ export function useTopbarJobs() {
     })
     const offEvents = events.subscribe((ev) => {
       if (ev.type === 'job_progress') {
+        if (ev.progress >= 1) {
+          void seed()
+          return
+        }
         seedRequest.current += 1
         setJobs((prev) => {
           const next = { ...prev }
-          if (ev.progress >= 1) delete next[ev.job_id]
-          else next[ev.job_id] = {
+          next[ev.job_id] = {
             job_id: ev.job_id,
             kind: ev.kind,
             state: 'running',
@@ -91,12 +117,7 @@ export function useTopbarJobs() {
           return next
         })
       } else if (ev.type === 'render_done') {
-        seedRequest.current += 1
-        setJobs((prev) => {
-          const next = { ...prev }
-          delete next[ev.job_id]
-          return next
-        })
+        void seed()
       }
     })
     void seed()
@@ -116,7 +137,15 @@ export function useTopbarJobs() {
       return next
     })
   }, [])
+  const removeRetryJob = useCallback((jobId: string) => {
+    setRetryJobs((previous) => {
+      const next = { ...previous }
+      delete next[jobId]
+      return next
+    })
+  }, [])
   const jobList = Object.values(jobs)
+  const retryJobList = Object.values(retryJobs)
   const renderRunning = jobList.some((j) => isRenderBlockingJobKind(j.kind))
-  return { jobList, renderRunning, removeJob }
+  return { jobList, retryJobList, renderRunning, removeJob, removeRetryJob }
 }

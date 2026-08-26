@@ -446,12 +446,21 @@ assert.equal(
 )
 
 const surface = readFileSync(new URL('../src/panels/Environment/HealthRecovery.tsx', import.meta.url), 'utf8')
+const cacheSurface = readFileSync(new URL('../src/panels/Environment/CacheLifecycle.tsx', import.meta.url), 'utf8')
 for (const selector of ['data-cut-health-refresh', 'data-cut-health-row', 'data-cut-health-capture', 'data-cut-health-open-assets', 'data-cut-health-open-recording', 'data-cut-health-open-toolchain']) {
   assert.ok(surface.includes(selector), `Health & Recovery has stable ${selector}`)
 }
 for (const evidence of ['data-cut-health-refresh-id', 'data-cut-health-settled', 'data-cut-health-capture-complete', 'data-cut-health-capture-count']) {
   assert.ok(surface.includes(evidence), `Health & Recovery exposes settled model evidence through ${evidence}`)
 }
+for (const selector of ['data-cut-cache-lifecycle', 'data-cut-cache-preview', 'data-cut-cache-preview-status', 'data-cut-cache-purge', 'data-cut-cache-confirm', 'data-cut-cache-confirm-cancel', 'data-cut-cache-confirm-purge', 'data-cut-cache-job', 'data-cut-cache-cancel', 'data-cut-cache-remeasure']) {
+  assert.ok(cacheSurface.includes(selector), `Cache lifecycle has stable ${selector}`)
+}
+for (const verb of ["project.cache_preview", "project.cache_purge", "jobs.status", "jobs.cancel"]) {
+  assert.ok(cacheSurface.includes(verb), `Cache lifecycle uses ${verb} through the typed verb client`)
+}
+assert.ok(cacheSurface.includes('void onComplete()'), 'a terminal cache job remeasures the Health surface')
+assert.ok(!cacheSurface.includes('window.confirm'), 'cache deletion uses a visible in-panel confirmation step')
 assert.ok(!surface.includes('media.relink'), 'Health & Recovery cannot relink media without an owning confirmed workflow')
 assert.ok(surface.includes('const doctorRefresh = useRef(onRefreshDoctor)'), 'ordinary App refresh callbacks are held in a ref')
 assert.ok(surface.includes('}, [projectSession, refresh])'), 'health loading does not rerun for ordinary project object updates')

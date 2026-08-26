@@ -2,7 +2,7 @@
 
 ## Executive summary
 
-This is the v0.6.110 deployment contract for the local Debug API, WebSocket
+This is the v0.6.111 deployment contract for the local Debug API, WebSocket
 endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
 one trusted interactive environment**. Its unauthenticated loopback listener is
 a whole-machine trust boundary, not same-user or per-process isolation. Under
@@ -23,7 +23,7 @@ and `app/server/src/chat.rs` (separate contained-Claude capability broker).
 | Browser mitigation | Reject a non-loopback `Origin` or `Host`, plus a no-Origin `Sec-Fetch-Site: cross-site` browser request; this mitigates browser cross-origin and DNS-rebinding requests only. |
 | Native callers | Can omit `Origin` and forge `Origin`/`Host`; headers are not authentication. |
 | Remote listening | Native LAN/public binding is unsupported and refused by default. `SHELLX_CUT_ALLOW_NON_LOCAL=1` changes only the bind check and provides no Cut authentication. |
-| Future hardening | A native remote mode must introduce and verify per-caller/per-user capability authentication. It is not implemented in v0.6.110. |
+| Future hardening | A native remote mode must introduce and verify per-caller/per-user capability authentication. It is not implemented in v0.6.111. |
 
 Remote use is supported only through an SSH/VPN/external ShellX broker or
 equivalent transport that independently authenticates and authorizes the
@@ -93,7 +93,7 @@ and use its checkpoint/revert controls as recovery tools.
 For a future supported remote or multi-principal deployment, Cut must add a
 native, verified per-caller/per-user capability authentication mechanism and
 test it at the server boundary. That hardening is intentionally not silently
-claimed or partially implemented in v0.6.110.
+claimed or partially implemented in v0.6.111.
 
 ## Verification hooks
 

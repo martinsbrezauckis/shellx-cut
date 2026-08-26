@@ -17,6 +17,7 @@
 //! Primary callers: record-engine (reads EventTrack → writes EditPlan),
 //! record-render (reads RecordingProject+EditPlan → MP4/GIF), record-cli.
 
+pub mod camera;
 pub mod color;
 pub mod ease;
 pub mod error;
@@ -28,6 +29,9 @@ pub mod project;
 /// Project file schema tag (written into `RecordingProject.schema`).
 pub const SCHEMA: &str = "shellx-record/1";
 
+pub use camera::{
+    CameraArtifact, CameraClockRange, CameraMediaFacts, CameraTerminalState, CAMERA_ARTIFACT_SCHEMA,
+};
 pub use color::Rgba;
 pub use ease::Ease;
 pub use error::{error_codes, RecordError, Result};

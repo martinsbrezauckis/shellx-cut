@@ -10,11 +10,16 @@
 // without the flag). Deps: lib/client types only.
 
 import type { OpRecord, Project, RenderReceipt, Transcript } from '../../lib/client'
+import { MANUAL_READ_ONLY_VERBS } from '../../manual/readOnlyVerbs.generated'
+import { handleCacheLifecycleMock } from './cacheLifecycleMock'
 
 const MOCK_PARAMS = typeof location !== 'undefined'
   ? new URLSearchParams(location.search)
   : new URLSearchParams()
 const MOCK_ON = MOCK_PARAMS.has('mock')
+// The embedded manual is a documentation surface, never a simulation of a
+// mutating Cut session. Keep its read allowance generated from schema/verbs.
+const MOCK_EMBEDDED_MANUAL_READ_ONLY = MOCK_PARAMS.get('manual') === 'embed' && MOCK_PARAMS.get('mock') === '1'
 const MOCK_TRANSCRIPT_MISSING = MOCK_PARAMS.has('mockTranscriptMissing')
 const MOCK_DIRECTOR_ERROR = MOCK_PARAMS.has('mockDirectorError')
 const MOCK_ENVIRONMENT = MOCK_PARAMS.has('mockEnvironment')
@@ -33,6 +38,77 @@ function parseArgs(body: BodyInit | null | undefined): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+// A small original SVG, kept in the mock rather than borrowing product footage.
+// It makes the embedded real frontend inspectable when no cutd is present while
+// remaining visibly a deterministic documentation fixture, not rendered media.
+const MANUAL_DEMO_IMAGE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="ShellX Cut documentation preview fixture">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#18243c"/><stop offset="1" stop-color="#0b1120"/></linearGradient>
+    <linearGradient id="card" x1="0" x2="1"><stop stop-color="#1f3b64"/><stop offset="1" stop-color="#14233d"/></linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect x="80" y="80" width="1120" height="560" rx="28" fill="url(#card)" stroke="#4d82c4" stroke-width="2"/>
+  <rect x="128" y="132" width="470" height="30" rx="15" fill="#72b7ff" opacity=".9"/>
+  <rect x="128" y="190" width="720" height="18" rx="9" fill="#a9c9ed" opacity=".62"/>
+  <rect x="128" y="224" width="584" height="18" rx="9" fill="#a9c9ed" opacity=".36"/>
+  <rect x="128" y="300" width="1024" height="204" rx="18" fill="#09111e" stroke="#385a87" stroke-width="2"/>
+  <path d="M158 474 L366 392 L510 444 L692 340 L872 416 L1116 330" fill="none" stroke="#72b7ff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="692" cy="340" r="15" fill="#f2c14e"/>
+  <text x="128" y="572" fill="#d9ebff" font-family="system-ui, sans-serif" font-size="28" font-weight="600">ShellX Cut · documentation preview</text>
+  <text x="128" y="608" fill="#a9c9ed" font-family="system-ui, sans-serif" font-size="20">Read-only local fixture — no project media is rendered here.</text>
+</svg>`
+const MANUAL_DEMO_IMAGE_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(MANUAL_DEMO_IMAGE_SVG)}`
+
+function isManualDemoImageRoute(url: string): boolean {
+  const base = typeof location === 'undefined' ? 'http://localhost' : location.origin
+  const path = new URL(url, base).pathname
+  return path === '/api/frame' || path.startsWith('/api/source/')
+}
+
+function manualDemoImageResponse(): Response {
+  return new Response(MANUAL_DEMO_IMAGE_SVG, {
+    status: 200,
+    headers: {
+      'content-type': 'image/svg+xml; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  })
+}
+
+/**
+ * fetch interception covers callers that request the image themselves. Native
+ * <img> loading bypasses window.fetch, so route the narrow manual image family
+ * to the same self-owned data URL as well. No route outside composed frames and
+ * project source images is changed. The embedded fixture classifies its visual
+ * sources as stills, so this route never substitutes a fake playable video.
+ */
+function installManualDemoImageRouting(): void {
+  if (typeof HTMLImageElement === 'undefined') return
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')
+  if (!descriptor?.get || !descriptor.set) return
+  Object.defineProperty(HTMLImageElement.prototype, 'src', {
+    configurable: true,
+    enumerable: descriptor.enumerable ?? true,
+    get: descriptor.get,
+    set(value: string) {
+      descriptor.set?.call(this, typeof value === 'string' && isManualDemoImageRoute(value) ? MANUAL_DEMO_IMAGE_URL : value)
+    },
+  })
+  // React may use setAttribute rather than the property setter for an image
+  // source. Cover that native path too, still scoped to HTMLImageElement and
+  // the two self-owned manual route families above.
+  const setAttribute = Element.prototype.setAttribute
+  Object.defineProperty(HTMLImageElement.prototype, 'setAttribute', {
+    configurable: true,
+    value(this: HTMLImageElement, name: string, value: string) {
+      const routed = name.toLowerCase() === 'src' && isManualDemoImageRoute(value)
+        ? MANUAL_DEMO_IMAGE_URL
+        : value
+      return setAttribute.call(this, name, routed)
+    },
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +152,17 @@ const PROJECT: Project = {
   name: 'demo-cut',
   settings: { width: 1920, height: 1080, fps: 30, audio_rate: 48000 },
   assets: {
-    a1: { path: 'testdata/talking_head.mp4', hash: 'sha256:9f3aa01c44', transcript: 'receipts/a1.words.json' },
+    a1: {
+      path: 'testdata/talking_head.mp4',
+      hash: 'sha256:9f3aa01c44',
+      transcript: 'receipts/a1.words.json',
+      // A static documentation host has no project media endpoint. Preserve
+      // the real editor/timeline shape but render the self-owned still fixture
+      // instead of asking the browser to decode a nonexistent mock video.
+      ...(MOCK_EMBEDDED_MANUAL_READ_ONLY
+        ? { probe: { kind: 'image' as const, width: 1920, height: 1080 } }
+        : {}),
+    },
     // still image (probe kind=image — drives the photo tint) + a music bed
     a2: { path: 'testdata/real/intro-canvas.png', hash: 'sha256:0a11c0ffee', probe: { kind: 'image', width: 1920, height: 1080 } },
     m1: { path: 'assets/music-bed.mp3', hash: 'sha256:5150bedbed', probe: { kind: 'audio', duration_ms: 60000 } },
@@ -312,6 +398,18 @@ function applyOp(newOp: OpRecord): void {
 }
 
 function handleVerb(name: string, args: Record<string, unknown>): unknown {
+  if (MOCK_EMBEDDED_MANUAL_READ_ONLY && !MANUAL_READ_ONLY_VERBS.has(name)) {
+    return {
+      ok: false,
+      error: {
+        code: 'manual_read_only',
+        message: `${name} is unavailable in the embedded manual. Open Cut to perform this action.`,
+        cause: 'The documentation mock exposes schema-derived read-only verbs only; it does not simulate mutations.',
+      },
+    }
+  }
+  const cacheLifecycle = handleCacheLifecycleMock(name, args)
+  if (cacheLifecycle) return cacheLifecycle
   switch (name) {
     case 'project.state':
       {
@@ -398,7 +496,20 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
     // offline demo structurally complete so newer shell consumers remain usable
     // merely because a newer shell consumer was added after the original mock.
     case 'project.list':
-      return { ok: true, result: { projects: [] } }
+      return {
+        ok: true,
+        result: {
+          projects: [{
+            id: 'mock-demo-cut',
+            name: PROJECT.name,
+            path: '/mock/demo-cut.cutproj',
+            created_ms: 1_700_000_000_000,
+            last_opened_ms: 1_700_003_600_000,
+            duration_ms: 58_000,
+            clip_count: 4,
+          }],
+        },
+      }
     case 'library.list': {
       if (MOCK_LIBRARY_TOTAL <= 0) {
         return {
@@ -906,6 +1017,7 @@ function install(): void {
   const realFetch = window.fetch.bind(window)
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (MOCK_EMBEDDED_MANUAL_READ_ONLY && isManualDemoImageRoute(url)) return manualDemoImageResponse()
     const m = /\/api\/verb\/([a-z_.]+)/.exec(url)
     if (!m) return realFetch(input, init)
     const args = parseArgs(init?.body)
@@ -914,6 +1026,7 @@ function install(): void {
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
   }
   Object.defineProperty(window, 'WebSocket', { configurable: true, value: FakeWS })
+  if (MOCK_EMBEDDED_MANUAL_READ_ONLY) installManualDemoImageRouting()
   // Offline hook: emulate a server push (e.g. a
   // ui_command relay) and inspect what the client sent back (acks).
   Object.defineProperty(window, '__cutMock', { configurable: true, value: {

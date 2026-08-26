@@ -79,6 +79,23 @@ pub(crate) fn for_source(
 }
 
 impl CaptureExportAudio {
+    /// The validated recorder-owned audio files that affect export output.
+    /// Retry fingerprints these before it receives a fresh output lease.
+    pub(crate) fn retry_inputs(&self) -> Vec<(&'static str, &Path)> {
+        let mut inputs = Vec::new();
+        if let Some(mic) = self.mic.as_deref() {
+            inputs.push(("capture_mic", mic));
+        }
+        if let Some(system) = self.system.as_deref() {
+            inputs.push(("capture_system", system));
+        }
+        inputs
+    }
+
+    pub(crate) fn system_audio_offset_ms(&self) -> u64 {
+        self.system_offset_ms
+    }
+
     /// Return a renderer-ready audio input. A one-source capture passes its
     /// validated WAV directly. Two sources (or a delayed system-only source) are
     /// prepared as PCM before the normal planned render; this is deliberately not

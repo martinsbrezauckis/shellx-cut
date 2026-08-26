@@ -1,0 +1,75 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "project",
+  "verbs": [
+    {
+      "name": "project.cache_preview",
+      "domain": "project",
+      "description": "Read a path-free, fail-closed cleanup preview for the open project's rebuildable editing cache. It inventories only flat proxy and filmstrip files that have a matching durable ShellX Cut ownership-ledger entry, excludes referenced or recently changed files, and never deletes. A symlink, unexpected directory/file, malformed/missing ownership state, stale ledger record, oversized root, unavailable clock, journal drift, or active cooperating cache producer blocks the preview rather than guessing. Sources, exports, captures, receipts, and all other project files are outside this verb's roots and are never inspected for deletion.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{schema:'shellx-cut/cache-purge-preview/1',status:'ready',plan_id,minimum_age_ms,inventory:{files,bytes},purgeable:{files,bytes},categories:[{kind:'proxies'|'thumbnails',files,bytes,purgeable_files,purgeable_bytes}],blocked_reasons:[]}. This is a read-only preview; filenames and paths are never returned.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.cache_purge",
+      "domain": "project",
+      "description": "Start one confirmed, cancellable cache-purge job from the exact opaque plan returned by project.cache_preview. The plan is single-use. Before each deletion the job reacquires the exclusive cache lease and revalidates project revision, flat roots, ownership ledger, file identity, age, and unreferenced status. It removes only aged, unreferenced, ledger-owned proxy or filmstrip files. It fails closed without deleting a source, export, capture, receipt, foreign/unowned/legacy file, symlink, partial root, or file changed after preview.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["plan_id", "confirm"],
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "pattern": "^cache_plan_[0-9]+$",
+            "description": "Opaque single-use id returned by the current project.cache_preview."
+          },
+          "confirm": {
+            "const": true,
+            "description": "Must be literal true after the person has reviewed the preview."
+          }
+        }
+      },
+      "result": "{job_id,status:'queued'}. Observe jobs.status, cancel with jobs.cancel, then call project.cache_preview again to remeasure. The job never returns paths or filenames.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_purge",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    }
+  ]
+}

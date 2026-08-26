@@ -35,6 +35,9 @@ pub(crate) fn for_capture(
     if let Some(webcam) = webcam {
         map.insert("webcam".into(), Value::String(webcam.into()));
     }
+    if let Some(camera_artifact) = recording_project.get("camera_artifact") {
+        map.insert("camera_artifact".into(), camera_artifact.clone());
+    }
     if let Some(studio_events) = studio_events {
         map.insert("studio_events".into(), Value::String(studio_events.into()));
     }
@@ -57,6 +60,7 @@ mod tests {
         .unwrap();
         assert_eq!(args["config"]["out_fps"], 25.0);
         assert_eq!(args["webcam"], "capture/webcam.mp4");
+        assert!(args.get("camera_artifact").is_none());
         assert_eq!(args["studio_events"], "capture/studio-events.json");
     }
 

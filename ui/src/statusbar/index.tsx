@@ -61,8 +61,10 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [jobCancelErrors, setJobCancelErrors] = useState<Record<string, string>>({})
   const [jobCancelPending, setJobCancelPending] = useState<Record<string, true>>({})
+  const [jobRetryErrors, setJobRetryErrors] = useState<Record<string, string>>({})
+  const [jobRetryPending, setJobRetryPending] = useState<Record<string, true>>({})
   const [outputDir, setOutputDir] = useState<string | null>(() => getStoredOutputDir())
-  const { jobList, removeJob } = useTopbarJobs()
+  const { jobList, retryJobList, removeJob, removeRetryJob } = useTopbarJobs()
   const timeMode = useTimeDisplay() // keep the bar's readout in lockstep with the timeline toggle
   const fps = project?.settings.fps ?? 30
 
@@ -91,6 +93,38 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
       }))
     } finally {
       setJobCancelPending((previous) => {
+        const next = { ...previous }
+        delete next[jobId]
+        return next
+      })
+    }
+  }
+
+  const retryJob = async (jobId: string) => {
+    if (jobRetryPending[jobId]) return
+    setJobRetryErrors((previous) => {
+      const next = { ...previous }
+      delete next[jobId]
+      return next
+    })
+    setJobRetryPending((previous) => ({ ...previous, [jobId]: true }))
+    try {
+      const r = await callVerb('jobs.retry', { job_id: jobId })
+      if (!r.ok) {
+        setJobRetryErrors((previous) => ({
+          ...previous,
+          [jobId]: r.error?.message ?? 'Could not retry this export.',
+        }))
+        return
+      }
+      removeRetryJob(jobId)
+    } catch {
+      setJobRetryErrors((previous) => ({
+        ...previous,
+        [jobId]: 'Server unreachable. Click to retry this export.',
+      }))
+    } finally {
+      setJobRetryPending((previous) => {
         const next = { ...previous }
         delete next[jobId]
         return next
@@ -175,6 +209,30 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
               onClick={() => void cancelJob(j.job_id)}
             >
               ×
+            </button>
+          </span>
+        )
+      })}
+
+      {retryJobList.map((j) => {
+        const pending = Boolean(jobRetryPending[j.job_id])
+        const error = jobRetryErrors[j.job_id]
+        return (
+          <span key={j.job_id} className="sb-job sb-job--retry" data-cut-job-retry-row={j.job_id} title={`Failed export · attempt ${j.attempt} · ${j.job_id}`}>
+            <span className="sb-job-dot" />
+            Failed export
+            <button
+              type="button"
+              className={`sb-job-retry${error ? ' sb-job-retry--error' : ''}`}
+              data-cut-job-retry={j.job_id}
+              data-cut-job-retry-error={error || undefined}
+              data-cut-job-retry-pending={pending ? 'true' : undefined}
+              disabled={pending}
+              title={pending ? 'Validating retry safely…' : error || 'Retry failed export'}
+              aria-label={pending ? 'Validating export retry safely' : error ? 'Retry failed export' : 'Retry failed export'}
+              onClick={() => void retryJob(j.job_id)}
+            >
+              {pending ? 'Retrying…' : 'Retry'}
             </button>
           </span>
         )

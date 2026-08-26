@@ -1,0 +1,35 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "transitions",
+  "verbs": [
+    {
+      "name": "transitions.list",
+      "domain": "transitions",
+      "description": "List the transitions-as-data CATALOG : every `edit.crossfade` VIDEO-transition style (ffmpeg `xfade`) with its family (dissolve/wipe/slide/smooth/cover/reveal/shape/slice/diagonal/squeeze/zoom/wind), motion direction where meaningful, and a one-line description of the seam. A pure READ (no project needed) so a UI or agent can DISCOVER and pick a transition by look/direction without hardcoding names. Generated from the in-house catalog (drift-guarded against the canonical transition set), so it never drifts from what edit.crossfade {transition} accepts. Also returns the distinct `categories` for grouped UI. (Audio always crossfades smoothly under any video style; this is the VIDEO seam look.)",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{count, categories: [string], transitions: [{name, category, direction?, description}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "transitions_list",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

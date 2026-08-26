@@ -644,27 +644,10 @@ async fn agent_chat_turn_review(
     ))
 }
 
-/// agent.chat{message, attachments?, agent?, model?, timeout_ms?} — natural-language timeline
-/// editing (the headline agent-chat feature). Claude uses its contained
-/// capability contract; Codex uses the user's normal native CLI configuration and sandbox;
-/// Grok uses a disposable home/config with only Cut's MCP route and its existing
-/// login file retained in place. Antigravity uses a new sandboxed project with
-/// one disposable Cut-only MCP plugin and bounded headless approval. All run from a fresh disposable cwd connected
-/// to THIS running serve (the same open project the UI shows). The op-log is the receipt
-/// for every reversible Cut verb the selected agent applies.
-/// NO model is hosted; the CLI's logged-in subscription does the reasoning. The
-/// handler holds NO project lock during the spawn (the agent's verbs acquire it per
-/// call over the proxy — holding it would deadlock).
-///
-/// Error transparency: agent.chat must never fail silently. Success means the
-/// op-log grew because an edit landed, producing `ok:true`.
-/// Every path echoes the validated attachment IDs. Every failure returns `ok:false` with a
-/// structured `error` (machine category) + `reason` (human) the UI renders:
-///   not_available (no supported installed CLI or a deferred provider) ·
-///   unsupported_capability (required provider flags are absent) ·
-///   spawn (resolved but failed to launch) · timeout · blocked (a CLI cancelled a
-///   Cut MCP call) · auth (login/expired session) · cli_error (stderr surfaced) ·
-///   no_change (ran but edited nothing — carries the agent's own final message).
+/// Natural-language editing through one verified local provider route. The
+/// handler drops project locks before launch, attributes every MCP edit, echoes
+/// validated asset/evidence identities, and always returns an explicit success
+/// or structured failure. Provider containment details live in `chat::broker`.
 pub(in crate::dispatch) async fn agent_chat(
     state: &AppState,
     args: Value,
@@ -675,6 +658,9 @@ pub(in crate::dispatch) async fn agent_chat(
         message: String,
         #[serde(default)]
         attachments: Vec<String>,
+        #[serde(default)]
+        evidence_ids: Vec<String>,
+        evidence_index_id: Option<String>,
         agent: Option<String>,
         model: Option<String>,
         timeout_ms: Option<u64>,
@@ -704,16 +690,20 @@ pub(in crate::dispatch) async fn agent_chat(
             )
         })?
     };
+    let evidence_index_id = crate::dispatch::media_intelligence::validate_evidence_attachments(
+        state,
+        a.evidence_index_id.as_deref(),
+        &a.evidence_ids,
+    )
+    .await?;
     let plan = json!({
         "request": &msg,
         "reference_ids": &attachments,
+        "evidence_ids": &a.evidence_ids,
+        "evidence_index_id": &evidence_index_id,
         "policy": ["inspect the open project", "apply only reversible editing verbs", "return op-log receipts"],
     });
-    // Every non-success path returns a structured error the UI
-    // renders inline, so the user always knows WHY a task did not execute. The verb
-    // itself succeeds (HTTP 200) with `ok:false` + `error` (machine category) +
-    // `reason` (human) + optional `agent_message` (the agent's OWN words) / `detail`
-    // (raw CLI tail). `reply` mirrors `reason` for back-compat with the v1 UI.
+    // Every non-success path is an explicit HTTP-200 result that the UI renders.
     let fail = |error: &str,
                 reason: String,
                 agent: Option<String>,
@@ -730,6 +720,8 @@ pub(in crate::dispatch) async fn agent_chat(
             "error": error,
             "actions": actions,
             "attachments": &attachments,
+            "evidence_ids": &a.evidence_ids,
+            "evidence_index_id": &evidence_index_id,
             "agent_message": agent_message,
             "detail": detail,
             "plan": &plan,
@@ -922,9 +914,7 @@ pub(in crate::dispatch) async fn agent_chat(
             None,
         );
     };
-    // Providers may declare workspace-local config files. Antigravity uses a
-    // disposable plugin marker plus its MCP configuration; no global provider
-    // configuration or login material is changed.
+    // Provider config files are workspace-local; canonical settings/login stay untouched.
     for (rel, contents) in &cmd.config_files {
         let cfg_path = ws.join(rel);
         if let Some(parent) = cfg_path.parent() {
@@ -939,7 +929,12 @@ pub(in crate::dispatch) async fn agent_chat(
             ));
         }
     }
-    let prompt = crate::chat::build_prompt(&msg, &attachments);
+    let prompt = crate::chat::build_prompt(
+        &msg,
+        &attachments,
+        evidence_index_id.as_deref(),
+        &a.evidence_ids,
+    );
     let timeout =
         std::time::Duration::from_millis(a.timeout_ms.unwrap_or(180_000).clamp(10_000, 600_000));
     // Claude and Codex receive the prompt on stdin. Grok reads a prompt file;
@@ -1127,6 +1122,8 @@ pub(in crate::dispatch) async fn agent_chat(
             "reply": result.reply,
             "actions": actions,
             "attachments": &attachments,
+            "evidence_ids": &a.evidence_ids,
+            "evidence_index_id": &evidence_index_id,
             "plan": &plan,
             "review": review,
             "cost_usd": result.cost_usd,

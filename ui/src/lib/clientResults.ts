@@ -15,6 +15,13 @@ import type {
   Waveform,
 } from './clientModel'
 import type { MotionImportAttestation } from './motionLinkModel'
+import type {
+  EvidenceInspectionResult,
+  MediaInspectionResult,
+  MediaIntelligenceSearchResult,
+  MediaIntelligenceStatusResult,
+} from './mediaIntelligenceModel'
+export type * from './mediaIntelligenceModel'
 
 /** ui.state result. Keep the relay's path-safe fields typed for UI-internal
  * satisfied-state checks without importing the app layer back into lib/. */
@@ -383,6 +390,8 @@ export interface MotionImportApplyResult {
 export interface AgentChatPlan {
   request: string
   reference_ids: string[]
+  evidence_ids: string[]
+  evidence_index_id?: string | null
   policy: string[]
 }
 
@@ -1074,6 +1083,29 @@ export interface ProjectEditingCache {
   categories: ProjectEditingCacheCategory[]
 }
 
+/** Explicit destructive-cache workflow, kept separate from project.health. */
+export interface ProjectCachePreviewResult {
+  schema: 'shellx-cut/cache-purge-preview/1'
+  status: 'ready'
+  plan_id: string
+  minimum_age_ms: number
+  inventory: { files: number; bytes: number }
+  purgeable: { files: number; bytes: number }
+  categories: Array<{
+    kind: 'proxies' | 'thumbnails'
+    files: number
+    bytes: number
+    purgeable_files: number
+    purgeable_bytes: number
+  }>
+  blocked_reasons: string[]
+}
+
+export interface ProjectCachePurgeResult {
+  job_id: string
+  status: 'queued'
+}
+
 export interface ProjectHealthResult {
   schema: 'shellx-cut/project-health/1'
   project_revision?: string
@@ -1201,6 +1233,8 @@ export interface VerbResults {
   // callers decode the sync-only delta in projectSync.ts after passing
   // since_revision; keeping this default type preserves existing readers.
   'project.state': Project
+  'project.cache_preview': ProjectCachePreviewResult
+  'project.cache_purge': ProjectCachePurgeResult
   'project.sequence_list': { active_sequence: string; sequences: SequenceSummary[] }
   'project.sequence_index': SequenceIndexResult
   'project.sequence_create': { sequence: SequenceSummary; active_sequence: string }
@@ -1229,6 +1263,8 @@ export interface VerbResults {
     reply: string
     actions: Array<{ op_id: string; verb: string }>
     attachments: string[]
+    evidence_ids: string[]
+    evidence_index_id?: string | null
     plan: AgentChatPlan
     review: AgentChatReview | null
     cost_usd: number | null
@@ -1240,10 +1276,16 @@ export interface VerbResults {
   'jobs.status': JobRecord
   'jobs.list': JobsListResult
   'jobs.cancel': { job_id: string; cancelled: boolean }
+  'jobs.retry': { job_id: string; retry_of: string; root_job_id: string; attempt: number; path: string; format: 'mp4' | 'gif'; status: 'queued' }
   'system.mcp_test': McpSelfTestResult
   'assets.generate': AssetsGenerateResult
   'assets.generated_list': GeneratedAssetsListResult
   'media.index_status': { count: number; assets: Array<{ asset: string; indexed_frames: number; dim: number; model: string; path?: string }> }
+  'media.intelligence_status': MediaIntelligenceStatusResult
+  'media.intelligence_rebuild': { job_id: string }
+  'media.intelligence_search': MediaIntelligenceSearchResult
+  'inspect.media': MediaInspectionResult
+  'inspect.range': EvidenceInspectionResult
   'generate.list': { templates: GenerateTemplateSummary[] }
   'generate.describe': GenerateTemplateManifest
   'generate.preview': GeneratePreviewResult

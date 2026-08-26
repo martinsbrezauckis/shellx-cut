@@ -44,6 +44,9 @@ pub(super) fn restart_interrupted(record: &mut JobRecord) {
         format!("job '{}' was interrupted", record.job_id),
         "server restarted while the job was running",
     ));
+    if let Some(retry) = record.retry.as_mut() {
+        retry.terminal(JobOutcome::Interrupted);
+    }
 }
 
 impl JobManager {
@@ -175,6 +178,9 @@ impl JobManager {
             record.outcome_reason = Some(reason);
             record.message = Some(message.to_string());
             record.result = Some(result);
+            if let Some(retry) = record.retry.as_mut() {
+                retry.terminal(JobOutcome::Succeeded);
+            }
         });
         self.publish_terminal_progress(job_id, kind, message);
     }
@@ -197,6 +203,9 @@ impl JobManager {
             record.outcome_reason = Some(reason);
             record.message = Some(message.to_string());
             record.error = Some(error);
+            if let Some(retry) = record.retry.as_mut() {
+                retry.terminal(outcome);
+            }
         });
         self.publish_terminal_progress(job_id, kind, message);
     }

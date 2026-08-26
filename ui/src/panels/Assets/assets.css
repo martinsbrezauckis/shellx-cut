@@ -488,6 +488,21 @@
 .assets__relink:hover:not(:disabled) { background: #dc2626; border-color: #dc2626; }
 .assets__relink:disabled { opacity: 0.5; cursor: default; }
 
+/* B5 grouped recovery stays deliberately compact and path-light. */
+.assets__bulk-relink { margin-top: 8px; padding: 8px; border: 1px solid color-mix(in srgb, #ef4444 42%, var(--hairline)); border-radius: var(--radius-panel); background: color-mix(in srgb, #ef4444 7%, transparent); }
+.assets__bulk-relink-copy { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11px; }
+.assets__bulk-relink-copy span, .assets__bulk-relink-preview p, .assets__bulk-relink-note { color: var(--ink-3); font-size: 11px; margin: 5px 0; }
+.assets__bulk-relink-busy { display: block; margin-top: 6px; color: var(--ink-2); font-size: 11px; }
+.assets__bulk-relink-preview { margin-top: 8px; }
+.assets__bulk-relink-preview ul { list-style: none; margin: 6px 0; padding: 0; max-height: 180px; overflow: auto; }
+.assets__bulk-relink-preview li { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; border-top: 1px solid var(--hairline); font-size: 11px; }
+.assets__bulk-relink-preview label { display: flex; min-width: 0; gap: 6px; align-items: center; color: var(--ink-1); }
+.assets__bulk-relink-preview label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assets__bulk-relink-preview em { max-width: 50%; color: var(--ink-3); font-style: normal; text-align: right; }
+.assets__bulk-relink-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.assets__bulk-relink-actions button:first-child { color: var(--ink-2); background: transparent; border: 1px solid var(--hairline); border-radius: var(--radius-button); padding: 4px 8px; }
+.assets__bulk-relink-success { color: #22c55e !important; }
+
 /* Save-to-Library star — quiet, sits left of Insert. */
 .assets__save {
   flex: none;

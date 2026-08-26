@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { OpRecord, Project, RenderReceipt } from '../lib/client'
 import type { DoctorReport } from '../lib/doctor'
+import type { AgentChatPrefill } from '../lib/evidenceAttachments'
 import { isEditableTarget } from '../lib/dom'
 import { Icon } from '../icons'
 import Divider from '../layout/Divider'
@@ -21,8 +22,6 @@ const AgentChat = lazy(() => import('../panels/AgentChat'))
 const GradeDrawer = lazy(() => import('../panels/Grade'))
 const MixerDrawer = lazy(() => import('../panels/Mixer'))
 
-type AgentChatPrefill = { prompt: string; nonce: number } | null
-
 interface AppRightRailProps {
   /** Keep event bridges mounted while a full workspace temporarily hides the rail. */
   hidden?: boolean
@@ -37,7 +36,7 @@ interface AppRightRailProps {
   receipts: RenderReceipt[]
   selectedClipId: string | null
   playheadMs: number
-  agentChatPrefill: AgentChatPrefill
+  agentChatPrefill: AgentChatPrefill | null
   onReject: (opId: string) => void
   onUndo: () => void
   onRedo: () => void

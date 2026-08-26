@@ -53,6 +53,10 @@ export default defineConfig({
     // debugging a field build with `SHELLX_CUT_SOURCEMAPS=1 npm run build`.
     sourcemap: process.env.SHELLX_CUT_SOURCEMAPS === '1',
     rollupOptions: {
+      input: {
+        app: fileURLToPath(new URL('./index.html', import.meta.url)),
+        manual: fileURLToPath(new URL('./manual.html', import.meta.url)),
+      },
       output: {
         manualChunks,
       },

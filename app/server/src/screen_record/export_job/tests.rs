@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::await_bounded_export_work;
+use super::retry::retry_descriptor;
+use super::{await_bounded_export_work, ExportFormat};
 use crate::dispatch::run_blocking_cancellable;
 use crate::output_paths::{fence_output_path, OutputPath, OutputPathPolicy};
 use crate::state::AppState;
@@ -80,6 +81,44 @@ fn test_output(project: &Path, name: &str) -> (OutputPath, PathBuf) {
     )
     .expect("reserve test export output");
     (output, path)
+}
+
+#[test]
+fn retry_descriptor_detects_changed_export_input_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("retry.cutproj");
+    let media = project.join("media");
+    let plans = project.join("plans");
+    std::fs::create_dir_all(&media).unwrap();
+    std::fs::create_dir_all(&plans).unwrap();
+    let source = media.join("recording.mp4");
+    let plan = plans.join("edit.json");
+    std::fs::write(&source, b"first source bytes").unwrap();
+    std::fs::write(&plan, b"first plan bytes").unwrap();
+    let audio = crate::screen_record::export_audio_for_source(&project, &source).unwrap();
+    let before = retry_descriptor(
+        &project,
+        "op_000001".into(),
+        &source,
+        &plan,
+        &audio,
+        &ExportFormat::Mp4,
+    )
+    .unwrap();
+
+    std::fs::write(&source, b"changed source bytes").unwrap();
+    let after = retry_descriptor(
+        &project,
+        "op_000001".into(),
+        &source,
+        &plan,
+        &audio,
+        &ExportFormat::Mp4,
+    )
+    .unwrap();
+    assert_ne!(before.inputs, after.inputs);
+    assert_eq!(before.source, "media/recording.mp4");
+    assert_eq!(before.plan, "plans/edit.json");
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 // commands.ts — the command registry behind the Cmd-K palette.
 //
-// ShellX Cut exposes 260 verbs across 32 domains; the palette is the agent-first
+// ShellX Cut exposes 270 verbs across 33 domains; the palette is the agent-first
 // discoverability surface that makes them reachable by keyboard, the thing the
 // native incumbents (Resolve/FCP) lack. v1 covers the high-value SURFACE launchers
 // (every editing drawer + the review surfaces) routed through Cut's existing
@@ -178,7 +178,7 @@ export const COMMANDS: Command[] = [
   { id: "autopilot", label: "Autopilot", description: "Let the agent plan low-risk fixes from measured receipts.", group: "Agent", icon: "autopilot", keywords: "ai auto edit agent assemble", manualId: "cut.header.autopilot", run: drawer("autopilot") },
   { id: "recipes", label: "Recipes", description: "Run named workflows such as podcast or screen-demo cleanup.", group: "Agent", icon: "bolt", keywords: "workflow pipeline template podcast talking head screen demo one click gated", manualId: "cut.header.recipes", run: drawer("recipes") },
   // ── Navigate / Review ──
-  { id: "manual", label: "Open manual", description: "Open the current online ShellX Cut manual.", group: "Navigate", icon: "manual", keywords: "docs documentation help wiki guide features", manualId: "cut.top.manual", run: emit("cut:open-manual") },
+  { id: "manual", label: "Open manual", description: "Browse the bundled interactive manual and reveal controls in Cut.", group: "Navigate", icon: "manual", keywords: "docs documentation help wiki guide features", manualId: "cut.top.manual", run: emit("cut:open-manual") },
   { id: "search", label: "Search project", description: "Find media or visual moments in the left sidebar.", group: "Navigate", icon: "search", keywords: "find assets clips text visual moment", manualId: "cut.top.find", run: drawer("search") },
   { id: "receipts", label: "Render receipts", description: "Review checks and evidence from renders and QC passes.", group: "Review", icon: "receipt", keywords: "qc verify checks evidence", manualId: "cut.review.receipts", run: surface("receipts") },
   { id: "scopes", label: "Video scopes", description: "Check luma, saturation, white balance, clipping, and broadcast range.", group: "Review", icon: "waveform", keywords: "vectorscope waveform histogram color clipping levels verify scopes", manualId: "cut.review.scopes", run: openAndHighlight(reviewTab("scopes"), { selector: "[data-cut-scopes]", label: "Video scopes", description: "Run measured color checks for the current frame." }, 220) },

@@ -8,6 +8,7 @@ mod outcome;
 mod persistence;
 mod process;
 mod queue;
+mod retry;
 mod runtime;
 
 use crate::events::EventBus;
@@ -17,6 +18,10 @@ pub(crate) use outcome::{JobOutcome, JobOutcomeReason};
 use persistence::{persist, recover, JobPersistenceNotice};
 pub(crate) use process::{run_owned, ProcessControl, ProcessTermination};
 pub use queue::JobQueueInfo;
+pub use retry::{
+    JobInputFingerprint, JobRetry, JobRetryDescriptor, ScreenRecordExportRetryDescriptor,
+    ScreenRecordExportRetryFormat,
+};
 use runtime::JobTaskControl;
 pub(crate) use runtime::{
     begin_current_blocking_worker, begin_current_process_worker, current_job_cancellation,
@@ -85,6 +90,10 @@ pub struct JobRecord {
     /// Active child job this orchestrator is currently awaiting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting_on: Option<JobDependencyInfo>,
+    /// Durable retry eligibility, lineage, and only the validated descriptor
+    /// owned by the job kind. Legacy records have no retry projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<JobRetry>,
     /// RFC3339 created/updated stamps.
     pub created_ts: String,
     pub updated_ts: String,
@@ -256,38 +265,7 @@ impl JobManager {
     /// Create a job record in Queued state and return its id. The caller
     /// then spawns the tokio task and drives `progress`/`finish`/`fail`.
     pub fn create(&self, kind: &str) -> JobRecord {
-        let mut inner = self.inner.lock().expect("job lock");
-        inner.next_seq += 1;
-        let now = cut_core::OpRecord::now_ts();
-        let mut rec = JobRecord {
-            job_id: format!("job_{:03}", inner.next_seq),
-            kind: kind.to_string(),
-            state: JobState::Queued,
-            completion: None,
-            outcome: None,
-            outcome_reason: None,
-            progress: 0.0,
-            message: None,
-            queue: None,
-            waiting_on: None,
-            created_ts: now.clone(),
-            updated_ts: now,
-            result: None,
-            error: None,
-            persistence_error: None,
-        };
-        if let Some(dir) = inner.persist_dir.clone() {
-            if let Err(e) = persist(&dir.join(format!("{}.json", rec.job_id)), &rec) {
-                tracing::error!(
-                    job_id = %rec.job_id,
-                    error = %e,
-                    "failed to persist queued job"
-                );
-                rec.persistence_error = Some(e.to_string());
-            }
-        }
-        inner.jobs.insert(rec.job_id.clone(), rec.clone());
-        rec
+        self.create_with_retry(kind, None)
     }
 
     /// Spawn and retain the task handle for a job created in this run. This keeps
@@ -497,6 +475,7 @@ mod tests {
             message: Some("done".into()),
             queue: None,
             waiting_on: None,
+            retry: None,
             created_ts: "2026-06-16T00:00:00.000Z".into(),
             updated_ts: "2026-06-16T00:00:00.000Z".into(),
             result: None,

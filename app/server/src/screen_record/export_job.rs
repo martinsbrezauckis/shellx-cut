@@ -5,6 +5,7 @@
 //! every terminal path only after its cancellable ffmpeg worker has reaped.
 
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::dispatch::{parse_args, run_blocking_cancellable, snapshot};
@@ -18,10 +19,22 @@ const EXPORT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const EXPORT_MAX_RUNNING: usize = 1;
 const EXPORT_LIMIT_KEY: &str = "screen_record.export";
 
-#[derive(Clone)]
+mod retry;
+pub(crate) use retry::retry_screen_record_export;
+
+#[derive(Clone, Debug)]
 enum ExportFormat {
     Mp4,
     Gif { fps: u32, width: u32 },
+}
+
+struct PreparedExport {
+    source: PathBuf,
+    plan: PathBuf,
+    capture_audio: crate::screen_record::CaptureExportAudio,
+    out: crate::output_paths::OutputPath,
+    format: ExportFormat,
+    output_path: String,
 }
 
 impl ExportFormat {
@@ -52,58 +65,135 @@ pub(crate) async fn screen_record_export(
     }
 
     let args: Args = parse_args(args)?;
-    let format = match args.format.as_deref().unwrap_or("mp4") {
-        "mp4" => ExportFormat::Mp4,
-        "gif" => ExportFormat::Gif {
-            fps: args.gif_fps.unwrap_or(15),
-            width: args.gif_width.unwrap_or(720),
-        },
-        other => {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                format!("unknown screen_record.export format '{other}'"),
-                "format must be mp4 | gif",
-            ));
-        }
+    let format = export_format(args.format.as_deref(), args.gif_fps, args.gif_width)?;
+    let (_project, _edl, dir, revision) = snapshot(state).await?;
+    let (source, plan, capture_audio) = resolve_export_inputs(&dir, &args.source, &args.plan)?;
+    let retry = if args.path.is_some() {
+        crate::jobs::JobRetry::ineligible(
+            "explicit Save As destinations cannot be retried automatically",
+        )
+    } else {
+        crate::jobs::JobRetry::screen_record_export(retry::retry_descriptor(
+            &dir,
+            revision,
+            &source,
+            &plan,
+            &capture_audio,
+            &format,
+        )?)
     };
-    let (_project, _edl, dir, _at) = snapshot(state).await?;
-    let source = crate::screen_record::plain_existing_file_under_project(
+    let prepared = allocate_export(
         &dir,
-        &args.source,
+        source,
+        plan,
+        capture_audio,
+        format,
+        args.path.as_deref(),
+    )?;
+    let output_path = prepared.output_path.clone();
+    let format_name = prepared.format.name();
+    let job = state
+        .jobs
+        .create_with_retry("screen_record_export", Some(retry));
+    let job_id = job.job_id.clone();
+    spawn_export_job(state, &job_id, prepared);
+
+    Ok(VerbResult::ok(json!({
+        "job_id": job_id,
+        "path": output_path,
+        "format": format_name,
+        "status": "queued",
+    })))
+}
+
+fn export_format(
+    requested: Option<&str>,
+    gif_fps: Option<u32>,
+    gif_width: Option<u32>,
+) -> Result<ExportFormat, CutError> {
+    match requested.unwrap_or("mp4") {
+        "mp4" => Ok(ExportFormat::Mp4),
+        "gif" => Ok(ExportFormat::Gif {
+            fps: gif_fps.unwrap_or(15),
+            width: gif_width.unwrap_or(720),
+        }),
+        other => Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("unknown screen_record.export format '{other}'"),
+            "format must be mp4 | gif",
+        )),
+    }
+}
+
+fn resolve_export_inputs(
+    dir: &Path,
+    source_arg: &str,
+    plan_arg: &str,
+) -> Result<(PathBuf, PathBuf, crate::screen_record::CaptureExportAudio), CutError> {
+    let source = crate::screen_record::plain_existing_file_under_project(
+        dir,
+        source_arg,
         "recording source",
         "pass the source path returned by screen_record.stop",
     )?;
     let plan = resolve_existing_project_file(
-        &dir,
-        &args.plan,
+        dir,
+        plan_arg,
         "EditPlan",
         "run screen_record.autoedit first and pass the returned plan path",
     )?;
-    let capture_audio = crate::screen_record::export_audio_for_source(&dir, &source)?;
+    let capture_audio = crate::screen_record::export_audio_for_source(dir, &source)?;
+    Ok((source, plan, capture_audio))
+}
+
+fn allocate_export(
+    dir: &Path,
+    source: PathBuf,
+    plan: PathBuf,
+    capture_audio: crate::screen_record::CaptureExportAudio,
+    format: ExportFormat,
+    requested_path: Option<&str>,
+) -> Result<PreparedExport, CutError> {
     let out = fence_output_path(
-        &dir,
-        args.path.as_deref(),
-        match &format {
+        dir,
+        requested_path,
+        match format {
             ExportFormat::Mp4 => "exports/recording.mp4",
             ExportFormat::Gif { .. } => "exports/recording.gif",
         },
-        match &format {
+        match format {
             ExportFormat::Mp4 => OutputPathPolicy::MP4,
             ExportFormat::Gif { .. } => OutputPathPolicy::GIF,
         },
     )?;
     let output_path = out.display().to_string();
-    let output_path_for_task = output_path.clone();
-    let format_name = format.name();
-    let job = state.jobs.create("screen_record_export");
-    let job_id = job.job_id.clone();
-    let jobs = state.jobs.clone();
-    let job_id_for_task = job_id.clone();
-    let format_for_task = format.clone();
+    Ok(PreparedExport {
+        source,
+        plan,
+        capture_audio,
+        out,
+        format,
+        output_path,
+    })
+}
 
+fn spawn_export_job(state: &AppState, job_id: &str, prepared: PreparedExport) {
+    let PreparedExport {
+        source,
+        plan,
+        capture_audio,
+        out,
+        format,
+        output_path,
+    } = prepared;
+    let output_path_for_task = output_path;
+    let format_name = format.name();
+    let jobs = state.jobs.clone();
+    let job_id_for_task = job_id.to_string();
+    let format_for_task = format.clone();
     state
         .jobs
-        .spawn_limited(&job_id, EXPORT_LIMIT_KEY, EXPORT_MAX_RUNNING, async move {
+        .spawn_limited(job_id, EXPORT_LIMIT_KEY, EXPORT_MAX_RUNNING, async move {
             let progress = ExportProgressReporter::new(
                 jobs.clone(),
                 job_id_for_task.clone(),
@@ -138,13 +228,6 @@ pub(crate) async fn screen_record_export(
                 Err(error) => jobs.fail(&job_id_for_task, error),
             }
         });
-
-    Ok(VerbResult::ok(json!({
-        "job_id": job_id,
-        "path": output_path,
-        "format": format_name,
-        "status": "queued",
-    })))
 }
 
 async fn render_export(

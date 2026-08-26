@@ -607,6 +607,18 @@ async fn screen_record_autoedit_patches_webcam_timeline_from_studio_events() {
         json!({
             "track": events.display().to_string(),
             "webcam": webcam.display().to_string(),
+            "camera_artifact": {
+                "schema": "shellx-record/camera-artifact/1",
+                "capture_id": "cap_autoedit_studio",
+                "artifact_id": "camera_autoedit",
+                "video": "camera/camera.mp4",
+                "clock": {"first_frame_offset_ms": 500, "end_frame_offset_ms": 1500},
+                "media": {
+                    "width": 320, "height": 180, "fps_num": 30, "fps_den": 1,
+                    "frame_count": 30, "duration_ms": 1000, "sha256": "a".repeat(64),
+                },
+                "terminal_state": "complete",
+            },
             "studio_events": studio_events.display().to_string()
         }),
         test_actor(),
@@ -624,6 +636,8 @@ async fn screen_record_autoedit_patches_webcam_timeline_from_studio_events() {
     assert_eq!(plan["webcam"]["timeline"][0]["t_ms"], 500);
     assert_eq!(plan["webcam"]["timeline"][0]["x"], 0.10);
     assert_eq!(plan["webcam"]["timeline"][1]["visible"], false);
+    assert_eq!(plan["webcam"]["camera_clock"]["first_frame_offset_ms"], 500);
+    assert_eq!(plan["webcam"]["camera_clock"]["end_frame_offset_ms"], 1500);
 }
 
 #[tokio::test]
@@ -816,3 +830,5 @@ fn screen_record_polish_subverb_failure_names_system_audio_step() {
     assert!(err.message.contains("system audio insert failed"));
     assert!(err.cause.contains("audio cannot be inserted"));
 }
+
+include!("screen_record_camera.rs");

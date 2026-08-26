@@ -55,12 +55,16 @@ mod open_health;
 #[cfg(test)]
 mod open_health_tests;
 mod overwrite;
+mod portable;
+mod relink;
 mod snapshots;
 #[cfg(test)]
 mod speed_ramp_replay_tests;
 
 use name_policy::{validate_logged_project_name, validate_project_name};
 pub use open_health::{ProjectCacheHealth, ProjectOpenHealth, ProjectSnapshotHealth};
+pub use portable::PORTABLE_SNAPSHOT_SCHEMA;
+pub use relink::{is_exact_sha256, RelinkGroupChange, RelinkGroupCommit};
 
 /// A project on disk: the materialized state + its op-log + dir layout.
 #[derive(Debug)]
@@ -4066,6 +4070,7 @@ pub fn apply_record(
             *project = Project::new(name, settings);
             Ok(())
         }
+        "project.package_create" => portable::replay_snapshot(project, op),
         "project.sequence_create" => {
             let sequence = op
                 .effects
@@ -4514,6 +4519,7 @@ pub fn apply_record(
             }
             Ok(())
         }
+        "media.relink_apply" => relink::replay_group(project, op),
         // BACKWARD COMPAT: old builds accepted gain/mute/solo/pan on video or
         // caption targets even though the renderer has always consumed audio
         // from TrackKind::Audio only. Those recorded operations were no-ops in

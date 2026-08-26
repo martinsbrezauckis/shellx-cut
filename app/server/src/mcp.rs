@@ -261,7 +261,7 @@ where
             let mut tool = json!({
                 "name": VerbRegistry::mcp_tool_name(&v.name),
                 "description": format!("{} Returns: {}", concise(&v.description, 400), concise(&v.result, 200)),
-                "inputSchema": trim_schema_descriptions(&v.args, 140),
+                "inputSchema": trim_schema_descriptions(&v.args, 120),
             });
             // Forward the machine-readable result contract as MCP outputSchema
             // when the verb declares one, but only if it is self-contained.

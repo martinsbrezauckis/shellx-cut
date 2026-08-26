@@ -177,6 +177,7 @@ pub(crate) fn read_studio_events(path: &Path) -> Result<StudioEventLog, CutError
 pub(crate) fn apply_studio_events_to_plan(
     plan: &mut record_core::EditPlan,
     webcam_source: Option<String>,
+    camera_clock: Option<record_core::CameraClockRange>,
     log: &StudioEventLog,
 ) -> Result<usize, CutError> {
     let timeline: Vec<record_core::WebcamKeyframe> = log
@@ -221,6 +222,7 @@ pub(crate) fn apply_studio_events_to_plan(
             .unwrap_or(record_core::Anchor::BottomRight),
         margin: plan.webcam.as_ref().map(|wc| wc.margin).unwrap_or(0.04),
         size: base_size,
+        camera_clock: camera_clock.or_else(|| plan.webcam.as_ref().and_then(|wc| wc.camera_clock)),
         timeline,
     });
     plan.validate().map_err(crate::screen_record::record_err)?;

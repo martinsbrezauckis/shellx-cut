@@ -1,10 +1,5 @@
-//! main.rs — cutd entrypoint (server contract).
-//! Role: CLI surface of the server binary:
-//!   cutd serve [--project <path>] [--headless] [--addr 127.0.0.1:6161]
-//!       → axum REST+WS+static-UI; background-run friendly.
-//!   cutd mcp [--project <path>] → MCP over stdio, tools from schema/verbs.json.
-//!   cutd verb <name> ['<json-args>'] [--project <path>]
-//!       → one-shot dispatch, prints the envelope.
+//! cutd server entrypoint: serve, MCP stdio, and one-shot verb dispatch.
+mod cache_lifecycle;
 mod chat;
 mod diarize;
 mod dispatch;
@@ -30,6 +25,11 @@ mod motion_artifact;
 mod motion_bridge;
 mod motion_edit_return;
 mod motion_editable_import;
+// Structural generic adapter is compiled in every server build. The later
+// authenticated coordinator binding will call it; this tranche intentionally
+// publishes no unauthenticated Cut verb.
+#[allow(dead_code)]
+mod motion_generic_consumer;
 mod motion_jobs;
 mod motion_package;
 mod motion_runtime;

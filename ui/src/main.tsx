@@ -3,6 +3,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { initTheme } from './lib/themePref'
+import ManualShell from './manual/ManualShell'
+import { isManualShell } from './manual/protocol'
 import './theme.css'
 
 // Apply the persisted colour theme BEFORE first paint so a light-theme reload
@@ -29,6 +31,6 @@ initTheme()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {isManualShell() ? <ManualShell /> : <App />}
   </StrictMode>,
 )

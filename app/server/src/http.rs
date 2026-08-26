@@ -24,6 +24,48 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tower_http::services::{ServeDir, ServeFile};
 
+const MEDIA_STREAM_CHUNK: usize = 64 * 1024;
+
+/// Build a no-Range file response without materializing the file in the server
+/// heap. Callers must fence and type the path before reaching this helper.
+async fn stream_file_response(
+    path: &std::path::Path,
+    content_type: &'static str,
+    accept_ranges: bool,
+) -> Response {
+    use axum::body::Body;
+    use axum::http::{header, StatusCode};
+    use tokio_util::io::ReaderStream;
+
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    let len = match file.metadata().await {
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    let stream = ReaderStream::with_capacity(file, MEDIA_STREAM_CHUNK);
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static(content_type),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        axum::http::HeaderValue::from_str(&len.to_string())
+            .expect("a decimal file length is a valid header"),
+    );
+    if accept_ranges {
+        response.headers_mut().insert(
+            header::ACCEPT_RANGES,
+            axum::http::HeaderValue::from_static("bytes"),
+        );
+    }
+    response
+}
+
 /// Default bind address (server contract: loopback only; Cut has no remote mode).
 pub const DEFAULT_ADDR: &str = "127.0.0.1:6161";
 
@@ -977,6 +1019,49 @@ mod tests {
         crate::output_paths::set_session_output_dir(None);
     }
 
+    #[tokio::test]
+    async fn sparse_multi_gigabyte_file_builds_a_bounded_stream_response() {
+        use http_body_util::BodyExt;
+        use std::io::{Seek, Write};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("large.mp4");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let logical_len = 5_u64 * 1024 * 1024 * 1024;
+        file.set_len(logical_len).unwrap();
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        file.write_all(b"bounded-stream-prefix").unwrap();
+        drop(file);
+
+        let mut response = stream_file_response(&path, "video/mp4", true).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_LENGTH)
+                .unwrap(),
+            logical_len.to_string().as_str()
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::ACCEPT_RANGES)
+                .unwrap(),
+            "bytes"
+        );
+
+        let frame = response
+            .body_mut()
+            .frame()
+            .await
+            .expect("the stream yields its first bounded frame")
+            .expect("the first sparse-file read succeeds");
+        let bytes = frame.data_ref().expect("the first frame contains data");
+        assert!(bytes.starts_with(b"bounded-stream-prefix"));
+        assert!(bytes.len() <= MEDIA_STREAM_CHUNK);
+        drop(response); // Deliberately never consume the remaining multi-gigabyte body.
+    }
+
     /// Percent-encode a filesystem path for the `?path=` query (test-local: the
     /// UI does this with encodeURIComponent).
     fn urlencoding_path(p: &str) -> String {
@@ -1337,16 +1422,17 @@ async fn serve_authorized_export(
             }
         }
     }
-    // Generated reviewer documents get a script-hash CSP; other export types
-    // retain their normal media response. The policy construction lives in the
-    // focused review HTTP module: it hashes the exact inline script before the
-    // bytes move into the response, blocks every network connection, and keeps
-    // the regular SPA's no-inline-script policy unchanged. This handler remains
-    // free of caller-controlled HTML construction or policy interpolation and is
-    // responsible only for export-path fencing, range reads, and file serving.
-    match tokio::fs::read(&canon_path).await {
-        Ok(bytes) => rh::export_response(&ext, ct, bytes),
-        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    // Generated reviewer HTML needs its complete bounded document in memory so
+    // review_http can hash-pin the exact inline script. Every other no-Range
+    // export, including multi-gigabyte media, streams from disk in fixed-size
+    // chunks instead of allocating O(asset-size) server memory.
+    if ext == "html" {
+        match tokio::fs::read(&canon_path).await {
+            Ok(bytes) => rh::export_response(&ext, ct, bytes),
+            Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+        }
+    } else {
+        stream_file_response(&canon_path, ct, true).await
     }
 }
 
@@ -1354,7 +1440,7 @@ async fn serve_authorized_export(
 /// asset library blob store (~/.shellx-cut/library/blobs/) for thumbnails/preview.
 /// Project-INDEPENDENT (the library is global). FENCED: bare filename only (no
 /// separators/traversal), canonicalized inside the blobs dir, suffix-allowlisted
-/// to media/image types. Full-body 200 (thumbnails don't need range).
+/// to media/image types. No-Range 200 responses stream in bounded chunks.
 async fn serve_library_blob(Path(file): Path<String>) -> Response {
     use axum::http::StatusCode;
     if file.is_empty() || file.contains('/') || file.contains('\\') || file.contains("..") {
@@ -1391,10 +1477,7 @@ async fn serve_library_blob(Path(file): Path<String>) -> Response {
         // Not an allowed media type — refuse rather than guess.
         _ => return (StatusCode::BAD_REQUEST, "unsupported file type").into_response(),
     };
-    match tokio::fs::read(&canon_path).await {
-        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
-    }
+    stream_file_response(&canon_path, ct, false).await
 }
 
 /// GET /api/library-poster?id=<item-id>[&h=<px>] — a rendered thumbnail for a
@@ -1736,19 +1819,9 @@ async fn serve_project_file(
             }
         }
     }
-    // No Range header → full body (small frame/filmstrip images), but advertise
-    // range support truthfully.
-    match tokio::fs::read(&canon_path).await {
-        Ok(bytes) => (
-            [
-                (axum::http::header::CONTENT_TYPE, ct),
-                (axum::http::header::ACCEPT_RANGES, "bytes"),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
-    }
+    // No Range header still advertises range support, but streams from disk so
+    // an unexpectedly large proxy/frame/filmstrip never becomes one heap buffer.
+    stream_file_response(&canon_path, ct, true).await
 }
 
 /// GET /api/state — convenience alias of project.state (server contract).

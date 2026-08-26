@@ -384,11 +384,10 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
             let mut args = vec![
                 "--new-project".into(),
                 "--sandbox".into(),
-                // Native image generation is a tool call. In print mode AGY
-                // cannot display a permission prompt, so use the same bounded
-                // headless approval contract as Agent Chat. The provider is
-                // still confined to this create-only generation workspace by
-                // the native sandbox and the exact-output prompt.
+                // In print mode AGY cannot display a permission prompt, so use
+                // the same bounded headless approval contract as Agent Chat.
+                // The provider is still confined to this create-only generation
+                // workspace by the native sandbox and exact-output prompt.
                 "--dangerously-skip-permissions".into(),
                 "--output-format".into(),
                 "json".into(),
@@ -404,9 +403,9 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
                 args.push("--model".into());
                 args.push(model.into());
             }
-            // Generation intentionally keeps slash/skill expansion enabled.
-            // Agent Chat disables it because that route exposes only Cut MCP,
-            // while assets.generate needs Antigravity's native image skill.
+            // Leave AGY's normal image-generation behavior available. Agent
+            // Chat disables slash expansion because that route exposes only Cut
+            // MCP; assets.generate sends the ordinary direct image request.
             args.push("--print".into());
             args.push("__PROMPT_TEXT__".into());
             Some(GenCommand {
@@ -430,6 +429,31 @@ pub fn build_prompt(
     output_path: &str,
     reference_paths: &[String],
 ) -> String {
+    // AGY's native image turn works best as the direct user request it is. A
+    // larger agent-protocol prompt (load a skill, emit JSON, and explain honest
+    // failure) can make the CLI reason about capability admission instead of
+    // creating the image. The process boundary already supplies the sandbox,
+    // timeout, exact scratch cwd, media probe, and project import checks, so the
+    // prompt only needs to state the creative request and final output path.
+    if provider == "antigravity" {
+        let mut lines = vec![
+            format!(
+                "Create one image from this description: {}",
+                serde_json::to_string(description).unwrap_or_default()
+            ),
+            "Save the final PNG EXACTLY this path:".to_string(),
+            output_path.to_string(),
+        ];
+        if !reference_paths.is_empty() {
+            lines.push("Use these images as visual references:".to_string());
+            for (index, path) in reference_paths.iter().enumerate() {
+                lines.push(format!("Reference {}: {}", index + 1, path));
+            }
+            lines.push("Do not overwrite the reference images.".to_string());
+        }
+        return lines.join("\n");
+    }
+
     let accepted = if kind == "video" {
         "mp4, webm, or ogv"
     } else {
@@ -461,8 +485,6 @@ pub fn build_prompt(
     }
     if provider == "codex" {
         lines.push("Load the installed image-generation skill and use Codex's built-in image_gen tool. Generate first, then copy the selected real image into the exact workspace output path. If this CLI session has no such tool, fail honestly.".to_string());
-    } else if provider == "antigravity" {
-        lines.push("Load and use the native Antigravity image-generation skill or connected image tool. Keep skill expansion enabled, generate one real image, and copy it into the exact workspace output path. If no real image-generation capability is available, fail honestly without writing a substitute file.".to_string());
     } else if kind == "video" {
         lines.push(format!(
             "Load and use Grok Build's native Imagine skill for this request: {}.",
@@ -873,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_generation_keeps_native_image_skill_expansion_enabled() {
+    fn antigravity_generation_keeps_normal_image_behavior_enabled() {
         let c = build_command("antigravity", "/scratch", Some("Gemini 3.5 Flash")).unwrap();
         assert_eq!(c.cmd, "agy");
         assert_eq!(c.prompt_transport, PromptTransport::Argument);
@@ -896,6 +918,39 @@ mod tests {
             p.to_lowercase().contains("fail honestly") || p.contains("do not write a fake file")
         );
         assert!(p.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn antigravity_prompt_is_a_direct_exact_path_image_request() {
+        let p = build_prompt(
+            "antigravity",
+            "image",
+            "a red fox",
+            "/scratch/generated.png",
+            &[],
+        );
+        assert_eq!(
+            p,
+            "Create one image from this description: \"a red fox\"\n\
+Save the final PNG EXACTLY this path:\n\
+/scratch/generated.png"
+        );
+        assert!(!p.contains("Load and use"));
+        assert!(!p.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn antigravity_prompt_keeps_reference_paths_simple_and_read_only() {
+        let paths = vec!["/scratch/reference-1.png".to_string()];
+        let p = build_prompt(
+            "antigravity",
+            "image",
+            "keep the palette",
+            "/scratch/generated.png",
+            &paths,
+        );
+        assert!(p.contains("Reference 1: /scratch/reference-1.png"));
+        assert!(p.contains("Do not overwrite the reference images."));
     }
 
     #[test]

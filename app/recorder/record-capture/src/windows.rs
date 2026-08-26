@@ -171,7 +171,7 @@ impl Capture for WindowsCapture {
         let dur = cfg.duration_ms.unwrap_or(u64::MAX / 4);
         let fps = capture_fps(cfg.fps);
 
-        // Resolve the capture SOURCE. A specific window (by title) takes precedence
+        // Resolve the capture SOURCE. A specific opaque native window id takes precedence
         // over a monitor; else the chosen monitor; else primary. WGC accepts either a
         // Window or a Monitor as the capture item (both impl TryInto<…ItemType>).
         #[derive(Clone, Copy)]
@@ -179,9 +179,10 @@ impl Capture for WindowsCapture {
             Monitor(WcMonitor),
             Window(WcWindow),
         }
-        let (src, w, h, surface) = if let Some(ref title) = cfg.window {
-            let win = WcWindow::from_contains_name(title)
-                .map_err(|e| cap_err("find the window to capture by title", e))?;
+        let (src, w, h, surface) = if let Some(ref window_id) = cfg.window {
+            let target = crate::windows_picker::resolve_window(window_id)
+                .map_err(|error| cap_err("resolve the selected window identity", error))?;
+            let win = WcWindow::from_raw_hwnd(target.0);
             // The source picker lists minimized windows so the list is stable
             // as windows are minimized/restored). A minimized window has a 0×0 capture
             // area, so RESTORE the target before capturing — selecting a minimized window
@@ -440,6 +441,7 @@ impl Capture for WindowsCapture {
         Ok(CaptureOutput {
             source_video: source_path,
             events,
+            camera_artifact: None,
             webcam_video: None,
             audio,
             settings: Settings {

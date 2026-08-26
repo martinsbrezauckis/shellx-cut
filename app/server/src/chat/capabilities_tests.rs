@@ -20,7 +20,7 @@ fn restricted_mcp_marker_requires_the_agent_chat_actor() {
 }
 
 #[test]
-fn schema_classifies_every_registry_verb_and_preserves_the_safe_95_170_split() {
+fn schema_classifies_every_registry_verb_and_preserves_the_safe_100_177_split() {
     let registry = crate::registry::VerbRegistry::load();
     let mut allowed = 0;
     let mut denied = 0;
@@ -30,8 +30,8 @@ fn schema_classifies_every_registry_verb_and_preserves_the_safe_95_170_split() {
             AgentChatCapability::Deny => denied += 1,
         }
     }
-    assert_eq!(allowed, 95, "schema-derived safe capability count");
-    assert_eq!(denied, 170, "schema-derived denied capability count");
+    assert_eq!(allowed, 100, "schema-derived safe capability count");
+    assert_eq!(denied, 177, "schema-derived denied capability count");
     assert_eq!(allowed + denied, registry.verbs.len());
 }
 
@@ -73,13 +73,14 @@ fn bounded_engine_interactions_stay_truthful_and_independent_of_agent_capability
         assert!(!spec.behavior.side_effects.network, "{name}");
     }
     // Inspection is similarly allowed only through the open-project handler;
-    // the live media checks still stat registered asset paths and the project
-    // reads load its current operation log.
+    // the live media checks and current-index evidence readers still inspect
+    // registered project state while project reads load the current op log.
     for name in [
         "project.state",
         "project.sequence_index",
         "project.ops",
         "project.diff",
+        "project.cache_preview",
         "media.check",
         "media.bin_list",
     ] {
@@ -108,8 +109,13 @@ fn bounded_engine_interactions_stay_truthful_and_independent_of_agent_capability
             "captions.save_style",
             "edit.auto_balance",
             "edit.color_match",
+            "inspect.media",
+            "inspect.range",
             "media.bin_list",
             "media.check",
+            "media.intelligence_search",
+            "media.intelligence_status",
+            "project.cache_preview",
             "project.diff",
             "project.health",
             "project.ops",

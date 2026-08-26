@@ -23,5 +23,5 @@ binaries/
 .playwright-cli/
 output/playwright/
 
-# Local documentation not intended for the source distribution.
-/docs/private/
+# Canonical private documentation may be tracked in the working repository.
+# The positive-selection public exporter must never copy docs/private/.

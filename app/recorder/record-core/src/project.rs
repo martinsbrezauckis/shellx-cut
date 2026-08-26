@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::camera::CameraArtifact;
 use crate::event::EventTrack;
 use crate::plan::EditPlan;
 
@@ -40,6 +41,11 @@ pub struct RecordingProject {
     pub source_video: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webcam_video: Option<String>,
+    /// CameraArtifact@1 is the authoritative synchronized camera stream. The
+    /// older `webcam_video` path remains serialized as a compatibility adapter
+    /// for old projects and existing webcam-overlay plan consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_artifact: Option<CameraArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
     pub events: EventTrack,
@@ -55,10 +61,21 @@ impl RecordingProject {
             settings,
             source_video: source_video.into(),
             webcam_video: None,
+            camera_artifact: None,
             audio: None,
             events,
             plan: None,
         }
+    }
+
+    /// Canonical camera video for presentation consumers. New projects prefer
+    /// the validated CameraArtifact@1; legacy projects keep their historical
+    /// `webcam_video` behavior without acquiring invented timing or hash facts.
+    pub fn camera_video_for_presentation(&self) -> Option<&str> {
+        self.camera_artifact
+            .as_ref()
+            .map(|artifact| artifact.video.as_str())
+            .or(self.webcam_video.as_deref())
     }
 }
 
@@ -75,5 +92,42 @@ mod tests {
         let back: RecordingProject = serde_json::from_str(&json).unwrap();
         assert_eq!(proj, back);
         assert_eq!(back.schema, crate::SCHEMA);
+    }
+
+    #[test]
+    fn camera_artifact_is_preferred_without_breaking_legacy_webcam_projects() {
+        let events = fixtures::generate("click-walkthrough").unwrap();
+        let mut project = RecordingProject::new("cap.mp4", Settings::default(), events);
+        project.webcam_video = Some("legacy-webcam.mp4".into());
+        assert_eq!(
+            project.camera_video_for_presentation(),
+            Some("legacy-webcam.mp4")
+        );
+        project.camera_artifact = Some(
+            CameraArtifact::new(
+                "cap_01",
+                "camera_01",
+                "camera/camera.mp4",
+                crate::CameraClockRange {
+                    first_frame_offset_ms: 500,
+                    end_frame_offset_ms: 1_500,
+                },
+                crate::CameraMediaFacts {
+                    width: 1280,
+                    height: 720,
+                    fps_num: 30,
+                    fps_den: 1,
+                    frame_count: 30,
+                    duration_ms: 1_000,
+                    sha256: "b".repeat(64),
+                },
+                crate::CameraTerminalState::Complete,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            project.camera_video_for_presentation(),
+            Some("camera/camera.mp4")
+        );
     }
 }

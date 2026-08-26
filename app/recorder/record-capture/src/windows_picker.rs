@@ -1,14 +1,17 @@
 //! Interactive-desktop monitor and window enumeration for Windows capture.
 
 use crate::{MonitorInfo, WindowInfo};
-use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
+use windows::core::{BOOL, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT, TRUE};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, GetThreadDesktop, OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS,
     DESKTOP_CONTROL_FLAGS, DESKTOP_ENUMERATE, DESKTOP_READOBJECTS,
 };
-use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    GetCurrentProcessId, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClientRect, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
@@ -58,17 +61,53 @@ struct WinCollector {
 unsafe extern "system" fn enum_window_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let collector = unsafe { &mut *(lparam.0 as *mut WinCollector) };
     if window_is_capturable(hwnd, collector.self_pid) {
-        if let (Some(id), Some(title)) =
-            (one_based_index(collector.items.len()), window_title(hwnd))
-        {
+        if let Some(title) = window_title(hwnd) {
+            let pid = window_pid(hwnd);
             collector.items.push(WindowInfo {
-                id,
+                id: crate::window_target::windows_window_id(hwnd.0 as usize, pid),
                 title,
-                app: String::new(),
+                app: window_process_name(pid),
             });
         }
     }
     TRUE
+}
+
+fn window_pid(hwnd: HWND) -> u32 {
+    let mut pid = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    pid
+}
+
+fn window_process_name(pid: u32) -> String {
+    if pid == 0 {
+        return String::new();
+    }
+    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+    else {
+        return String::new();
+    };
+    let mut buffer = vec![0u16; 32_768];
+    let mut size = buffer.len() as u32;
+    let queried = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )
+    };
+    let _ = unsafe { CloseHandle(process) };
+    if queried.is_err() || size == 0 {
+        return String::new();
+    }
+    let path = String::from_utf16_lossy(&buffer[..size as usize]);
+    std::path::Path::new(&path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn window_title(hwnd: HWND) -> Option<String> {
@@ -84,7 +123,7 @@ fn window_title(hwnd: HWND) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn window_is_capturable(hwnd: HWND, self_pid: u32) -> bool {
+pub(crate) fn window_is_capturable(hwnd: HWND, self_pid: u32) -> bool {
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() {
             return false;
@@ -117,6 +156,19 @@ fn window_is_capturable(hwnd: HWND, self_pid: u32) -> bool {
         }
         true
     }
+}
+
+pub(crate) fn resolve_window(id: &str) -> Result<HWND, &'static str> {
+    let Some((raw, expected_pid)) = crate::window_target::parse_windows_window_id(id) else {
+        return Err("the selected window id is malformed; reopen the source picker");
+    };
+    let hwnd = HWND(raw as *mut std::ffi::c_void);
+    let current_pid = window_pid(hwnd);
+    if current_pid != expected_pid || !window_is_capturable(hwnd, unsafe { GetCurrentProcessId() })
+    {
+        return Err("the selected window is no longer available; reopen the source picker");
+    }
+    Ok(hwnd)
 }
 
 pub(crate) fn list_windows() -> Vec<WindowInfo> {

@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { activeJobLabel, activeJobProgress } from '../src/lib/jobPresentation'
 import type { JobRecord } from '../src/lib/client'
-import { activeJobViews, type JobView } from '../src/topbar/useTopbarJobs'
+import { activeJobViews, retryableJobViews, type JobView } from '../src/topbar/useTopbarJobs'
 
 const job = (overrides: Partial<JobView> = {}): JobView => ({
   job_id: 'job_001',
@@ -20,6 +20,7 @@ assert.equal(
   activeJobProgress(job({ state: 'queued', progress: 0, queue: { resource: 'analysis', max_running: 2 } })),
   'waiting for analysis capacity · 2 slots',
 )
+
 assert.equal(
   activeJobProgress(job({ state: 'queued', progress: 0, queue: { resource: 'screen_record.export', max_running: 1 } })),
   'waiting for screen record export capacity · 1 slot',
@@ -36,6 +37,22 @@ const record = (job_id: string, created_ts: string, state: JobRecord['state']): 
   updated_ts: created_ts,
   ...(state === 'queued' ? { queue: { resource: 'render', max_running: 1 } } : {}),
 })
+const retryable = record('job_050', '2026-08-09T05:00:00Z', 'failed')
+retryable.kind = 'screen_record_export'
+retryable.retry = { eligible: true, root_job_id: 'job_050', attempt: 1 }
+const explicitlyIneligible = record('job_051', '2026-08-09T06:00:00Z', 'failed')
+explicitlyIneligible.retry = {
+  eligible: false,
+  reason: 'explicit Save As destinations cannot be retried automatically',
+  root_job_id: 'job_051',
+  attempt: 1,
+}
+const unrelatedFailure = record('job_052', '2026-08-09T07:00:00Z', 'failed')
+assert.deepEqual(
+  retryableJobViews([unrelatedFailure, explicitlyIneligible, retryable]).map((entry) => entry.job_id),
+  ['job_050'],
+  'only the engine retry.eligible projection exposes a retry control',
+)
 const projected = activeJobViews([
   record('job_003', '2026-08-09T03:00:00Z', 'queued'),
   record('job_001', '2026-08-09T01:00:00Z', 'running'),
@@ -59,9 +76,12 @@ assert.equal(
 )
 
 const statusbarCss = readFileSync(new URL('../src/statusbar/statusbar.css', import.meta.url), 'utf8')
+const statusbarSource = readFileSync(new URL('../src/statusbar/index.tsx', import.meta.url), 'utf8')
 const cancelRule = statusbarCss.match(/[.]sb-job-cancel\s*\{([^}]*)\}/)?.[1] || ''
 assert.match(cancelRule, /width:\s*24px/)
 assert.match(cancelRule, /height:\s*24px/)
 assert.match(cancelRule, /flex:\s*none/)
+assert.match(statusbarSource, /data-cut-job-retry=/, 'retryable failed exports expose a stable retry selector')
+assert.match(statusbarSource, /callVerb\('jobs[.]retry'/, 'the retry control invokes the typed durable retry verb')
 
 console.log('PASS active jobs use human labels and truthful queued/running progress')

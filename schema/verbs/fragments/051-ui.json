@@ -1,0 +1,274 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "ui",
+  "verbs": [
+    {
+      "name": "ui.open",
+      "domain": "ui",
+      "description": "Open/focus a UI panel on the connected client.",
+      "args": {
+        "type": "object",
+        "required": [
+          "panel"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "panel": {
+            "type": "string",
+            "enum": [
+              "timeline",
+              "preview",
+              "transcript",
+              "assets",
+              "projects",
+              "generate",
+              "generate-prompt",
+              "generate-storyboard",
+              "generate-media",
+              "find-media",
+              "find-moment",
+              "sequence-index",
+              "library",
+              "record",
+              "properties",
+              "color",
+              "audio",
+              "chat",
+              "review",
+              "review-ops",
+              "receipts",
+              "qc",
+              "scopes",
+              "diff",
+              "comments",
+              "wizard",
+              "environment",
+              "settings-health-recovery",
+              "settings-general",
+              "settings-editing",
+              "settings-video-performance",
+              "settings-ai-transcription",
+              "settings-recording",
+              "settings-services-integrations",
+              "settings-agent-control",
+              "settings-storage-privacy",
+              "settings-about",
+              "music",
+              "title",
+              "kinetic",
+              "layer",
+              "clips",
+              "autopilot",
+              "assemble",
+              "recipes",
+              "matte",
+              "shape",
+              "mask",
+              "stock",
+              "search"
+            ]
+          }
+        }
+      },
+      "result": "Confirmed UI transition. Success is {applied:true, verb, request_id, requested:{panel}, state, surface, selector} only after the exact connected client commits the registry surface and its stable selector is present (timeline/preview are also focused). Unknown, unavailable, already-open/no-op, disconnected, or timed-out requests return ok:false; a UI rejection also carries result.applied:false plus the resulting state. The enum is generated from the shared UI surface registry used by human openers, ui.state, palette routes, selectors, and browser tests.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "ui_open",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "ui.playhead",
+      "domain": "ui",
+      "description": "Move the UI playhead (and preview) to a timeline position.",
+      "args": {
+        "type": "object",
+        "required": [
+          "at_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "result": "Confirmed UI transition: {applied:true, verb, request_id, requested:{at_ms}, state} only after a later ui-state revision reports exactly at_ms. Already-current/no-op and uncommitted requests return ok:false with result.applied:false.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "ui_playhead",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "ui.select",
+      "domain": "ui",
+      "description": "Set the UI clip selection.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip_ids"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip_ids": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        }
+      },
+      "result": "Confirmed UI transition: {applied:true, verb, request_id, requested:{clip_ids}, state} only after a later ui-state revision reports the exact ordered selection. Missing clips, already-current/no-op, and uncommitted requests return ok:false with result.applied:false.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "ui_select",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "ui.highlight",
+      "domain": "ui",
+      "description": "Visually HIGHLIGHT a UI element on the connected client — an animated outline over the target plus an optional label/description chip, so an agent can point at what it is doing. Resolve the target by exactly one of selector, clip, panel, or clear:true. label is a short title; description a longer line; duration_ms auto-clears after N ms (default 3500; 0 stays until cleared/replaced). A persistent highlight can be dismissed in-app with the close button or Escape. scroll defaults true. The call is confirmed only after the exact UI client renders or clears the overlay.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "selector"
+            ]
+          },
+          {
+            "required": [
+              "clip"
+            ]
+          },
+          {
+            "required": [
+              "panel"
+            ]
+          },
+          {
+            "required": [
+              "clear"
+            ],
+            "properties": {
+              "clear": {
+                "const": true
+              }
+            }
+          }
+        ],
+        "properties": {
+          "selector": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Raw CSS selector for the target element (e.g. '[data-cut-title-btn]')"
+          },
+          "clip": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Timeline clip id → highlights its [data-cut-clip] element"
+          },
+          "panel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Panel name (timeline|preview|transcript|review|topbar) → its [data-cut-panel] element"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "Short bold title shown in the highlight chip"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Longer descriptive line shown under the label"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86400000,
+            "description": "Auto-clear after N ms (default 3500; 0 = stay until cleared/replaced)"
+          },
+          "scroll": {
+            "type": "boolean",
+            "description": "Scroll the target into view first (default true)"
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "Remove any active highlight; use clear:true instead of another target"
+          }
+        }
+      },
+      "result": "Confirmed UI transition: {applied:true, verb, request_id, requested, state, selector?} after the target exists and the overlay is rendered (or cleared). Missing/malformed targets and no-op clears return ok:false with result.applied:false.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "ui_highlight",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

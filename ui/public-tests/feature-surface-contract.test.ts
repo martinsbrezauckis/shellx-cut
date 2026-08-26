@@ -10,6 +10,7 @@ const repoRoot = resolve(uiRoot, '..')
 const surfaceContract = readFileSync(resolve(repoRoot, 'docs/public/FEATURE_SURFACE_CONTRACT.md'), 'utf8')
 const agentHandoff = readFileSync(resolve(repoRoot, 'START_HERE_FOR_AGENT.txt'), 'utf8')
 const packageJson = JSON.parse(readFileSync(resolve(uiRoot, 'package.json'), 'utf8')) as { scripts?: Record<string, string> }
+const libraryRunner = readFileSync(resolve(uiRoot, 'public-tests/lib/runLibraryTests.mjs'), 'utf8')
 const schema = JSON.parse(readFileSync(resolve(repoRoot, 'schema/verbs.json'), 'utf8'))
 const tauriConfig = JSON.parse(readFileSync(resolve(repoRoot, 'app/desktop/src-tauri/tauri.conf.json'), 'utf8')) as {
   bundle?: { resources?: Record<string, string> }
@@ -67,7 +68,8 @@ assert.doesNotMatch(agentHandoff, new RegExp(retiredWorkflow))
 assert.doesNotMatch(agentDocs, new RegExp(retiredWorkflow))
 assert.doesNotMatch(agentApi, new RegExp(retiredWorkflow))
 assert.equal(packageJson.scripts?.['test:feature-surface-contract'], 'tsx public-tests/feature-surface-contract.test.ts')
-assert.match(packageJson.scripts?.['test:lib'] || '', /feature-surface-contract\.test\.ts/)
+assert.equal(packageJson.scripts?.['test:lib'], 'node public-tests/lib/runLibraryTests.mjs')
+assert.match(libraryRunner, /discoverLibraryTests\(\)/, 'the canonical library runner discovers this test instead of pinning a manual list')
 
 for (const name of ['assets.providers', 'assets.search', 'assets.fetch']) {
   assert.equal(schema.verbs.find((verb: { name: string; behavior?: { ui_exposure?: string } }) => verb.name === name)?.behavior?.ui_exposure, 'human',

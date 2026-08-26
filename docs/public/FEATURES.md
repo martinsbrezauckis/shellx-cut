@@ -7,13 +7,33 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.110 release notes
+## v0.6.111 release notes
 
-- Atomic Overwrite edits with compact Source Monitor targets and stills.
-- Match Frame, All Uses, and registered source reveal.
-- One-word captions.
-- Bounded clip-volume automation.
-- Bugfixes.
+- A bundled interactive Manual uses the real editor frontend, opens and
+  highlights indexed controls, and keeps embedded exploration read-only.
+- Find → Moment uses `media.intelligence_status`,
+  `media.intelligence_rebuild`, and `media.intelligence_search` to search one
+  cited project index across spoken words, existing
+  visual embeddings, scenes, beats, markers, and media metadata. Results keep
+  source and timeline time distinct, disclose partial/stale coverage, and can
+  be previewed, opened on the current sequence, or explicitly handed to Agent
+  Chat for discussion without applying an edit. `inspect.media` and
+  `inspect.range` provide the path-light, current evidence agents use for those
+  citations.
+- Assets can recover several moved sources through an exact-hash
+  `media.relink_preview` / `media.relink_apply` review, while agent-only
+  `project.package_plan` / `project.package_create` makes a verified portable
+  project copy without changing the open project.
+- Health & Recovery adds a read-only `project.cache_preview` and explicitly
+  confirmed, cancellable `project.cache_purge` for aged, unreferenced,
+  Cut-owned proxy and filmstrip files; source media, exports, recordings, and
+  foreign files are never candidates.
+- A failed default Recording Studio export can expose one guarded
+  `jobs.retry` attempt when its project revision, capture inputs, edit plan, and
+  output lease are still identical. Changed, cancelled, explicit Save As,
+  successful, legacy, and already-retried jobs remain ineligible.
+- Reliability and UI fixes across native testing, provider routing, the Manual
+  button, and release packaging.
 
 ## Visible Surface Map
 
@@ -152,6 +172,16 @@ route to the same surface registry.
   (computed live, never a stored flag), the Assets tray badges offline clips,
   and `media.relink` repoints an asset — same-content relinks keep proxies and
   transcripts, changed content re-derives them.
+- Assets → Recover missing media handles several moved sources through one
+  bounded folder review. `media.relink_preview` permits only uniquely exact
+  full-file hashes to be selected; `media.relink_apply` rechecks those choices
+  and appends one grouped project-metadata operation with an immutable receipt.
+  Filename, duration, or sampled-hash resemblance is diagnostic only.
+- For an agent-assisted portable copy, `project.package_plan` inventories every
+  referenced asset across all sequences, deduplicates exact bytes, excludes
+  rebuildable caches, and refuses offline or stale inputs. A matching
+  `project.package_create` publishes a new verified `.cutproj` without
+  replacing a destination or changing the source project.
 - Media Health in the Assets tray summarizes missing source files, proxy/source
   playback state, and large 4K/camera clips, with a one-click relink action,
   per-asset readiness badges, a "needs action" filter, and Advanced counts kept
@@ -196,9 +226,18 @@ route to the same surface registry.
   Finder, or the Linux file manager to show a local regular file. Browser,
   removed, offline, and non-file cases stay closed with a visible reason; the
   UI neither supplies nor displays a raw source path.
-- Visual search: index video frames and find moments by content. Results keep
-  source time distinct from edited timeline time, jump to the nearest real use
-  of a trimmed/reused clip, and open unused hits at the exact Source frame.
+- Cited Find moment search: **Prepare search** derives a rebuildable, path-light
+  index from analysis the project already owns—transcript words and speakers,
+  existing visual embeddings, scenes, beats, markers, and media metadata. It
+  does not silently run missing transcription, perception, or visual analysis.
+  Coverage says what is ready, missing, or stale; stale evidence is excluded.
+  Search supports evidence-kind and current-sequence scope, returns source-time
+  excerpts with exact provenance, previews online sources, and jumps only to a
+  real occurrence in the active sequence. Selected citations become visible,
+  index-bound Agent Chat attachments as well as an editable draft. Cut resolves
+  them through the same read-only `inspect.range` contract before provider
+  launch, so changed or stale evidence is refused instead of trusted from copied
+  prose. Nothing is sent or edited until the user deliberately continues.
 - Dedicated global Library workspace: All/Recent/Favorites/Missing collections,
   tags, folders, search/sort/type filters, list/grid density, bulk organization,
   add-to-project, explicit Insert at playhead, and honest dead-link reporting
@@ -398,6 +437,9 @@ route to the same surface registry.
   and that resource's slot count; the durable list is refreshed even when a
   progress event was missed. A running batch also names the exact active render
   job it is currently waiting on; Cut does not imply that every job is retryable.
+  `jobs.retry` is deliberately narrower: it permits one linked retry only for
+  an eligible failed default-output Recording Studio export after revalidating
+  the project revision, capture inputs, edit plan, and output lease.
 - Settings > Health & Recovery explains whether the disposable project cache
   matched or was rebuilt from durable history, whether a replay snapshot was
   accepted, and how many newer journal records still replay on reopen. It is a
@@ -409,7 +451,14 @@ route to the same surface registry.
   newer files visibly inside that window, and blocks on a partial scan. It does
   not call file-change time "last used" or infer that active work has stopped,
   does not follow symlinks or unexpected directories, excludes foreign files,
-  exports, captures, receipts, and source media, and offers no purge action.
+  exports, captures, receipts, and source media. A separate visible cache
+  cleanup control first asks the server for a read-only durable-ownership
+  `project.cache_preview`, then requires in-panel confirmation before starting
+  a cancellable `project.cache_purge` job. That job has an exclusive lease and
+  revalidates its revision, flat roots,
+  ledger, and file identity; it can remove only aged, unreferenced,
+  ledger-owned proxy/filmstrip files and fails closed on legacy, foreign,
+  symlinked, partial, or changed cache state.
 - Verification receipts: deterministic checks, judge review, pregate, pacing,
   captions, delivery, brand, loudness, video scopes, and related fix loops.
   Review can re-run the output-only checks for one exact persisted render; Cut
@@ -568,8 +617,11 @@ route to the same surface registry.
 - Command search includes user-facing setup/help entries such as Media Health,
   Proxy imports, Video tools setup, and CLI agent setup; results open the real
   surface and use the same highlight overlay as `ui.highlight`.
-- The bundled app points to the online manual at
-  `https://docs.theshellx.com/manual/cut/`, including feature deep links such as
+- The bundled app contains an indexed interactive manual. Selecting an article
+  opens the real owning surface and highlights its control without executing
+  the action. The online counterpart at
+  `https://docs.theshellx.com/manual/cut/` embeds the same real frontend in a
+  read-only documentation runtime and retains established feature links such as
   `?feature=cut.left.media_health`.
 - Fresh installed builds expose:
   - `GET /api/agent`

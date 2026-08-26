@@ -33,6 +33,7 @@ import { libraryMembershipBatches } from './libraryMembership'
 import { assetReadiness, mediaCapabilitiesFromDoctor, summarizeMediaReadiness, type MediaReadinessAsset } from './mediaReadiness'
 import SourceMonitor, { type SourceMonitorAsset } from './SourceMonitor'
 import AssetContextMenu, { type AssetContextMenuState } from './AssetContextMenu'
+import BulkRelinkPanel from './BulkRelinkPanel'
 import './assets.css'
 
 export interface AssetsProps {
@@ -841,6 +842,13 @@ export default function Assets({ project, doctor, playheadMs, onProjectChanged, 
               </div>
             ))}
           </div>
+          {mediaHealth.offline > 0 && (
+            <BulkRelinkPanel
+              offlineCount={mediaHealth.offline}
+              onProjectChanged={onProjectChanged}
+              onRefresh={refreshOfflineNow}
+            />
+          )}
           <details className="assets__health-advanced" data-cut-media-health-advanced>
             <summary data-cut-media-health-advanced-toggle>Advanced</summary>
             <dl>

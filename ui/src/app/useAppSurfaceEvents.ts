@@ -1,9 +1,9 @@
 import { useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import type { LayoutState } from '../layout/useLayout'
-import { openCutManual } from '../lib/manual'
 import type { GenerateWorkspaceTab } from '../panels/GenerateTemplates'
 import { isSettingsCategoryId, type SettingsCategoryId } from '../panels/Environment/settingsModel'
 import type { AppDrawer } from './AppDrawerStack'
+import type { AgentChatPrefill, ChatEvidenceAttachment } from '../lib/evidenceAttachments'
 import { normalizeGenerateTab } from './model'
 import { uiSurface } from './uiSurfaceRegistry'
 
@@ -17,8 +17,9 @@ interface AppSurfaceEventsArgs {
   setEnvOpen: Dispatch<SetStateAction<boolean>>
   setEnvCategory: Dispatch<SetStateAction<SettingsCategoryId>>
   onRefreshDoctor: () => void | Promise<unknown>
+  onOpenManual?: (featureId?: string) => void
   agentChatPromptSeq: MutableRefObject<number>
-  setAgentChatPrefill: Dispatch<SetStateAction<{ prompt: string; nonce: number } | null>>
+  setAgentChatPrefill: Dispatch<SetStateAction<AgentChatPrefill | null>>
 }
 
 /** Bridges document-level app events to the shared surface registry. Returns
@@ -33,6 +34,7 @@ export function useAppSurfaceEvents({
   setEnvOpen,
   setEnvCategory,
   onRefreshDoctor,
+  onOpenManual,
   agentChatPromptSeq,
   setAgentChatPrefill,
 }: AppSurfaceEventsArgs) {
@@ -144,9 +146,9 @@ export function useAppSurfaceEvents({
     const onRefreshDoctorEvent = () => {
       void onRefreshDoctor()
     }
-    const onOpenManual = (e: Event) => {
+    const onOpenManualEvent = (e: Event) => {
       const feature = (e as CustomEvent<{ feature?: string } | string | undefined>).detail
-      openCutManual(typeof feature === 'string' ? feature : feature?.feature)
+      onOpenManual?.(typeof feature === 'string' ? feature : feature?.feature)
     }
     const onOpenComment = (e: Event) => {
       const id = (e as CustomEvent<{ id?: string }>).detail?.id
@@ -168,11 +170,15 @@ export function useAppSurfaceEvents({
     }
     const onOpenChat = (e: Event) => {
       openSurface('chat')
-      const detail = (e as CustomEvent<string | { prompt?: string }>).detail
+      const detail = (e as CustomEvent<string | { prompt?: string; evidence?: ChatEvidenceAttachment[] }>).detail
       const prompt = typeof detail === 'string' ? detail : detail?.prompt
       if (prompt?.trim()) {
         agentChatPromptSeq.current += 1
-        setAgentChatPrefill({ prompt, nonce: agentChatPromptSeq.current })
+        setAgentChatPrefill({
+          prompt,
+          nonce: agentChatPromptSeq.current,
+          evidence: typeof detail === 'string' ? undefined : detail?.evidence,
+        })
       }
     }
     const onOpenDrawer = (e: Event) => {
@@ -195,7 +201,7 @@ export function useAppSurfaceEvents({
     document.addEventListener('cut:open-environment', onOpenEnvironment)
     document.addEventListener('cut:open-wizard', onOpenWizard)
     document.addEventListener('cut:refresh-doctor', onRefreshDoctorEvent)
-    document.addEventListener('cut:open-manual', onOpenManual)
+    document.addEventListener('cut:open-manual', onOpenManualEvent)
     document.addEventListener('cut:open-comment', onOpenComment)
     document.addEventListener('cut:open-kinetic', onKinetic)
     document.addEventListener('cut:open-grade', onGrade)
@@ -214,7 +220,7 @@ export function useAppSurfaceEvents({
       document.removeEventListener('cut:open-environment', onOpenEnvironment)
       document.removeEventListener('cut:open-wizard', onOpenWizard)
       document.removeEventListener('cut:refresh-doctor', onRefreshDoctorEvent)
-      document.removeEventListener('cut:open-manual', onOpenManual)
+      document.removeEventListener('cut:open-manual', onOpenManualEvent)
       document.removeEventListener('cut:open-comment', onOpenComment)
       document.removeEventListener('cut:open-kinetic', onKinetic)
       document.removeEventListener('cut:open-grade', onGrade)
@@ -232,6 +238,7 @@ export function useAppSurfaceEvents({
     setAgentChatPrefill,
     setFocusComment,
     openSurface,
+    onOpenManual,
     onRefreshDoctor,
   ])
   return openSurface

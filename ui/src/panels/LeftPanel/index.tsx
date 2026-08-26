@@ -102,6 +102,7 @@ export default function LeftPanel({
           aria-selected={tab === 'projects'}
           className={`lp__tab ${tab === 'projects' ? 'lp__tab--active' : ''}`}
           data-cut-left-tab="projects"
+          data-cut-manual-id="cut.top.projects"
           onClick={() => onTab('projects')}
         >
           Projects
@@ -111,6 +112,7 @@ export default function LeftPanel({
           aria-selected={tab === 'assets'}
           className={`lp__tab ${tab === 'assets' ? 'lp__tab--active' : ''}`}
           data-cut-left-tab="assets"
+          data-cut-manual-id="cut.left.assets"
           onClick={() => onTab('assets')}
         >
           Assets
@@ -121,6 +123,7 @@ export default function LeftPanel({
           aria-selected={tab === 'transcript'}
           className={`lp__tab ${tab === 'transcript' ? 'lp__tab--active' : ''}`}
           data-cut-left-tab="transcript"
+          data-cut-manual-id="cut.left.transcript"
           onClick={() => onTab('transcript')}
         >
           Transcript
@@ -130,6 +133,7 @@ export default function LeftPanel({
           aria-selected={tab === 'generate'}
           className={`lp__tab ${tab === 'generate' ? 'lp__tab--active' : ''}`}
           data-cut-left-tab="generate"
+          data-cut-manual-id="cut.left.generate"
           onClick={() => onTab('generate')}
         >
           Generate
@@ -139,6 +143,7 @@ export default function LeftPanel({
           aria-selected={tab === 'find'}
           className={`lp__tab ${tab === 'find' ? 'lp__tab--active' : ''}`}
           data-cut-left-tab="find"
+          data-cut-manual-id="cut.left.find"
           onClick={() => onTab('find')}
         >
           Find
@@ -206,6 +211,7 @@ export default function LeftPanel({
                 aria-selected={findSurface === 'find-media'}
                 className={`lp__subtab ${findSurface === 'find-media' ? 'lp__subtab--active' : ''}`}
                 data-cut-find-tab="find-media"
+                data-cut-manual-id="cut.left.find.media"
                 onClick={() => onFindSurface('find-media')}
               >
                 <Icon name="search" size={14} tone="brand" /> Find media
@@ -215,6 +221,7 @@ export default function LeftPanel({
                 aria-selected={findSurface === 'find-moment'}
                 className={`lp__subtab ${findSurface === 'find-moment' ? 'lp__subtab--active' : ''}`}
                 data-cut-find-tab="find-moment"
+                data-cut-manual-id="cut.left.find.moment"
                 onClick={() => onFindSurface('find-moment')}
               >
                 <Icon name="search" size={14} tone="asset" /> Find moment
@@ -224,6 +231,7 @@ export default function LeftPanel({
                 aria-selected={findSurface === 'sequence-index'}
                 className={`lp__subtab ${findSurface === 'sequence-index' ? 'lp__subtab--active' : ''}`}
                 data-cut-find-tab="sequence-index"
+                data-cut-manual-id="cut.left.sequence_index"
                 title="Search clips and markers across every sequence"
                 onClick={() => onFindSurface('sequence-index')}
               >

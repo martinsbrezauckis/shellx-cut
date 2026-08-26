@@ -1,0 +1,366 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "comment",
+  "verbs": [
+    {
+      "name": "comment.add",
+      "domain": "comment",
+      "description": "Append a timecoded REVIEW COMMENT. Anchors review feedback at a timeline position (at_ms, optional end_ms for a range) with a free-text note; status starts 'open'. When a clip exists under at_ms, the stored comment also carries anchor:{track_id,clip_id,offset_ms} so the UI/agents can resolve it after upstream ripple edits and badge it stale if the clip is removed. A review-metadata op (in the op-log for receipts + replay, but NOT a timeline edit / not in the undo stack). The agent later drafts a concrete change for it (comment.draft) which is reviewed + applied (comment.apply). author defaults to 'client'.",
+      "args": {
+        "type": "object",
+        "required": [
+          "at_ms",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Timeline anchor, ms"
+          },
+          "text": {
+            "type": "string",
+            "description": "The review note"
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "End of a range comment (ms); omit for a point comment"
+          },
+          "author": {
+            "type": "string",
+            "description": "Who left it (default 'client')"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{comment: {id, at_ms, end_ms?, anchor?:{track_id,clip_id,offset_ms}, text, author, status, ts}}; one op appended",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "comment_add",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "comment.export",
+      "domain": "comment",
+      "description": "Export a PORTABLE OFFLINE REVIEW PACKAGE for the latest persisted render receipt: a standalone HTML reviewer, a receipt-verified copy of the rendered media, and a machine-readable manifest. The receipt output must be inside an authorized export folder — the project's exports subtree, CUTD_OUTPUTS_DIR, or the folder chosen with project.set_output_dir — which is where the engine is allowed to deliver a render in the first place; this prevents a tampered receipt from turning the export route into an arbitrary-file reader. The reviewer plays the copied render, accepts timecoded notes without a server, and downloads shellx-cut/review-feedback/1 JSON for comment.import. By default no render-affecting op may follow the receipt (later comment/preset/name metadata is harmless), so reviewers never receive a stale cut. Read-only (no op).",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Optional fenced .html output path. The media and manifest are written beside it. Default exports/review_<render_id>.html."
+          },
+          "allow_stale": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicitly export an older latest render even when the project changed after it. The package remains bound to the receipt's source_op_id and reports stale:true."
+          }
+        }
+      },
+      "result": "{path, manifest_path, media_path, render_id, source_op_id, render_hash, stale}; no op",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "comment_export",
+        "project_state": "optional",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "comment.import",
+      "domain": "comment",
+      "description": "Import shellx-cut/review-feedback/1 JSON downloaded by a portable review package. Validates the schema, size/count/text/time bounds, source op, render id, and render hash against the saved local receipt, then appends every note ATOMICALLY as one replay-safe review-metadata op. Each imported comment carries review_source:{source_op_id,render_id,render_hash}. Later comment/preset/name metadata does not stale unchanged rendered bytes; any later render-affecting op does, and requires allow_stale:true plus a rationale.",
+      "args": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to a shellx-cut/review-feedback/1 JSON file (max 2 MiB, 1-500 comments)."
+          },
+          "allow_stale": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicitly import feedback against an older reviewed render. Requires rationale."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Audit reason; required when allow_stale imports feedback against an older project head."
+          }
+        }
+      },
+      "result": "{comments, count, source_op_id, render_id, reviewed_project, current_project, stale}; one atomic comment.import op appended",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "comment_import",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "comment.list",
+      "domain": "comment",
+      "description": "List review comments, optionally filtered by lifecycle status. Read-only (no op). New comments may include anchor:{track_id,clip_id,offset_ms}; resolve that against current project.state tracks to follow the clip after ripple edits, and treat a missing clip as a stale/orphaned note.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "addressed",
+              "dismissed"
+            ],
+            "description": "Filter to this status; omit for all"
+          }
+        }
+      },
+      "result": "{comments: [...], count}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "comment_list",
+        "project_state": "optional",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "comment.resolve",
+      "domain": "comment",
+      "description": "Set a comment's lifecycle status: 'addressed' (its drafted change was applied), 'dismissed' (won't act on it), or back to 'open'. A review-metadata op.",
+      "args": {
+        "type": "object",
+        "required": [
+          "comment_id",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "comment_id": {
+            "type": "string",
+            "description": "Comment id (cmN) from comment.list"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "addressed",
+              "dismissed"
+            ]
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{comment}; one op appended",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "comment_resolve",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "comment.draft",
+      "domain": "comment",
+      "description": "Ask the drafting agent (the verify.judge claude-CLI ladder, reused) to propose a concrete change set for an OPEN review comment — a sequence of editor verb calls that addresses it, given the timeline + transcript context + the verb catalog. The proposal is STORED on the comment for review (comment.draft does NOT apply it; comment.apply executes it after review). Honest backend semantics like verify.judge: a missing/not-logged-in CLI returns status 'not_run', a run that fails returns 'error', and NO draft is stored in either case (never a fabricated edit). The proposed verbs are validated against the real registry (unknown/non-actionable verbs flagged in draft.validation).",
+      "args": {
+        "type": "object",
+        "required": [
+          "comment_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "comment_id": {
+            "type": "string",
+            "description": "Comment id (cmN) from comment.list — must be an existing comment"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{comment_id, status: completed|not_run|error, draft?: {verbs:[{verb,args}], rationale, confidence, validation, backend}}; one op appended on success",
+      "result_schema": {
+        "$ref": "shellx-cut://receipts.schema.json#/$defs/CommentDraft"
+      },
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "comment_draft",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "comment.apply",
+      "domain": "comment",
+      "description": "EXECUTE a comment's drafted change. Dispatches each verb in the comment's draft as a real op carrying the comment as its rationale (the receipt linking the edit to the comment), wrapped in an AUTO-CHECKPOINT so the whole apply is revertible in one step (project.revert{to: the returned checkpoint}). Returns the before/after project.diff — the review artifact — and marks the comment 'addressed'. Stops on the FIRST failing verb and hands back the checkpoint to revert the partial apply (a half-applied draft is never left silently). Requires the comment to have a draft (run comment.draft first); a no-op draft (empty verbs) is refused — dismiss the comment instead.",
+      "args": {
+        "type": "object",
+        "required": [
+          "comment_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "comment_id": {
+            "type": "string",
+            "description": "Comment id (cmN) — must have a draft from comment.draft"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{comment_id, status: addressed|failed, applied:[{verb,ok,result,error}], diff, checkpoint, revert_hint}; appends a checkpoint + the drafted ops + a comment.resolve",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "comment_id",
+          "status",
+          "applied",
+          "diff",
+          "checkpoint"
+        ],
+        "properties": {
+          "comment_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "addressed",
+              "failed"
+            ]
+          },
+          "applied": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "verb": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "result": {},
+                "error": {}
+              }
+            }
+          },
+          "diff": {
+            "$ref": "shellx-cut://receipts.schema.json#/$defs/DiffSummary"
+          },
+          "checkpoint": {
+            "type": "string"
+          },
+          "revert_hint": {
+            "type": "string"
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "comment_apply",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

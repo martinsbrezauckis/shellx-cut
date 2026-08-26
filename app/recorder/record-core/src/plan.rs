@@ -246,6 +246,12 @@ pub struct WebcamOverlay {
     pub margin: f64,
     /// Bubble diameter, fraction of output height.
     pub size: f64,
+    /// Optional measured camera-frame interval on the shared recorder
+    /// `CaptureClock`. Absent keeps legacy webcam plans usable; present means
+    /// renderers must show no camera frame before first delivery or after the
+    /// terminal camera frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_clock: Option<crate::CameraClockRange>,
     /// Timed Studio keyframes captured while recording. Empty keeps the static
     /// anchor/margin/size behavior used by older plans.
     #[serde(default)]
@@ -405,6 +411,15 @@ impl EditPlan {
             if wc.source.trim().is_empty() {
                 return Err(bad("webcam source must not be empty"));
             }
+            if let Some(clock) = wc.camera_clock {
+                if clock.end_frame_offset_ms < clock.first_frame_offset_ms
+                    || clock.end_frame_offset_ms > self.duration_ms
+                {
+                    return Err(bad(
+                        "webcam camera_clock must be ordered and contained by the plan duration",
+                    ));
+                }
+            }
             if !(wc.margin.is_finite() && wc.margin >= 0.0 && wc.margin <= 1.0) {
                 return Err(bad("webcam margin must be in [0, 1]"));
             }
@@ -477,6 +492,7 @@ mod validate_tests {
             anchor: Anchor::BottomRight,
             margin: 0.04,
             size: 0.22,
+            camera_clock: None,
             timeline: vec![WebcamKeyframe {
                 t_ms: 0,
                 visible: None,
@@ -498,6 +514,7 @@ mod validate_tests {
             anchor: Anchor::BottomRight,
             margin: 0.04,
             size: 0.22,
+            camera_clock: None,
             timeline: vec![
                 WebcamKeyframe {
                     t_ms: 800,
@@ -584,6 +601,7 @@ mod tests {
             anchor: Anchor::BottomRight,
             margin: 0.04,
             size: 0.22,
+            camera_clock: None,
             timeline: vec![WebcamKeyframe {
                 t_ms: 1200,
                 visible: Some(false),
@@ -607,6 +625,7 @@ mod tests {
             anchor: Anchor::BottomRight,
             margin: 0.05,
             size: 0.20,
+            camera_clock: None,
             timeline: vec![
                 WebcamKeyframe {
                     t_ms: 1000,

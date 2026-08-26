@@ -1,0 +1,552 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "library",
+  "verbs": [
+    {
+      "name": "library.list",
+      "domain": "library",
+      "description": "List the global asset library (~/.shellx-cut/library/), filtered + sorted. The library holds media (video/audio/image) that lives ACROSS projects — added by the user or the agent, organized by folders + tags. READ-ONLY. Items LINK their original by src_path (default) or carry a content-addressed stored copy; the UI renders a blob thumbnail via /api/library-blob, else a type glyph.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "video",
+              "audio",
+              "image"
+            ],
+            "description": "Filter by asset kind (probe-derived)."
+          },
+          "folder": {
+            "type": "string",
+            "description": "Filter to a folder (exact)."
+          },
+          "tag": {
+            "type": "string",
+            "description": "Filter to items carrying this tag (exact)."
+          },
+          "q": {
+            "type": "string",
+            "description": "Case-insensitive name or tag substring filter."
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "added",
+              "name",
+              "recent",
+              "uses"
+            ],
+            "default": "added",
+            "description": "added (newest first, default) | name (asc) | recent (last-used) | uses (most-used)."
+          },
+          "collection": {
+            "type": "string",
+            "enum": [
+              "all",
+              "favorites",
+              "missing"
+            ],
+            "default": "all",
+            "description": "Server-side collection filter. missing computes backing-file existence before paging."
+          },
+          "ids": {
+            "type": "array",
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional exact id-membership filter (maximum 500), intended for bounded cross-surface membership checks."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Zero-based offset into the filtered, sorted result."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100,
+            "description": "Bounded page size. Defaults to 100 and may not exceed 500."
+          }
+        }
+      },
+      "result": "{items: [LibItem{id, type, name, src_path?, blob?, tags[], folder?, favorite?, added_ms, used_ms?, uses?, source, probe?:{duration_ms?,width?,height?,has_audio?}, media_ok:boolean}], folders:[string], tags:[string], total:int, offset:int, limit:int, next_offset?:int|null} — exactly one bounded page plus exact filtered total",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_list",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.add",
+      "domain": "library",
+      "description": "Add a media file to the global library. Source = either path (a file on disk) OR asset (an asset id in the OPEN project → its source path). The file is ffprobe-VALIDATED (corrupt → rejected) and its KIND (video/audio/image) is derived from the probe, never a caller hint. By default the item LINKS the original (src_path; tiny disk). copy:true stores a content-addressed copy in library/blobs/<sha256>.<ext>. Idempotent by content hash (same file added twice = one item). source defaults to 'user' (set 'agent' when the agent curates).",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to a media file to add (mutually exclusive with asset)."
+          },
+          "asset": {
+            "type": "string",
+            "description": "An asset id in the open project to promote into the library (instead of path)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name (defaults to the file name)."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tags to attach at add time."
+          },
+          "folder": {
+            "type": "string",
+            "description": "Folder to file it under."
+          },
+          "copy": {
+            "type": "boolean",
+            "default": false,
+            "description": "true = keep a managed copy in the Library blob store; false (default) = link the original by path."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "user",
+              "agent"
+            ],
+            "default": "user"
+          }
+        }
+      },
+      "result": "{item: LibItem}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_add",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.relink",
+      "domain": "library",
+      "description": "Repair a missing LINKED Library source by pointing it at the SAME media bytes in a new filesystem location. The file is ffprobe-validated and content-hashed. Different content is rejected with conflict so the content-derived item id stays truthful. Managed copies are not relinked by this verb.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Existing linked Library item id."
+          },
+          "path": {
+            "type": "string",
+            "description": "New absolute path to the same media bytes."
+          }
+        }
+      },
+      "result": "{item: LibItem} — the same item id and organization with its linked src_path repaired",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_relink",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.remove",
+      "domain": "library",
+      "description": "Remove a library item by id. A linked original is never touched; a copied blob is unlinked only when no other item references it (content dedup safe). Returns {removed:bool}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{removed: bool}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_remove",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.move",
+      "domain": "library",
+      "description": "Move a library item to a folder. Omit folder (or pass empty) to move it back to the root. Returns the updated {item}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string",
+            "description": "Target folder; omit/empty = root."
+          }
+        }
+      },
+      "result": "{item: LibItem}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_move",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.tag",
+      "domain": "library",
+      "description": "Replace a library item's tag set (the 'mark' gesture for assigning assets to project workflows). Returns the updated {item}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id",
+          "tags"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "result": "{item: LibItem}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_tag",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.favorite",
+      "domain": "library",
+      "description": "Pin/unpin a library item (favorites surface first in the UI). Returns the updated {item}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id",
+          "on"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": "{item: LibItem}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_favorite",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.use",
+      "domain": "library",
+      "description": "Bump a library item's recently-used timestamp + use count (drives the 'recent'/'uses' sorts). Called automatically by library.add_to_project; exposed for explicit telemetry. Returns the updated {item}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{item: LibItem}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_use",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.add_to_project",
+      "domain": "library",
+      "description": "Import a library asset into the OPEN project — reuses media.import (hash/probe/proxy/transcribe/perception chain + auto-place when the timeline is empty) so the asset becomes a normal project asset (then place it with edit.insert). Also bumps the library use counter. Requires an open project; errors if the item's linked original has gone missing (re-add it, or use an item stored as a Library copy). Returns the media.import result (the new project asset).",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The library item id to import."
+          }
+        }
+      },
+      "result": "the media.import result {asset_id, job_id, op, capture_manifest?} for the imported asset (probe lands async via the enrich_job)",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_add_to_project",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.folder_add",
+      "domain": "library",
+      "description": "Create a library organization folder. No-op (added:false) if it already exists. Returns {added, folders}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{added: bool, folders: [string]}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_folder_add",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.folder_rename",
+      "domain": "library",
+      "description": "Rename a library folder and re-point every item filed under it. renamed:false if old is unknown or new is empty/taken. Returns {renamed, folders}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "old",
+          "new"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "old": {
+            "type": "string"
+          },
+          "new": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{renamed: bool, folders: [string]}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_folder_rename",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "library.folder_remove",
+      "domain": "library",
+      "description": "Remove a library folder; its items are un-foldered (moved to root, NOT deleted). Returns {removed, folders}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{removed: bool, folders: [string]}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "library_folder_remove",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    }
+  ]
+}

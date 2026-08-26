@@ -33,6 +33,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
 import type { Project, VerbResults } from '../../lib/client'
+import type { AgentChatPrefill, ChatEvidenceAttachment } from '../../lib/evidenceAttachments'
+import { evidenceAttachmentIdentity } from '../../lib/evidenceAttachments'
 import {
   fetchDoctor,
   chatAgentsFrom,
@@ -44,9 +46,12 @@ import {
 import { getChatAgent, setChatAgent } from '../../lib/chatAgentPref'
 import { Icon } from '../../icons'
 import AttachmentPicker from './AttachmentPicker'
+import AssetAttachmentStrip from './AssetAttachmentStrip'
+import EvidenceAttachmentStrip from './EvidenceAttachmentStrip'
 import { chatAttachmentOptions, toggleChatAttachment } from './attachmentModel'
 import { AGENT_PROMPT_CATEGORIES, AGENT_PROMPT_LIBRARY, AGENT_QUICK_PROMPTS } from './promptLibrary'
 import { markReviewOps } from '../Review/reviewMarkers'
+import { useEvidenceAttachments } from './useEvidenceAttachments'
 import './chat.css'
 
 type ChatResult = VerbResults['agent.chat']
@@ -64,8 +69,10 @@ interface Turn {
   errorKind?: string | null
   agentMessage?: string | null
   attachments?: Array<{ id: string; label: string }>
+  evidence?: ChatEvidenceAttachment[]
   request?: string
   requestAttachments?: Array<{ id: string; label: string }>
+  requestEvidence?: ChatEvidenceAttachment[]
   projectName?: string
   plan?: ChatResult['plan']
   review?: ChatResult['review']
@@ -78,13 +85,14 @@ export interface AgentChatProps {
   /** The open project supplies only registered asset IDs to the attachment picker. */
   project: Project | null
   /** Prompt handed off while the chat tab was opening; nonce makes repeats apply. */
-  prefill?: { prompt: string; nonce: number } | null
+  prefill?: AgentChatPrefill | null
 }
 
 export default function AgentChat({ project, prefill }: AgentChatProps) {
   const [log, setLog] = useState<Turn[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
+  const evidenceAttachments = useEvidenceAttachments(prefill)
   const [busy, setBusy] = useState(false)
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
@@ -217,9 +225,12 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
       label: attachmentOptions.find((option) => option.id === id)?.label ?? id,
     }))
     const turnProjectName = project?.name
+    const turnEvidence = evidenceAttachments.selected
+    const evidenceIdentity = evidenceAttachmentIdentity(turnEvidence)
     setInput('')
     setAttachments([])
-    setLog((l) => [...l, { role: 'user', text: message, attachments: turnAttachments }])
+    evidenceAttachments.clear()
+    setLog((l) => [...l, { role: 'user', text: message, attachments: turnAttachments, evidence: turnEvidence }])
     setBusy(true)
     try {
       // Pass the selected provider. The backend rejects a provider without an
@@ -228,6 +239,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
         message,
         agent,
         attachments: turnAttachments.length > 0 ? turnAttachments.map((attachment) => attachment.id) : undefined,
+        ...evidenceIdentity,
       })
       const res: ChatResult | null | undefined = r.ok ? r.result : null
       if (res && res.ok) {
@@ -243,6 +255,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
             cost: res.cost_usd,
             request: message,
             requestAttachments: turnAttachments,
+            requestEvidence: turnEvidence,
             projectName: turnProjectName,
             plan: res.plan,
             review: res.review,
@@ -265,6 +278,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
             actions: res.actions,
             request: message,
             requestAttachments: turnAttachments,
+            requestEvidence: turnEvidence,
             projectName: turnProjectName,
             plan: res.plan,
             review: res.review,
@@ -281,7 +295,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
     } finally {
       setBusy(false)
     }
-  }, [input, busy, agent, attachments, attachmentOptions, project?.name])
+  }, [input, busy, agent, attachments, attachmentOptions, evidenceAttachments, project?.name])
 
   const patchTurn = useCallback((index: number, patch: Partial<Turn>) => {
     setLog((current) => current.map((turn, candidate) => candidate === index ? { ...turn, ...patch } : turn))
@@ -330,9 +344,10 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
     const registered = new Set(attachmentOptions.map((option) => option.id))
     setInput(turn.request)
     setAttachments((turn.requestAttachments ?? []).map((attachment) => attachment.id).filter((id) => registered.has(id)))
+    evidenceAttachments.restore(turn.requestEvidence ?? [])
     patchTurn(index, { reviewState: 'retry', reviewError: null })
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }, [attachmentOptions, patchTurn, revertTurn])
+  }, [attachmentOptions, evidenceAttachments, patchTurn, revertTurn])
 
   const inspectDiff = useCallback((turn: Turn) => {
     const review = turn.review
@@ -454,21 +469,8 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
             data-cut-chat-error={t.role === 'agent' && t.ok === false ? (t.errorKind ?? 'error') : undefined}
           >
             <div className="chat__bubble">{t.text}</div>
-            {t.role === 'user' && t.attachments && t.attachments.length > 0 && (
-              <div className="chat__turn-attachments">
-                {t.attachments.map((attachment) => (
-                  <span
-                    key={attachment.id}
-                    className="chat__turn-attachment"
-                    data-cut-chat-turn-attachment={attachment.id}
-                    title={attachment.id}
-                  >
-                    <Icon name="attach" size={14} />
-                    {attachment.label}
-                  </span>
-                ))}
-              </div>
-            )}
+            {t.role === 'user' && <AssetAttachmentStrip attachments={t.attachments ?? []} turn />}
+            {t.role === 'user' && <EvidenceAttachmentStrip attachments={t.evidence ?? []} turn />}
             {/* Error transparency: the agent's OWN final words on a failed turn
                 (a refusal, "couldn't find a clip at 2s", an answer) — rendered
                 verbatim below the reason, never swallowed. */}
@@ -609,27 +611,12 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
           </div>
         )}
       </div>
-      {attachments.length > 0 && (
-        <div className="chat__attachments" data-cut-chat-attachments={attachments.length}>
-          {attachments.map((id) => {
-            const label = attachmentOptions.find((option) => option.id === id)?.label ?? id
-            return (
-              <span key={id} className="chat__attachment-chip" title={id}>
-                <span>{label}</span>
-                <button
-                  type="button"
-                  data-cut-chat-attachment-remove={id}
-                  aria-label={`Remove ${label}`}
-                  disabled={busy}
-                  onClick={() => setAttachments((selected) => selected.filter((candidate) => candidate !== id))}
-                >
-                  <Icon name="close" size={14} />
-                </button>
-              </span>
-            )
-          })}
-        </div>
-      )}
+      <AssetAttachmentStrip
+        attachments={attachments.map((id) => ({ id, label: attachmentOptions.find((option) => option.id === id)?.label ?? id }))}
+        busy={busy}
+        onRemove={(id) => setAttachments((selected) => selected.filter((candidate) => candidate !== id))}
+      />
+      <EvidenceAttachmentStrip attachments={evidenceAttachments.selected} busy={busy} onRemove={evidenceAttachments.remove} />
       <div className="chat__compose">
         <AttachmentPicker
           options={attachmentOptions}

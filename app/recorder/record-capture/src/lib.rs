@@ -15,6 +15,7 @@
 //! `doctor()` reports capability cards (mirrors ShellX Cut's system.doctor) so the
 //! UI/agent can tell what's present vs needs install/permission.
 
+pub mod camera;
 mod capture_clock;
 mod checkpoint;
 pub mod doctor;
@@ -57,6 +58,7 @@ mod mic_timing;
 mod system_audio_probe;
 #[cfg(feature = "mic")]
 mod system_audio_timing;
+mod window_target;
 
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows;
@@ -87,6 +89,10 @@ mod linux_capture_state;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_media;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod linux_portal;
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod linux_runtime;
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_source_publication;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_token;
@@ -107,6 +113,7 @@ mod input_evdev;
 #[doc(hidden)]
 pub mod wayland_pw;
 
+pub use camera::{CameraBackend, CameraDevice, CameraReadiness, CameraRequest, ReplayCamera};
 pub use capture_clock::CaptureClock;
 pub use doctor::{doctor, Card};
 pub use doctor_portal::{is_linux_portal_prompt_deferred, LINUX_PORTAL_PROMPT_DEFERRED_DETAIL};
@@ -138,14 +145,14 @@ pub struct MonitorInfo {
 /// One on-screen application window the user can pick as the capture target.
 ///
 /// Returned by [`list_windows`] so the UI / agent can offer a WINDOW picker (record
-/// just one app, not the whole screen). The capture backend re-resolves the window
-/// from its `title` at start (`Window::from_contains_name` on Windows), so the UI
-/// passes a chosen `WindowInfo.title` straight back as `CaptureConfig.window`.
+/// just one app, not the whole screen). `id` is an opaque native identity returned
+/// by the current enumeration and consumed unchanged by [`CaptureConfig::window`].
+/// The title is display copy only and never selects a capture target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowInfo {
-    /// 1-based position in the enumeration — a stable-enough key for the UI list.
-    pub id: u32,
-    /// The window title (what `CaptureConfig.window` matches on).
+    /// Opaque native window identity, valid only while that exact target remains live.
+    pub id: String,
+    /// Current display title. It may change without changing target identity.
     pub title: String,
     /// Owning process / app name, best-effort (for display, e.g. "chrome.exe").
     pub app: String,
@@ -193,10 +200,10 @@ pub fn list_monitors() -> Vec<MonitorInfo> {
 /// in-app WINDOW picker (record a single app instead of the full screen). Mirrors
 /// [`list_monitors`]'s platform behavior:
 /// - **Windows** (`capture-windows`): real enumeration via `windows-capture`
-///   (`Window::enumerate()`), filtered to valid, titled, non-trivial windows; the
-///   chosen `WindowInfo.title` goes back as `CaptureConfig.window` and is re-resolved
-///   at capture start.
-/// - **macOS** (`capture-macos`): real ScreenCaptureKit enumeration.
+///   (`Window::enumerate()`), filtered to valid, titled, non-trivial windows. The
+///   opaque HWND + process identity is revalidated exactly at capture start.
+/// - **macOS** (`capture-macos`): real ScreenCaptureKit enumeration with an opaque
+///   native window id that is revalidated exactly at capture start.
 /// - **Linux / headless**: returns an EMPTY vec (Linux's XDG portal offers window
 ///   selection in its own picker). An empty list means there is no in-app picker.
 pub fn list_windows() -> Vec<WindowInfo> {
@@ -291,7 +298,7 @@ pub fn live_capture() -> Option<Box<dyn Capture>> {
     }
 }
 
-use record_core::{EventTrack, RecordingProject, Result, Settings};
+use record_core::{CameraArtifact, EventTrack, RecordingProject, Result, Settings};
 use serde::{Deserialize, Serialize};
 
 /// Debug probe: run ONLY the evdev input listener for `seconds` and return the
@@ -332,9 +339,9 @@ pub struct CaptureConfig {
     pub capture_cursor: bool,
     /// Which monitor (None = primary).
     pub monitor: Option<u32>,
-    /// Capture just ONE application window by title (None = whole monitor/screen).
-    /// Takes precedence over `monitor` when set. Windows-only; matched with
-    /// `Window::from_contains_name` at capture start.
+    /// Capture just ONE application window by opaque id from [`list_windows`]
+    /// (None = whole monitor/screen). Takes precedence over `monitor` when set.
+    /// The backend revalidates that exact native identity immediately before use.
     pub window: Option<String>,
     pub audio: bool,
     /// Capture DESKTOP/SYSTEM audio (game/app sound) in the SAME capture, as a SEPARATE
@@ -388,6 +395,10 @@ impl Default for CaptureConfig {
 pub struct CaptureOutput {
     pub source_video: String,
     pub events: EventTrack,
+    /// Authoritative CameraArtifact@1 for a synchronized camera stream. Native
+    /// backends leave this absent until they implement the camera contract.
+    pub camera_artifact: Option<CameraArtifact>,
+    /// Legacy presentation-only path retained for existing projects/autoedit.
     pub webcam_video: Option<String>,
     pub audio: Option<String>,
     pub settings: Settings,
@@ -397,7 +408,12 @@ impl CaptureOutput {
     /// Fold the captured artifacts into a `RecordingProject` (ready for autoedit).
     pub fn into_project(self) -> RecordingProject {
         let mut p = RecordingProject::new(self.source_video, self.settings, self.events);
-        p.webcam_video = self.webcam_video;
+        p.webcam_video = self.webcam_video.or_else(|| {
+            self.camera_artifact
+                .as_ref()
+                .map(|artifact| artifact.video.clone())
+        });
+        p.camera_artifact = self.camera_artifact;
         p.audio = self.audio;
         p
     }
@@ -510,6 +526,7 @@ mod stop_tests {
             Ok(CaptureOutput {
                 source_video: "mock.mp4".into(),
                 events,
+                camera_artifact: None,
                 webcam_video: None,
                 audio: None,
                 settings: Settings {

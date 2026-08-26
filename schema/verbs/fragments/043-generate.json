@@ -1,0 +1,388 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "generate",
+  "verbs": [
+    {
+      "name": "generate.list",
+      "domain": "generate",
+      "description": "List the built-in Generate catalog: reusable native Cut definitions plus promoted rich ShellX Motion families that preview and insert as receipt-bound rendered media. Pure READ: no project required, no op, no checkpoint. This is NOT assets.generate; it returns typed template metadata for editable or linked timeline generation.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "title",
+              "caption",
+              "shape",
+              "motion",
+              "social",
+              "batch",
+              "all"
+            ],
+            "description": "Filter by template kind. Omit or pass all for every kind."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "builtin",
+              "project",
+              "user",
+              "all"
+            ],
+            "description": "Filter by template source. Builtin templates are supported; project/user sources are reserved for future save/import support."
+          },
+          "query": {
+            "type": "string",
+            "description": "Case-insensitive search over id, title, summary, and tags."
+          }
+        }
+      },
+      "result": "{templates:[{id, source, kind, title, summary, tags, params:{type,required,default?,minimum?,maximum?,step?}, capabilities, available}]} — read-only discovery surface for the Generate module.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "generate_list",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "generate.describe",
+      "domain": "generate",
+      "description": "Describe ONE Generate template in full before preview/insert: bounded params (including decimal minimum/maximum/step), defaults, lowering verb/args, capabilities, and verification expectations. Pure READ. NOT_FOUND for an unknown id (ids come from generate.list).",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Generate template id from generate.list, for example builtin.lower-third.clean."
+          }
+        }
+      },
+      "result": "{id, source, kind, title, summary, tags, params, defaults, capabilities, lowering:{verb,args}, verification}.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "generate_describe",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "generate.preview",
+      "domain": "generate",
+      "description": "Render a non-mutating PNG evidence frame for one Generate template after resolving params and lowering args. Pure preview: no project required, no op, no checkpoint. With an open project it writes into <project>/frames and returns a /frames/{file} URL; without a project it writes a temp PNG path. Preview supports templates that lower to title.add or edit.add_shape; project-dependent templates report INVALID_ARGS honestly.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Generate template id from generate.list."
+          },
+          "params": {
+            "type": "object",
+            "description": "Template parameter overrides keyed by the template's declared params."
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 7680,
+            "description": "Optional preview width in pixels. Supply with height; defaults to the open project's width or 1280 with no project."
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 4320,
+            "description": "Optional preview height in pixels. Supply with width; defaults to the open project's height or 720 with no project."
+          },
+          "frame_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional timestamp inside the resolved template duration; defaults to a visible mid/hold frame."
+          }
+        }
+      },
+      "result": "{id, preview_id, path, url?, mime:\"image/png\", width, height, frame_ms, params, lowering:{verb,args}, supported, warnings[]} — real PNG evidence, no op_ids.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "generate_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "generate.insert",
+      "domain": "generate",
+      "description": "Materialize one Generate template into the open project by resolving params, lowering to an existing native verb, and dispatching that verb through the normal replay-safe path. Inserts are grouped by an auto-checkpoint and return instance evidence: op ids, generated clip/asset ids, resolved params, lowering args, and the native verb result. Supported template verbs are title.add, edit.add_shape, and captions.kinetic. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Generate template id from generate.list."
+          },
+          "params": {
+            "type": "object",
+            "description": "Template parameter overrides keyed by the template's declared params."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Timeline start in milliseconds for templates that lower to a ranged insert. Defaults to 0."
+          },
+          "track": {
+            "type": "string",
+            "description": "Optional target track when the lowered native verb accepts a track argument."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Why this generated insert is being applied; threaded to lowered verbs that accept rationale."
+          }
+        }
+      },
+      "result": "{id, instance_id, checkpoint, op_ids, clips, assets, params, lowering:{verb,args}, result, restore_hint} — generated timeline instance evidence; op_ids includes the auto-checkpoint and native lowered op ids.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "generate_insert",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "generate.from_prompt",
+      "domain": "generate",
+      "description": "Convert a natural-language visual/title/caption/card/social Generate request into a typed Generate plan, then optionally preview or insert it through generate.preview/generate.insert. Orchestrator only: no custom renderer and no direct timeline op of its own. Honest degradation: no adapter/agent backend -> status:not_run, no fake plan; malformed output -> status:error, no mutation.",
+      "args": {
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Natural-language request for an editable Generate template instance."
+          },
+          "policy": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "preview",
+              "insert"
+            ],
+            "description": "plan = return a typed plan only; preview = render a non-mutating PNG evidence frame; insert = materialize through generate.insert."
+          },
+          "agent": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "claude",
+              "codex",
+              "grok"
+            ],
+            "description": "Preferred prompt-planning backend for the adapter. auto lets the adapter choose."
+          },
+          "template_id": {
+            "type": "string",
+            "description": "Optional template hint from generate.list. The returned plan is still validated against the real catalog."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Timeline/playhead time used for preview frame_ms and insert at_ms."
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 7680,
+            "description": "Optional preview width. Supply with height."
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 4320,
+            "description": "Optional preview height. Supply with width."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "Adapter timeout in milliseconds."
+          },
+          "context": {
+            "type": "object",
+            "description": "Optional caller context such as selected clip, transcript excerpt, brand hints, or target platform."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Human/agent rationale threaded to generate.insert when policy is insert."
+          }
+        }
+      },
+      "result": "{status, request, backend?, plan?, validation?, preview?, insert?, reason?, warnings[], next_actions[]} where policy plan mutates nothing, policy preview returns real image evidence, and policy insert returns normal generate.insert checkpoint/op/clip evidence.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "generate_from_prompt",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "generate.storyboard",
+      "domain": "generate",
+      "description": "Create or update a multi-scene Generate Storyboard plan from a prompt, director answers, script/outline, or existing-media context. policy:plan validates the Storyboard IR and never mutates the project; policy:preview renders per-scene PNG preview evidence for supported Generate template scenes and still mutates nothing; policy:insert materializes supported Generate template scenes through normal native Generate/native verbs and returns checkpoint/op/clip/asset/restore evidence. The result includes deterministic validation evidence, required agent skill path, missing input/questions, warnings, and next actions.",
+      "args": {
+        "type": "object",
+        "required": [
+          "input"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "Prompt, brief seed, script, outline, or user request to turn into a multi-scene Generate Storyboard plan."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "quick_prompt",
+              "director_brief",
+              "script",
+              "existing_media"
+            ],
+            "description": "Planning path. auto lets the adapter infer the path from input/context."
+          },
+          "policy": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "preview",
+              "insert"
+            ],
+            "description": "plan validates only; preview renders non-mutating per-scene evidence; insert materializes supported scenes into the open project with checkpoint/restore evidence."
+          },
+          "answers": {
+            "type": "object",
+            "description": "Structured director answers already collected by Agent Chat or UI. Keys are brief fields; values can include stated/inferred source metadata."
+          },
+          "context": {
+            "type": "object",
+            "description": "Optional selected media, transcript availability, playhead, platform, brand hints, or Assemble outputs."
+          },
+          "agent": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "claude",
+              "codex",
+              "grok"
+            ],
+            "description": "Preferred planning backend for the adapter. auto lets the adapter choose."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000,
+            "description": "Storyboard adapter timeout in milliseconds."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Human/agent rationale for why this storyboard plan is being created."
+          }
+        }
+      },
+      "result": "{status, request, backend?, storyboard?, questions[], validation?, evidence:{policy, mutated, skill_path, scene_count, duration_ms, template_ids, brief_fields}, preview?, insert?, reason?, warnings[], next_actions[]}. policy plan mutates nothing; policy preview returns preview:{policy:'preview',mutated:false,scenes:[{scene_id,index,status,template_id,range_ms,preview_id,path,url,mime,width,height,lowering}],unsupported[],warnings[]}; policy insert returns insert:{policy:'insert',mutated:true,scenes:[{scene_id,index,status,template_id,range_ms,checkpoint,op_ids,clips,assets,lowering,restore_hint}],checkpoints,op_ids,clips,assets,restore_hint}.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "generate_storyboard",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

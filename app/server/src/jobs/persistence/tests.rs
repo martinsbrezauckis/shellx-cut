@@ -19,6 +19,7 @@ fn record(job_id: &str, state: JobState) -> JobRecord {
         message: None,
         queue: None,
         waiting_on: None,
+        retry: None,
         created_ts: "2026-08-08T00:00:00.000Z".into(),
         updated_ts: "2026-08-08T00:00:00.000Z".into(),
         result: None,

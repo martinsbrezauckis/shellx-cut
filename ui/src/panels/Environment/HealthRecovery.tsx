@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
 import type { DoctorReport } from '../../lib/doctor'
 import type { JobsListResult } from '../../lib/clientResults'
+import CacheLifecycle from './CacheLifecycle'
 import {
   loadCaptureRecovery,
   type CaptureRecoveryInventory,
@@ -188,7 +189,7 @@ export default function HealthRecovery({
       <div className="settings-section-head">
         <p className="settings-eyebrow">Current project & machine</p>
         <h3 id="settings-health-recovery-title">Health &amp; Recovery</h3>
-        <p>Recovery evidence is reported by the engine in this check. This page never repairs, deletes, or relinks anything on its own.</p>
+        <p>Recovery evidence is reported by the engine in this check. This page never repairs or relinks anything on its own; cache cleanup requires a separate preview and confirmation.</p>
       </div>
       <div className="settings-health-toolbar">
         <button type="button" className="env-btn env-btn--ghost" data-cut-health-refresh onClick={() => void refresh()} disabled={refreshing}>
@@ -219,6 +220,7 @@ export default function HealthRecovery({
           )
         })}
       </div>
+      <CacheLifecycle hasProject={hasProject} projectSession={projectSession} onComplete={refresh} />
       <p className="settings-health-note" data-cut-health-confirmation>Recovery actions with ambiguous or destructive consequences stay in their owning workflow and require your confirmation.</p>
     </section>
   )

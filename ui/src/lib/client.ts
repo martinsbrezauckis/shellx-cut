@@ -25,6 +25,13 @@ import type {
 } from './clientModel'
 import { UI_OPEN_SURFACE_IDS } from '../app/uiSurfaceRegistry'
 import type { VerbResults } from './clientResults'
+import type {
+  InspectMediaArgs,
+  InspectRangeArgs,
+  MediaIntelligenceRebuildArgs,
+  MediaIntelligenceSearchArgs,
+  MediaIntelligenceStatusArgs,
+} from './mediaIntelligenceModel'
 
 export type {
   AnimState,
@@ -97,7 +104,7 @@ export interface VerbResult<T = unknown> {
 export const UI_OPEN_PANELS = UI_OPEN_SURFACE_IDS
 export type UiOpenPanel = (typeof UI_OPEN_PANELS)[number]
 
-// Verb args map — one entry per verb in schema/verbs.json (261 verbs, 32 domains).
+// Verb args map — one entry per verb in schema/verbs.json (277 verbs, 33 domains).
 // Keys ARE the wire names; keep in sync with the registry. Later additions
 // edit.crop, edit.crossfade, edit.move_marker, audio.add_music,
 // captions.set_range + ripple flags on edit.ripple_delete (lift) / edit.move.
@@ -107,8 +114,14 @@ export interface VerbArgs {
   'project.create': { name: string; settings?: Partial<ProjectSettings>; dir?: string; starter?: 'first-edit' }
   'project.open': { path: string }
   'project.save': Record<string, never>
+  // B6 is deliberately agent-only in this slice; these typings keep the
+  // shared client contract complete without implying a human editor control.
+  'project.package_plan': { destination: string; name: string; b5_receipt?: Record<string, unknown> }
+  'project.package_create': { destination: string; name: string; plan_hash: string; b5_receipt?: Record<string, unknown> }
   'project.state': { since_revision?: string; limit?: number }
   'project.health': { cursor?: string; revision?: string; limit?: number }
+  'project.cache_preview': Record<string, never>
+  'project.cache_purge': { plan_id: string; confirm: true }
   'project.sequence_list': Record<string, never>
   'project.sequence_index': { query?: string; asset?: string; kind?: 'all' | 'clip' | 'marker'; sequence?: string; track_kind?: 'video' | 'audio' | 'caption'; status?: 'all' | 'issues' | 'offline' | 'gaps' | 'effects' | 'hidden' | 'locked' | 'muted'; limit?: number }
   'project.sequence_create': { name: string; from?: 'empty' | 'active'; rationale?: string }
@@ -166,6 +179,10 @@ export interface VerbArgs {
   // hash = pure repath (derived kept); new hash = derived cleared + import chain
   // rerun (result.job_id). Refuses kind mismatch; warns if shorter than used.
   'media.relink': { asset: string; path: string; rationale?: string }
+  // B5 grouped recovery: preview is path-light in the UI; apply is guarded by
+  // request_id + expected_revision and emits one immutable project receipt.
+  'media.relink_preview': { root: string }
+  'media.relink_apply': { root: string; plan_hash: string; accept: string[]; rationale?: string }
   // Read-only offline report: {count, offline_count, assets:[{asset, path,
   // exists, modified_ms?, referenced}]} — existence computed from the fs at call time.
   'media.check': { asset?: string }
@@ -181,6 +198,14 @@ export interface VerbArgs {
   'media.index_status': { asset?: string }
   'media.index': { asset: string; fps?: number; rationale?: string }
   'media.search': { query?: string; query_vector?: number[]; asset?: string; top_k?: number; max_gap_ms?: number; rationale?: string }
+  // Unified cited search over already-durable transcript, visual, perception,
+  // marker, and metadata evidence. Rebuild derives the search index; it does
+  // not silently run missing analysis or mutate the edit.
+  'media.intelligence_status': MediaIntelligenceStatusArgs
+  'media.intelligence_rebuild': MediaIntelligenceRebuildArgs
+  'media.intelligence_search': MediaIntelligenceSearchArgs
+  'inspect.media': InspectMediaArgs
+  'inspect.range': InspectRangeArgs
   'effects.list': Record<string, never>
   // transitions-as-data discovery catalog (xfade styles for edit.crossfade).
   'transitions.list': Record<string, never>
@@ -198,6 +223,7 @@ export interface VerbArgs {
   'jobs.status': { job_id: string }
   'jobs.list': Record<string, never>
   'jobs.cancel': { job_id: string }
+  'jobs.retry': { job_id: string }
 
   // group_id: composite-action tag (store-level meta-arg) — a linked A/V
   // split is two ops sharing one tag so a single Ctrl+Z undoes the whole cut.
@@ -699,7 +725,7 @@ export interface VerbArgs {
     rationale?: string
   }
   'assets.generated_list': { kind?: 'image' | 'video'; limit?: number }
-  'agent.chat': { message: string; attachments?: string[]; agent?: 'claude' | 'codex' | 'grok' | 'antigravity'; model?: string; timeout_ms?: number }
+  'agent.chat': { message: string; attachments?: string[]; evidence_ids?: string[]; evidence_index_id?: string; agent?: 'claude' | 'codex' | 'grok' | 'antigravity'; model?: string; timeout_ms?: number }
   'plugins.list': Record<string, never>
   'plugins.enable': { name: string; enabled?: boolean; rationale?: string }
   'plugins.call': { plugin: string; verb: string; args?: Record<string, unknown>; rationale?: string }

@@ -250,7 +250,6 @@ const model = source('src/panels/Inspector/volumeAutomationModel.ts')
 const propertyRow = source('src/components/inspector/PropertyRow.tsx')
 const publicFeatures = readFileSync(resolve(repoRoot, 'docs/public/FEATURES.md'), 'utf8')
 const coreEdit = readFileSync(resolve(repoRoot, 'app/core/src/edit.rs'), 'utf8')
-const moduleSizeGate = readFileSync(resolve(repoRoot, 'scripts/module-size-gate.mjs'), 'utf8')
 
 assert.ok(inspector.includes("from './VolumeSection'"), 'Inspector imports the dedicated Volume section')
 assert.ok(app.includes('projectRevision={project?.project_revision ?? null}'), 'App keeps the project.state revision ephemeral while passing it to the rail')
@@ -320,8 +319,4 @@ assert.ok(model.includes('compareProjectRevisions(received, refreshAfterRevision
 assert.ok(model.includes('expected_revision: current.projectRevision'), 'static Gain guard derives mutation controls from its latest revision ref')
 assert.ok(model.includes('Clear the Speed ramp before editing volume automation.'), 'Automation model exposes a visible speed-ramp reason')
 assert.ok(coreEdit.includes('if c.speed_ramp.is_some()'), 'Core edit.keyframe fails closed for a speed-ramped clip')
-assert.ok(moduleSizeGate.includes('ui/src/panels/Inspector/VolumeAutomationEditor.tsx'), 'Module-size gate bounds the Volume automation editor')
-assert.ok(moduleSizeGate.includes('ui/src/panels/Inspector/volumeAutomationModel.ts'), 'Module-size gate bounds the Volume automation model')
-assert.ok(moduleSizeGate.includes('ui/public-tests/volume-automation.test.ts'), 'Module-size gate bounds the dedicated volume automation regression test')
-
 console.log('PASS volume automation model and source contracts')

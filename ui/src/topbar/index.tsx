@@ -19,7 +19,6 @@ import { envHealthLevel, isFfmpegMissing, type DoctorReport } from '../lib/docto
 import type { WorkspaceMode } from '../layout/useLayout'
 import { FPS_PRESETS, RES_PRESETS, resKey } from '../lib/formatPresets'
 import { applyExportOutputDir, folderTail, getStoredOutputDir, setStoredOutputDir, withAuthorizedOutputPath } from '../lib/exportDestination'
-import { openCutManual } from '../lib/manual'
 import { activeJobLabel, activeJobProgress } from '../lib/jobPresentation'
 import {
   openVideoToolsGuide,
@@ -100,13 +99,16 @@ export interface TopBarProps {
   /** Environment doctor report — drives the Setup button's health nudge dot
    *  (amber = a degraded card, red = an essential dep missing). */
   doctor?: DoctorReport | null
+  /** Toggle the bundled local manual; the online route stays inside that panel. */
+  onOpenManual?: () => void
+  manualOpen?: boolean
 }
 
 // Timeline composition FORMAT presets — RES_PRESETS / FPS_PRESETS / resKey
 // live in lib/formatPresets. New projects auto-adopt the first video; these are
 // expert corrections, not quality choices required during project creation.
 
-export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, mode = 'edit', onMode, onOpenSetup, doctor = null }: TopBarProps) {
+export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, mode = 'edit', onMode, onOpenSetup, doctor = null, onOpenManual, manualOpen = false }: TopBarProps) {
   // New project + Import moved OUT of the topbar: create lives in the
   // Projects left-tab (panels/Projects), import lives in the Assets tray + Library.
 
@@ -512,6 +514,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
             aria-selected={mode === m.id}
             className={`tb-mode${mode === m.id ? ' tb-mode--on' : ''}${m.id === 'record' ? ' tb-mode--record' : ''}`}
             data-cut-mode={m.id}
+            data-cut-manual-id={m.id === 'record' ? 'cut.record.open' : undefined}
             title={m.hint}
             onClick={(e) => { e.currentTarget.blur(); onMode?.(m.id) }}
           >
@@ -528,6 +531,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
       <button
         className="tb-btn tb-btn--secondary tb-nav"
         data-cut-projects-btn
+        data-cut-manual-id="cut.top.projects"
         aria-label="Projects"
         title="Projects — browse, reopen, or create a project (opens the left sidebar)"
         onClick={(e) => { e.currentTarget.blur(); onOpenProjects?.() }}
@@ -537,6 +541,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
       <button
         className={`tb-btn tb-btn--secondary tb-nav${mode === 'library' ? ' tb-nav--active' : ''}`}
         data-cut-library-btn
+        data-cut-manual-id="cut.top.library"
         aria-label="Library"
         aria-pressed={mode === 'library'}
         title={mode === 'library'
@@ -565,6 +570,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
             className="tb-btn tb-btn--secondary tb-nav"
             data-cut-setup-btn
             data-cut-settings-btn
+            data-cut-manual-id="cut.top.settings"
             data-cut-setup-health={lvl}
             aria-label="Settings"
             title="Settings — export folder, recordings, installable tools, captions, app info"
@@ -592,9 +598,11 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
       <button
         className="tb-btn tb-btn--secondary tb-nav"
         data-cut-manual-link
+        data-cut-manual-id="cut.top.manual"
         aria-label="Manual"
-        title="Manual — open the current ShellX Cut documentation"
-        onClick={(e) => { e.currentTarget.blur(); openCutManual() }}
+        aria-pressed={manualOpen}
+        title={manualOpen ? 'Close the bundled ShellX Cut manual' : 'Manual — browse and reveal Cut features'}
+        onClick={(e) => { e.currentTarget.blur(); onOpenManual?.() }}
       >
         <Icon name="manual" size={16} tone="brand" /> <span className="tb-nav-label">Manual</span>
       </button>
@@ -653,6 +661,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-title-btn
+          data-cut-manual-id="cut.header.title"
           aria-label="Title"
           disabled={!project}
           title="Add an animated lower-third or intro card"
@@ -661,6 +670,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-shape-btn
+          data-cut-manual-id="cut.header.shape"
           aria-label="Shape"
           disabled={!project}
           title="Add a rectangle, ellipse, line, arrow, or callout"
@@ -669,6 +679,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-mask-btn
+          data-cut-manual-id="cut.header.region_mask"
           aria-label="Region mask"
           disabled={!project}
           title="Region mask — blur, pixelate, or cover an area of a selected clip"
@@ -677,6 +688,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-music-btn
+          data-cut-manual-id="cut.header.music"
           aria-label="Music bed"
           disabled={!project}
           title="Add music under the edit and lower it beneath speech"
@@ -685,6 +697,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-mixer-btn
+          data-cut-manual-id="cut.header.mixer"
           aria-label="Audio mixer"
           disabled={!project}
           title="Mix each track's level, pan, mute, and solo"
@@ -693,6 +706,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-clips-btn
+          data-cut-manual-id="cut.header.repurpose"
           aria-label="Repurpose into shorts"
           disabled={!project}
           title="Repurpose into shorts — best moments → render and validate a package per platform"
@@ -701,6 +715,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-autopilot-btn
+          data-cut-manual-id="cut.header.autopilot"
           aria-label="Autopilot"
           disabled={!project}
           title="Render, review quality, and apply safe automatic fixes"
@@ -709,6 +724,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-recipes-btn
+          data-cut-manual-id="cut.header.recipes"
           aria-label="Recipes"
           /* NOT disabled without a project: recipe.list/describe are project-free
              reads, so a user can BROWSE the named workflows (and read each stage)
@@ -720,6 +736,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-assemble-btn
+          data-cut-manual-id="cut.header.assemble"
           aria-label="Assemble with AI"
           disabled={!project}
           title="Find the best moments, match a script to footage, or fill a slot with b-roll"
@@ -728,6 +745,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-iconbtn"
           data-cut-storyboard-btn
+          data-cut-manual-id="cut.header.storyboard"
           disabled={!project || sbBusy}
           aria-label="Storyboard"
           aria-busy={sbBusy}
@@ -740,6 +758,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className={`tb-iconbtn ${commentsOpen ? 'tb-iconbtn--on' : ''}`}
           data-cut-comments-btn
+          data-cut-manual-id="cut.header.comments"
           aria-pressed={!!commentsOpen}
           aria-label="Review comments"
           title="Review comments — leave a timecoded note, the agent drafts the edit (Ctrl/Cmd+Shift+C)"
@@ -764,6 +783,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
           type="button"
           className={`tb-btn tb-gpu${useGpu ? ' tb-gpu--on' : ''}`}
           data-cut-gpu-toggle
+          data-cut-manual-id="cut.header.gpu"
           data-cut-gpu-on={useGpu || undefined}
           aria-pressed={useGpu}
           title={useGpu ? 'Faster exports are on. Turn off for repeatable software encoding.' : 'Faster exports are off. Turn on to use available video hardware.'}
@@ -784,6 +804,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-btn tb-btn--primary tb-render-opts"
           data-cut-render-opts
+          data-cut-manual-id="cut.top.render"
           disabled={!project || renderRunning}
           aria-expanded={renderOptsOpen}
           title="Render options — format, quality, footage profile"
@@ -973,6 +994,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <button
           className="tb-btn tb-btn--secondary"
           data-cut-export-btn
+          data-cut-manual-id="cut.top.export"
           disabled={!project}
           aria-expanded={menuOpen}
           title="Export a finished file, captions, audio, or timeline interchange"

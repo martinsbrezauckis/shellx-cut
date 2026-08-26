@@ -88,10 +88,10 @@ function recordCardLabel(name: string): string {
 // exactly what screen_record.start{monitor} expects. Empty list ⇒ no in-app picker
 // (single display, or Linux where the OS portal owns source choice).
 interface MonitorInfo { index: number; name: string; width: number; height: number; primary: boolean }
-// One application window the doctor enumerated for the window picker (record one
-// app, not the whole screen). `title` is passed back as screen_record.start{window}.
-// Empty list ⇒ no in-app window picker (Linux/macOS — the OS portal owns it).
-interface WindowInfo { id: number; title: string; app: string }
+// One application window the doctor enumerated for the window picker. `id` is
+// the opaque native identity passed back to screen_record.start{window}; title is
+// display copy only and never selects a target.
+interface WindowInfo { id: string; title: string; app: string }
 // Result of screen_record.doctor{warm_mic:true}: whether the default mic went
 // live (prompt answered + stream up), the device name, and whether this build has a
 // mic backend at all. Drives the "mic ready" indicator so the user knows the first
@@ -135,10 +135,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Linux), and the chosen 1-based monitor index (null = primary / engine default).
   const [monitors, setMonitors] = useState<MonitorInfo[]>([])
   const [monitorIdx, setMonitorIdx] = useState<number | null>(null)
-  // Window picker: the doctor's enumerated app windows (empty on Linux/macOS), and
-  // the chosen window title (null = capture the whole screen/monitor, not one window).
+  // Window picker: the doctor's enumerated app windows and the chosen opaque
+  // native target id (null = capture the whole screen/monitor, not one window).
   const [windows, setWindows] = useState<WindowInfo[]>([])
-  const [windowTitle, setWindowTitle] = useState<string | null>(null)
+  const [windowTargetId, setWindowTargetId] = useState<string | null>(null)
+  const selectedWindowMissing = windowTargetId !== null && !windows.some((window) => window.id === windowTargetId)
   // `capMs === null` = open-ended (the default). Otherwise it is the cap in ms.
   const [capMs, setCapMs] = useState<number | null>(null)
   const [fps, setFps] = useState(30)
@@ -245,11 +246,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       setStartAllowed(res.start_allowed ?? res.ready)
       const mons = res.monitors ?? []
       setMonitors(mons)
-      // App windows for the window picker. Re-probing (re-entering Record)
-      // refreshes the list. Drop a stale selection if its window is gone.
+      // App windows for the window picker. Keep a vanished selected identity so
+      // the UI can refuse visibly instead of silently falling back to a monitor.
       const wins = res.windows ?? []
       setWindows(wins)
-      setWindowTitle((prev) => (prev && wins.some((w) => w.title === prev) ? prev : null))
       // Default the picker to the primary display (else the first), so the chosen
       // index is explicit once there's a list. Empty list ⇒ null (engine primary).
       setMonitorIdx((prev) => {
@@ -393,6 +393,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   const start = useCallback(async () => {
     setErr(null)
     setNote('')
+    if (selectedWindowMissing) {
+      setErr('The selected window is no longer available. Choose another source before recording.')
+      setPhase('error')
+      return
+    }
     // Record without a project: if none is open, create one on the fly so
     // you can record straight from the Record surface — the capture lands in a fresh
     // auto-named project. project.create OPENS it server-side; onClipAdded re-syncs App.
@@ -427,9 +432,9 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       },
     }
     if (capMs !== null) startArgs.duration_ms = capMs // omitted entirely = open-ended
-    // Source selection: a chosen window (by title) wins; otherwise a chosen monitor on a
+    // Source selection: an opaque live window identity wins; otherwise a chosen monitor on a
     // multi-monitor setup; else neither = engine default (primary full screen).
-    if (windowTitle) startArgs.window = windowTitle
+    if (windowTargetId) startArgs.window = windowTargetId
     else if (monitorIdx !== null && monitors.length >= 2) startArgs.monitor = monitorIdx
     const r = await callVerb('screen_record.start', startArgs)
     if (!r.ok) {
@@ -457,7 +462,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
         if (left <= 0) void finalize(res.capture_id, null)
       }
     }, 250)
-  }, [capMs, fps, audio, systemAudio, keys, rawCapture, monitorIdx, monitors, windowTitle, finalize, project, onClipAdded, studio])
+  }, [capMs, fps, audio, systemAudio, keys, rawCapture, monitorIdx, monitors, windowTargetId, selectedWindowMissing, finalize, project, onClipAdded, studio])
 
   // Manual STOP — ends an open-ended (or capped) capture right now.
   const stop = useCallback(() => {
@@ -705,18 +710,18 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                     Opening it re-probes (onMouseDown) and reveals app windows as they appear. */ (
                   <select
                     className="rec__select"
-                    data-cut-rec-source={windowTitle ? 'window' : 'screen'}
-                    data-cut-rec-monitor={windowTitle ? '' : (monitorIdx ?? '')}
-                    data-cut-rec-window={windowTitle ?? ''}
+                    data-cut-rec-source={windowTargetId ? 'window' : 'screen'}
+                    data-cut-rec-monitor={windowTargetId ? '' : (monitorIdx ?? '')}
+                    data-cut-rec-window={windowTargetId ?? ''}
                     disabled={busy}
                     // Re-enumerate the live windows the moment the user opens the picker,
                     // so a window opened or closed since mount shows up immediately.
                     onMouseDown={() => { void probe() }}
-                    value={windowTitle ? `win:${windowTitle}` : `mon:${monitorIdx ?? (monitors.find((m) => m.primary)?.index ?? monitors[0]?.index ?? 1)}`}
+                    value={windowTargetId ? `win:${windowTargetId}` : `mon:${monitorIdx ?? (monitors.find((m) => m.primary)?.index ?? monitors[0]?.index ?? 1)}`}
                     onChange={(e) => {
                       const v = e.target.value
-                      if (v.startsWith('win:')) setWindowTitle(v.slice(4))
-                      else { setWindowTitle(null); setMonitorIdx(Number(v.slice(4))) }
+                      if (v.startsWith('win:')) setWindowTargetId(v.slice(4))
+                      else { setWindowTargetId(null); setMonitorIdx(Number(v.slice(4))) }
                     }}
                     aria-label="What to record — a screen or one application window"
                   >
@@ -730,7 +735,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                     {windows.length >= 1 && (
                       <optgroup label="Windows — record one app">
                         {windows.map((w) => (
-                          <option key={`win-${w.id}`} value={`win:${w.title}`}>
+                          <option key={`win-${w.id}`} value={`win:${w.id}`}>
                             {`${w.title}${w.app ? ` — ${w.app}` : ''}`}
                           </option>
                         ))}
@@ -739,6 +744,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                   </select>
                 )}
               </div>
+              {selectedWindowMissing && (
+                <p className="rec__source-note" data-cut-rec-window-missing>
+                  The selected window closed or changed identity. Choose another source before recording.
+                </p>
+              )}
               {monitors.length < 2 && windows.length < 1 && ready !== false && (
                 <p className="rec__source-note" data-cut-rec-source-note>
                   {/Mac/i.test(navigator.platform) || /Mac OS X/.test(navigator.userAgent)
@@ -836,7 +846,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                 type="button"
                 className="rec__start"
                 data-cut-action="record-start"
-                disabled={busy || startAllowed === false}
+                disabled={busy || startAllowed === false || selectedWindowMissing}
                 onClick={() => void start()}
               >
                 ● Start recording ({SHORTCUT_LABEL})

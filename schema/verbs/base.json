@@ -1,0 +1,168 @@
+{
+  "$comment": "Canonical non-verb root fields for schema/verbs.json. Edit this file and the ordered verb fragments, then run node scripts/generate-verbs.mjs.",
+  "schema": "shellx-cut/verb-base/1",
+  "verbs_after": "envelope",
+  "root": {
+    "$comment": "ShellX Cut verb registry — the public contract. Single source of truth: the server loads this file, MCP tools are generated from it (dots→underscores), the typed UI client mirrors it, and the coverage gate asserts REST and MCP both expose 100% of these verbs. Envelope: {ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}. Optional mutation_controls are merged into every live verb input schema: op-emitting calls persist request identity, enforce expected_revision atomically, and replay completed lost-response retries. Warnings carry non-fatal guardrail findings in-band rather than only in logs. File-writing verbs such as render.final{path} and export.*{path} fence output paths through canonicalization, traversal and symlink rejection, allowed roots, and suffix allowlists. REST path = POST /api/verb/{name}.",
+    "schema": "shellx-cut/verbs/1",
+    "mutation_controls": {
+      "request_id": {
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        "description": "Caller-generated retry identity. For an op-emitting mutation, the same caller + request_id + payload returns the original durable response; a changed payload conflicts."
+      },
+      "expected_revision": {
+        "type": "string",
+        "pattern": "^op_[0-9]{6,}$",
+        "description": "Optional optimistic concurrency guard. Requires request_id and must match the current durable project_revision when the first op commits."
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {},
+        "op_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "project_revision": {
+          "type": "string",
+          "pattern": "^op_[0-9]{6,}$",
+          "description": "Latest durable operation ID after a successful project mutation"
+        },
+        "warnings": {
+          "type": "array",
+          "description": "Non-fatal guardrail findings (e.g. preflight fps/resolution auto-conform). Integrity violations hard-error instead.",
+          "items": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message",
+            "cause"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "clip_id": {
+              "type": "string"
+            },
+            "at_ms": {
+              "type": "integer"
+            },
+            "cause": {
+              "type": "string"
+            },
+            "suggested_action": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "events": {
+      "$comment": "WS stream at GET /api/events (public verb contract 'events'). Every message: {type,...payload}. Ordering guarantee : receipt_ready always follows render_done — agents key on receipt_ready. receipt_ready is RE-EMITTED when verify.judge attaches its review (no separate judge event type: the second emission is distinguishable by receipt.judge presence).",
+      "types": [
+        "op_applied",
+        "job_progress",
+        "render_done",
+        "receipt_ready",
+        "project_changed",
+        "ui_state",
+        "doctor_updated"
+      ]
+    },
+    "behavior_contract": {
+      "mutation_classes": [
+        "read",
+        "project_metadata",
+        "asset_metadata",
+        "timeline",
+        "navigation",
+        "external_side_effect"
+      ],
+      "project_states": [
+        "none",
+        "optional",
+        "required"
+      ],
+      "side_effect_flags": [
+        "filesystem",
+        "process",
+        "network",
+        "ui"
+      ],
+      "idempotency_modes": [
+        "not_applicable",
+        "request_key",
+        "natural",
+        "none"
+      ],
+      "replayability_modes": [
+        "not_applicable",
+        "replayable",
+        "not_replayable"
+      ],
+      "async_job_types": [
+        "none",
+        "render",
+        "media",
+        "provider",
+        "setup",
+        "capture",
+        "motion"
+      ],
+      "ui_exposures": [
+        "human",
+        "agent_only",
+        "internal",
+        "rig_only"
+      ],
+      "agent_chat_capabilities": [
+        "inspect",
+        "edit",
+        "deny"
+      ],
+      "risk_levels": [
+        "none",
+        "reversible",
+        "destructive",
+        "external"
+      ],
+      "facets": [
+        "transcript_cut",
+        "ui_command"
+      ]
+    }
+  }
+}

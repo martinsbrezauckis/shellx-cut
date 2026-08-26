@@ -5,10 +5,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-> **Engine v0.6.110.** Synced to the contract (`schema/verbs.json` — the single
+> **Engine v0.6.111.** Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **265 verbs across 32 domains** under the public verb contract.
-> **`reference.md` is the full 265-verb table —
+> the file): **277 verbs across 33 domains** under the public verb contract.
+> **`reference.md` is the full 277-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -223,6 +223,11 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   that tap at the video boundary before checkpoint stitching, and its finite
 >   wait scales from capture work rather than assuming every native finalize fits
 >   a fixed short timeout.
+>   If a default-output `screen_record.export` ends in an eligible true failure,
+>   `jobs.retry {job_id}` can create exactly one linked attempt only while the
+>   project revision, capture media and audio, EditPlan, and output lease are
+>   unchanged. Never retry a cancellation, explicit Save As, success, legacy
+>   record, changed input, or an already retried job.
 > - **Director / reframe / delivery** — `render.reframe` (subject-tracked moving
 >   crop to a platform aspect — the HONEST alternative to a static centre-crop),
 >   `render.direct` (director-model pass: a per-scene contact sheet the foundation
@@ -361,7 +366,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 265 tools, and same-engine
+the final proof of protocol negotiation, ping, all 277 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -495,6 +500,55 @@ single imported file from the open project, `media.remove {asset}` — the inver
 kept), replay-safe, and refuses while any timeline clip still uses it (delete those clips
 first — that delete is undoable; the asset removal is not).
 
+### Offline-media bulk recovery (B5)
+
+For several missing sources, use `media.relink_preview {root}` first and treat
+its opaque `plan_hash` as a fresh, bounded evidence set. The preview refuses
+symlink traversal and only makes a row selectable when one candidate's **full
+SHA-256** exactly equals the asset's stored full identity. Duplicate exact
+candidates, sampled/missing source hashes, and filename/kind/duration matches
+are diagnostics, never authority to relink.
+
+Apply only selected eligible rows with `media.relink_apply {root, plan_hash,
+accept, request_id, expected_revision}`. It re-scans/re-hashes and writes one
+replayable project metadata op plus an immutable request receipt. This has no
+Library transaction, import/proxy/enrichment job, derived-state cleanup, or
+Ctrl-Z promise. Preserve the `shellx-cut/media-relink-receipt/1` result for B6:
+it carries the project identity, revisions, plan hash, grouped op id, and each
+asset's expected hash/chosen path/disposition.
+
+### Portable package (B6, agent-only)
+
+Do not use Library “Keep a copy” or loop `media.relink` to make a package.
+First call `project.package_plan {destination,name,b5_receipt?}`. It is a
+full-SHA-256 dry run over referenced media in every sequence and returns the
+exact `plan_hash`, byte totals, dedupe plan, and B5 receipt digest. Pass the B5
+receipt only when recovery repaired media; it must be the immutable result from
+the matching source revision. A plan refuses offline/symlinked sources, unsafe
+destinations, stale B5 evidence, and unsupported Motion-linked provenance.
+
+Then call `project.package_create {destination,name,plan_hash,b5_receipt?}` and
+wait on its `portable_package` job. It creates a new Cut-native `.cutproj` in a
+private same-parent stage, copies only referenced bytes, clears cache pointers,
+verifies a `package.manifest.json`, and publishes without replacement through
+the native Linux, macOS, or Windows no-clobber primitive. It does not append a
+source project op or change source paths/assets/media. This is not a human editor
+control; unknown targets fail closed rather than substituting a weaker publish.
+
+### Project cache lifecycle
+
+Use `project.cache_preview {}` before any cleanup claim. It returns a path-free,
+one-use plan only for aged, unreferenced proxy and filmstrip files that still
+match Cut's durable ownership ledger. A legacy, unowned, foreign, symlinked,
+partial, changed, or actively produced cache blocks the plan; source media,
+exports, recordings, receipts, and arbitrary files are never candidates.
+
+Only after the user confirms that exact preview, call
+`project.cache_purge {plan_id,confirm:true}`. Poll its cancellable job through
+`jobs.status`, use `jobs.cancel` when requested, and run a new preview after it
+finishes to remeasure. Never infer deletion authority from directory size, file
+age alone, or `project.health`.
+
 ### 2. Import and wait for perception
 
 `media.import {path}` returns `{asset_id, job_id, enrich_job}` — it registers the
@@ -584,10 +638,25 @@ local filters and select that existing UI row/card; no new agent verb exists.
 **Reveal Source File** is likewise a desktop UI affordance, not an agent path:
 the native shell resolves the live registered asset itself and refuses browser,
 missing, offline, or non-file cases without exposing a raw source path.
-Find moment results are source-relative. Use the result's **Timeline** action to
-jump to the nearest real occurrence after trims, gaps, reuse, constant speed, or
-reverse; use **Source** to inspect the indexed frame directly. An unused asset or
-a variable-speed ramp has no honest direct timeline jump and stays Source-only.
+For unified cited retrieval, inspect `media.intelligence_status` first. If no
+index exists or current evidence is stale, `media.intelligence_rebuild` derives
+one in a cancellable job from transcript, existing visual indexes, perception,
+markers, and metadata already stored by Cut. It never silently starts missing
+transcription, perception, or visual indexing. Then call
+`media.intelligence_search` with an evidence-kind and sequence scope. Treat each
+`EvidenceHit@1` as source-relative cited evidence: keep its source range,
+provenance, and live timeline occurrences distinct; stale evidence is excluded.
+In Find → Moment, **Preview** opens the registered source at its anchor and
+**Timeline** jumps only to the nearest real occurrence in the active sequence.
+An offline or unused source remains an honest citation without a fabricated
+preview or timeline jump. Use `inspect.media` for a bounded, path-light asset
+view and `inspect.range` to resolve selected opaque evidence ids against the
+current index before reasoning about their ranges or provenance. Selecting hits
+and choosing **Ask Agent** adds index-bound citation chips and prefills Agent
+Chat; it does not send a turn or apply an edit. When the user sends, Cut
+revalidates every citation before provider launch and the agent must call
+`inspect.range`. If the index or an authority changed, stop and ask the user to
+select current evidence instead of relying on copied prompt text.
 
 For human setup guidance, prefer the visible surfaces over raw diagnostics:
 Assets **Media Health** summarizes missing source files, proxy/source playback

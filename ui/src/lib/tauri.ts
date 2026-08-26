@@ -348,11 +348,11 @@ export async function pickLibraryRelinkMedia(): Promise<string | null> {
  * (`dialog:allow-open` works from the engine-served remote origin); `directory:
  * true` makes it a folder picker.
  */
-export async function pickFolder(): Promise<string | null> {
+export async function pickFolder(options: { title?: string } = {}): Promise<string | null> {
   if (!isTauri()) return null
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const sel = await open({ directory: true, multiple: false, title: 'Choose export folder — ShellX Cut' })
+    const sel = await open({ directory: true, multiple: false, title: options.title ?? 'Choose export folder — ShellX Cut' })
     if (!sel) return null
     return typeof sel === 'string' ? sel : (sel as { path?: string })?.path ?? null
   } catch {
