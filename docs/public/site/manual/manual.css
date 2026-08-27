@@ -108,6 +108,9 @@ input {
 
 .manual-topnav a {
   color: var(--ink-0);
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 .manual-muted {
@@ -349,8 +352,6 @@ input {
 
 .manual-highlight {
   position: absolute;
-  z-index: 1;
-  box-sizing: border-box;
   border: 2px solid var(--accent-hot);
   background: rgba(200, 66, 58, 0.12);
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.34);
@@ -632,8 +633,16 @@ input {
   --product-accent: #ff315f;
 }
 
+.docs-product--motion {
+  --product-accent: #3ad9f2;
+}
+
 .docs-product--vault {
   --product-accent: #e8b95e;
+}
+
+.docs-product--shellx {
+  --product-accent: #c8423a;
 }
 
 .docs-product-icon {
@@ -707,12 +716,16 @@ input {
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
-    padding: 14px 18px;
+    padding: 6px 18px;
   }
 
   .manual-topnav,
   .manual-product {
     flex-wrap: wrap;
+  }
+
+  .manual-topnav {
+    row-gap: 0;
   }
 
   .manual-shell {
@@ -722,12 +735,7 @@ input {
     padding: 18px;
   }
 
-  .manual-tree {
-    position: static;
-    max-height: min(42vh, 320px);
-    overflow: auto;
-  }
-
+  .manual-tree,
   .manual-detail {
     position: static;
     max-height: none;

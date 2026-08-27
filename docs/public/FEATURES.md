@@ -7,7 +7,7 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.112 release notes (candidate source; qualification pending)
+## v0.6.112 release notes
 
 - Cut presents the editor and local API before background FFmpeg hardware
   discovery begins, so a slow driver probe no longer holds the opening UI.
@@ -22,26 +22,23 @@ workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
   The Record UI receives only expiring opaque tokens and generic `Microphone N`
   category-and-ordinal labels; an
   unavailable saved selection refuses mic-enabled start instead of falling back.
-  Linux remains System Default only. This is source-only behavior, not native or
-  installed-release qualification.
+  Linux remains System Default only.
 - Recording internals now also have a durable private Windows Pause session and
   a private camera-session spine. They preserve exact monitor/device identity,
   measured screen-clock timing, verified pause artifacts, Stop dominance,
   exactly-once camera cleanup, truthful zero-frame cancellation, and replay-
-  safe evidence. These foundations are deliberately unwired: this candidate
-  does not expose Pause or Camera controls and does not claim native behavior.
+  safe evidence. These foundations are deliberately unwired: v0.6.112 does not
+  expose Pause or Camera controls.
 - Long-form timeline scrolling isolates unchanged track rows and coalesces
   scroll updates. Further thumbnail-candidate reduction remains planned.
 
-These are current source capabilities, not installed, signed, or published
-v0.6.112 qualification claims.
+These are current v0.6.112 release capabilities.
 
 - Projects → Make a copy opens a preview-first portable-copy flow: choose a
   destination with the native folder picker, inspect used-reference and unique
   media counts, dedupe savings, cache exclusion, offline refusal, and current
   destination collision truth, then explicitly confirm the copy. It never
-  changes the source project or original media. Native-host publication and
-  reopen qualification remains pending for this source-only v0.6.112 work.
+  changes the source project or original media.
 
 ## v0.6.111 release notes
 

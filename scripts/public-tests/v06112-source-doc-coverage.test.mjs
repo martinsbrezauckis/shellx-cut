@@ -35,8 +35,8 @@ test('v0.6.112 source identity and user documentation stay coherent', async () =
   assert.equal(uiVersion, '0.6.112')
   assert.equal(JSON.parse(tauriConfig).version, uiVersion)
   assert.match(appManifest, /version = "0\.6\.112"/)
-  assert.match(readme, /STATUS — 0\.6\.112 release line/)
-  assert.match(readme, /Installing 0\.6\.111/)
+  assert.match(readme, /STATUS — 0\.6\.112 release/)
+  assert.match(readme, /Installing 0\.6\.112/)
 
   for (const phrase of [
     'FFmpeg hardware',
@@ -48,7 +48,7 @@ test('v0.6.112 source identity and user documentation stay coherent', async () =
     'truthful zero-frame cancellation',
     'timeline scrolling',
   ]) assert.match(features, new RegExp(phrase.replaceAll('/', '\\/')))
-  assert.match(features, /not installed, signed, or published/)
+  assert.match(features, /current v0\.6\.112 release capabilities/)
 
   assert.match(manualIndex, /data-app-version="0\.6\.112">0\.6\.112</)
   assert.match(manualSource, /custom 1–240 FPS validation/)

@@ -4,8 +4,7 @@ Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.112 candidate source; installed
-release support begins only after qualification and publication.
+This reference describes the Debug API shipped with ShellX Cut v0.6.112.
 
 ## Starting the server
 

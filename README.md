@@ -10,8 +10,7 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-> **STATUS — 0.6.112 release line.** This is candidate source, not yet a shipped
-> or installed-release claim. The public contract is 278 verbs across 33
+> **STATUS — 0.6.112 release.** The public contract is 278 verbs across 33
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -49,10 +48,10 @@ integrations.
 
 ## Quickstart
 
-> **Installing 0.6.111:** download and run the installer or package from the
+> **Installing 0.6.112:** download and run the installer or package from the
 > GitHub release. Users already on 0.6.107 can use the in-app update when it is
 > offered. Versions older than 0.6.107 must install 0.6.107 manually before
-> using the in-app update, or install 0.6.111 directly.
+> using the in-app update, or install 0.6.112 directly.
 
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
