@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type VerbArgs, type VerbResults } from '../lib/client'
 import { outputDirectoryForPath, withAuthorizedOutputPath } from '../lib/exportDestination'
+import { mediaBasename } from '../lib/mediaPath'
 import { isTauri, pickRenderOutput } from '../lib/tauri'
 import { Icon } from '../icons'
 import { useBlockingOverlay } from '../components/overlay/useBlockingOverlay'
@@ -98,7 +99,7 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
   const chooseOutput = async (i: number) => {
     setPickerNote(null)
     if (!isTauri()) {
-      setPickerNote('Open the desktop app to choose an output file, or paste a full path.')
+      setPickerNote('Open the desktop app to choose an output file.')
       return
     }
     const path = await pickRenderOutput()
@@ -141,7 +142,7 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
     setPhase('running')
     try {
       const duplicate = duplicateOutputPaths(rows)
-      if (duplicate) { setErr(`Each queued output path must be unique: ${duplicate}`); setPhase('form'); return }
+      if (duplicate) { setErr('Each queued delivery must use a different output file.'); setPhase('form'); return }
       const outputDirs = [...new Set(rows
         .map((row) => row.output.trim())
         .filter(Boolean)
@@ -150,12 +151,12 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
         .map((dir) => dir.replace(/\\/g, '/').toLowerCase()))]
       const explicitOutputCount = rows.filter((row) => row.output.trim()).length
       if (explicitOutputCount > 0 && explicitOutputCount < rows.length) {
-        setErr('Choose explicit output files for every queued render, or leave every path empty to use the default export folder.')
+        setErr('Choose output files for every queued render, or use the default exports folder for every row.')
         setPhase('form')
         return
       }
       if (outputDirs.length > 1) {
-        setErr('Choose explicit queue outputs in one folder, or leave paths empty to use the default export folder.')
+        setErr('Choose all queue outputs in one folder, or use the default exports folder for every row.')
         setPhase('form')
         return
       }
@@ -194,20 +195,24 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
               {rows.map((r, i) => (
                 <div className="rq-row" data-cut-render-queue-row={i} key={i}>
                   <span className="rq-row-n">{i + 1}</span>
-                  <input
+                  <span
                     className="rq-out"
                     data-cut-render-queue-output={i}
-                    placeholder="Choose output file or leave empty for exports"
-                    value={r.output}
-                    onChange={(e) => setRow(i, { output: e.target.value })}
-                  />
+                  >{r.output ? mediaBasename(r.output) : 'Default exports folder'}</span>
                   <button
                     className="rq-pick"
                     data-cut-render-queue-output-pick={i}
-                    title="Choose output file"
-                    aria-label={`Choose output file for delivery ${i + 1}`}
+                    title={r.output ? 'Change output file' : 'Choose output file'}
+                    aria-label={`${r.output ? 'Change' : 'Choose'} output file for delivery ${i + 1}`}
                     onClick={() => void chooseOutput(i)}
                   ><Icon name="save" size={14} label="Choose output file" /></button>
+                  {r.output && <button
+                    className="rq-row-x"
+                    data-cut-render-queue-output-clear={i}
+                    title="Use the default exports folder"
+                    aria-label={`Use the default exports folder for delivery ${i + 1}`}
+                    onClick={() => setRow(i, { output: '' })}
+                  ><Icon name="close" size={14} label="clear output" /></button>}
                   <select
                     className="rq-sel"
                     data-cut-render-queue-preset={i}
@@ -265,7 +270,7 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
                 ? entries.map((e, k) => (
                     <li className="rq-item" data-cut-render-queue-item={e.idx ?? k} key={e.idx ?? k}>
                       <span className="rq-item-n">{(e.idx ?? k) + 1}</span>
-                      <span className="rq-item-out">{e.output || `exports/${e.job_id ?? 'pending'}`}</span>
+                      <span className="rq-item-out">{e.output ? mediaBasename(e.output) : `exports/${e.job_id ?? 'pending'}`}</span>
                       <span className={`rq-item-state rq-item-state--${e.state ?? 'pending'}`}>{e.state ?? (phase === 'done' ? 'done' : 'pending')}</span>
                     </li>
                   ))

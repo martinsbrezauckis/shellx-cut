@@ -1,0 +1,39 @@
+use super::*;
+
+#[test]
+fn adapter_rejects_unverified_evidence_instead_of_synthesizing_it() {
+    let (_commands, _command_rx, event_tx, event_rx) = channel();
+    let mut translator = WindowsPauseEventTranslator::new(event_rx, Factory { reject: true });
+    event_tx
+        .send(WindowsPausePilotEvent::PauseSealed {
+            generation: 1,
+            epoch: 1,
+            run: run(1, 0, 120),
+            observed_at: Instant::now(),
+        })
+        .unwrap();
+    assert!(matches!(
+        translator.try_next(),
+        Err(WindowsPauseAdapterError::EvidenceRejected)
+    ));
+}
+
+#[test]
+fn adapter_rejects_native_settings_that_do_not_match_the_accepted_range() {
+    let (_commands, _command_rx, event_tx, event_rx) = channel();
+    let mut translator = WindowsPauseEventTranslator::new(event_rx, Factory { reject: false });
+    let mut native = run(44, 0, 120);
+    native.accepted.range.width = 1;
+    event_tx
+        .send(WindowsPausePilotEvent::PauseSealed {
+            generation: 1,
+            epoch: 1,
+            run: native,
+            observed_at: Instant::now(),
+        })
+        .unwrap();
+    assert!(matches!(
+        translator.try_next(),
+        Err(WindowsPauseAdapterError::EvidenceRejected)
+    ));
+}

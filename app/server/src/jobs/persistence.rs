@@ -5,10 +5,12 @@
 //! instead of being silently ignored; `jobs.list` exposes the recovery notice.
 
 mod cleanup;
+mod lineage;
 mod retry;
 
 use super::{outcome::restart_interrupted, JobRecord};
 use cut_core::CutError;
+use lineage::reconcile_retry_lineage;
 use retry::write_atomically_with;
 #[cfg(test)]
 use retry::{
@@ -81,7 +83,7 @@ pub(super) fn recover(project_dir: &Path) -> Result<RecoveredJobs, CutError> {
                 continue;
             }
         };
-        let mut record = match serde_json::from_str::<JobRecord>(&text) {
+        let record = match serde_json::from_str::<JobRecord>(&text) {
             Ok(record) => record,
             Err(error) => {
                 notices.push(quarantine(
@@ -112,15 +114,24 @@ pub(super) fn recover(project_dir: &Path) -> Result<RecoveredJobs, CutError> {
             )?);
             continue;
         }
+        records.push(record);
+    }
+
+    // Retry admission writes the child before consuming the source record. If
+    // the process stops in that window, repair only a fully validated pair.
+    // Validate the complete recovered graph before changing any record, so an
+    // inconsistent lineage cannot cause recovery to rewrite related history.
+    reconcile_retry_lineage(&dir, &mut records)?;
+
+    for record in &mut records {
         if matches!(
             record.state,
             super::JobState::Queued | super::JobState::Running
         ) {
-            restart_interrupted(&mut record);
+            restart_interrupted(record);
             record.updated_ts = cut_core::OpRecord::now_ts();
-            persist(&path, &record)?;
+            persist(&dir.join(format!("{}.json", record.job_id)), record)?;
         }
-        records.push(record);
     }
 
     Ok(RecoveredJobs {
@@ -205,5 +216,7 @@ fn quarantine(
 
 #[cfg(test)]
 mod cleanup_tests;
+#[cfg(test)]
+mod lineage_tests;
 #[cfg(test)]
 mod tests;

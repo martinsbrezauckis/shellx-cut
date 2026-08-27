@@ -1,4 +1,5 @@
-use super::plan::accepted_changes;
+use super::metadata::MetadataAssessment;
+use super::plan::{accepted_changes, metadata_for_source_identity, preview_result};
 use super::scan::full_sha256;
 #[cfg(unix)]
 use super::scan::scan_folder;
@@ -37,11 +38,73 @@ fn plan(disposition: &str) -> RelinkPlan {
 
 #[test]
 fn metadata_or_ambiguous_rows_are_never_applyable() {
-    let error = accepted_changes(&plan("metadata_only"), &["a1".into()]).unwrap_err();
+    let error = accepted_changes(&plan("metadata_review"), &["a1".into()]).unwrap_err();
     assert_eq!(error.code, error_codes::CONFLICT);
     let accepted = accepted_changes(&plan("eligible_exact_hash"), &["a1".into()]).unwrap();
     assert_eq!(accepted.len(), 1);
     assert_eq!(accepted[0].chosen_path, "/safe/a.mov");
+}
+
+#[test]
+fn sampled_identity_keeps_a_unique_strong_candidate_review_only() {
+    let result = metadata_for_source_identity(
+        "sha256s:sampled",
+        MetadataAssessment {
+            disposition: "metadata_review",
+            diagnostics: vec!["basename_match".into(), "byte_size_match".into()],
+        },
+    );
+    assert_eq!(result.disposition, "metadata_review");
+    assert_eq!(
+        result.diagnostics,
+        vec![
+            "basename_match",
+            "byte_size_match",
+            "complete_sha256_unavailable"
+        ]
+    );
+
+    let unavailable = metadata_for_source_identity(
+        "sha256s:sampled",
+        MetadataAssessment {
+            disposition: "no_match",
+            diagnostics: Vec::new(),
+        },
+    );
+    assert_eq!(unavailable.disposition, "hash_unavailable");
+    assert_eq!(unavailable.diagnostics, vec!["complete_sha256_unavailable"]);
+}
+
+#[test]
+fn metadata_review_preview_exposes_only_safe_fact_labels() {
+    let mut review = plan("metadata_review");
+    review.assets[0].chosen_path = Some("/private/recovery/clip.mov".into());
+    review.assets[0].chosen_hash = Some("sha256:private-candidate".into());
+    review.assets[0].diagnostics = vec![
+        "basename_match".into(),
+        "kind_match".into(),
+        "byte_size_match".into(),
+        "duration_match".into(),
+    ];
+    let preview = preview_result(&PreparedPlan {
+        plan: review,
+        plan_hash: "sha256:preview".into(),
+    });
+    assert_eq!(preview["assets"][0]["disposition"], "metadata_review");
+    assert!(preview["assets"][0].get("candidate").is_none());
+    assert_eq!(
+        preview["assets"][0]["diagnostics"],
+        json!([
+            "basename_match",
+            "kind_match",
+            "byte_size_match",
+            "duration_match"
+        ])
+    );
+    let exposed = serde_json::to_string(&preview).unwrap();
+    assert!(!exposed.contains("/private/recovery"));
+    assert!(!exposed.contains("private-candidate"));
+    assert!(!exposed.contains("/safe"));
 }
 
 #[test]

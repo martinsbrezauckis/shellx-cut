@@ -6,7 +6,8 @@
 // native-shell update preference that must be known before the web UI loads.
 //
 // All guarded by isTauri(): on a browser/remote build every helper degrades to
-// a no-op so the existing path-input stays the fallback. withGlobalTauri:true
+// a no-op and the UI explains that native selection requires the desktop app.
+// User-facing absolute-path inputs are not a fallback. withGlobalTauri:true
 // (tauri.conf) exposes window.__TAURI__ for the small invoke/listen helpers;
 // file drag/drop uses Tauri's official current-Webview subscription because
 // native events target that Webview rather than the generic app event bus.

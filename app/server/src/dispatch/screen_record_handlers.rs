@@ -1,86 +1,18 @@
 use super::*;
 use std::io::Read;
-use std::path::Path;
 
 mod camera_foundation;
+mod stop_files;
+
+use stop_files::{
+    capture_marker_duration, capture_started_unix_ms, local_regular_file_nonempty, unix_ms_now,
+};
 
 // ---------------------------------------------------------------------------
 // screen_record.* — integrated Cut recorder orchestration. Low-level recorder
 // calls live in screen_record.rs; polish/export orchestration lives here because
 // it needs the verb dispatcher.
 // ---------------------------------------------------------------------------
-
-fn capture_marker_duration(marker: &Path) -> Result<Option<u64>, CutError> {
-    match std::fs::symlink_metadata(marker) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(capture_file_error(marker, "inspect capture marker", error)),
-        Ok(_) => {
-            if !record_recovery::is_plain_regular_file(marker).map_err(|error| {
-                capture_file_error(
-                    marker,
-                    "validate capture marker",
-                    std::io::Error::other(error),
-                )
-            })? {
-                return Err(CutError::new(
-                    error_codes::IO,
-                    format!("could not read capture marker {}", marker.display()),
-                    "the capture marker must be a local regular file",
-                ));
-            }
-            let bytes = std::fs::read(marker)
-                .map_err(|error| capture_file_error(marker, "read capture marker", error))?;
-            let marker: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-            Ok(marker.get("duration_ms").and_then(|value| value.as_u64()))
-        }
-    }
-}
-
-/// Read only the durable capture-clock start used to size an open-ended Stop
-/// wait. A live writer can be between journal appends, so malformed/torn journal
-/// state falls back to the explicit minimum budget rather than blocking Stop.
-fn capture_started_unix_ms(capture_dir: &Path) -> Option<u64> {
-    record_recovery::read_manifest(capture_dir)
-        .ok()
-        .map(|manifest| manifest.start.started_unix_ms)
-        .filter(|started| *started > 0)
-}
-
-fn unix_ms_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
-}
-
-fn local_regular_file_nonempty(path: &Path, stage: &str) -> Result<bool, CutError> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(capture_file_error(path, stage, error)),
-        Ok(metadata) => metadata,
-    };
-    if !record_recovery::is_plain_regular_file(path)
-        .map_err(|error| capture_file_error(path, stage, std::io::Error::other(error)))?
-    {
-        return Err(CutError::new(
-            error_codes::IO,
-            format!(
-                "could not {stage}: {} is not a local regular file",
-                path.display()
-            ),
-            "capture files must remain inside the local capture directory",
-        ));
-    }
-    Ok(metadata.len() > 0)
-}
-
-fn capture_file_error(path: &Path, stage: &str, error: std::io::Error) -> CutError {
-    CutError::new(
-        error_codes::IO,
-        format!("could not {stage} at {}: {error}", path.display()),
-        "capture files must remain inside the local capture directory",
-    )
-}
 
 /// screen_record.stop{capture_id, autoedit?, rationale?} — finalize a capture
 /// started by `screen_record.start` and surface its artifacts.
@@ -292,6 +224,14 @@ pub(super) async fn screen_record_stop(
             "regenerate the capture; screen_record.stop expects a RecordingProject object with source_video and events",
         ));
     }
+    // Cadence evidence is optional and versioned. A legacy project has no
+    // such field; malformed or unknown evidence stays absent rather than being
+    // inferred from the legacy f32 settings timebase.
+    let cadence = proj
+        .get("capture_cadence")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<record_core::CaptureCadence>(value).ok())
+        .filter(|cadence| cadence.schema == record_core::CAPTURE_CADENCE_SCHEMA);
     let source_video_raw = proj
         .get("source_video")
         .and_then(|v| v.as_str())
@@ -391,6 +331,7 @@ pub(super) async fn screen_record_stop(
         .map(|path| path.display().to_string());
     let system_timing = artifacts.system_timing.clone();
     let studio_events = artifacts.studio_events.clone();
+    let microphone = crate::screen_record::microphone::capture_outcome_projection(&out_dir);
     let raw_streams = json!({
         "screen": source_video.clone(),
         "camera": webcam.clone(),
@@ -458,7 +399,9 @@ pub(super) async fn screen_record_stop(
         "source": source_video,
         "webcam": webcam,
         "camera_artifact": camera_artifact,
+        "cadence": cadence,
         "audio": audio,
+        "microphone": microphone,
         "events": events_path,
         "studio_events": studio_events,
         "raw_streams": raw_streams,

@@ -190,10 +190,9 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
    *  stores None), matching the button's "neutral" promise. Previously this only
    *  reset local state, leaving the clip's grade untouched (the dead-control bug).
    *  Reuses fire() with explicit identity values to avoid the async-setState race. */
-  /** Open the native .cube picker (desktop only) and seed the LUT path from it —
-   *  the PRIMARY affordance so users don't hand-type an absolute server path. The
-   *  mono input stays the manual/advanced fallback (and the only path on a
-   *  browser/remote build, where isTauri() is false). */
+  /** Open the native .cube picker (desktop only). Absolute LUT paths are never
+   *  user-editable: the picker owns selection and the engine still validates the
+   *  chosen file before applying it. */
   const pickLut = async () => {
     const p = await pickCube()
     if (p) setLut(p)
@@ -268,39 +267,28 @@ export default function GradeDrawer({ project, clipId }: GradeDrawerProps) {
                 </label>
               )}
 
-              {/* LUT (.cube): native picker is the PRIMARY affordance. The raw
-                  path field stays as an Advanced fallback for browsers/rigs and
-                  fixture injection. Fenced engine-side: must end .cube + exist. */}
+              {/* LUT (.cube): selection is native-picker only. The absolute path
+                  remains internal; users see only the chosen file name. */}
               <label className="cd-field">
                 <span className="cd-field-label">Look-up table (.cube)</span>
                 <div className="cd-lut-row">
-                  {desktop && (
-                    <button
-                      type="button"
-                      className="cd-btn cd-btn--ghost"
-                      data-cut-grade-lut-pick
-                      onClick={() => void pickLut()}
-                      style={{ flexShrink: 0 }}
-                    >
-                      Choose .cube…
-                    </button>
-                  )}
-                  <span className="cd-lut-chip" data-cut-grade-lut-picked title={lut || 'No LUT selected'}>
+                  <button
+                    type="button"
+                    className="cd-btn cd-btn--ghost"
+                    data-cut-grade-lut-pick
+                    disabled={!desktop}
+                    onClick={() => void pickLut()}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {lut ? 'Change .cube…' : 'Choose .cube…'}
+                  </button>
+                  <span className="cd-lut-chip" data-cut-grade-lut-picked>
                     {lut ? lut.split(/[\\/]/).pop() : 'No LUT selected'}
                   </span>
                 </div>
-                <details className="cd-advanced" data-cut-grade-lut-advanced open={!desktop}>
-                  <summary data-cut-grade-lut-advanced-toggle>Advanced path</summary>
-                  <input
-                    className="cd-input cd-input--mono"
-                    data-cut-grade-lut
-                    placeholder="Paste .cube path"
-                    value={lut}
-                    onChange={(e) => setLut(e.target.value)}
-                  />
-                  <p className="cd-note">Use this when the native picker is unavailable or a test fixture needs an exact file path.</p>
-                </details>
-                <p className="cd-note">Optional 3D color preset. Choose a .cube file; Apply commits it to the selected clip.</p>
+                <p className="cd-note">{desktop
+                  ? 'Optional 3D color preset. Choose a .cube file; Apply commits it to the selected clip.'
+                  : 'Open the desktop app to choose a .cube file.'}</p>
               </label>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>

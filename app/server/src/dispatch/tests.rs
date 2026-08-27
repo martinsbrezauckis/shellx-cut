@@ -58,6 +58,7 @@ mod render_verify;
 mod request_idempotency;
 mod schema_contract;
 mod screen_record;
+mod screen_record_cadence;
 mod screen_record_containment;
 mod screen_record_export_regression;
 mod screen_record_link_consumers;

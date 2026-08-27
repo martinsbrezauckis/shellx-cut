@@ -275,7 +275,7 @@ pub(super) fn build_index(
     }
     finalize_index(MediaEvidenceIndex {
         schema: INDEX_SCHEMA.into(),
-        generator: "shellx-cut/0.6.111".into(),
+        generator: generator_identity(),
         index_id: String::new(),
         project_id: opaque_id(&[&snapshot.dir.to_string_lossy()]),
         project_revision: snapshot.revision.clone(),

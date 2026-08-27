@@ -16,14 +16,50 @@
 //! UI/agent can tell what's present vs needs install/permission.
 
 pub mod camera;
+// REC-CAMERA-01a is deliberately crate-private until a durable server owner
+// wires it to real native finalization. Its test-injected lifecycle must still
+// compile in ordinary builds so that boundary remains explicit and reviewable.
+#[allow(
+    dead_code,
+    reason = "private camera-session spine awaits server wiring"
+)]
+mod camera_session;
+#[cfg(test)]
+mod camera_session_lifecycle_tests;
+#[cfg(test)]
+mod camera_session_tests;
 mod capture_clock;
+mod capture_output;
 mod checkpoint;
 pub mod doctor;
 mod doctor_portal;
 mod doctor_probe;
 mod doctor_process;
 mod doctor_system_audio;
+// REC-REGION-01 first fixes the cross-host crop contract; the native backends
+// consume it in the next slice. Keep that bounded foundation compiled on native
+// feature builds without weakening dead-code diagnostics elsewhere.
+#[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
+mod macos_region_plan;
+mod pause_stream_coordinator;
+#[cfg(test)]
+mod pause_stream_coordinator_tests;
+mod pause_stream_selection;
+mod pause_stream_types;
+#[allow(dead_code)]
+#[cfg(any(
+    test,
+    all(windows, feature = "capture-windows"),
+    all(target_os = "macos", feature = "capture-macos"),
+    all(target_os = "linux", feature = "capture-linux")
+))]
+mod region_geometry;
+#[cfg(test)]
+mod region_geometry_tests;
 mod replay;
+mod session_clock;
+#[cfg(test)]
+mod session_clock_tests;
 #[cfg(any(
     test,
     all(windows, feature = "capture-windows"),
@@ -48,20 +84,51 @@ mod cursor_correlation_tests;
     all(target_os = "linux", feature = "capture-linux")
 ))]
 mod input;
+#[cfg(any(
+    all(windows, feature = "capture-windows"),
+    all(target_os = "macos", feature = "capture-macos"),
+    all(target_os = "linux", feature = "capture-linux")
+))]
+mod input_listener;
 
 #[cfg(feature = "mic")]
 mod macos_system_audio;
 #[cfg(feature = "mic")]
 mod mic;
+mod mic_endpoint;
 #[cfg(feature = "mic")]
 mod mic_timing;
+#[cfg(feature = "mic")]
+mod microphone_result;
+#[cfg(any(
+    test,
+    all(windows, feature = "capture-windows"),
+    all(target_os = "macos", feature = "capture-macos")
+))]
+mod monitor_identity;
 mod system_audio_probe;
 #[cfg(feature = "mic")]
 mod system_audio_timing;
 mod window_target;
 
+// REC-PAUSE-01 Windows-only native seam. It owns neutral command/event values
+// and WGC run ordering, but no Cut server journal, verb, UI, or installed claim.
+// The server consumes it through a separate private adapter.
+#[doc(hidden)]
+pub mod windows_pause_pilot;
+
+// The private WGC run owner is platform-neutral enough to exercise its control
+// ordering on the host test target; only the live adapter below is Windows-only.
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod windows_wgc_run;
+#[cfg(test)]
+mod windows_wgc_run_tests;
+mod windows_wgc_run_types;
+
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_monitor_target;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_picker;
 #[cfg(all(windows, feature = "capture-windows"))]
@@ -77,6 +144,10 @@ mod macos_checkpoint;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_finalization;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_monitor_target;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_region_capture;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_system_tap;
 
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
@@ -86,6 +157,8 @@ mod macos_probe;
 mod linux;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_capture_state;
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod linux_input;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_media;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
@@ -117,7 +190,23 @@ pub use camera::{CameraBackend, CameraDevice, CameraReadiness, CameraRequest, Re
 pub use capture_clock::CaptureClock;
 pub use doctor::{doctor, Card};
 pub use doctor_portal::{is_linux_portal_prompt_deferred, LINUX_PORTAL_PROMPT_DEFERRED_DETAIL};
+pub use mic_endpoint::{
+    list_microphone_endpoints, resolve_microphone_source, MicrophoneEndpoint,
+    MicrophoneEndpointRef, MicrophoneSource,
+};
+pub use pause_stream_coordinator::PauseStreamCoordinator;
+pub use pause_stream_selection::SelectedCaptureStreams;
+pub use pause_stream_types::{
+    AcknowledgementRejection, AcknowledgementResult, BoundaryRequestResult,
+    PauseStreamCoordinatorStatus, PendingStreamBoundary, StreamAcknowledgement, StreamBoundary,
+    StreamBoundaryKind, StreamRefusal,
+};
+pub use record_recovery::RecordingStream;
 pub use replay::ReplayCapture;
+pub use session_clock::{
+    LogicalSessionClock, SessionPhase, SessionTransition, SessionTransitionIgnored,
+    SessionTransitionResult,
+};
 pub use system_audio_probe::{
     probe_system_audio, reserve_system_audio, SystemAudioLease, SystemAudioProbe, DEFAULT_WINDOW_MS,
 };
@@ -125,11 +214,20 @@ pub use system_audio_probe::{
 /// One physical display the user can pick as the capture target.
 ///
 /// Returned by [`list_monitors`] so the UI / agent can offer a monitor PICKER on a
-/// multi-display setup. The `index` is the 1-based index the capture backend wants
-/// in [`CaptureConfig::monitor`] (`WcMonitor::from_index` on Windows), so the UI can
-/// pass a chosen `MonitorInfo.index` straight back into `screen_record.start`.
+/// multi-display setup. The `id` is an opaque native identity. The existing
+/// `index` is the 1-based value the current capture backend wants in
+/// [`CaptureConfig::monitor`]
+/// (`WcMonitor::from_index` on Windows). When `id` is present, the UI also
+/// passes it unchanged as `screen_record.start{monitor_id}` so the native
+/// backend can re-resolve the exact target without ordinal fallback.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonitorInfo {
+    /// Opaque, versioned identity for this exact native display when the
+    /// platform can derive one. When selected, it is re-resolved exactly at
+    /// capture start; an unavailable identity fails closed rather than falling
+    /// back to display order, title, primary state, or geometry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     /// 1-based monitor index (what `CaptureConfig.monitor` expects).
     pub index: u32,
     /// Friendly display name (best-effort; falls back to "Monitor N" on Windows).
@@ -160,7 +258,9 @@ pub struct WindowInfo {
 
 /// Enumerate the displays available as capture targets, for the in-app monitor
 /// PICKER. The list mirrors the backend's 1-based indexing so a chosen
-/// `MonitorInfo.index` is passed straight back as `CaptureConfig.monitor`.
+/// `MonitorInfo.index` is passed straight back as `CaptureConfig.monitor` when
+/// no exact id is available. `MonitorInfo.id` is otherwise passed unchanged as
+/// `CaptureConfig.monitor_id` and intentionally has no ordinal fallback.
 ///
 /// Platform behavior:
 /// - **Windows** (`capture-windows`): real enumeration via the `windows-capture`
@@ -221,43 +321,28 @@ pub fn list_windows() -> Vec<WindowInfo> {
     }
 }
 
-/// The result of [`warm_mic`]: whether the default microphone went LIVE (samples
-/// flowed) within the warm window, the device name when known, and whether this
-/// build has a mic backend at all. The UI calls warm_mic on entering the Record
-/// surface so the OS mic-permission prompt is answered + the cpal stream is spun up
-/// BEFORE the user hits record. Pure probe — opens the default input briefly, never
-/// writes the recording.
+/// The result of a bounded microphone test.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MicWarm {
     /// True iff the mic produced at least one audio callback within the window.
     pub live: bool,
-    /// The default input device name, when the host could name it.
-    pub device: Option<String>,
+    /// Highest real sample peak heard during the bounded warm/test window, in
+    /// dBFS. `None` means no measurable signal was delivered; it is never a
+    /// synthetic floor or a continuous recording meter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_dbfs: Option<i16>,
     /// True when this build was compiled with the `mic` feature (a mic backend).
     pub supported: bool,
 }
 
-/// Warm the default microphone for up to `max_ms` (see [`MicWarm`]). No-op stub
-/// (`supported:false`) on a build without the `mic` feature.
+/// Warm the default microphone for up to `max_ms` (see [`MicWarm`]).
 pub fn warm_mic(max_ms: u64) -> MicWarm {
-    #[cfg(feature = "mic")]
-    {
-        let (live, device) = mic::warm(max_ms);
-        return MicWarm {
-            live,
-            device,
-            supported: true,
-        };
-    }
-    #[allow(unreachable_code)]
-    {
-        let _ = max_ms;
-        MicWarm {
-            live: false,
-            device: None,
-            supported: false,
-        }
-    }
+    warm_microphone(&MicrophoneSource::SystemDefault, max_ms)
+}
+
+/// Warm/test a source after the server has resolved its private selection.
+pub fn warm_microphone(source: &MicrophoneSource, max_ms: u64) -> MicWarm {
+    mic_endpoint::warm_microphone(source, max_ms)
 }
 
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
@@ -298,7 +383,7 @@ pub fn live_capture() -> Option<Box<dyn Capture>> {
     }
 }
 
-use record_core::{CameraArtifact, EventTrack, RecordingProject, Result, Settings};
+use record_core::{CameraArtifact, EventTrack, Result, Settings};
 use serde::{Deserialize, Serialize};
 
 /// Debug probe: run ONLY the evdev input listener for `seconds` and return the
@@ -311,17 +396,19 @@ pub fn evdev_probe(seconds: u64, capture_keys: bool) -> Option<(usize, usize, us
     use std::sync::Arc;
     let stop = Arc::new(AtomicBool::new(false));
     let start = std::time::Instant::now();
-    let input = input_evdev::spawn_evdev_listener(start, stop.clone(), capture_keys, 1920, 1080);
+    let listener = input_evdev::spawn_evdev_listener(start, stop.clone(), capture_keys, 1920, 1080);
     eprintln!(">>> evdev probe: generate input NOW for {seconds}s <<<");
     std::thread::sleep(std::time::Duration::from_secs(seconds));
     stop.store(true, Ordering::Relaxed);
-    let g = input.lock().unwrap();
-    Some((
-        g.clicks.len(),
-        g.keys.len(),
-        g.cursor.len(),
-        g.scrolls.len(),
-    ))
+    match listener.seal(start.elapsed().as_millis() as u64) {
+        Ok((cursor, clicks, scrolls, keys)) => {
+            Some((clicks.len(), keys.len(), cursor.len(), scrolls.len()))
+        }
+        Err(error) => {
+            eprintln!("evdev probe failed to seal input: {error}");
+            None
+        }
+    }
 }
 #[cfg(not(all(target_os = "linux", feature = "capture-linux")))]
 pub fn evdev_probe(_seconds: u64, _capture_keys: bool) -> Option<(usize, usize, usize, usize)> {
@@ -339,11 +426,22 @@ pub struct CaptureConfig {
     pub capture_cursor: bool,
     /// Which monitor (None = primary).
     pub monitor: Option<u32>,
+    /// Opaque exact native identity from a fresh [`list_monitors`] row. When
+    /// present, native backends re-enumerate and select only this identity; the
+    /// legacy [`Self::monitor`] ordinal is not a fallback. Never serialized into
+    /// recording artifacts or receipts.
+    #[serde(skip, default)]
+    pub monitor_id: Option<String>,
     /// Capture just ONE application window by opaque id from [`list_windows`]
     /// (None = whole monitor/screen). Takes precedence over `monitor` when set.
     /// The backend revalidates that exact native identity immediately before use.
     pub window: Option<String>,
     pub audio: bool,
+    /// The microphone endpoint is resolved once before a capture starts and is
+    /// intentionally not serialized into manifests, logs, or public receipts.
+    /// Existing callers that omit it preserve the OS-system-default behavior.
+    #[serde(skip, default)]
+    pub microphone_source: MicrophoneSource,
     /// Capture DESKTOP/SYSTEM audio (game/app sound) in the SAME capture, as a SEPARATE
     /// mixable track. Only the macOS (ScreenCaptureKit) backend reads this — it sets the
     /// stream's `capturesAudio`; the screen_record orchestrator then splits it out to
@@ -379,8 +477,10 @@ impl Default for CaptureConfig {
             fps: 30.0,
             capture_cursor: false,
             monitor: None,
+            monitor_id: None,
             window: None,
             audio: false,
+            microphone_source: MicrophoneSource::SystemDefault,
             system_audio: false,
             capture_keys: false,
             out_dir: ".".to_string(),
@@ -401,22 +501,22 @@ pub struct CaptureOutput {
     /// Legacy presentation-only path retained for existing projects/autoedit.
     pub webcam_video: Option<String>,
     pub audio: Option<String>,
+    /// Sanitized microphone result. Endpoint identity and local paths remain private.
+    pub microphone_outcome: MicrophoneCaptureOutcome,
     pub settings: Settings,
+    /// Facts from the mandatory final-source verification pass, when this
+    /// backend has one. A direct/unverified backend leaves this absent instead
+    /// of causing a second probe solely for presentation metadata.
+    pub verified_media: Option<record_recovery::MediaFacts>,
 }
 
-impl CaptureOutput {
-    /// Fold the captured artifacts into a `RecordingProject` (ready for autoedit).
-    pub fn into_project(self) -> RecordingProject {
-        let mut p = RecordingProject::new(self.source_video, self.settings, self.events);
-        p.webcam_video = self.webcam_video.or_else(|| {
-            self.camera_artifact
-                .as_ref()
-                .map(|artifact| artifact.video.clone())
-        });
-        p.camera_artifact = self.camera_artifact;
-        p.audio = self.audio;
-        p
-    }
+/// What happened to the microphone track for a capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophoneCaptureOutcome {
+    NotRequested,
+    Saved,
+    MicrophoneLostSavedPrefix,
+    MicrophoneLostNoTrack,
 }
 
 /// A capture backend: produce a source video + event track per `cfg`.
@@ -443,11 +543,12 @@ mod monitor_tests {
 
     use super::*;
 
-    /// `MonitorInfo` serializes to the exact `{index,name,width,height,primary}`
+    /// `MonitorInfo` serializes to the exact `{id?,index,name,width,height,primary}`
     /// shape the cutd `screen_record.doctor` result and the UI `<select>` consume.
     #[test]
     fn monitor_info_serializes_to_the_expected_shape() {
         let m = MonitorInfo {
+            id: Some("shellx-monitor-v1:windows:0123456789abcdef".into()),
             index: 1,
             name: "Monitor 1".into(),
             width: 3840,
@@ -455,6 +556,7 @@ mod monitor_tests {
             primary: true,
         };
         let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["id"], "shellx-monitor-v1:windows:0123456789abcdef");
         assert_eq!(v["index"], 1);
         assert_eq!(v["name"], "Monitor 1");
         assert_eq!(v["width"], 3840);
@@ -463,6 +565,22 @@ mod monitor_tests {
         // Round-trips back to an equal value (Deserialize contract).
         let back: MonitorInfo = serde_json::from_value(v).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn unavailable_native_identity_does_not_hide_the_legacy_picker_row() {
+        let m = MonitorInfo {
+            id: None,
+            index: 2,
+            name: "Legacy display".into(),
+            width: 1_280,
+            height: 720,
+            primary: false,
+        };
+        let value = serde_json::to_value(&m).unwrap();
+        assert!(value.get("id").is_none());
+        assert_eq!(value["index"], 2);
+        assert_eq!(value["name"], "Legacy display");
     }
 
     /// On the Linux/headless build this crate is tested on, `list_monitors()` is the
@@ -529,12 +647,14 @@ mod stop_tests {
                 camera_artifact: None,
                 webcam_video: None,
                 audio: None,
+                microphone_outcome: MicrophoneCaptureOutcome::NotRequested,
                 settings: Settings {
                     width: 1920,
                     height: 1080,
                     fps: 30.0,
                     audio_rate: 48_000,
                 },
+                verified_media: None,
             })
         }
     }

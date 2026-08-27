@@ -1,0 +1,90 @@
+[package]
+edition = "2018"
+name = "rdevin"
+version = "0.1.0"
+authors = [
+    "Nicolas Patry <patry.nicolas@protonmail.com>",
+    "Devin Droddy <devin.droddy@gmail.com>",
+]
+build = false
+exclude = ["flake.*"]
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Cross-platform passive listening for keyboard and mouse input."
+homepage = "https://github.com/justdeeevin/rdevin"
+documentation = "https://docs.rs/rdevin/"
+keywords = [
+    "input",
+    "mouse",
+    "keyboard",
+    "listening",
+]
+categories = [
+    "development-tools::testing",
+    "api-bindings",
+    "hardware-support",
+]
+license = "MIT"
+publish = false
+repository = "https://github.com/justdeeevin/rdevin"
+
+[lib]
+name = "rdevin"
+path = "src/lib.rs"
+
+[dependencies.enum-map]
+version = "2.4.0"
+
+[dependencies.lazy_static]
+version = "1.4"
+
+[dependencies.strum]
+version = "0.24.1"
+features = ["derive"]
+
+[dependencies.thiserror]
+version = "2.0.12"
+
+[dependencies.widestring]
+version = "1.0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies.libc]
+version = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies.x11]
+version = "2.18"
+features = [
+    "xlib",
+    "xrecord",
+    "xinput",
+]
+
+[target.'cfg(target_os = "macos")'.dependencies.cocoa]
+version = "0.24.0"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-foundation]
+version = "0.9.3"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-foundation-sys]
+version = "0.8.3"
+
+[target.'cfg(target_os = "macos")'.dependencies.core-graphics]
+version = "0.22.3"
+features = ["highsierra"]
+
+[target.'cfg(target_os = "macos")'.dependencies.dispatch]
+version = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies.better_default]
+version = "1.0.5"
+
+[target.'cfg(target_os = "windows")'.dependencies.winapi]
+version = "0.3"
+features = [
+    "winuser",
+    "errhandlingapi",
+    "processthreadsapi",
+]

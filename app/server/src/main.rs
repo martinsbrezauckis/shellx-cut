@@ -52,6 +52,7 @@ mod review_http;
 mod schema_validation;
 mod screen_record;
 mod screen_record_studio;
+mod startup_tasks;
 mod state;
 mod stt_settings;
 mod track;
@@ -174,34 +175,17 @@ async fn main() -> anyhow::Result<()> {
                 ),
                 None => tracing::info!("headless mode — API only"),
             }
-            // Stamp the bind address onto doctor reports, then run the
-            // environment scan ONCE at startup.
-            // Off the bind path so a slow probe never delays listening; the
-            // first `system.doctor` call returns this cached result. A capability
-            // change vs the (empty) prior cache publishes `doctor_updated`.
+            // Stamp the configured bind address onto Doctor reports. The
+            // environment scan itself starts only after a real Cut app root
+            // mounts, so automatic FFmpeg discovery cannot delay the UI.
             state.set_addr(&addr).await;
-            let startup_doctor = {
-                let st = state.clone();
-                tokio::spawn(async move {
-                    let r = st.doctor_rescan().await;
-                    tracing::info!(
-                        "doctor: {} cards, ffmpeg {}",
-                        r.cards.len(),
-                        if r.essential_ok {
-                            "ok"
-                        } else {
-                            "MISSING (wizard will surface)"
-                        }
-                    );
-                })
-            };
             // Refuse a non-loopback bind by default (server trust boundary).
             // BEFORE opening the socket — the header guard alone is not a network
             // boundary for a non-browser client on an exposed bind.
             if let Err(reason) = http::check_bind_addr(&addr) {
                 anyhow::bail!(reason);
             }
-            let router = http::build_router(state, dist);
+            let router = http::build_router(state.clone(), dist);
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             // Publish the actual bound address (resolves :0 or a fallback port).
             // so `cutd mcp` / `cutd verb` proxies reach this engine even when it
@@ -214,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| addr.clone());
             httpc::write_discovery(&bound);
             tracing::info!("cutd listening on http://{bound}/ (POST /api/verb/{{name}})");
+            let startup_doctor = startup_tasks::spawn_post_ui_doctor(state);
             let result = axum::serve(listener, router)
                 .with_graceful_shutdown(async {
                     let _ = tokio::signal::ctrl_c().await;

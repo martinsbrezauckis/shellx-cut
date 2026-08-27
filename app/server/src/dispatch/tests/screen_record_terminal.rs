@@ -74,6 +74,8 @@ impl Capture for FakeSuccessfulPortal {
                     duration_ms: 10,
                     decoded_video_frames: 1,
                     has_audio: false,
+                    avg_frame_rate: None,
+                    r_frame_rate: None,
                 },
             )
             .map_err(manifest_error)?;
@@ -101,12 +103,14 @@ impl Capture for FakeSuccessfulPortal {
             camera_artifact: None,
             webcam_video: None,
             audio: None,
+            microphone_outcome: record_capture::MicrophoneCaptureOutcome::NotRequested,
             settings: Settings {
                 width: 2,
                 height: 2,
                 fps: 30.0,
                 audio_rate: 48_000,
             },
+            verified_media: None,
         })
     }
 }
@@ -174,6 +178,7 @@ async fn fake_successful_portal_still_publishes_checkpoint_and_project() {
         false,
         None,
         None,
+        None,
         project_dir,
         capture_dir.clone(),
         project_path.clone(),
@@ -221,6 +226,7 @@ async fn dispatch_stop_returns_the_fake_blocked_portal_terminal_failure_promptly
         false,
         false,
         false,
+        None,
         None,
         None,
         project_dir.clone(),

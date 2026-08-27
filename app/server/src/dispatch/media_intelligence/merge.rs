@@ -101,7 +101,7 @@ pub(super) fn merge_index(
         .collect();
     finalize_index(MediaEvidenceIndex {
         schema: INDEX_SCHEMA.into(),
-        generator: "shellx-cut/0.6.111".into(),
+        generator: generator_identity(),
         index_id: String::new(),
         project_id: rebuilt.project_id,
         project_revision: snapshot.revision.clone(),

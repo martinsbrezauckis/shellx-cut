@@ -14,12 +14,11 @@
 //
 // SOURCE: full-screen capture. On a MULTI-MONITOR setup, screen_record.doctor
 // returns an enumerated `monitors` list and we render a real <select> so the user
-// picks which display; the chosen 1-based index is passed through as
-// screen_record.start{monitor}. On a single display (or Linux, where the doctor
+// picks which display. The chosen 1-based index retains the legacy capture path,
+// while an available opaque id is returned unchanged as screen_record.start{monitor_id}
+// for exact native revalidation. On a single display (or Linux, where the doctor
 // list is empty because the XDG portal shows its OWN source picker at capture
-// time) we keep the single "Full screen" button — no regression. Per-window
-// capture needs engine-side window enumeration (not yet wired) — surfaced honestly
-// as "coming", never a dead control.
+// time) we keep the single "Full screen" button — no regression.
 //
 // Zero hidden state: every result is read from the verb envelope. Callers: App
 // (workspaceMode === 'record'). Deps: lib/client (verbs), lib/doctor (cards).
@@ -33,7 +32,15 @@ import { isTauri, onRecordHotkey, pickExportOutput } from '../../lib/tauri'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import { StudioControls } from './StudioControls'
 import { StudioPreview } from './StudioPreview'
+import { MicInputControl } from './MicInputControl'
 import { SystemAudioProbeControl } from './SystemAudioProbeControl'
+import { RecordFrameRateControl } from './RecordFrameRateControl'
+import { recordingFrameRateReason } from './recordingFrameRate'
+import {
+  probedAverageCadenceLabel,
+  requestedCadenceLabel,
+  type RecordingCadence,
+} from './recordingCadence'
 import { useRecordingExport } from './useRecordingExport'
 import {
   defaultStudioState,
@@ -84,20 +91,17 @@ const RECORD_CARD_LABELS: Record<string, string> = {
 function recordCardLabel(name: string): string {
   return RECORD_CARD_LABELS[name] ?? name.replaceAll('_', ' ')
 }
-// One display the doctor enumerated for the monitor PICKER. `index` is 1-based —
-// exactly what screen_record.start{monitor} expects. Empty list ⇒ no in-app picker
-// (single display, or Linux where the OS portal owns source choice).
-interface MonitorInfo { index: number; name: string; width: number; height: number; primary: boolean }
+// One display the doctor enumerated for the monitor PICKER. `id` is an opaque
+// exact-native identity; `index` remains the legacy 1-based
+// screen_record.start{monitor} value. When present, `id` is returned unchanged
+// as `monitor_id`, and no display copy or ordinal is used as a substitute.
+// Empty list ⇒ no in-app picker (single display, or Linux where the OS portal
+// owns source choice).
+interface MonitorInfo { id?: string; index: number; name: string; width: number; height: number; primary: boolean }
 // One application window the doctor enumerated for the window picker. `id` is
 // the opaque native identity passed back to screen_record.start{window}; title is
 // display copy only and never selects a target.
 interface WindowInfo { id: string; title: string; app: string }
-// Result of screen_record.doctor{warm_mic:true}: whether the default mic went
-// live (prompt answered + stream up), the device name, and whether this build has a
-// mic backend at all. Drives the "mic ready" indicator so the user knows the first
-// recording will actually capture their voice.
-interface MicWarm { live: boolean; device?: string; supported: boolean }
-
 type Phase = 'idle' | 'recording' | 'finalizing' | 'done' | 'error'
 
 // Length options. `ms: null` = OPEN-ENDED ("record until I stop", the default);
@@ -143,12 +147,15 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // `capMs === null` = open-ended (the default). Otherwise it is the cap in ms.
   const [capMs, setCapMs] = useState<number | null>(null)
   const [fps, setFps] = useState(30)
+  const [customFps, setCustomFps] = useState('')
+  const customFpsError = customFps.trim() ? recordingFrameRateReason(customFps) : null
   const [audio, setAudio] = useState(true)
   // Capture DESKTOP/SYSTEM audio (game/app sound) as a SEPARATE mixable track.
   // Defaults OFF for safety: desktop audio capture should be an explicit opt-in.
   // Linux uses the PulseAudio-compatible monitor source.
   const [systemAudio, setSystemAudio] = useState(false)
   const [audioProbeRunning, setAudioProbeRunning] = useState(false)
+  const [micTestRunning, setMicTestRunning] = useState(false)
   const [keys, setKeys] = useState(false)
   // When ON (default), stop → auto-polish (auto-zoom, cursor, framing) — the
   // slower re-render. When OFF, stop → a FAST stream-copy (raw:true) so the clip lands
@@ -165,8 +172,9 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   const [studio, setStudio] = useState<StudioState>(() => defaultStudioState())
   const [lastRawStreams, setLastRawStreams] = useState<StudioRawStreams | null>(null)
   const [lastCursorCorrelation, setLastCursorCorrelation] = useState<CursorCorrelation | null>(null)
-  // Mic-warm result from the on-mount warm; null until probed / when mic is off.
-  const [micWarm, setMicWarm] = useState<MicWarm | null>(null)
+  // Server evidence stays separate from the local selector: the UI never
+  // relabels the backend integer request or legacy f32 as measured media.
+  const [captureCadence, setCaptureCadence] = useState<RecordingCadence | null>(null)
   // The last finalized capture's source+plan, retained so "Export clip" can render it
   // to a file (screen_record.export) without re-recording. (AUTO-EDIT mode only.)
   const [lastCapture, setLastCapture] = useState<{ source: string; plan: string } | null>(null)
@@ -192,6 +200,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   const [elapsed, setElapsed] = useState(0)
   const [note, setNote] = useState('')
   const [err, setErr] = useState<string | null>(null)
+  const updateCustomFps = useCallback((value: string) => {
+    setCustomFps(value)
+    if (err?.startsWith('Frame rate needs correction:')) setErr(null)
+  }, [err])
   const tickRef = useRef<number | null>(null)
   // The capture_id of the in-flight recording — drives the manual Stop + shortcut.
   const captureRef = useRef<string | null>(null)
@@ -234,7 +246,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       .then((ok) => { if (ok) setNote(`Marker added at ${at}`) })
   }, [elapsed, emitStudioEvent, phase])
 
-  // Probe the recorder's capability cards (in-process screen_record.doctor).
   const probe = useCallback(async () => {
     const r = await callVerb('screen_record.doctor', {})
     if (r.ok && r.result) {
@@ -264,47 +275,20 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   }, [])
   useEffect(() => { void probe() }, [probe])
 
-  // Warm the default mic on entering Record (and whenever mic capture is turned
-  // on) so the OS permission prompt is answered + the cpal stream is spun up BEFORE the
-  // user hits record — a short FIRST recording otherwise finishes before the just-
-  // granted mic starts flowing. screen_record.doctor{warm_mic:true} opens it briefly.
   useEffect(() => {
-    if (!audio) { setMicWarm(null); return }
-    let cancelled = false
-    void callVerb('screen_record.doctor', { warm_mic: true }).then((r) => {
-      if (cancelled || !r.ok || !r.result) return
-      const mw = (r.result as { mic_warm?: MicWarm }).mic_warm
-      if (mw) setMicWarm(mw)
-    })
-    return () => { cancelled = true }
-  }, [audio])
-
-  useEffect(() => {
-    if (!audio || !navigator.mediaDevices?.addEventListener) return
-    let cancelled = false
-    const refreshMic = () => {
-      setMicWarm(null)
-      void probe()
-      void callVerb('screen_record.doctor', { warm_mic: true }).then((r) => {
-        if (cancelled || !r.ok || !r.result) return
-        const mw = (r.result as { mic_warm?: MicWarm }).mic_warm
-        if (mw) setMicWarm(mw)
-      })
+    if (!navigator.mediaDevices?.addEventListener) return
+    const refreshSources = () => {
+      if (phase === 'idle') void probe()
     }
-    navigator.mediaDevices.addEventListener('devicechange', refreshMic)
-    return () => {
-      cancelled = true
-      navigator.mediaDevices.removeEventListener('devicechange', refreshMic)
-    }
-  }, [audio, probe])
+    navigator.mediaDevices.addEventListener('devicechange', refreshSources)
+    return () => navigator.mediaDevices.removeEventListener('devicechange', refreshSources)
+  }, [phase, probe])
 
   const clearTick = () => {
     if (tickRef.current) window.clearInterval(tickRef.current)
     tickRef.current = null
   }
 
-  // Finalize: stop (with autoedit) → polish → clip on the timeline. Idempotent on
-  // captureRef so a double-trigger (button + shortcut, or cap + manual) is harmless.
   const finalize = useCallback(async (captureId: string, source: string | null) => {
     clearTick()
     if (captureRef.current !== captureId) return // already finalized / superseded
@@ -332,9 +316,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
         const stop = await withAuthorizedOutputPath(rawOutputPath, () =>
           callVerb('screen_record.stop', { capture_id: captureId, autoedit: false, mux_raw: true, raw_path: rawOutputPath }))
         if (!stop.ok) { setErr(`stop failed: ${stop.error?.message ?? 'error'}`); setPhase('error'); return }
-        const sr = stop.result as { raw_path?: string; raw_has_mic?: boolean; raw_has_system?: boolean; source?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation }
+        const sr = stop.result as { raw_path?: string; raw_has_mic?: boolean; raw_has_system?: boolean; source?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence }
         setLastRawStreams(sr.raw_streams ?? null)
         setLastCursorCorrelation(sr.cursor_correlation ?? null)
+        setCaptureCadence(sr.cadence ?? null)
         const rawPath = sr.raw_path ?? sr.source ?? null
         if (!rawPath) { setErr('capture produced no raw recording'); setPhase('error'); return }
         setLastRaw({ path: rawPath, hasMic: !!sr.raw_has_mic, hasSystem: !!sr.raw_has_system })
@@ -344,9 +329,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       }
       const stop = await callVerb('screen_record.stop', { capture_id: captureId, autoedit: true })
       if (!stop.ok) { setErr(`stop failed: ${stop.error?.message ?? 'error'}`); setPhase('error'); return }
-      const sr = stop.result as { source?: string; plan?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation }
+      const sr = stop.result as { source?: string; plan?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence }
       setLastRawStreams(sr.raw_streams ?? null)
       setLastCursorCorrelation(sr.cursor_correlation ?? null)
+      setCaptureCadence(sr.cadence ?? null)
       const src = sr.source ?? source
       if (!src || !sr.plan) { setErr('capture produced no source/plan'); setPhase('error'); return }
       // Retain source+plan so "Export clip" can render a file later without re-recording.
@@ -393,6 +379,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   const start = useCallback(async () => {
     setErr(null)
     setNote('')
+    if (customFpsError) {
+      setErr(`Frame rate needs correction: ${customFpsError}`)
+      return
+    }
     if (selectedWindowMissing) {
       setErr('The selected window is no longer available. Choose another source before recording.')
       setPhase('error')
@@ -411,6 +401,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     // capture keystrokes in raw mode — a small privacy win (keys can reveal secrets).
     setLastRawStreams(null)
     setLastCursorCorrelation(null)
+    setCaptureCadence(null)
     setLastCapture(null)
     setLastRaw(null)
     const startArgs: {
@@ -420,6 +411,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       keys: boolean
       duration_ms?: number
       monitor?: number
+      monitor_id?: string
       window?: string
       studio?: unknown
     } = {
@@ -432,17 +424,25 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       },
     }
     if (capMs !== null) startArgs.duration_ms = capMs // omitted entirely = open-ended
-    // Source selection: an opaque live window identity wins; otherwise a chosen monitor on a
-    // multi-monitor setup; else neither = engine default (primary full screen).
+    // Source selection: an opaque live window identity wins; otherwise a chosen
+    // monitor on a multi-monitor setup. When Doctor supplied the selected monitor's
+    // opaque identity, return it unchanged for the server/native exact-target path.
     if (windowTargetId) startArgs.window = windowTargetId
-    else if (monitorIdx !== null && monitors.length >= 2) startArgs.monitor = monitorIdx
+    else {
+      const selectedMonitor = monitorIdx === null
+        ? undefined
+        : monitors.find((monitor) => monitor.index === monitorIdx)
+      if (monitorIdx !== null && monitors.length >= 2) startArgs.monitor = monitorIdx
+      if (selectedMonitor?.id) startArgs.monitor_id = selectedMonitor.id
+    }
     const r = await callVerb('screen_record.start', startArgs)
     if (!r.ok) {
       setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'could not start capture'}`)
       setPhase('error')
       return
     }
-    const res = r.result as { capture_id: string; out_dir?: string }
+    const res = r.result as { capture_id: string; out_dir?: string; cadence?: RecordingCadence }
+    setCaptureCadence(res.cadence ?? null)
     captureRef.current = res.capture_id
     recordStartedAtRef.current = Date.now()
     setPhase('recording')
@@ -462,7 +462,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
         if (left <= 0) void finalize(res.capture_id, null)
       }
     }, 250)
-  }, [capMs, fps, audio, systemAudio, keys, rawCapture, monitorIdx, monitors, windowTargetId, selectedWindowMissing, finalize, project, onClipAdded, studio])
+  }, [capMs, fps, customFpsError, audio, systemAudio, keys, rawCapture, monitorIdx, monitors, windowTargetId, selectedWindowMissing, finalize, project, onClipAdded, studio])
 
   // Manual STOP — ends an open-ended (or capped) capture right now.
   const stop = useCallback(() => {
@@ -496,6 +496,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // project isn't open / capture cannot start (matches the button's disabled state).
   const toggle = useCallback(() => {
     if (audioProbeRunning) return
+    if (micTestRunning) return
     const now = Date.now()
     if (now - lastToggleRef.current < 400) return // de-dupe the global+in-page double-fire
     lastToggleRef.current = now
@@ -504,7 +505,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     } else if (phase === 'idle' || phase === 'done' || phase === 'error') {
       if (startAllowed !== false) void start() // start() auto-creates a project if none is open
     }
-  }, [audioProbeRunning, phase, project, startAllowed, start, stop])
+  }, [audioProbeRunning, micTestRunning, phase, project, startAllowed, start, stop])
 
   // A SINGLE key (F9) toggles Start ⇄ Stop — no 3-key chord.
   //
@@ -541,7 +542,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Clean up the tick on unmount.
   useEffect(() => () => { clearTick() }, [])
 
-  const busy = phase === 'recording' || phase === 'finalizing' || audioProbeRunning
+  const busy = phase === 'recording' || phase === 'finalizing' || audioProbeRunning || micTestRunning
 
   // Staleness guard: the user's open windows change while the Record tab sits open
   // (they alt-tab, open Chrome, close an app), but the picker only probed on mount —
@@ -777,26 +778,23 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                 })}
               </div>
             </div>
-            <div className="rec__field rec__field--fps">
-              <span className="rec__label">Frame rate</span>
-              <div className="rec__seg">
-                {[24, 30, 60].map((f) => (
-                  <button key={f} type="button" className={`rec__seg-btn${fps === f ? ' rec__seg-btn--on' : ''}`} data-cut-rec-fps={f} disabled={busy} onClick={() => setFps(f)}>{f}</button>
-                ))}
-              </div>
-            </div>
-            <label className="rec__toggle rec__toggle--mic" data-cut-rec-audio-toggle>
-              <input type="checkbox" data-cut-rec-audio-toggle-input checked={audio} disabled={busy} onChange={(e) => setAudio(e.target.checked)} /> Capture microphone audio
-            </label>
-            {audio && micWarm && (
-              <p className="rec__mic-warm" data-cut-rec-mic-warm={micWarm.live ? 'ready' : micWarm.supported ? 'pending' : 'none'}>
-                {micWarm.live
-                  ? `✓ Mic ready${micWarm.device ? ` — ${micWarm.device}` : ''}`
-                  : micWarm.supported
-                    ? 'Grant microphone access when prompted — warming it now so your first recording isn’t silent.'
-                    : 'No microphone detected on this machine.'}
-              </p>
-            )}
+            <RecordFrameRateControl
+              value={fps}
+              customValue={customFps}
+              disabled={busy}
+              onValueChange={setFps}
+              onCustomValueChange={updateCustomFps}
+            />
+            <p className="rec__fps-status" data-cut-rec-cadence>
+              {requestedCadenceLabel(captureCadence, fps)} · {probedAverageCadenceLabel(captureCadence)}
+            </p>
+            <MicInputControl
+              audio={audio}
+              disabled={busy}
+              idle={phase === 'idle'}
+              onAudioChange={setAudio}
+              onTestingChange={setMicTestRunning}
+            />
             <label className="rec__toggle rec__toggle--system" data-cut-rec-system-audio-toggle title="Capture the desktop/app sound (e.g. a game) onto its OWN audio track, separate from the mic">
               <input type="checkbox" data-cut-rec-system-audio-toggle-input checked={systemAudio} disabled={busy} onChange={(e) => setSystemAudio(e.target.checked)} /> Capture system / desktop audio (game sound)
             </label>
@@ -846,7 +844,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                 type="button"
                 className="rec__start"
                 data-cut-action="record-start"
-                disabled={busy || startAllowed === false || selectedWindowMissing}
+                disabled={busy || startAllowed === false || selectedWindowMissing || Boolean(customFpsError)}
                 onClick={() => void start()}
               >
                 ● Start recording ({SHORTCUT_LABEL})

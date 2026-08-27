@@ -1,0 +1,54 @@
+//! Classification helpers that keep v1 checkpoint recovery out of pause-owned captures.
+
+use std::path::Path;
+
+use record_recovery::{is_plain_regular_file, RECORDING_SESSION_JOURNAL_FILE};
+
+pub(super) enum PauseSessionOwnership {
+    Absent,
+    Present,
+}
+
+/// The v1 scanner does not parse, repair, or consume a pause-session journal.
+/// Its mere local presence reserves the capture for the pause-aware owner.
+pub(super) fn pause_session_ownership(
+    root: &Path,
+) -> Result<PauseSessionOwnership, std::io::Error> {
+    let path = root.join(RECORDING_SESSION_JOURNAL_FILE);
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(PauseSessionOwnership::Absent)
+        }
+        Err(error) => Err(error),
+        Ok(_) if is_plain_regular_file(&path).map_err(std::io::Error::other)? => {
+            Ok(PauseSessionOwnership::Present)
+        }
+        Ok(_) => Err(std::io::Error::other(
+            "pause-session journal is linked or not a local regular file",
+        )),
+    }
+}
+
+/// A normal v1 completion publishes `project.json` before its receipt. This
+/// recognizes only the fixed local source leaf; metadata never redirects it.
+pub(super) fn has_sealed_normal_project(root: &Path) -> bool {
+    let project = root.join("project.json");
+    let source = root.join("source.mp4");
+    if !is_plain_regular_file(&project).unwrap_or(false)
+        || !is_plain_regular_file(&source).unwrap_or(false)
+    {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(project) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    value
+        .get("source_video")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| Path::new(path).file_name())
+        .and_then(|name| name.to_str())
+        == Some("source.mp4")
+}

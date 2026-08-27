@@ -29,6 +29,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { callVerb, type Project } from '../../lib/client'
+import NativeFolderPicker from '../../components/NativeFolderPicker'
 import { Icon } from '../../icons'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
 import '../drawer.css'
@@ -429,11 +430,10 @@ export default function AssembleDrawer({ project, playheadMs = 0, onSeek, onClos
                 <input className="cd-input" data-cut-assemble-query placeholder="e.g. city traffic at night"
                   value={query} onChange={(e) => setQuery(e.target.value)} />
               </label>
-              <label className="cd-field">
-                <span className="cd-field-label">Media folder</span>
-                <input className="cd-input cd-input--mono" data-cut-assemble-dir placeholder="/path/to/video clips"
-                  value={brollDir} onChange={(e) => setBrollDir(e.target.value)} />
-              </label>
+              <NativeFolderPicker kind="assemble" label="Media folder" dialogTitle="Choose b-roll folder — ShellX Cut"
+                value={brollDir} disabled={busy} onChooseStart={() => setErr(null)}
+                onDesktopRequired={() => setNote('Open the desktop app to choose a local b-roll folder.')}
+                onSelected={(selected) => { reset(); setBrollDir(selected); setNote('B-roll folder selected.') }} />
               <div className="cd-row">
                 <label className="cd-field cd-field--inline">
                   <span className="cd-field-label">Place at (s)</span>
@@ -451,7 +451,7 @@ export default function AssembleDrawer({ project, playheadMs = 0, onSeek, onClos
                     onChange={(e) => setBrollDurS(Math.max(1, Math.min(120, Number(e.target.value) || 5)))} />
                 </label>
               </div>
-              <button className="cd-btn cd-btn--primary" data-cut-assemble-run disabled={busy || !project}
+              <button className="cd-btn cd-btn--primary" data-cut-assemble-run disabled={busy || !project || !brollDir.trim()}
                 onClick={() => void runBroll()}>
                 {busy ? 'Fetching…' : <><Icon name="videoClip" size={14} tone="media" /> Fill with b-roll</>}
               </button>

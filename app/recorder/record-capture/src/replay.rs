@@ -54,7 +54,9 @@ impl Capture for ReplayCapture {
             camera_artifact: None,
             webcam_video: None,
             audio: None,
+            microphone_outcome: crate::MicrophoneCaptureOutcome::NotRequested,
             settings,
+            verified_media: None,
         })
     }
 }

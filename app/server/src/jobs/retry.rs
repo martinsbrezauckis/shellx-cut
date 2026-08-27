@@ -4,6 +4,8 @@ use super::{persist, JobManager, JobOutcome, JobRecord, JobState};
 use cut_core::CutError;
 use serde::{Deserialize, Serialize};
 
+const RETRIED_REASON: &str = "a retry attempt has already been admitted";
+
 /// Durable retry projection. Public job status exposes its eligibility and
 /// lineage while the persisted descriptor remains engine-private; the
 /// dispatcher never replays raw historical verb arguments.
@@ -22,13 +24,13 @@ pub struct JobRetry {
     pub descriptor: Option<JobRetryDescriptor>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobRetryDescriptor {
     ScreenRecordExport(ScreenRecordExportRetryDescriptor),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScreenRecordExportRetryDescriptor {
     pub project_revision: String,
     pub source: String,
@@ -118,8 +120,14 @@ impl JobRetry {
 
     pub(super) fn mark_retried(&mut self, child_id: &str) {
         self.eligible = false;
-        self.reason = Some("a retry attempt has already been admitted".into());
+        self.reason = Some(RETRIED_REASON.into());
         self.retried_by = Some(child_id.to_string());
+    }
+
+    pub(super) fn is_marked_retried_by(&self, child_id: &str) -> bool {
+        !self.eligible
+            && self.reason.as_deref() == Some(RETRIED_REASON)
+            && self.retried_by.as_deref() == Some(child_id)
     }
 }
 

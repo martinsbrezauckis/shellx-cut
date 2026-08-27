@@ -1,4 +1,4 @@
-import type { KeyboardEvent, MouseEvent } from 'react'
+import { memo, type KeyboardEvent, type MouseEvent } from 'react'
 import type { Track, WindowThumbs } from '../../lib/client'
 import { Icon } from '../../icons'
 import { useOfflineMedia } from '../../app/OfflineMediaContext'
@@ -52,7 +52,7 @@ interface TimelineTrackRowProps {
   onOpenTrackMenu: (trackId: string, x: number, y: number) => void
 }
 
-export default function TimelineTrackRow({
+const TimelineTrackRow = memo(function TimelineTrackRow({
   track,
   tracks,
   items,
@@ -196,4 +196,6 @@ export default function TimelineTrackRow({
       </div>
     </div>
   )
-}
+})
+
+export default TimelineTrackRow

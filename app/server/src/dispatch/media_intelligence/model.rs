@@ -15,6 +15,10 @@ pub(super) const ALL_KINDS: [&str; 6] = [
     "metadata",
 ];
 
+pub(super) fn generator_identity() -> String {
+    format!("shellx-cut/{}", env!("CARGO_PKG_VERSION"))
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ProjectSnapshot {
     pub(super) dir: PathBuf,

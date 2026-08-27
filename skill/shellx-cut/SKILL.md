@@ -5,10 +5,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-> **Engine v0.6.111.** Synced to the contract (`schema/verbs.json` — the single
+> **Engine v0.6.112.** Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **277 verbs across 33 domains** under the public verb contract.
-> **`reference.md` is the full 277-verb table —
+> the file): **278 verbs across 33 domains** under the public verb contract.
+> **`reference.md` is the full 278-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -197,6 +197,18 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   proves packets; Doctor opens no loopback/tap stream and cannot trigger the
 >   separate macOS Audio Capture prompt. This card does not gate screen-only
 >   recording.
+>   Windows/macOS Doctor monitor rows include an opaque, versioned native `id`
+>   only when an exact identity is available. Pass it unchanged as
+>   `screen_record.start{monitor_id}`; Cut re-enumerates and matches it exactly
+>   before capture. It is not a display name, ordinal, primary flag, geometry,
+>   or device path; never invent a replacement. The legacy full-display picker
+>   still accepts its documented `index` when `id` is absent, and Linux
+>   intentionally returns no in-app monitor rows.
+>   The visible **Test microphone** control tests System Default or the current
+>   selected source and reports one real peak. Windows/macOS selection consumes
+>   one current opaque Doctor token into private endpoint storage; public labels
+>   are generic `Microphone N`, Linux stays System Default only, and an absent
+>   saved choice refuses mic-enabled start rather than changing source.
 >   When the user deliberately chooses **Test system audio**, call
 >   `system_audio_probe{max_ms?:500..5000}` while a short sound is playing. This
 >   is the bounded consenting path: it may open the macOS Audio Capture prompt,
@@ -366,7 +378,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 277 tools, and same-engine
+the final proof of protocol negotiation, ping, all 278 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -505,9 +517,15 @@ first — that delete is undoable; the asset removal is not).
 For several missing sources, use `media.relink_preview {root}` first and treat
 its opaque `plan_hash` as a fresh, bounded evidence set. The preview refuses
 symlink traversal and only makes a row selectable when one candidate's **full
-SHA-256** exactly equals the asset's stored full identity. Duplicate exact
-candidates, sampled/missing source hashes, and filename/kind/duration matches
-are diagnostics, never authority to relink.
+SHA-256** exactly equals the asset's stored full identity. A unique candidate
+with exact basename, kind, stored byte size, and duration (audio/video) or
+dimensions (still) may be marked `metadata_review`; it is a disabled “Possible
+replacement — review individually” hint that directs the person to the normal
+one-file Relink flow. Available dimensions, container, or codec disagreement,
+missing stored probe/size, and tied private rankings refuse that hint. Duplicate
+exact candidates and sampled/missing source hashes remain diagnostics, never
+authority to relink. Preview diagnostics contain safe matched-fact labels only,
+not candidate paths, roots, raw probes, timestamps, ranks, or metadata values.
 
 Apply only selected eligible rows with `media.relink_apply {root, plan_hash,
 accept, request_id, expected_revision}`. It re-scans/re-hashes and writes one
@@ -517,23 +535,26 @@ Ctrl-Z promise. Preserve the `shellx-cut/media-relink-receipt/1` result for B6:
 it carries the project identity, revisions, plan hash, grouped op id, and each
 asset's expected hash/chosen path/disposition.
 
-### Portable package (B6, agent-only)
+### Portable package (B6)
 
-Do not use Library “Keep a copy” or loop `media.relink` to make a package.
-First call `project.package_plan {destination,name,b5_receipt?}`. It is a
-full-SHA-256 dry run over referenced media in every sequence and returns the
-exact `plan_hash`, byte totals, dedupe plan, and B5 receipt digest. Pass the B5
-receipt only when recovery repaired media; it must be the immutable result from
-the matching source revision. A plan refuses offline/symlinked sources, unsafe
-destinations, stale B5 evidence, and unsupported Motion-linked provenance.
+Do not use Library “Keep a copy” or loop `media.relink` to make a package. A
+person can use Projects → Make a copy: it uses a native destination-folder
+picker, shows the full-SHA-256 preview, and requires an explicit create
+confirmation. For direct API work, first call
+`project.package_plan {destination,name,b5_receipt?}`. It returns the exact
+`plan_hash`, byte totals, dedupe plan, current `target_status`, and B5 receipt
+digest. Pass the B5 receipt only when recovery repaired media; it must be the
+immutable result from the matching source revision. A plan refuses
+offline/symlinked sources, unsafe destinations, stale B5 evidence, and
+unsupported Motion-linked provenance.
 
 Then call `project.package_create {destination,name,plan_hash,b5_receipt?}` and
 wait on its `portable_package` job. It creates a new Cut-native `.cutproj` in a
 private same-parent stage, copies only referenced bytes, clears cache pointers,
 verifies a `package.manifest.json`, and publishes without replacement through
 the native Linux, macOS, or Windows no-clobber primitive. It does not append a
-source project op or change source paths/assets/media. This is not a human editor
-control; unknown targets fail closed rather than substituting a weaker publish.
+source project op or change source paths/assets/media; unknown targets fail
+closed rather than substituting a weaker publish.
 
 ### Project cache lifecycle
 
@@ -616,7 +637,9 @@ prefers a ready editing proxy so large or host-unsupported source codecs stay
 auditionable, with an explicit keyboard-accessible Play/Pause control. This
 uses one source range for both picture and linked audio at
 the current timeline playhead; it does not change Program playback while
-auditioning the source.
+auditioning the source. Audio-bearing sources also expose the same cached
+`media.waveform` projection used by the timeline, with In/Out/current markers
+and pointer or keyboard seeking bound to the Source transport.
 An online still image opens in that same monitor as an image preview. Choose a
 bounded `duration_ms` on one unlocked video destination for **Overwrite still**
 at the live playhead; the still surface has no source In/Out, transport, range
@@ -674,8 +697,10 @@ of depending on the sidecar process PATH.
 The human Render button and FFmpeg-backed export choices also run
 `verify.pregate {}` before starting output. High-risk preflight findings block
 the action; lower-risk warnings show a concise warning with collapsible details
-and a deliberate Continue button. The warning's Guide action opens the online
-manual anchor `cut.export.preflight`.
+and a deliberate Continue button. The warning's Guide action opens the bundled
+manual article `cut.export.preflight`; it does not open the preflight UI or
+start output. The currently published online manual remains legacy reference
+material while separately validated real-frontend publication is pending.
 
 Results land in the project: word-level timestamps (`receipts/<asset>.words.json`)
 and instrument facts — silence, scenes, beats, loudness, and `content_bbox`

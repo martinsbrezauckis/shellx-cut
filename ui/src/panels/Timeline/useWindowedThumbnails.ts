@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getWindowThumbs, type WindowThumbs } from '../../lib/client'
 import { msToPx, pxToMs, RAIL_W, type LaidItem } from './layout'
+import { buildTimelineVisibleRangeIndex } from './timelineVisibleRangeIndex'
 
 /** Target on-screen px per windowed thumbnail, close to NLE thumbnail density. */
 const WIN_THUMB_PX = 96
@@ -38,6 +39,9 @@ export function useWindowedThumbnails({
   viewW,
   scrollX,
 }: UseWindowedThumbnailsArgs): Map<string, WindowThumbs> {
+  // Timeline geometry does not change while scrolling. Build its range index
+  // once per geometry snapshot, then ask it only for viewport intersections.
+  const visibleRangeIndex = useMemo(() => buildTimelineVisibleRangeIndex(allItems), [allItems])
   const windowReqs = useMemo(() => {
     const reqs = new Map<string, WindowedThumbRequest>()
     const pxPerSec = msToPx(1000, zoom)
@@ -45,7 +49,7 @@ export function useWindowedThumbnails({
     const laneW = Math.max(200, viewW - RAIL_W)
     const viewLeftMs = pxToMs(scrollX, zoom)
     const viewRightMs = pxToMs(scrollX + laneW, zoom)
-    for (const it of allItems) {
+    for (const it of visibleRangeIndex.query(viewLeftMs, viewRightMs).items) {
       if (it.kind !== 'video' || it.isImage || !it.asset) continue
       if (it.srcInMs === undefined || it.srcOutMs === undefined) continue
       if (!filmstrips.has(it.asset)) continue
@@ -64,7 +68,7 @@ export function useWindowedThumbnails({
       reqs.set(it.id, { asset: it.asset, t0: Math.round(s0), t1: Math.round(s1), count })
     }
     return reqs
-  }, [allItems, filmstrips, zoom, viewW, scrollX])
+  }, [visibleRangeIndex, filmstrips, zoom, viewW, scrollX])
 
   const [windowedTiles, setWindowedTiles] = useState<Map<string, WindowThumbs>>(new Map())
   const winReqKey = useRef(new Map<string, string>())

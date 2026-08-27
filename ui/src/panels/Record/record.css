@@ -70,7 +70,7 @@
 .rec__field--mode { grid-column: 2; grid-row: 1; }
 .rec__toggle--mic { grid-column: 1; grid-row: 2; }
 .rec__toggle--system { grid-column: 2; grid-row: 2; }
-.rec__mic-warm { grid-column: 1 / -1; grid-row: 3; }
+.rec__mic-input { grid-column: 1; grid-row: 2 / span 3; min-width: 0; }
 .rec__audio-probe { grid-column: 1 / -1; grid-row: 4; }
 .rec__field--length { grid-column: 1; grid-row: 5; }
 .rec__field--fps { grid-column: 2; grid-row: 5; }
@@ -99,6 +99,22 @@
 .rec__seg-btn:hover:not(:disabled) { color: var(--ink, #f2f3f5); }
 .rec__seg-btn--on { background: var(--cut, #2563eb); color: #fff; }
 .rec__seg-btn:disabled { opacity: 0.45; cursor: default; }
+.rec__fps-custom {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ink-3, #aab1bd); font: 600 var(--fs-ui-xs, 11px)/1 var(--sans);
+}
+.rec__fps-input {
+  width: 62px; padding: 7px 8px; border: 1px solid var(--border, #2a2e36); border-radius: 7px;
+  background: var(--surface-2, #1b1e24); color: var(--ink, #f2f3f5); font: 600 var(--fs-ui-sm)/1 var(--sans);
+}
+.rec__fps-input:focus { outline: 2px solid var(--cut, #2563eb); outline-offset: 1px; }
+.rec__fps-input[aria-invalid="true"] { border-color: #ef4444; }
+.rec__fps-input:disabled { opacity: 0.45; cursor: default; }
+.rec__fps-status {
+  flex-basis: calc(100% - 106px); margin: -6px 0 0 106px; color: var(--ink-4, #6b7280);
+  font: var(--fs-ui-xs, 11px)/1.4 var(--sans);
+}
+.rec__fps-status--error { color: #ff9a9a; }
 
 .rec__toggle { display: flex; align-items: center; gap: 8px; color: var(--ink-2, #d6dae0); font: var(--fs-ui-sm)/1 var(--sans); cursor: pointer; }
 
@@ -146,11 +162,16 @@
 .rec__err { margin: 0; color: #ff9a9a; font: var(--fs-ui-sm)/1.4 var(--sans); }
 .rec__hint { margin: 0; color: var(--ink-4, #6b7280); font: var(--fs-ui-xs, 11px)/1.4 var(--sans); }
 
-/* Mic-warm indicator under the microphone toggle, aligned under the label. */
-.rec__mic-warm { margin: -6px 0 0 24px; font: var(--fs-ui-xs, 11px)/1.4 var(--sans); }
-.rec__mic-warm[data-cut-rec-mic-warm="ready"] { color: #7ee0b0; }
-.rec__mic-warm[data-cut-rec-mic-warm="pending"] { color: var(--cut-soft, #93b4ff); }
-.rec__mic-warm[data-cut-rec-mic-warm="none"] { color: var(--ink-4, #6b7280); }
+.rec__mic-input-detail { display: grid; gap: 7px; margin: 8px 0 0 24px; }
+.rec__mic-input-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.rec__mic-input-device { min-width: 0; overflow: hidden; color: var(--ink-3, #aab1bd); font: var(--fs-ui-xs, 11px)/1.35 var(--sans); text-overflow: ellipsis; white-space: nowrap; }
+.rec__mic-meter { height: 5px; overflow: hidden; border-radius: 4px; background: var(--surface-3, #282d36); }
+.rec__mic-meter-fill { display: block; height: 100%; min-width: 0; background: #7ee0b0; transition: width 120ms ease; }
+.rec__mic-status { margin: 0; color: var(--ink-4, #6b7280); font: var(--fs-ui-xs, 11px)/1.4 var(--sans); }
+.rec__mic-status[data-cut-rec-mic-status="signal"] { color: #7ee0b0; }
+.rec__mic-status[data-cut-rec-mic-status="quiet"] { color: #f5c451; }
+.rec__mic-status[data-cut-rec-mic-status="error"] { color: #ff9a9a; }
+.rec__mic-input .rec__source-note { margin-top: 0; }
 
 .rec__audio-probe { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .rec__audio-probe-status { color: var(--ink-4, #6b7280); font: var(--fs-ui-xs, 11px)/1.4 var(--sans); }

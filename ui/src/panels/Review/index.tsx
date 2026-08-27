@@ -13,7 +13,6 @@ import { callVerb } from '../../lib/client'
 import type { OpRecord, Project, RenderReceipt } from '../../lib/client'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import DiffView from './DiffView'
-import './mock' // deterministic offline demo; no-op unless ?mock=1 is present
 import OpsFeed from './OpsFeed'
 import QC from './QC'
 import Receipts from './Receipts'

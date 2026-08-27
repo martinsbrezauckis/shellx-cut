@@ -552,6 +552,11 @@ async fn dispatch_validated(
         DispatchTarget::ScreenRecordDoctor => crate::screen_record::screen_record_doctor(args)
             .await
             .into(),
+        DispatchTarget::ScreenRecordMicrophoneSelection => {
+            crate::screen_record::microphone::selection_handler(args)
+                .await
+                .into()
+        }
         DispatchTarget::ScreenRecordSystemAudioProbe => {
             crate::screen_record::system_audio_capture::probe_handler(args)
                 .await

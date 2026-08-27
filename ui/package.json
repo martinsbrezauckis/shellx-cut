@@ -1,7 +1,7 @@
 {
   "name": "shellx-cut-ui",
   "private": true,
-  "version": "0.6.111",
+  "version": "0.6.112",
   "type": "module",
   "description": "ShellX Cut UI — Vite + React + TS app shell (UI contract). The UI is an API client, nothing more: all state via verbs/WS, zero local mutation.",
   "scripts": {
@@ -13,7 +13,9 @@
     "test:stock-provider-catalog": "tsx public-tests/stock-provider-catalog.test.ts",
     "test:source-navigation": "tsx public-tests/source-navigation.test.ts",
     "test:media-intelligence": "tsx public-tests/media-intelligence-search.test.ts",
-    "test:manual-frontend-contract": "tsx public-tests/manual-frontend-contract.test.ts",
+    "test:manual-frontend-contract": "tsx public-tests/manual-frontend-contract.test.ts && tsx public-tests/manual-local-deeplink.test.ts",
+    "test:manual-local-deeplink-browser": "node --test public-tests/manual-local-deeplink-browser.test.mjs",
+    "test:startup-readiness": "tsx public-tests/startup-readiness.test.ts",
     "test:package-command-contract": "node public-tests/package-command-contract.test.mjs",
     "verify-generated-lifecycle": "node public-tests/verify-generated-asset-lifecycle.mjs",
     "verify-publish-package": "node public-tests/verify-publish-package.mjs",

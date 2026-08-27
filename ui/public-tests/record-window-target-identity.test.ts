@@ -29,7 +29,7 @@ assert.match(record, /value=\{`win:\$\{w\.id\}`\}/, 'the visible option carries 
 assert.match(record, /startArgs\.window = windowTargetId/, 'the UI returns the identity unchanged')
 assert.match(record, /selectedWindowMissing/, 'the UI keeps a vanished selection visible')
 assert.match(record, /selected window is no longer available/, 'the UI explains the refusal')
-assert.match(record, /disabled=\{busy \|\| startAllowed === false \|\| selectedWindowMissing\}/, 'a vanished target cannot start capture')
+assert.match(record, /disabled=\{[^}]*selectedWindowMissing[^}]*\}/, 'a vanished target cannot start capture')
 assert.doesNotMatch(record, /startArgs\.window = windowTitle/, 'the UI never submits display copy')
 
 for (const name of ['screen_record.start', 'debug.screenshot']) {
@@ -39,6 +39,7 @@ for (const name of ['screen_record.start', 'debug.screenshot']) {
   assert.match(verb.args.properties.window.description, /title.*never/i, `${name} rejects title selection`)
 }
 const doctor = schema.verbs.find((candidate: { name?: string }) => candidate.name === 'screen_record.doctor')
-assert.match(doctor.result, /windows\[\]\.id.*passed unchanged/i, 'Doctor owns the picker-to-capture identity contract')
+assert.match(doctor.result, /windows\[\]\.id.*passes the selected id unchanged.*revalidates it/i, 'Doctor owns the picker-to-capture identity contract')
+assert.match(doctor.result, /title and app remain display-only/i, 'Doctor keeps window presentation fields non-authoritative')
 
 console.log('PASS stable native recording-window identity contract')

@@ -14,13 +14,16 @@ import {
 } from '../layout/panelPersistGuard'
 import type { LayoutState, RightTab } from '../layout/useLayout'
 import PanelErrorBoundary from '../components/PanelErrorBoundary'
-import Review from '../panels/Review'
 import type { ReviewTab, ReviewTabRequest } from '../panels/Review'
 
 const Inspector = lazy(() => import('../panels/Inspector'))
 const AgentChat = lazy(() => import('../panels/AgentChat'))
 const GradeDrawer = lazy(() => import('../panels/Grade'))
 const MixerDrawer = lazy(() => import('../panels/Mixer'))
+// The default layout keeps the Review rail collapsed and unpinned. Keep its
+// receipt/QC body out of the entry chunk until the user deliberately pins it.
+// This lets the real app root commit without parsing an inactive surface.
+const Review = lazy(() => import('../panels/Review'))
 
 interface AppRightRailProps {
   /** Keep event bridges mounted while a full workspace temporarily hides the rail. */
@@ -333,17 +336,19 @@ export default function AppRightRail({
           </div>
         )}
         {railPinned && (
-          <Review
-            project={project}
-            playheadMs={playheadMs}
-            ops={ops}
-            receipts={receipts}
-            onReject={onReject}
-            onUndo={onUndo}
-            onRedo={onRedo}
-            reviewTabRequest={reviewTabRequest}
-            onCollapse={() => setLayout((l) => ({ ...l, railCollapsed: true }))}
-          />
+          <Suspense fallback={<SurfaceLoading label="Loading review" />}>
+            <Review
+              project={project}
+              playheadMs={playheadMs}
+              ops={ops}
+              receipts={receipts}
+              onReject={onReject}
+              onUndo={onUndo}
+              onRedo={onRedo}
+              reviewTabRequest={reviewTabRequest}
+              onCollapse={() => setLayout((l) => ({ ...l, railCollapsed: true }))}
+            />
+          </Suspense>
         )}
       </div>
     </>

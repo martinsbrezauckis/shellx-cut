@@ -33,32 +33,99 @@ use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 mod autoedit_args;
+mod cadence;
 mod capture_artifacts;
 mod capture_files;
+mod capture_registry;
+mod capture_session_control;
 mod capture_terminal;
 mod containment;
+mod doctor_projection;
 mod export_audio;
 mod export_job;
 mod export_progress;
 pub(crate) mod finalization_budget;
+pub(crate) mod microphone;
+mod monitor_start_admission;
 mod polish;
+// REC-PAUSE-01 is a pure internal projection contract. It intentionally has no
+// verb, filesystem writer, or live-worker caller until the pause-aware capture
+// coordinator can produce the journal and sealed run inputs it requires.
+#[allow(dead_code)]
+mod pause_projection;
+// REC-PAUSE-01 strict CFR qualification remains a private pure plan. It has
+// no writer, verb, live capture, or public product surface.
+#[allow(dead_code)]
+mod pause_projection_frame_grid;
+// REC-PAUSE-01 execution remains a private seam: it is not wired to a verb,
+// native worker, or capture lifecycle until those owners can supply sealed facts.
+#[allow(dead_code)]
+mod pause_projection_executor;
+// REC-PAUSE-01 private session ownership. This is a platform-neutral command,
+// fact, journal, and projection-admission seam only; no public caller or live
+// native adapter exists in this slice.
+#[allow(dead_code)]
+mod pause_session_owner;
+#[cfg(test)]
+mod pause_session_owner_tests;
+// REC-PAUSE-02 is a pure private command/fact protocol. It has no native
+// worker registry, journal, public verb, or lifecycle caller in this slice.
+#[allow(dead_code)]
+mod pause_worker_protocol;
+#[cfg(test)]
+mod pause_worker_protocol_tests;
+// REC-PAUSE-01 binds only logical boundaries and durable private evidence. It
+// deliberately has no live-worker caller until native capture can prove each
+// selected stream's per-run seal and restart facts.
 mod raw_mux;
 pub(crate) mod recovery;
+// REC-REGION-01 owns short-lived native-picker selections privately. It has no
+// verb, UI, native-picker caller, marker, receipt, or capture-start wiring
+// until a later slice can consume its exact monitor and crop contract.
+#[allow(dead_code)]
+mod region_selection;
+#[cfg(test)]
+mod region_selection_tests;
+#[allow(dead_code)]
+mod run_seal_coordinator;
+#[cfg(test)]
+mod run_seal_coordinator_tests;
 mod screenshot;
 mod start_readiness;
 pub(crate) mod system_audio;
 pub(crate) mod system_audio_capture;
 mod windows_path;
+// REC-PAUSE-01 server-only translation. It has no public caller: a later
+// native lifecycle hook must supply a verified screen fragment/event factory.
+#[allow(dead_code)]
+mod windows_pause_adapter;
+#[allow(dead_code)]
+mod windows_pause_adapter_events;
+// REC-PAUSE-01 private owner composition. It is Windows-only in production and
+// has injected Linux ordering tests; it remains absent from every public path.
+#[allow(dead_code)]
+mod windows_pause_evidence;
+#[allow(dead_code)]
+mod windows_pause_evidence_artifacts;
+#[allow(dead_code)]
+mod windows_pause_evidence_contract;
+#[allow(dead_code)]
+mod windows_pause_session;
+// The private constructor is deliberately unwired until native qualification.
+#[allow(dead_code)]
+#[cfg(windows)]
+mod windows_pause_session_start;
 pub(crate) use autoedit_args::for_capture as autoedit_args_for_capture;
 pub(crate) use capture_artifacts::{camera_artifact_for_capture, resolve_stop_artifacts};
 pub(crate) use capture_files::{
     optional_plain_file_in_dir, plain_existing_file_under_dir, plain_existing_file_under_project,
 };
+pub use capture_registry::stop_capture;
+use capture_registry::{capture_sessions, reserve_capture};
+use capture_session_control::CaptureSessionControl;
 pub(crate) use capture_terminal::read_failure as capture_terminal_failure;
 pub(crate) use containment::{
     capture_file, create_capture_dir, existing_capture_dir, publish_marker,
@@ -75,78 +142,19 @@ pub(crate) use raw_mux::mux_raw_sources;
 pub(crate) use recovery::recovery_status_handler;
 pub use screenshot::capture_screenshot_png;
 
-/// OPEN-ENDED CAPTURE registry: process-global map from `capture_id` → the
-/// external stop flag for that running capture. `start_capture` inserts the flag
-/// (cloned into the backend's `capture()` call); `stop_capture` sets it so the
-/// backend's poll loop ends the recording PROMPTLY (instead of running to a fixed
-/// deadline), then the caller's file-poll finalizes as before. Stored behind a
-/// `OnceLock<Mutex<…>>` so it needs no external dep and is lazily initialized.
-static CAPTURE_STOPS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
-
 const MIN_CAPTURE_FPS: f64 = 1.0;
 const MAX_CAPTURE_FPS: f64 = 240.0;
 
-fn capture_stops() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
-    CAPTURE_STOPS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-struct CaptureReservation {
-    capture_id: String,
-}
-
-impl Drop for CaptureReservation {
-    fn drop(&mut self) {
-        release_capture(&self.capture_id);
-    }
-}
-
-fn reserve_capture(
-    capture_id: String,
-    stop: Arc<AtomicBool>,
-) -> Result<CaptureReservation, CutError> {
-    let mut map = match capture_stops().lock() {
-        Ok(m) => m,
-        Err(p) => p.into_inner(),
-    };
-    if let Some(active_id) = map.keys().next() {
-        return Err(CutError::new(
-            error_codes::CONFLICT,
-            "a screen recording is already active",
-            format!("capture {active_id} still owns the recording devices"),
-        )
-        .with_suggested_action(
-            "stop the active recording and wait for it to finalize before starting another",
-        ));
-    }
-    map.insert(capture_id.clone(), stop);
-    Ok(CaptureReservation { capture_id })
-}
-
-fn release_capture(capture_id: &str) {
-    let mut map = match capture_stops().lock() {
-        Ok(m) => m,
-        Err(p) => p.into_inner(),
-    };
-    map.remove(capture_id);
-}
-
-/// Signal the running capture `capture_id` to stop EARLY. Sets its registry
-/// flag (if present) so an OPEN-ENDED capture ends now. The worker keeps its registry
-/// reservation until every capture thread has finished. Returns `true` if a flag was found+set (the
-/// capture was tracked in THIS cutd process), `false` if not — e.g. cutd restarted
-/// mid-capture and lost the in-memory flag, in which case the caller still falls back
-/// to the duration-bounded file poll. Idempotent.
-pub fn stop_capture(capture_id: &str) -> bool {
-    let map = match capture_stops().lock() {
-        Ok(m) => m,
-        Err(p) => p.into_inner(), // a poisoned lock still lets us signal stop
-    };
-    if let Some(flag) = map.get(capture_id) {
-        flag.store(true, Ordering::Relaxed);
-        true
-    } else {
-        false
-    }
+/// Whether this server build configures the live recorder with a passive
+/// cursor/click/scroll source. The target-specific dependency declarations
+/// enable exactly one such backend on desktop targets; unsupported targets must
+/// not advertise `InputEvents` merely because key capture was requested.
+const fn configured_passive_input_capture() -> bool {
+    cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    ))
 }
 
 fn validate_capture_settings(duration_ms: Option<u64>, fps: f64) -> Result<(), CutError> {
@@ -233,10 +241,15 @@ pub struct RecordCard {
 
 /// One display the user can pick as the capture target (mirrors
 /// `record_capture::MonitorInfo`, kept field-stable for the
-/// `screen_record.doctor` result the UI's monitor PICKER consumes). The 1-based
-/// `index` is what `screen_record.start{monitor}` expects.
+/// `screen_record.doctor` result the UI's monitor PICKER consumes). The opaque
+/// `id` is passed unchanged to `screen_record.start{monitor_id}` when present;
+/// the 1-based `index` remains the compatible path when it is absent.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct MonitorInfo {
+    /// Opaque native display identity when available. It has no
+    /// title/ordinal/geometry fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub index: u32,
     pub name: String,
     pub width: u32,
@@ -333,17 +346,7 @@ pub fn doctor() -> RecordDoctor {
     let start_allowed = start_readiness::start_allowed(&cards);
     // Enumerate displays for the in-app picker. Linux deliberately returns an
     // empty successful result because its portal owns source selection.
-    let monitors = monitor_probe
-        .unwrap_or_default()
-        .into_iter()
-        .map(|m| MonitorInfo {
-            index: m.index,
-            name: m.name,
-            width: m.width,
-            height: m.height,
-            primary: m.primary,
-        })
-        .collect();
+    let monitors = doctor_projection::monitors(monitor_probe.unwrap_or_default());
     // Enumerate application windows for the in-app picker (Windows/macOS; empty
     // on Linux). Mirror record_capture::WindowInfo 1:1.
     let windows = record_capture::list_windows()
@@ -377,17 +380,11 @@ fn record_card(c: record_capture::Card) -> RecordCard {
     }
 }
 
-/// screen_record.doctor{} — report the recorder's capability cards (the environment
-/// doctor, the recorder analog of system.doctor). Calls `record_capture::doctor()`
-/// IN-PROCESS (no child process), maps each card, and rolls up a `ready` flag.
-/// The bounded screen probe stores no image data and will not use a portal picker.
-///
-/// No project is required.
 pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize, Default)]
     struct Args {
-        // The Record surface passes warm_mic:true on mount when mic capture is on, so
-        // we answer the OS permission prompt before the user's first short recording.
+        // Warm is an explicit Test, audio off→on, or Start action only. Doctor
+        // enumeration itself must never open a microphone stream.
         #[serde(default)]
         warm_mic: bool,
     }
@@ -397,19 +394,17 @@ pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
         // cpal may enter an unbounded native-driver call on Windows. Keep that
         // blocking work off the async request runtime, and return an honest
         // bounded result even if the driver ignores the low-level stop flag.
-        let task = tokio::task::spawn_blocking(warm_mic);
+        let task = tokio::task::spawn_blocking(microphone::warm_projection);
         Some(
             match tokio::time::timeout(std::time::Duration::from_secs(4), task).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(error)) => json!({
                     "live": false,
-                    "device": null,
                     "supported": true,
                     "error": format!("microphone warm-up worker failed: {error}"),
                 }),
                 Err(_) => json!({
                     "live": false,
-                    "device": null,
                     "supported": true,
                     "timed_out": true,
                     "error": "microphone warm-up exceeded 4 seconds",
@@ -419,6 +414,7 @@ pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
     } else {
         None
     };
+    let microphone = microphone::doctor_projection();
     Ok(VerbResult::ok(json!({
         "cards": d.cards,
         "ready": d.ready,
@@ -426,14 +422,18 @@ pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
         "monitors": d.monitors,
         "windows": d.windows,
         "mic_warm": mic_warm,
+        "microphones": microphone.microphones,
+        "microphone_selection": microphone.microphone_selection,
     })))
 }
 
 /// screen_record.start{duration_ms?, fps?, audio?, system_audio?, studio?,
-/// keys?, monitor?, window?, rationale?} —
+/// keys?, monitor?, monitor_id?, window?, rationale?} —
 /// kick off a live, duration-bounded or open-ended capture in the background. `window`
 /// accepts only an opaque id from the latest `screen_record.doctor.windows` enumeration;
 /// titles are display-only, and a vanished identity fails instead of falling back.
+/// `monitor_id` likewise accepts only a current exact Doctor identity, and is
+/// revalidated by the native backend immediately before capture.
 pub(crate) async fn screen_record_start(
     state: &AppState,
     args: Value,
@@ -451,6 +451,7 @@ pub(crate) async fn screen_record_start(
         #[serde(default)]
         keys: bool,
         monitor: Option<u32>,
+        monitor_id: Option<String>,
         window: Option<String>,
         rationale: Option<String>,
     }
@@ -458,10 +459,23 @@ pub(crate) async fn screen_record_start(
     let duration_ms: Option<u64> = a.duration_ms;
     let fps = a.fps.unwrap_or(30.0);
     validate_capture_settings(duration_ms, fps)?;
+    let cadence = cadence::from_server_fps(fps)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     let recorder_doctor = doctor();
     start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
-
+    let monitor_target = monitor_start_admission::admit(
+        a.monitor,
+        a.monitor_id.as_deref(),
+        a.window.is_some(),
+        &recorder_doctor.monitors,
+    )?;
+    // `audio:false` retains its historical behavior and never reads this
+    // preference. A missing selected microphone refuses before any worker starts.
+    let microphone_source = if a.audio {
+        microphone::source_for_start()?
+    } else {
+        record_capture::MicrophoneSource::SystemDefault
+    };
     let capture_id = new_capture_id();
     windows_path::ensure_pre_marker_path(&dir, &capture_id)?;
     let recovery_scan = recovery::scan_recovery_for_project(&dir)?;
@@ -474,6 +488,7 @@ pub(crate) async fn screen_record_start(
         "duration_ms": duration_ms,
         "open_ended": duration_ms.is_none(),
         "fps": fps,
+        "cadence": cadence,
         "audio": a.audio,
         "system_audio": a.system_audio,
         "studio": a.studio,
@@ -491,9 +506,11 @@ pub(crate) async fn screen_record_start(
         duration_ms,
         fps,
         a.audio,
+        microphone_source,
         a.system_audio,
         a.keys,
-        a.monitor,
+        monitor_target.legacy_index,
+        monitor_target.exact_id,
         a.window,
         dir.clone(),
         out_dir.clone(),
@@ -510,6 +527,7 @@ pub(crate) async fn screen_record_start(
         "status": "recording",
         "duration_ms": duration_ms,
         "open_ended": duration_ms.is_none(),
+        "cadence": cadence,
         "studio_events": crate::screen_record_studio::studio_events_path(&out_dir),
         "recovery_scan": { "recovered": recovery_scan.recovered, "deferred": recovery_scan.deferred, "failed_closed": recovery_scan.failed_closed },
         "note": if duration_ms.is_none() {
@@ -528,15 +546,6 @@ pub(crate) fn screen_record_cache_dir(project_dir: &Path) -> Result<PathBuf, Cut
 /// Scan on daemon/project open and again immediately before a fresh capture. A scan
 /// only ever promotes independently verified finalized checkpoints; live or PID-
 /// ambiguous owners are reported as deferred and never signalled.
-/// Warm the default mic on entering the Record surface (see
-/// `record_capture::warm_mic`) — opens it briefly via the recorder's own cpal path so
-/// the OS permission prompt + stream init happen BEFORE the user records. Returns
-/// `{live, device, supported}`, surfaced by `screen_record.doctor{warm_mic:true}`.
-pub fn warm_mic() -> serde_json::Value {
-    let w = record_capture::warm_mic(1500);
-    serde_json::json!({ "live": w.live, "device": w.device, "supported": w.supported })
-}
-
 /// Start a live capture on a background thread (in-process). The thread runs
 /// `record_capture::live_capture().capture(cfg, stop)` — which finalizes the source
 /// video + EventTrack and writes the `RecordingProject` JSON to `project_path` once
@@ -576,9 +585,11 @@ pub fn start_capture(
     duration_ms: Option<u64>,
     fps: f64,
     audio: bool,
+    microphone_source: record_capture::MicrophoneSource,
     system_audio: bool,
     keys: bool,
     monitor: Option<u32>,
+    monitor_id: Option<String>,
     window: Option<String>,
     project_dir: PathBuf,
     out_dir: PathBuf,
@@ -590,9 +601,11 @@ pub fn start_capture(
         duration_ms,
         fps,
         audio,
+        microphone_source,
         system_audio,
         keys,
         monitor,
+        monitor_id,
         window,
         project_dir,
         out_dir,
@@ -616,9 +629,11 @@ fn start_capture_with_backend<F>(
     duration_ms: Option<u64>,
     fps: f64,
     audio: bool,
+    microphone_source: record_capture::MicrophoneSource,
     system_audio: bool,
     keys: bool,
     monitor: Option<u32>,
+    monitor_id: Option<String>,
     window: Option<String>,
     project_dir: PathBuf,
     out_dir: PathBuf,
@@ -631,6 +646,7 @@ where
 {
     align_ffmpeg_env();
     validate_capture_settings(duration_ms, fps)?;
+    let capture_cadence = cadence::from_server_fps(fps)?;
     // Normalize the `\\?\` verbatim prefix off the capture dir BEFORE deriving
     // any path. On Windows the caller canonicalizes the project dir → verbatim path;
     // the windows-capture backend + ffmpeg reject it (os error 123 — "filename,
@@ -639,6 +655,13 @@ where
     // `system.wav` are both derived from `out_dir`, so one strip fixes both.
     let out_dir = strip_verbatim_prefix(&out_dir);
     windows_path::ensure_wgc_checkpoint_path_supported(&out_dir)?;
+    let control = CaptureSessionControl::new(
+        duration_ms,
+        audio,
+        system_audio,
+        configured_passive_input_capture(),
+    );
+    let clock = record_capture::CaptureClock::new();
     let cfg = record_capture::CaptureConfig {
         // Pass `None` straight through for OPEN-ENDED ("record until I stop").
         // The backend treats None as "run until the external stop flag is set".
@@ -646,8 +669,13 @@ where
         fps,
         capture_cursor: false, // hide the OS cursor; polish re-renders a synthetic one
         monitor,
+        // When set, this exact opaque Doctor identity is authoritative over the
+        // legacy ordinal. Native backends re-enumerate and refuse rather than
+        // substituting a display if it disappeared.
+        monitor_id,
         window, // exact opaque app-window id from Doctor (None = whole screen)
         audio,
+        microphone_source,
         // On macOS the SCK backend captures desktop/system audio inside the same
         // stream (the avfoundation `:default` loopback recorded the MIC, not system audio).
         // Linux/Windows ignore this field and capture system audio via their parallel loopback
@@ -659,23 +687,31 @@ where
             manifest_dir: out_dir.to_string_lossy().into_owned(),
             interval_ms: recovery::CHECKPOINT_INTERVAL_MS,
         }),
-        clock: Some(record_capture::CaptureClock::new()),
+        clock: Some(clock.clone()),
     };
     let system_audio_lease = system_audio_capture::reserve(system_audio)?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let reservation = reserve_capture(capture_id.clone(), stop.clone())?;
-    let stop_for_thread = stop.clone();
-    std::thread::Builder::new()
+    let reservation = reserve_capture(capture_id.clone(), control.clone())?;
+    if let Err(error) = control.observe_backend_start(clock) {
+        control.terminalize();
+        return Err(CutError::new(
+            error_codes::IO,
+            "could not observe screen-record backend start",
+            error.to_string(),
+        ));
+    }
+    let control_for_thread = control.clone();
+    let worker = std::thread::Builder::new()
         .name(format!("cut-capture-{capture_id}"))
         .spawn(move || {
             let _reservation = reservation;
+            let _terminal_guard = control_for_thread.terminal_guard();
             let _system_audio_lease = system_audio_lease;
             // Linux/Windows capture system audio beside the screen backend and
             // join it before completion; macOS owns its tap inside native capture.
             let system_audio_worker = if system_audio && !cfg!(target_os = "macos") {
                 let sys_out = out_dir.join("system.wav");
                 let sys_log = log_path.clone();
-                let sys_stop = stop_for_thread.clone();
+                let sys_stop = control_for_thread.stop_signal();
                 let clock = cfg.clock.clone();
                 std::thread::Builder::new()
                     .name("cut-system-audio".into())
@@ -710,9 +746,11 @@ where
             // threads; only this factory crosses the spawn boundary).
             let captured = (|| {
                 let cap = backend()?;
-                cap.capture(&cfg, stop_for_thread.clone())
+                cap.capture(&cfg, control_for_thread.stop_signal())
             })();
-            stop_for_thread.store(true, Ordering::Relaxed);
+            // A natural deadline and a backend error both stop the private
+            // lifecycle before they wake sidecars for finalization.
+            control_for_thread.terminalize();
             let result: Result<(), record_core::RecordError> =
                 system_audio_capture::finalize_worker(system_audio_worker, &log_path)
                     .and(captured)
@@ -724,7 +762,8 @@ where
                         if system_audio {
                             split_mac_system_audio(std::path::Path::new(&out.source_video));
                         }
-                        let project = out.into_project();
+                        microphone::persist_capture_outcome(&out_dir, out.microphone_outcome)?;
+                        let project = out.into_project_with_capture_cadence(capture_cadence);
                         let bytes = serde_json::to_vec_pretty(&project).map_err(|e| {
                             record_core::RecordError::new(
                                 "io",
@@ -771,14 +810,15 @@ where
                     );
                 }
             }
-        })
-        .map_err(|e| {
-            CutError::new(
-                error_codes::IO,
-                "could not start the screen-record worker",
-                e.to_string(),
-            )
-        })?;
+        });
+    if let Err(error) = worker {
+        control.terminalize();
+        return Err(CutError::new(
+            error_codes::IO,
+            "could not start the screen-record worker",
+            error.to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -792,6 +832,7 @@ pub(crate) fn start_capture_with_test_backend<F>(
     system_audio: bool,
     keys: bool,
     monitor: Option<u32>,
+    monitor_id: Option<String>,
     window: Option<String>,
     project_dir: PathBuf,
     out_dir: PathBuf,
@@ -807,9 +848,11 @@ where
         duration_ms,
         fps,
         audio,
+        record_capture::MicrophoneSource::SystemDefault,
         system_audio,
         keys,
         monitor,
+        monitor_id,
         window,
         project_dir,
         out_dir,
@@ -1197,27 +1240,39 @@ mod tests {
         assert_eq!(v["suggested_action"], "install ffmpeg");
     }
 
-    /// A reservation owns the devices until worker cleanup. `stop_capture` signals
-    /// the shared flag but deliberately keeps the reservation while finalization runs.
+    /// A reservation owns the devices until worker cleanup. `stop_capture`
+    /// terminalizes the control before signaling it, but deliberately retains
+    /// the reservation while finalization runs.
     #[test]
     fn capture_registry_enforces_single_owner_until_worker_release() {
         let id = format!("cap_test_{}", std::process::id());
         let second_id = format!("cap_test_second_{}", std::process::id());
-        let flag = Arc::new(AtomicBool::new(false));
-        let reservation = reserve_capture(id.clone(), flag.clone()).unwrap();
-        let conflict = reserve_capture(second_id.clone(), Arc::new(AtomicBool::new(false)))
-            .err()
-            .expect("a second capture must be rejected");
+        let control = CaptureSessionControl::new(None, false, false, false);
+        let reservation = reserve_capture(id.clone(), control.clone()).unwrap();
+        let conflict = reserve_capture(
+            second_id.clone(),
+            CaptureSessionControl::new(None, false, false, false),
+        )
+        .err()
+        .expect("a second capture must be rejected");
         assert_eq!(conflict.code, error_codes::CONFLICT);
 
-        // The "backend" hasn't been told to stop yet.
-        assert!(!flag.load(Ordering::Relaxed), "flag starts unset");
+        // The backend has not been told to stop yet.
+        assert!(!control.status().stop_requested, "stop signal starts unset");
 
-        // Stop signals but keeps ownership until every worker has finished.
-        assert!(stop_capture(&id), "stop_capture found the registered flag");
+        // Stop terminalizes first but keeps ownership until every worker has finished.
         assert!(
-            flag.load(Ordering::Relaxed),
-            "the flag the backend polls is now set — its loop will finalize"
+            stop_capture(&id),
+            "stop_capture found the registered control"
+        );
+        assert!(
+            control.status().stop_requested,
+            "the signal the backend polls is now set — its loop will finalize"
+        );
+        assert_eq!(
+            control.status().phase,
+            record_capture::SessionPhase::Stopped,
+            "stop is terminal before the physical signal"
         );
 
         assert!(
@@ -1225,12 +1280,16 @@ mod tests {
             "repeat stop remains idempotent while finalization owns the devices"
         );
         assert!(
-            capture_stops().lock().unwrap().contains_key(&id),
+            capture_sessions().lock().unwrap().contains_key(&id),
             "registry retains the capture until worker cleanup"
         );
         drop(reservation);
         assert!(!stop_capture(&id), "worker release removes the reservation");
-        let second = reserve_capture(second_id, Arc::new(AtomicBool::new(false))).unwrap();
+        let second = reserve_capture(
+            second_id,
+            CaptureSessionControl::new(None, false, false, false),
+        )
+        .unwrap();
         drop(second);
     }
 

@@ -391,6 +391,33 @@ pub fn resolved_ffmpeg_dir() -> Option<PathBuf> {
     }
 }
 
+/// The deterministic startup directory for the Python sidecar, if the normal
+/// resolution ladder found a real ffmpeg file. This intentionally does not
+/// run the optional hardware-capability selector: that selector executes
+/// several subprocess probes and is warmed by the background Doctor only after
+/// the server has opened its loopback listener and given the UI time to paint.
+///
+/// Explicit executable and persisted manual choices retain their precedence;
+/// only the opportunistic automatic hardware choice is deferred. The sidecar
+/// still receives a usable, user-selected-or-ladder-resolved ffmpeg before its
+/// first media job.
+pub fn resolved_startup_ffmpeg_dir() -> Option<PathBuf> {
+    let has_env = std::env::var_os(ENV_FFMPEG).is_some_and(|p| !p.is_empty());
+    let program = if has_env {
+        resolve_tool("ffmpeg", ENV_FFMPEG)
+    } else if let Some(manual) = ffmpeg_override() {
+        manual
+    } else {
+        resolve_tool("ffmpeg", ENV_FFMPEG)
+    };
+    let p = PathBuf::from(program);
+    if p.is_file() {
+        p.parent().map(Path::to_path_buf)
+    } else {
+        None
+    }
+}
+
 /// EVERY ffmpeg binary discoverable on this machine, RESOLVED-FIRST then deduped
 /// by canonical path (existing files only). This is the "find any installed
 /// ffmpeg" the doctor probes: the search-ladder binary, plus a full PATH walk,

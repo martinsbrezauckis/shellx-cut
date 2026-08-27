@@ -25,7 +25,11 @@ fn stream_sha256(
 ) -> Result<(u64, String), CutError> {
     let mut digest = Sha256::new();
     let mut bytes = 0u64;
-    let mut buffer = [0u8; 1024 * 1024];
+    // Tokio blocking workers have a bounded native stack. Keeping the MiB
+    // transfer buffer there can overflow the release server before the first
+    // package manifest is published, so all package I/O buffers live on the
+    // heap.
+    let mut buffer = vec![0u8; 1024 * 1024];
     loop {
         if cancel.is_some_and(crate::jobs::JobCancellation::is_cancelled) {
             return Err(cancelled());
@@ -46,7 +50,7 @@ fn stream_copy_sha256(
 ) -> Result<(u64, String), CutError> {
     let mut digest = Sha256::new();
     let mut bytes = 0u64;
-    let mut buffer = [0u8; 1024 * 1024];
+    let mut buffer = vec![0u8; 1024 * 1024];
     loop {
         if cancel.is_cancelled() {
             return Err(cancelled());

@@ -16,6 +16,7 @@ import { requestSourceNavigation } from '../../app/sourceNavigation'
 import { Icon } from '../../icons'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
 import { assetUsesFromSequenceIndex, type AssetUse } from './assetUses'
+import SourceWaveform from './SourceWaveform'
 import './source-monitor.css'
 
 export interface SourceMonitorAsset {
@@ -136,6 +137,17 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
       setPlaying(false)
       setNote('Playback could not start for this source')
     }
+  }
+
+  const seekSource = (nextMs: number) => {
+    const media = mediaRef.current
+    if (!media || durationMs <= 0) return
+    const next = Math.max(0, Math.min(durationMs, Math.round(nextMs)))
+    media.currentTime = next / 1000
+    // The native seek event arrives asynchronously. Update the Source Monitor
+    // readout now so a waveform seek is immediate and then remains in sync.
+    setCurrentMs(next)
+    setNote(null)
   }
 
   const insert = async () => {
@@ -413,6 +425,15 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
           </button>
           <span>{formatTime(durationMs)}</span>
         </div>}
+
+        {!isStill && sourceHasAudio && <SourceWaveform
+          asset={asset.id}
+          durationMs={durationMs}
+          currentMs={currentMs}
+          inMs={inMs}
+          outMs={outMs}
+          onSeek={seekSource}
+        />}
 
         {!isStill && <div className="source-monitor__marks">
           <button type="button" data-cut-source-mark-in disabled={busy} onClick={markIn}>Mark In</button>

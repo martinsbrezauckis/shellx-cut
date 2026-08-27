@@ -3,7 +3,7 @@ import { callVerb } from '../../lib/client'
 import { mediaBasename } from '../../lib/mediaPath'
 import { isTauri, pickFolder } from '../../lib/tauri'
 
-type Disposition = 'eligible_exact_hash' | 'ambiguous_exact_hash' | 'metadata_only' | 'ambiguous_metadata' | 'hash_unavailable' | 'no_match'
+type Disposition = 'eligible_exact_hash' | 'ambiguous_exact_hash' | 'metadata_review' | 'metadata_insufficient' | 'metadata_mismatch' | 'ambiguous_metadata' | 'hash_unavailable' | 'no_match'
 interface PreviewRow {
   asset: string
   expected_hash: string
@@ -27,7 +27,9 @@ function requestId(): string {
 function dispositionLabel(row: PreviewRow): string {
   if (row.disposition === 'eligible_exact_hash') return 'Exact match'
   if (row.disposition === 'ambiguous_exact_hash') return 'Multiple exact matches — choose elsewhere'
-  if (row.disposition === 'metadata_only') return 'Metadata resemblance only — refused'
+  if (row.disposition === 'metadata_review') return 'Possible replacement — review individually'
+  if (row.disposition === 'metadata_insufficient') return 'Not enough stored facts to review'
+  if (row.disposition === 'metadata_mismatch') return 'Metadata conflict — refused'
   if (row.disposition === 'ambiguous_metadata') return 'Ambiguous metadata — refused'
   if (row.disposition === 'hash_unavailable') return 'No complete source hash — refused'
   return 'No match found'
@@ -38,10 +40,12 @@ export default function BulkRelinkPanel({
   offlineCount,
   onProjectChanged,
   onRefresh,
+  onReviewIndividually,
 }: {
   offlineCount: number
   onProjectChanged?: () => void | Promise<void>
   onRefresh: () => Promise<void>
+  onReviewIndividually?: (assetId: string) => void | Promise<void>
 }) {
   const [phase, setPhase] = useState<'idle' | 'previewing' | 'ready' | 'applying' | 'done'>('idle')
   const [preview, setPreview] = useState<Preview | null>(null)
@@ -107,7 +111,7 @@ export default function BulkRelinkPanel({
       {note && <p className="assets__bulk-relink-note" role="status">{note}</p>}
       {preview && (phase === 'ready' || phase === 'done') && (
         <div className="assets__bulk-relink-preview" data-cut-media-relink-preview>
-          <p>{preview.scan.files} files checked. Only complete SHA-256 matches can be applied; ambiguous and metadata-only rows stay refused.</p>
+          <p>{preview.scan.files} files checked. Only complete SHA-256 matches can be applied; possible replacements must be reviewed one file at a time.</p>
           <ul>
             {preview.assets.map((row) => {
               const selectable = row.disposition === 'eligible_exact_hash'
@@ -119,6 +123,9 @@ export default function BulkRelinkPanel({
                   <span>{mediaBasename(row.display_name)}</span>
                 </label>
                 <em>{dispositionLabel(row)}</em>
+                {row.disposition === 'metadata_review' && phase === 'ready' && onReviewIndividually && (
+                  <button type="button" data-cut-media-relink-review={row.asset} onClick={() => void onReviewIndividually(row.asset)}>Relink source…</button>
+                )}
               </li>
             })}
           </ul>

@@ -2066,6 +2066,7 @@ async fn get_frame(
 /// GET /api/events — WS upgrade; streams every Event as one JSON text frame.
 /// Also accepts client→server messages:
 ///   {"type":"ui_hello"}                       → marks this socket as a UI client
+///   {"type":"ui_mounted"}                     → first real Cut app-root mount; warms Doctor once
 ///   {"type":"ui_state","state":{…}}           → updates AppState::ui_state + rebroadcast
 ///                                               (also marks the socket as UI)
 ///   {"type":"screenshot_result","request_id":N,…} → resolves ui.screenshot
@@ -2113,6 +2114,15 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
                         match v.get("type").and_then(|t| t.as_str()) {
                             Some("ui_hello") if ui_client_id.is_none() => {
                                 ui_client_id = Some(state.ui_bridge.register(cmd_tx.clone()));
+                            }
+                            // This internal message is accepted only after the
+                            // existing loopback/origin-guarded socket has
+                            // registered as a UI client. It deliberately adds
+                            // no verb or HTTP route to the public contract.
+                            Some("ui_mounted") if ui_client_id.is_some() => {
+                                if state.ui_mount_readiness.notify_mounted() {
+                                    tracing::debug!("first Cut app root mounted; warming doctor");
+                                }
                             }
                             Some("ui_state") => {
                                 // First state push doubles as UI registration.

@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cadence::CaptureCadence;
 use crate::camera::CameraArtifact;
 use crate::event::EventTrack;
 use crate::plan::EditPlan;
@@ -46,6 +47,10 @@ pub struct RecordingProject {
     /// for old projects and existing webcam-overlay plan consumers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_artifact: Option<CameraArtifact>,
+    /// CaptureCadence@1 retains the exact requested rate and any final-source
+    /// probe facts without changing the legacy `Settings.fps` render contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_cadence: Option<CaptureCadence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
     pub events: EventTrack,
@@ -62,6 +67,7 @@ impl RecordingProject {
             source_video: source_video.into(),
             webcam_video: None,
             camera_artifact: None,
+            capture_cadence: None,
             audio: None,
             events,
             plan: None,
@@ -129,5 +135,18 @@ mod tests {
             project.camera_video_for_presentation(),
             Some("camera/camera.mp4")
         );
+    }
+
+    #[test]
+    fn legacy_project_json_has_no_fabricated_capture_cadence() {
+        let events = fixtures::generate("click-walkthrough").unwrap();
+        let legacy = serde_json::json!({
+            "schema": crate::SCHEMA,
+            "settings": Settings::default(),
+            "source_video": "cap.mp4",
+            "events": events,
+        });
+        let project: RecordingProject = serde_json::from_value(legacy).unwrap();
+        assert!(project.capture_cadence.is_none());
     }
 }

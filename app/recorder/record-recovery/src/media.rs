@@ -5,6 +5,7 @@ use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
 use cut_media::ffmpeg::{run_owned_command, OwnedProcessControl};
+use record_core::FrameRate;
 use serde::Deserialize;
 
 use crate::{ManifestError, MediaFacts};
@@ -25,6 +26,8 @@ struct ProbeFormat {
 struct ProbeStream {
     codec_type: Option<String>,
     nb_read_frames: Option<String>,
+    avg_frame_rate: Option<String>,
+    r_frame_rate: Option<String>,
 }
 
 /// Probe container duration, count all video frames, and decode its video stream.
@@ -52,7 +55,7 @@ pub(crate) fn verify_checkpoint_media(
             "error",
             "-count_frames",
             "-show_entries",
-            "format=duration:stream=codec_type,nb_read_frames",
+            "format=duration:stream=codec_type,nb_read_frames,avg_frame_rate,r_frame_rate",
             "-of",
             "json",
         ])
@@ -65,7 +68,33 @@ pub(crate) fn verify_checkpoint_media(
             "ffprobe verification was unavailable or did not produce bounded media facts".into(),
         ));
     }
-    let probe: Probe = serde_json::from_slice(&bytes)?;
+    let Some(media) = media_facts_from_ffprobe(&bytes)? else {
+        return Ok(None);
+    };
+    let has_audio = media.has_audio;
+    let mut decode = Command::new(ffmpeg);
+    decode
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-map", "0:v:0", "-f", "null", "-"]);
+    if !bounded_status(&mut decode, "decode checkpoint video")?.success() {
+        return Ok(None);
+    }
+    if has_audio {
+        let mut audio = Command::new(ffmpeg);
+        audio
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args(["-map", "0:a:0", "-f", "null", "-"]);
+        if !bounded_status(&mut audio, "decode checkpoint audio")?.success() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(media))
+}
+
+fn media_facts_from_ffprobe(bytes: &[u8]) -> Result<Option<MediaFacts>, ManifestError> {
+    let probe: Probe = serde_json::from_slice(bytes)?;
     let Some(duration_ms) = probe
         .format
         .duration
@@ -95,28 +124,18 @@ pub(crate) fn verify_checkpoint_media(
         .streams
         .iter()
         .any(|stream| stream.codec_type.as_deref() == Some("audio"));
-    let mut decode = Command::new(ffmpeg);
-    decode
-        .args(["-v", "error", "-i"])
-        .arg(path)
-        .args(["-map", "0:v:0", "-f", "null", "-"]);
-    if !bounded_status(&mut decode, "decode checkpoint video")?.success() {
-        return Ok(None);
-    }
-    if has_audio {
-        let mut audio = Command::new(ffmpeg);
-        audio
-            .args(["-v", "error", "-i"])
-            .arg(path)
-            .args(["-map", "0:a:0", "-f", "null", "-"]);
-        if !bounded_status(&mut audio, "decode checkpoint audio")?.success() {
-            return Ok(None);
-        }
-    }
     Ok(Some(MediaFacts {
         duration_ms,
         decoded_video_frames,
         has_audio,
+        avg_frame_rate: video
+            .avg_frame_rate
+            .as_deref()
+            .and_then(FrameRate::from_ffprobe),
+        r_frame_rate: video
+            .r_frame_rate
+            .as_deref()
+            .and_then(FrameRate::from_ffprobe),
     }))
 }
 
@@ -140,4 +159,45 @@ pub(crate) fn matches_expected(expected: &MediaFacts, actual: &MediaFacts) -> bo
     expected.decoded_video_frames == actual.decoded_video_frames
         && expected.has_audio == actual.has_audio
         && expected.duration_ms.abs_diff(actual.duration_ms) <= 20
+        && expected
+            .avg_frame_rate
+            .is_none_or(|rate| actual.avg_frame_rate == Some(rate))
+        && expected
+            .r_frame_rate
+            .is_none_or(|rate| actual.r_frame_rate == Some(rate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verification_keeps_exact_rates_and_rejects_zero_over_zero() {
+        let media = media_facts_from_ffprobe(
+            br#"{"format":{"duration":"10.010"},"streams":[{"codec_type":"video","nb_read_frames":"300","avg_frame_rate":"30000/1001","r_frame_rate":"30/1"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(media.avg_frame_rate, FrameRate::from_ffprobe("30000/1001"));
+        assert_eq!(media.r_frame_rate, FrameRate::from_ffprobe("30/1"));
+        assert_eq!(media.probed_cadence().decoded_video_frames, Some(300));
+
+        let invalid = media_facts_from_ffprobe(
+            br#"{"format":{"duration":"1"},"streams":[{"codec_type":"video","nb_read_frames":"1","avg_frame_rate":"0/0","r_frame_rate":"0/0"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(invalid.avg_frame_rate.is_none());
+        assert!(invalid.r_frame_rate.is_none());
+    }
+
+    #[test]
+    fn legacy_media_facts_json_defaults_rate_evidence_to_absent() {
+        let facts: MediaFacts = serde_json::from_str(
+            r#"{"duration_ms":100,"decoded_video_frames":3,"has_audio":false}"#,
+        )
+        .unwrap();
+        assert!(facts.avg_frame_rate.is_none());
+        assert!(facts.r_frame_rate.is_none());
+    }
 }

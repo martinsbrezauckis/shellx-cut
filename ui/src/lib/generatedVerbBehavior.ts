@@ -284,7 +284,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "not_applicable",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "agent_only",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "none",
     "facets": []
@@ -302,7 +302,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_replayable",
     "async_job": "media",
-    "ui_exposure": "agent_only",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -1121,7 +1121,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "mutation_class": "read",
     "side_effects": {
       "filesystem": true,
-      "process": false,
+      "process": true,
       "network": false,
       "ui": false
     },
@@ -4224,7 +4224,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
   "screen_record.doctor": {
     "mutation_class": "read",
     "side_effects": {
-      "filesystem": false,
+      "filesystem": true,
       "process": false,
       "network": false,
       "ui": true
@@ -4993,6 +4993,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "ui_exposure": "agent_only",
     "agent_chat": "inspect",
     "risk": "none",
+    "facets": []
+  },
+  "screen_record.microphone_selection": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "screen_record_microphone_selection",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
     "facets": []
   }
 }

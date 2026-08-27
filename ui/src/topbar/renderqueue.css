@@ -37,6 +37,8 @@
 }
 .rq-out {
   flex: 1 1 230px; min-width: 0;
+  display: inline-flex; align-items: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   background: var(--surface-1, #15171b); color: var(--ink-1, #e8eaed);
   border: 1px solid var(--hairline-2, #2a2e35); border-radius: 6px;
   padding: 6px 9px; font: var(--fs-ui-xs, 12px) var(--mono, ui-monospace);
@@ -49,6 +51,7 @@
   border: 1px solid var(--hairline-2, #2a2e35); border-radius: 6px;
 }
 .rq-pick:hover { border-color: var(--cut-soft, #60a5fa); color: var(--ink-1, #e8eaed); }
+.rq-pick:disabled { opacity: 0.45; cursor: not-allowed; }
 .rq-sel {
   background: var(--surface-1, #15171b); color: var(--ink-1, #e8eaed);
   border: 1px solid var(--hairline-2, #2a2e35); border-radius: 6px;

@@ -4,6 +4,8 @@ Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
+This reference describes the Debug API in v0.6.112 candidate source; installed
+release support begins only after qualification and publication.
 
 ## Starting the server
 
@@ -53,7 +55,7 @@ authentication boundary:
 - Shared/multi-user machines, untrusted local apps/services, containers sharing
   host networking, and exposed ports are outside the supported default. Native
   per-caller/per-user capability authentication is future hardening; it is not
-  in v0.6.111. Under this documented deployment assumption, its absence is
+  in the current source. Under this documented deployment assumption, its absence is
   **NOT A DEFECT**.
 
 `cutd mcp` is a stdio transport that proxies the running server; it has no
@@ -157,7 +159,7 @@ verbs' deletion roots.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 277 schemas once at startup and applies the selected schema at the shared
+all 278 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -472,6 +474,15 @@ The Windows and macOS in-app window pickers use the live rows returned by
 that exact identity and returns a clear error if the window closed or was
 replaced; it never searches by title or silently falls back to a whole display.
 
+On Windows and macOS, `screen_record.doctor.monitors[]` includes an opaque
+versioned native `id` when Cut can derive an exact native identity. Pass that
+`id` unchanged as `screen_record.start{monitor_id}` to require a fresh native
+re-enumeration and exact match before capture. A stale display fails explicitly:
+Cut never substitutes display copy, list position, primary state, dimensions,
+or the legacy `monitor` ordinal. The existing full-display picker retains that
+ordinal path only when Doctor did not provide an `id`. Linux deliberately
+returns no in-app monitor rows because the system portal owns source choice.
+
 `screen_record.stop` waits with a bounded capture-work-derived budget: twice the
 marker-declared or journal-observed capture span plus 15 seconds, with a 45-second
 minimum and 15-minute maximum. That allows real checkpoint stitch/audio finalization
@@ -528,6 +539,15 @@ only when that stream is not all-silent. Green UI readiness requires both facts.
 It returns no audio bytes or path. Its
 temporary Linux/Windows WAV is removed before the response; macOS samples never
 leave memory.
+
+For microphone setup, `screen_record.doctor{warm_mic:true}` is the bounded
+user-visible test path for the resolved System Default or selected input. Doctor
+returns generic `Microphone N` labels plus short-lived opaque tokens only;
+Windows/MMDevice and macOS/Core Audio identities stay private, while Linux is
+System Default only. `mic_warm` returns real bounded signal facts without a
+device/backend name. An unavailable saved choice refuses mic-enabled start
+instead of silently changing source. On device change, idle Record refreshes
+safe enumeration only; recording never opens a competing microphone stream.
 
 ```bash
 curl -sS http://127.0.0.1:6161/api/verb/screen_record.system_audio_probe \
@@ -850,7 +870,7 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
 (`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
-read-only check proves protocol negotiation, ping, all 277 tools, and that the
+read-only check proves protocol negotiation, ping, all 278 tools, and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use
@@ -880,8 +900,15 @@ with separate state and is refused while a served engine is running.
 `media.relink_preview {root}` is a bounded, read-only, symlink-refusing folder
 scan for offline assets in the open project. Its `plan_hash` is only actionable
 for a unique candidate whose complete `sha256:` equals the asset's stored full
-SHA-256. Duplicate exact candidates, sampled/missing stored hashes, and
-filename/kind/duration metadata matches are disclosed but refused.
+SHA-256. A unique candidate with exact basename, kind, stored raw byte size,
+and duration (audio/video) or dimensions (still) can be marked
+`metadata_review`: it is a disabled hint to use normal one-file Relink, never
+an applyable bulk row. Available dimension, normalized container, or codec
+mismatch refuses; missing stored probe/size is `metadata_insufficient`; equal
+top private ranks are `ambiguous_metadata`. Duplicate exact candidates and
+sampled/missing stored hashes remain refused. Preview diagnostics disclose only
+safe matched-fact labels, never candidate paths, selected root, raw probes,
+timestamps, scores, or metadata values.
 
 `media.relink_apply {root, plan_hash, accept, request_id, expected_revision}`
 revalidates the exact plan and writes one replayable project-local metadata op.
@@ -891,7 +918,7 @@ path, and disposition per accepted asset); the ordinary immutable mutation
 request receipt is retained too. Neither verb touches the global Library or
 starts import/proxy/enrichment work, and bulk recovery makes no Ctrl-Z promise.
 
-## B6 portable package (agent-only)
+## B6 portable package
 
 `project.package_plan {destination, name, b5_receipt?}` is the required dry
 run. It walks every sequence, hashes only referenced source media with complete
@@ -913,6 +940,8 @@ post-publication parent-directory sync or private-stage cleanup warning was
 retained. The source project's log, cache, asset paths, and media remain intact
 (the normal persisted source-local job record is operational state, not a
 project operation). Linux, macOS, and Windows each publish through a native
-no-replace directory primitive; unknown targets fail closed. There is no Pack
-project UI yet, and Library “Keep a copy” remains a different global-Library
-action.
+no-replace directory primitive; unknown targets fail closed. In the desktop
+editor, Projects → Make a copy selects a destination through the native folder
+picker, previews counts, dedupe, cache exclusion, and target availability, then
+requires an explicit confirmation. Library “Keep a copy” remains a different
+global-Library action.

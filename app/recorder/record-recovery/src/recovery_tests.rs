@@ -51,6 +51,8 @@ fn segment(owner: &mut ManifestOwner, sequence: u64) {
                 duration_ms: 100,
                 decoded_video_frames: 1,
                 has_audio: false,
+                avg_frame_rate: None,
+                r_frame_rate: None,
             },
         )
         .unwrap();

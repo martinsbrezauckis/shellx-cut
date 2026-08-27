@@ -1,6 +1,6 @@
 use super::*;
 use crate::dispatch::media_intelligence::model::{
-    finalize_index, load_index, opaque_id, EvidenceEntry, MediaEvidenceIndex,
+    finalize_index, generator_identity, load_index, opaque_id, EvidenceEntry, MediaEvidenceIndex,
 };
 use cut_core::{Asset, Clip, Marker, Project, ProjectSettings};
 
@@ -81,6 +81,19 @@ fn build_fixture_index(snapshot: &ProjectSnapshot) -> MediaEvidenceIndex {
         crate::jobs::JobCancellation::test_active(),
     )
     .unwrap()
+}
+
+#[test]
+fn index_generator_tracks_the_compiled_server_version() {
+    assert_eq!(
+        generator_identity(),
+        format!("shellx-cut/{}", env!("CARGO_PKG_VERSION")),
+    );
+    let (_directory, snapshot) = fixture();
+    assert_eq!(
+        build_fixture_index(&snapshot).generator,
+        generator_identity()
+    );
 }
 
 #[test]

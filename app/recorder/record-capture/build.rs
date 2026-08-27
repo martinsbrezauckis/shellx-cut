@@ -6,6 +6,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=src/mac_systemaudio.mm");
+    println!("cargo:rerun-if-changed=src/mic_endpoint/macos.mm");
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let has_macos_capture = std::env::var("CARGO_FEATURE_CAPTURE_MACOS").is_ok();
     if target_os == "macos" && has_macos_capture {
@@ -25,6 +26,7 @@ fn main() {
 
         cc::Build::new()
             .file("src/mac_systemaudio.mm")
+            .file("src/mic_endpoint/macos.mm")
             .flag("-fobjc-arc") // ARC for the CATapDescription / NSDictionary objects
             .cpp_link_stdlib(None) // we add libc++ explicitly below (rustc does the final link)
             .compile("sxc_mac_systemaudio");

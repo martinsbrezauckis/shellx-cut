@@ -118,6 +118,7 @@ fn build_prepared(
         destination: destination.to_string_lossy().into_owned(),
         name: name.clone(),
         target: target.to_string_lossy().into_owned(),
+        target_status: package_target_status(&target)?,
         b5_receipt_sha256,
         assets,
         total_source_bytes,
@@ -275,6 +276,25 @@ fn validate_destination(destination: PathBuf) -> Result<PathBuf, CutError> {
         ));
     }
     destination.canonicalize().map_err(Into::into)
+}
+
+/// Report a destination leaf as occupied whenever it exists in the directory
+/// entry table. `Path::exists` follows links and would wrongly describe a
+/// dangling symlink as free even though native no-replace publication refuses
+/// that leaf. Inspection failures are not availability claims.
+fn package_target_status(target: &Path) -> Result<&'static str, CutError> {
+    match fs::symlink_metadata(target) {
+        Ok(_) => Ok("occupied"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("available"),
+        Err(error) => Err(CutError::new(
+            error_codes::IO,
+            "portable package destination could not be inspected",
+            error.to_string(),
+        )
+        .with_suggested_action(
+            "resolve access to the selected destination folder, then preview the copy again",
+        )),
+    }
 }
 
 fn validate_package_name(name: &str) -> Result<(), CutError> {

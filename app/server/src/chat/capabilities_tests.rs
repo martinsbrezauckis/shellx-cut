@@ -20,7 +20,7 @@ fn restricted_mcp_marker_requires_the_agent_chat_actor() {
 }
 
 #[test]
-fn schema_classifies_every_registry_verb_and_preserves_the_safe_100_177_split() {
+fn schema_classifies_every_registry_verb_and_preserves_the_safe_100_178_split() {
     let registry = crate::registry::VerbRegistry::load();
     let mut allowed = 0;
     let mut denied = 0;
@@ -31,7 +31,7 @@ fn schema_classifies_every_registry_verb_and_preserves_the_safe_100_177_split() 
         }
     }
     assert_eq!(allowed, 100, "schema-derived safe capability count");
-    assert_eq!(denied, 177, "schema-derived denied capability count");
+    assert_eq!(denied, 178, "schema-derived denied capability count");
     assert_eq!(allowed + denied, registry.verbs.len());
 }
 
@@ -47,6 +47,9 @@ fn prohibited_cut_tools_are_denied_but_marker_edits_are_available() {
         "system.fetch_tool",
         "agent.chat",
         "project.revert",
+        // This is a Human Record-workspace preference that persists an
+        // app-local microphone selection, not a project edit an agent may make.
+        "screen_record.microphone_selection",
     ] {
         let spec = registry.get(denied).expect("registered denied verb");
         assert_eq!(capability(spec), AgentChatCapability::Deny);

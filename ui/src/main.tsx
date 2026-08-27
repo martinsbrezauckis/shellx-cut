@@ -5,6 +5,7 @@ import App from './App'
 import { initTheme } from './lib/themePref'
 import ManualShell from './manual/ManualShell'
 import { isManualShell } from './manual/protocol'
+import { isMockRuntime, loadMockRuntime } from './mockBootstrap'
 import './theme.css'
 
 // Apply the persisted colour theme BEFORE first paint so a light-theme reload
@@ -29,8 +30,15 @@ initTheme()
   }
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    {isManualShell() ? <ManualShell /> : <App />}
-  </StrictMode>,
-)
+function mount(): void {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      {isManualShell() ? <ManualShell /> : <App />}
+    </StrictMode>,
+  )
+}
+
+// The built documentation/demo runtime needs its API/WebSocket adapter before
+// React mounts. Production startup remains synchronous and does not load it.
+if (isMockRuntime()) void loadMockRuntime().then(mount)
+else mount()

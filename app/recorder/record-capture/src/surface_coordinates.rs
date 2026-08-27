@@ -40,15 +40,31 @@ impl CaptureSurface {
     fn for_output(self, width: u32, height: u32) -> Option<SurfaceTransform> {
         (width > 0 && height > 0).then_some(SurfaceTransform {
             surface: self,
+            output_width: width,
+            output_height: height,
             scale_x: f64::from(width) / self.coordinate_width,
             scale_y: f64::from(height) / self.coordinate_height,
         })
+    }
+
+    // Used by the bounded REC-REGION-01 geometry module before its native
+    // Windows/macOS consumers land.
+    #[allow(dead_code)]
+    pub(super) fn global_geometry(self) -> (f64, f64, f64, f64) {
+        (
+            self.origin_x,
+            self.origin_y,
+            self.coordinate_width,
+            self.coordinate_height,
+        )
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SurfaceTransform {
     surface: CaptureSurface,
+    output_width: u32,
+    output_height: u32,
     scale_x: f64,
     scale_y: f64,
 }
@@ -57,11 +73,24 @@ impl SurfaceTransform {
     fn point(self, x: f64, y: f64) -> Option<(f64, f64)> {
         let x = x - self.surface.origin_x;
         let y = y - self.surface.origin_y;
-        (x.is_finite()
+        if !(x.is_finite()
             && y.is_finite()
             && (0.0..self.surface.coordinate_width).contains(&x)
             && (0.0..self.surface.coordinate_height).contains(&y))
-        .then_some((x * self.scale_x, y * self.scale_y))
+        {
+            return None;
+        }
+
+        let x = x * self.scale_x;
+        let y = y * self.scale_y;
+        // Floating-point multiplication may round a mathematically in-bounds
+        // source point onto an output edge. EventTrack's frame space is half-open,
+        // so never emit `x == width` or `y == height`.
+        (x.is_finite()
+            && y.is_finite()
+            && (0.0..f64::from(self.output_width)).contains(&x)
+            && (0.0..f64::from(self.output_height)).contains(&y))
+        .then_some((x, y))
     }
 }
 

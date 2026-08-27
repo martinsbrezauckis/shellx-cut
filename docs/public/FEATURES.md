@@ -7,6 +7,42 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
+## v0.6.112 release notes (candidate source; qualification pending)
+
+- Cut presents the editor and local API before background FFmpeg hardware
+  discovery begins, so a slow driver probe no longer holds the opening UI.
+- User-facing media-folder, b-roll-folder, LUT, and Render Queue destinations
+  use native desktop pickers and path-light labels instead of editable local
+  filesystem paths.
+- Audio-bearing media in Source Monitor now has a seekable waveform with
+  current-position and In/Out markers, sharing the timeline waveform cache.
+- Recording adds 24/25/30/50/60 FPS presets, validated custom 1–240 FPS input,
+  and an app-local microphone preference: System Default preserves existing
+  behavior, while Windows/macOS can save a privately resolved selected endpoint.
+  The Record UI receives only expiring opaque tokens and generic `Microphone N`
+  category-and-ordinal labels; an
+  unavailable saved selection refuses mic-enabled start instead of falling back.
+  Linux remains System Default only. This is source-only behavior, not native or
+  installed-release qualification.
+- Recording internals now also have a durable private Windows Pause session and
+  a private camera-session spine. They preserve exact monitor/device identity,
+  measured screen-clock timing, verified pause artifacts, Stop dominance,
+  exactly-once camera cleanup, truthful zero-frame cancellation, and replay-
+  safe evidence. These foundations are deliberately unwired: this candidate
+  does not expose Pause or Camera controls and does not claim native behavior.
+- Long-form timeline scrolling isolates unchanged track rows and coalesces
+  scroll updates. Further thumbnail-candidate reduction remains planned.
+
+These are current source capabilities, not installed, signed, or published
+v0.6.112 qualification claims.
+
+- Projects → Make a copy opens a preview-first portable-copy flow: choose a
+  destination with the native folder picker, inspect used-reference and unique
+  media counts, dedupe savings, cache exclusion, offline refusal, and current
+  destination collision truth, then explicitly confirm the copy. It never
+  changes the source project or original media. Native-host publication and
+  reopen qualification remains pending for this source-only v0.6.112 work.
+
 ## v0.6.111 release notes
 
 - A bundled interactive Manual uses the real editor frontend, opens and
@@ -21,9 +57,10 @@ workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
   `inspect.range` provide the path-light, current evidence agents use for those
   citations.
 - Assets can recover several moved sources through an exact-hash
-  `media.relink_preview` / `media.relink_apply` review, while agent-only
-  `project.package_plan` / `project.package_create` makes a verified portable
-  project copy without changing the open project.
+  `media.relink_preview` / `media.relink_apply` review, while the underlying
+  `project.package_plan` / `project.package_create` portable-package API
+  preserves the open project. The later Projects UI is documented in the
+  v0.6.112 source-only notes above.
 - Health & Recovery adds a read-only `project.cache_preview` and explicitly
   confirmed, cancellable `project.cache_purge` for aged, unreferenced,
   Cut-owned proxy and filmstrip files; source media, exports, recordings, and
@@ -176,12 +213,19 @@ route to the same surface registry.
   bounded folder review. `media.relink_preview` permits only uniquely exact
   full-file hashes to be selected; `media.relink_apply` rechecks those choices
   and appends one grouped project-metadata operation with an immutable receipt.
-  Filename, duration, or sampled-hash resemblance is diagnostic only.
-- For an agent-assisted portable copy, `project.package_plan` inventories every
-  referenced asset across all sequences, deduplicates exact bytes, excludes
-  rebuildable caches, and refuses offline or stale inputs. A matching
-  `project.package_create` publishes a new verified `.cutproj` without
-  replacing a destination or changing the source project.
+  A unique, strongly matching metadata candidate is labeled “Possible
+  replacement — review individually” and routes to normal one-file Relink;
+  it remains disabled and cannot enter grouped apply. That hint requires exact
+  basename, kind, stored byte size, and duration (audio/video) or dimensions
+  (still), and available dimension/container/codec disagreement refuses it.
+  Missing stored probe/size and tied private ranks are refused. Preview exposes
+  safe matched-fact labels only, never candidate paths, roots, raw probes,
+  timestamps, scores, or metadata values.
+- Projects → Make a copy uses `project.package_plan` to inventory every
+  referenced asset across all sequences, deduplicate exact bytes, exclude
+  rebuildable caches, and refuse offline or stale inputs before a user confirms.
+  A matching `project.package_create` publishes a new verified `.cutproj`
+  without replacing a destination or changing the source project.
 - Media Health in the Assets tray summarizes missing source files, proxy/source
   playback state, and large 4K/camera clips, with a one-click relink action,
   per-asset readiness badges, a "needs action" filter, and Advanced counts kept
@@ -198,7 +242,10 @@ route to the same surface registry.
   playback, using its editing proxy when one is ready so large or
   platform-unsupported source codecs remain auditionable; use the explicit
   keyboard-accessible Play/Pause transport, mark source In/Out,
-  and insert that exact range at the timeline playhead. Video assets with audio
+  and insert that exact range at the timeline playhead. Audio-bearing sources
+  also show a display-only waveform projection: amber In/Out marks and a white
+  current-position line make the selected range readable; click it or use its
+  keyboard slider controls to seek the real source transport. Video assets with audio
   create aligned linked picture and sound. The same compact V and A destination
   selectors can target either unlocked track or Off, then **Overwrite range**
   replaces only the selected destinations at the playhead; native selects work
@@ -500,12 +547,30 @@ route to the same surface registry.
 
 - Recording Studio surface with a large composition preview, background
   choice, raw-stream status, and focused hotkeys (`F9` record, `F12` marker).
+- Capture frame rate keeps the 30 FPS default, offers one-click 24/25/30/50/60
+  choices, and accepts a validated custom 1–240 FPS value before recording.
+  Each new capture also retains its exact reduced requested decimal and the v1
+  nearest-integer backend request separately from the legacy editing timebase.
+  After finalization, an optional FFprobe record may show independently measured
+  average and nominal rates, decoded frames, and duration; a failed, invalid, or
+  unavailable probe is shown as not measured rather than guessed.
+- **Test microphone** opens the current OS-default input for a bounded sample
+  window, reports a real peak without inventing a silence floor, and keeps the
+  Start action unavailable until the test finishes. The device name is
+  display-only; individual stable device selection is not yet claimed.
 - Live camera capture is parked for this release. The UI says so directly and
   does not show unusable enable/position/size controls; screen, microphone and
   supported system-audio recording remain available.
 - Screen recorder doctor, system-audio probe, start, stop, studio-event, autoedit, polish, and
   export verbs. `screen_record.autoedit` is the plan step reached through the
   Stop/auto-edit workflow and agent API; it is not a separate visible button.
+- On Windows and macOS, Doctor monitor rows include an opaque native display ID
+  only when the exact identity is available. The Record picker passes it
+  unchanged to `screen_record.start{monitor_id}`, which revalidates that exact
+  display before capture and never substitutes an ordinal, label, primary state,
+  or geometry. The familiar ordinal path remains only when no ID is available;
+  no Region control or coordinate form is exposed yet. Linux keeps source
+  selection in its system portal.
 - Doctor reports system audio as a separate optional card. A compiled backend
   remains `unknown` until an actual recording proves packets; Doctor never opens
   a loopback/tap stream or triggers macOS Audio Capture consent, and this
@@ -617,12 +682,12 @@ route to the same surface registry.
 - Command search includes user-facing setup/help entries such as Media Health,
   Proxy imports, Video tools setup, and CLI agent setup; results open the real
   surface and use the same highlight overlay as `ui.highlight`.
-- The bundled app contains an indexed interactive manual. Selecting an article
-  opens the real owning surface and highlights its control without executing
-  the action. The online counterpart at
-  `https://docs.theshellx.com/manual/cut/` embeds the same real frontend in a
-  read-only documentation runtime and retains established feature links such as
-  `?feature=cut.left.media_health`.
+- The bundled app contains an indexed interactive manual. Contextual Guide
+  actions open its requested article; selecting or reading an article does not
+  open, reveal, or execute editor UI. **Show in Cut** is the separate explicit
+  reveal-and-highlight action. The currently published online page at
+  `https://docs.theshellx.com/manual/cut/` remains legacy reference material;
+  separately validated real-frontend online publication is pending.
 - Fresh installed builds expose:
   - `GET /api/agent`
   - `GET /api/agent-doc/<path>`

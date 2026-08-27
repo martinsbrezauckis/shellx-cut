@@ -3,7 +3,7 @@
 // This script does not publish and never writes into docs/public/site/manual.
 
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync, realpathSync } from 'node:fs'
 import { copyFile, mkdtemp, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -22,6 +22,7 @@ import {
   readText,
   readViteManifest,
   repoRoot,
+  sha256,
   sourceSnapshot,
   uiRoot,
   validateSourceContract,
@@ -31,7 +32,6 @@ const viteBin = resolve(uiRoot, 'node_modules/.bin/vite')
 
 function parseArgs(argv) {
   let output
-  let scratch = false
   let check = false
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -39,25 +39,55 @@ function parseArgs(argv) {
       output = argv[index + 1]
       if (!output) fail('--output requires a directory ending in /manual/cut')
       index += 1
-    } else if (arg === '--scratch') scratch = true
-    else if (arg === '--check') check = true
+    } else if (arg === '--check') check = true
     else if (arg === '--help' || arg === '-h') {
-      console.log('Usage: node scripts/public/stage-cut-manual.mjs [--check] [--scratch | --output <dir>/manual/cut]')
+      console.log('Usage: node scripts/public/stage-cut-manual.mjs --output <new-candidate>/manual/cut')
+      console.log('       node scripts/public/stage-cut-manual.mjs --check')
       process.exit(0)
     } else fail(`unknown argument: ${arg}`)
   }
-  if (check && (scratch || output)) fail('--check cannot be combined with an output option')
-  if (scratch && output) fail('choose either --scratch or --output, not both')
-  return { output, check }
+  if (check && output) fail('--check cannot be combined with --output')
+  if (!check && !output) fail('--output <new-candidate>/manual/cut is required; staging never chooses a publication destination')
+  return { output: output ? resolve(output) : null, check }
 }
 
-async function resolveOutput({ output }) {
-  if (output) return { output: resolve(output), scratchRoot: null }
-  const scratchRoot = await mkdtemp(join(tmpdir(), 'shellx-cut-manual-'))
-  return { output: join(scratchRoot, 'manual', 'cut'), scratchRoot }
+function lstatOrNull(path) {
+  try {
+    return lstatSync(path)
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
+    throw error
+  }
 }
 
-function validateOutputPath(output) {
+function physicalDirectory(path, label) {
+  const requested = resolve(path)
+  const entry = lstatOrNull(requested)
+  if (!entry) fail(`${label} is missing: ${requested}`)
+  if (entry.isSymbolicLink()) fail(`${label} must not be a symbolic link (including a dangling link): ${requested}`)
+  if (!entry.isDirectory()) fail(`${label} must be a physical directory: ${requested}`)
+  const actual = resolve(realpathSync.native(requested))
+  if (actual !== requested) fail(`${label} must not traverse a symbolic-link ancestor: ${requested}`)
+  return { path: requested, device: entry.dev, inode: entry.ino }
+}
+
+function assertSameDirectory(directory, label) {
+  const current = physicalDirectory(directory.path, label)
+  if (current.device !== directory.device || current.inode !== directory.inode) {
+    fail(`${label} was replaced while staging; refusing destination lifecycle drift: ${directory.path}`)
+  }
+}
+
+function assertMissingOutput(path) {
+  const entry = lstatOrNull(path)
+  if (!entry) return
+  if (entry.isSymbolicLink()) {
+    fail(`output candidate directory must be absent, not a symbolic-link or dangling-link replacement: ${path}`)
+  }
+  fail(`output candidate directory already exists; staging never replaces it: ${path}`)
+}
+
+async function prepareOutput(output) {
   if (basename(output) !== 'cut' || basename(dirname(output)) !== 'manual') {
     fail(`output must be the route directory .../manual/cut, got ${output}`)
   }
@@ -65,7 +95,33 @@ function validateOutputPath(output) {
     fail('refusing to write inside docs/public/site; review a generated artifact before any separate publication migration')
   }
   if (isInside(legacyManualRoot, output)) fail('refusing to overwrite the historical screenshot/manual source')
-  if (existsSync(output)) fail(`output already exists; staging never overwrites it: ${output}`)
+  const candidateRoot = physicalDirectory(dirname(dirname(output)), 'candidate root')
+  const manualRoot = dirname(output)
+  const manualEntry = lstatOrNull(manualRoot)
+  if (!manualEntry) await mkdir(manualRoot, { mode: 0o700 })
+  const manual = physicalDirectory(manualRoot, 'manual route root')
+  assertMissingOutput(output)
+  const stagingDir = join(manual.path, `.${basename(output)}.staging-${process.pid}-${randomUUID()}`)
+  await mkdir(stagingDir, { mode: 0o700 })
+  return { candidateRoot, manual, output, staging: physicalDirectory(stagingDir, 'candidate staging directory') }
+}
+
+function assertOutputLifecycle(lifecycle) {
+  assertSameDirectory(lifecycle.candidateRoot, 'candidate root')
+  assertSameDirectory(lifecycle.manual, 'manual route root')
+  assertSameDirectory(lifecycle.staging, 'candidate staging directory')
+  assertMissingOutput(lifecycle.output)
+}
+
+async function discardStaging(lifecycle) {
+  try {
+    assertSameDirectory(lifecycle.candidateRoot, 'candidate root')
+    assertSameDirectory(lifecycle.manual, 'manual route root')
+    assertSameDirectory(lifecycle.staging, 'candidate staging directory')
+    await rm(lifecycle.staging.path, { recursive: true, force: false })
+  } catch {
+    // A changed parent is deliberately retained for operator inspection.
+  }
 }
 
 function run(command, args, options) {
@@ -94,7 +150,6 @@ async function copyManualArtifact(buildDir, stagingDir) {
   const files = manualClosure(await readViteManifest(buildDir), buildDir)
   const manualHtml = resolve(buildDir, 'manual.html')
   assertRegularFile(manualHtml, 'built manual HTML')
-  await mkdir(stagingDir, { recursive: true })
   await copyFile(manualHtml, join(stagingDir, 'index.html'))
   for (const source of files) {
     const rel = normalizedRelative(buildDir, source)
@@ -121,7 +176,27 @@ async function validateArtifactContract(stagingDir, sourceContract) {
       fail(`manual artifact is outside the static asset closure: ${artifact.path}`)
     }
   }
+  assertNoMatch(JSON.stringify(artifacts), /(?:^|[\\/])(?:private|\.git)(?:[\\/]|$)|release-studio/i, 'built manual must not include private or control-plane paths')
   return { ...sourceContract, artifacts }
+}
+
+function candidateIdentity(source, artifacts) {
+  const artifactClosureSha256 = sha256(artifacts
+    .map((artifact) => `${artifact.path}\0${artifact.sha256}\n`)
+    .sort()
+    .join(''))
+  const candidateSha256 = sha256([
+    source.gitHead,
+    source.uiInputTreeSha256,
+    artifactClosureSha256,
+  ].join('\0'))
+  return {
+    schema: 'shellx-cut/manual-candidate-identity@1',
+    candidateId: `cut-manual-${candidateSha256.slice(0, 20)}`,
+    sourceGitHead: source.gitHead,
+    uiInputTreeSha256: source.uiInputTreeSha256,
+    artifactClosureSha256,
+  }
 }
 
 async function viteVersion() {
@@ -141,19 +216,21 @@ async function gitHead() {
 }
 
 async function stage(output) {
-  validateOutputPath(output)
   const sourceContract = validateSourceContract()
   const before = await sourceSnapshot()
-  const buildDir = await mkdtemp(join(tmpdir(), 'shellx-cut-manual-vite-'))
-  const stagingDir = join(dirname(output), `.${basename(output)}.staging-${process.pid}-${randomUUID()}`)
-  let staged = false
+  let buildDir = null
+  let lifecycle = null
+  let promoted = false
   try {
-    await mkdir(dirname(output), { recursive: true })
+    lifecycle = await prepareOutput(output)
+    buildDir = await mkdtemp(join(tmpdir(), 'shellx-cut-manual-vite-'))
     await runVite(buildDir)
     const after = await sourceSnapshot()
     if (before.sha256 !== after.sha256) fail('UI build inputs changed while Vite was running; artifact was not staged')
-    await copyManualArtifact(buildDir, stagingDir)
-    const contract = await validateArtifactContract(stagingDir, sourceContract)
+    await copyManualArtifact(buildDir, lifecycle.staging.path)
+    const contract = await validateArtifactContract(lifecycle.staging.path, sourceContract)
+    const head = await gitHead()
+    if (!head) fail('unable to resolve the local Git source identity for this candidate')
     const manifest = {
       schema: 'shellx-cut/manual-publication@1',
       route: '/manual/cut/',
@@ -165,7 +242,7 @@ async function stage(output) {
       legacyScreenshotHotspotAuthority: 'rejected',
       excludedLegacyInputs: contract.legacyPublicationInputs,
       source: {
-        gitHead: await gitHead(),
+        gitHead: head,
         uiInputFileCount: before.fileCount,
         uiInputTreeSha256: before.sha256,
         directInputs: before.directInputs,
@@ -173,13 +250,16 @@ async function stage(output) {
       },
       artifacts: contract.artifacts,
     }
-    await writeFile(join(stagingDir, publicationManifestName), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-    await rename(stagingDir, output)
-    staged = true
+    manifest.identity = candidateIdentity(manifest.source, manifest.artifacts)
+    await writeFile(join(lifecycle.staging.path, publicationManifestName), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+    assertOutputLifecycle(lifecycle)
+    await rename(lifecycle.staging.path, lifecycle.output)
+    promoted = true
+    physicalDirectory(lifecycle.output, 'published candidate directory')
     return manifest
   } finally {
-    await rm(buildDir, { recursive: true, force: true })
-    if (!staged) await rm(stagingDir, { recursive: true, force: true })
+    if (buildDir) await rm(buildDir, { recursive: true, force: true })
+    if (lifecycle && !promoted) await discardStaging(lifecycle)
   }
 }
 
@@ -190,22 +270,15 @@ async function main() {
     console.log(JSON.stringify({ result: 'PASS', ...sourceContract }, null, 2))
     return
   }
-  const destination = await resolveOutput(options)
-  let completed = false
-  try {
-    const manifest = await stage(destination.output)
-    completed = true
-    console.log(JSON.stringify({
-      result: 'PASS',
-      output: destination.output,
-      scratchRoot: destination.scratchRoot,
-      manifest: join(destination.output, publicationManifestName),
-      route: manifest.route,
-      artifactCount: manifest.artifacts.length,
-    }, null, 2))
-  } finally {
-    if (!completed && destination.scratchRoot) await rm(destination.scratchRoot, { recursive: true, force: true })
-  }
+  const manifest = await stage(options.output)
+  console.log(JSON.stringify({
+    result: 'PASS',
+    output: options.output,
+    manifest: join(options.output, publicationManifestName),
+    route: manifest.route,
+    candidateId: manifest.identity.candidateId,
+    artifactCount: manifest.artifacts.length,
+  }, null, 2))
 }
 
 main().catch((error) => {

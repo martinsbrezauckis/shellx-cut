@@ -38,9 +38,7 @@ use crate::linux_media::probe_dims;
 use crate::linux_portal;
 use crate::linux_runtime::{cap_err, ffmpeg_bin, ffprobe_bin, gst_bin, shared_runtime};
 use crate::linux_token::{read_token, write_token};
-use crate::{
-    checkpoint::Checkpoints, cursor_correlation, input, Capture, CaptureConfig, CaptureOutput,
-};
+use crate::{checkpoint::Checkpoints, cursor_correlation, Capture, CaptureConfig, CaptureOutput};
 
 /// Live Linux capture backend (ScreenCast portal + GStreamer + rdevin + cpal).
 pub struct LinuxCapture;
@@ -59,7 +57,10 @@ impl Capture for LinuxCapture {
         // `stop` ends it; the gst/x11 path polls `stop` directly (below). A concrete
         // `duration_ms` still acts as an upper bound (whichever fires first wins).
         let dur = cfg.duration_ms.unwrap_or(u64::MAX / 4);
-        let fps = cfg.fps.max(1.0);
+        // All live backends share the v1 integer request policy. Keeping this
+        // conversion in record-core prevents Linux's old `as u32` truncation
+        // from diverging from Windows/macOS for fractional requests.
+        let fps = record_core::backend_fps_v1(cfg.fps);
 
         let out_dir = cfg.out_dir.trim_end_matches('/').to_string();
         std::fs::create_dir_all(&out_dir).map_err(|e| cap_err("create output dir", e))?;
@@ -240,22 +241,26 @@ impl Capture for LinuxCapture {
                 .as_ref()
                 .map(crate::CaptureClock::start)
                 .unwrap_or_else(Instant::now);
+            let mut input = Some(crate::linux_input::start(
+                input_mode.use_evdev,
+                start,
+                stop.clone(),
+                capture_keys,
+                sw,
+                sh,
+            )?);
+
             let mic_handle = if audio_wanted {
                 let ready = Arc::new(AtomicBool::new(false));
-                Some(crate::mic::spawn_mic(
+                Some(crate::mic_endpoint::spawn_microphone_capture(
                     format!("{out_dir_async}/mic.wav"),
+                    cfg.microphone_source.clone(),
                     stop.clone(),
                     ready,
                     start,
                 ))
             } else {
                 None
-            };
-
-            let input = if input_mode.use_evdev {
-                crate::input_evdev::spawn_evdev_listener(start, stop.clone(), capture_keys, sw, sh)
-            } else {
-                input::spawn_listener(start, stop.clone(), capture_keys)
             };
 
             // Each interval closes its own MP4 before publication. A process death can
@@ -397,25 +402,30 @@ impl Capture for LinuxCapture {
             // any CPU-heavy stitch. The stitched timeline already includes measured
             // restart gaps, so post-capture publication time must not extend sidecars.
             stop.store(true, Ordering::Relaxed);
+            // X11's measured video boundary is final. Seal its RECORD listener
+            // before stitch/audio finalization; retain the Wayland evdev ordering.
+            let sealed_x11_input = if input_mode.use_evdev {
+                None
+            } else {
+                Some(
+                    input
+                        .take()
+                        .expect("X11 input owner remains live until video stops")
+                        .finish(duration_ms)?,
+                )
+            };
             if let Some(owner) = checkpoints.as_ref() {
                 owner.stitch(&ff_for_async, &ffprobe_bin(), "raw.mp4")?;
             }
-            let audio = mic_handle.and_then(|h| {
-                match crate::mic::join_bounded(h, Duration::from_secs(2)) {
-                    Some(Ok(p)) => Some(p),
-                    Some(Err(e)) => {
-                        eprintln!("warning: mic capture failed, recording without audio: {e}");
-                        None
-                    }
-                    None => {
-                        eprintln!(
-                            "warning: mic capture did not stop within 2s, recording without audio"
-                        );
-                        None
-                    }
-                }
-            });
-            let (cursor, mut clicks, scrolls, keys) = input.lock().unwrap().snapshot();
+            let (audio, microphone_outcome) =
+                crate::microphone_result::finish(audio_wanted, mic_handle);
+            let (cursor, mut clicks, scrolls, keys) = match sealed_x11_input {
+                Some(snapshot) => snapshot,
+                None => input
+                    .take()
+                    .expect("Wayland evdev owner remains live through audio finalization")
+                    .finish(duration_ms)?,
+            };
             // rdevin supplies desktop-global coordinates. Its selected portal
             // surface must be scaled against the *finalized* video dimensions, not
             // `stream.size()` (which is logical under compositor scaling). Defer it
@@ -460,6 +470,7 @@ impl Capture for LinuxCapture {
                 h: sh,
                 duration_ms,
                 audio,
+                microphone_outcome,
                 input,
                 keys,
             })
@@ -473,11 +484,11 @@ impl Capture for LinuxCapture {
         // normal source after CFR normalization. Decode it again before the
         // RecordingProject can name it; a successful encoder exit alone is not
         // proof that its final container has the gap-padded clock we promised.
-        crate::linux_source_publication::normalize_and_publish(
+        let verified_media = crate::linux_source_publication::normalize_and_publish(
             Path::new(&raw),
             Path::new(&path),
             phase.duration_ms,
-            fps as u32,
+            fps,
             &ffmpeg_bin(),
             &ffprobe_bin(),
         )
@@ -544,12 +555,14 @@ impl Capture for LinuxCapture {
             camera_artifact: None,
             webcam_video: None,
             audio: phase.audio,
+            microphone_outcome: phase.microphone_outcome,
             settings: Settings {
                 width: w,
                 height: h,
                 fps: fps as f32,
                 audio_rate: 48_000,
             },
+            verified_media: Some(verified_media),
         })
     }
 }

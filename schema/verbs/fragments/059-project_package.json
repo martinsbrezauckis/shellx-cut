@@ -5,7 +5,7 @@
     {
       "name": "project.package_plan",
       "domain": "project",
-      "description": "Agent-only B6 dry-run for a Cut-native portable package. It hashes every referenced media source with full SHA-256, includes tracks from every sequence, refuses offline/symlinked media and unsupported Motion-linked provenance, and returns a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; when supplied it must be immutable, journal-backed, and match the current source revision exactly.",
+      "description": "B6 dry-run for a Cut-native portable package. The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, refuse offline/symlinked media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; when supplied it must be immutable, journal-backed, and match the current source revision exactly.",
       "args": {
         "type": "object",
         "required": [
@@ -31,7 +31,7 @@
           }
         }
       },
-      "result": "{plan:shellx-cut/portable-package-plan/1:{project_identity,project_revision,destination,name,target,b5_receipt_sha256?,assets:[{asset,bytes,sha256,package_path}],total_source_bytes,total_package_bytes,source_file_count,unique_media_count,policy},plan_hash:'sha256:<full>'} — a dry-run only; duplicate full-content media are represented once in total_package_bytes",
+      "result": "{plan:shellx-cut/portable-package-plan/1:{project_identity,project_revision,destination,name,target,target_status:'available'|'occupied',b5_receipt_sha256?,assets:[{asset,bytes,sha256,package_path}],total_source_bytes,total_package_bytes,source_file_count,unique_media_count,policy},plan_hash:'sha256:<full>'} — a dry run only; target_status is current preview truth and creation rechecks without replacement; duplicate full-content media are represented once in total_package_bytes",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -45,7 +45,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "agent_only",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "none",
         "facets": []
@@ -54,7 +54,7 @@
     {
       "name": "project.package_create",
       "domain": "project",
-      "description": "Agent-only B6 Pack project publication. Recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
+      "description": "B6 Pack project publication used after an explicit Projects > Make a copy confirmation or by direct API. It recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
       "args": {
         "type": "object",
         "required": [
@@ -100,7 +100,7 @@
         "idempotency": "none",
         "replayability": "not_replayable",
         "async_job": "media",
-        "ui_exposure": "agent_only",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []

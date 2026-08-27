@@ -20,7 +20,18 @@ const agentApi = readFileSync(resolve(repoRoot, 'app/server/src/http.rs'), 'utf8
 const stockPanel = [
   'src/panels/Stock/index.tsx',
   'src/panels/Stock/StockResults.tsx',
+  'src/components/NativeFolderPicker.tsx',
 ].map((path) => readFileSync(resolve(uiRoot, path), 'utf8')).join('\n')
+const assemblePanel = [
+  'src/panels/Assemble/index.tsx',
+  'src/components/NativeFolderPicker.tsx',
+].map((path) => readFileSync(resolve(uiRoot, path), 'utf8')).join('\n')
+const portableCopy = [
+  'src/panels/Projects/PortableCopy.tsx',
+  'src/components/NativeFolderPicker.tsx',
+].map((path) => readFileSync(resolve(uiRoot, path), 'utf8')).join('\n')
+const gradePanel = readFileSync(resolve(uiRoot, 'src/panels/Grade/index.tsx'), 'utf8')
+const renderQueue = readFileSync(resolve(uiRoot, 'src/topbar/RenderQueueModal.tsx'), 'utf8')
 const readme = readFileSync(resolve(repoRoot, 'README.md'), 'utf8')
 const publicFeatures = readFileSync(resolve(repoRoot, 'docs/public/FEATURES.md'), 'utf8')
 const manual = readFileSync(resolve(repoRoot, 'docs/public/site/manual/manual.js'), 'utf8')
@@ -98,6 +109,27 @@ assert.match(stockPanel, /projectScope: number/, 'Find media receives the App pr
 assert.match(stockImportCoordinator, /activeRequestScope/, 'the coordinator retains an old request lock until it settles')
 assert.match(stockImportCoordinator, /scope === snapshot\.projectScope/, 'old-project imports may never publish Added state into the new project')
 assert.match(stockImportCoordinator, /scope !== snapshot\.projectScope\) return null/, 'a stale project handler cannot admit a request after a project switch')
+assert.match(stockPanel, /pickFolder\(\{ title: dialogTitle/, 'Find media local-folder search uses the native folder picker')
+assert.match(stockPanel, /data-cut-stock-dir-choose/, 'Find media exposes a stable folder-picker control')
+assert.doesNotMatch(stockPanel, /data-cut-stock-dir\s+type=["']text/, 'Find media must never ask users to type a folder path')
+assert.match(assemblePanel, /pickFolder\(\{ title: dialogTitle/, 'AI B-roll uses the native folder picker')
+assert.match(assemblePanel, /data-cut-assemble-dir-choose/, 'AI B-roll exposes a stable folder-picker control')
+assert.doesNotMatch(assemblePanel, /data-cut-assemble-dir[^-][\s\S]{0,120}(?:<input|onChange)/, 'AI B-roll must never ask users to type a folder path')
+for (const name of ['project.package_plan', 'project.package_create']) {
+  assert.equal(schema.verbs.find((verb: { name: string; behavior?: { ui_exposure?: string } }) => verb.name === name)?.behavior?.ui_exposure, 'human',
+    `${name} is human-visible only when Projects can drive its real preview-first flow`)
+}
+assert.match(portableCopy, /pickFolder\(\{ title: dialogTitle/, 'Portable Copy uses the native folder picker')
+assert.match(portableCopy, /data-cut-portable-dir-choose/, 'Portable Copy exposes a stable native destination control')
+assert.doesNotMatch(portableCopy, /data-cut-portable-dir[^-][\s\S]{0,120}(?:<input|onChange)/, 'Portable Copy must never ask users to type a destination path')
+assert.match(portableCopy, /callVerb\('project\.package_plan'/, 'Portable Copy gets counts and collision truth from the server plan')
+assert.match(portableCopy, /callVerb\('project\.package_create'/, 'Portable Copy creates only after the explicit confirmation route')
+assert.match(portableCopy, /callVerb\('jobs\.status'/, 'Portable Copy displays only actual job state and progress')
+assert.match(portableCopy, /data-cut-portable-review/, 'Portable Copy has a deliberate review-before-create step')
+assert.match(gradePanel, /data-cut-grade-lut-pick/, 'Color grading selects LUT files through the native picker')
+assert.doesNotMatch(gradePanel, /data-cut-grade-lut(?:\s|>)[\s\S]{0,120}<input|Paste \.cube path|Advanced path/, 'Color grading must not expose an editable LUT path')
+assert.match(renderQueue, /data-cut-render-queue-output-pick/, 'Render queue rows select output files through the native save picker')
+assert.doesNotMatch(renderQueue, /<input[\s\S]{0,180}data-cut-render-queue-output/, 'Render queue must not expose editable output paths')
 for (const source of [stockPanel, readme, publicFeatures, manual]) {
   assert.match(source, /search or import a\s+result/, 'network-provider copy must disclose both search and import/download contact')
   assert.doesNotMatch(source, /only when you search/, 'network-provider copy must not falsely promise search-only contact')

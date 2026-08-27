@@ -1,5 +1,6 @@
 //! Bounded exact-hash offline-media relink preview and grouped apply.
 
+mod metadata;
 mod plan;
 mod scan;
 #[cfg(test)]
@@ -16,18 +17,17 @@ const MAX_SCAN_FILES: usize = 512;
 const MAX_SCAN_DEPTH: usize = 16;
 const MAX_SCAN_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 struct OfflineAssetSnapshot {
     asset_id: String,
     expected_hash: String,
     old_path: String,
     source_path: PathBuf,
     display_name: String,
-    kind: Option<String>,
-    duration_ms: Option<u64>,
+    metadata: metadata::StoredMetadata,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 struct RelinkSnapshot {
     project_identity: Value,
     project_revision: String,
@@ -35,11 +35,12 @@ struct RelinkSnapshot {
     assets: Vec<OfflineAssetSnapshot>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 struct Candidate {
     path: String,
     display_name: String,
     hash: String,
+    metadata: metadata::CandidateMetadata,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -216,7 +217,6 @@ async fn snapshot(state: &AppState, root: PathBuf) -> Result<RelinkSnapshot, Cut
         .iter()
         .map(|(asset_id, asset)| {
             let source_path = source_path(&store.dir, asset);
-            let probe = asset.probe.as_ref();
             OfflineAssetSnapshot {
                 asset_id: asset_id.clone(),
                 expected_hash: asset.hash.clone(),
@@ -227,13 +227,7 @@ async fn snapshot(state: &AppState, root: PathBuf) -> Result<RelinkSnapshot, Cut
                     .and_then(|name| name.to_str())
                     .unwrap_or("media")
                     .to_owned(),
-                kind: probe
-                    .and_then(|value| value.get("kind"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                duration_ms: probe
-                    .and_then(|value| value.get("duration_ms"))
-                    .and_then(Value::as_u64),
+                metadata: metadata::stored_metadata(asset.probe.as_ref()),
             }
         })
         .collect::<Vec<_>>();

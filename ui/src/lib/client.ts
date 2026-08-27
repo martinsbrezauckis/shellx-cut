@@ -104,7 +104,7 @@ export interface VerbResult<T = unknown> {
 export const UI_OPEN_PANELS = UI_OPEN_SURFACE_IDS
 export type UiOpenPanel = (typeof UI_OPEN_PANELS)[number]
 
-// Verb args map — one entry per verb in schema/verbs.json (277 verbs, 33 domains).
+// Verb args map — one entry per verb in schema/verbs.json (278 verbs, 33 domains).
 // Keys ARE the wire names; keep in sync with the registry. Later additions
 // edit.crop, edit.crossfade, edit.move_marker, audio.add_music,
 // captions.set_range + ripple flags on edit.ripple_delete (lift) / edit.move.
@@ -684,13 +684,15 @@ export interface VerbArgs {
   // Integrated Cut recorder (doctor + autoedit + the polish orchestrator
   // + a fenced file export). config (autoedit) is accepted but currently ignored.
   'screen_record.doctor': { warm_mic?: boolean }
+  'screen_record.microphone_selection': { mode: 'system_default' | 'selected'; microphone_token?: string }
   'screen_record.system_audio_probe': { max_ms?: number }
   'screen_record.recovery_status': { after?: string; limit?: number }
   // Live duration-bounded capture. `start` launches an in-process
   // recorder thread and returns a capture_id; `stop` polls for the
   // finalized project.json then surfaces the events track (+ optional autoedit).
-  // `monitor` is accepted-but-ignored in v1 (the record CLI has no --monitor flag).
-  'screen_record.start': { duration_ms?: number; fps?: number; audio?: boolean; system_audio?: boolean; studio?: unknown; keys?: boolean; monitor?: number; window?: string; rationale?: string }
+  // `monitor_id`, when supplied from Doctor, is revalidated as the exact native
+  // target. `monitor` remains the legacy ordinal compatibility path.
+  'screen_record.start': { duration_ms?: number; fps?: number; audio?: boolean; system_audio?: boolean; studio?: unknown; keys?: boolean; monitor?: number; monitor_id?: string; window?: string; rationale?: string }
   'screen_record.stop': { capture_id: string; autoedit?: boolean; mux_raw?: boolean; raw_path?: string; rationale?: string }
   'screen_record.studio_event': {
     capture_id: string

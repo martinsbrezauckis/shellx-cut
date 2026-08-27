@@ -1156,6 +1156,13 @@ export default function Timeline(props: TimelineProps) {
     clientXToMs,
     onSelect,
   })
+  // Scroll position only windows the ruler/thumbnail work; it does not change
+  // a track row's content. Keep this handler stable so memoized rows can skip
+  // that scroll-only parent render while retaining the live playhead via cfg.
+  const openTrackMenu = useCallback((trackId: string, x: number, y: number) => {
+    contextMenus.setClipMenu(null)
+    contextMenus.setSurfaceMenu({ kind: 'track', trackId, x, y, atMs: cfg.current.playheadMs })
+  }, [contextMenus.setClipMenu, contextMenus.setSurfaceMenu])
 
   // --- wheel: ONE non-passive capture listener (timeline behavior contract) -------------
   useEffect(() => {
@@ -1591,10 +1598,7 @@ export default function Timeline(props: TimelineProps) {
                 onLaneDown={onLaneDown}
                 onClipDown={onClipDown}
                 onSeamDown={onSeamDown}
-                onOpenTrackMenu={(trackId, x, y) => {
-                  contextMenus.setClipMenu(null)
-                  contextMenus.setSurfaceMenu({ kind: 'track', trackId, x, y, atMs: playheadMs })
-                }}
+                onOpenTrackMenu={openTrackMenu}
               />
             )
           })}

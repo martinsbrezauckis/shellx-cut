@@ -10,7 +10,7 @@ mod purge;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use ownership::record_generated;
+pub(crate) use ownership::{record_generated, remove_owned_output, OwnedRemoval};
 pub(crate) use purge::{preview, start_purge};
 
 use cut_core::{error_codes, CutError};

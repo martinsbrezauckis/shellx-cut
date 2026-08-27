@@ -39,6 +39,8 @@ fn media(duration_ms: u64) -> MediaFacts {
         duration_ms,
         decoded_video_frames: 1,
         has_audio: false,
+        avg_frame_rate: None,
+        r_frame_rate: None,
     }
 }
 fn segment(owner: &mut ManifestOwner, seq: u64) {

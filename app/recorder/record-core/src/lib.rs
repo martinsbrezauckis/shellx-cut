@@ -17,18 +17,27 @@
 //! Primary callers: record-engine (reads EventTrack → writes EditPlan),
 //! record-render (reads RecordingProject+EditPlan → MP4/GIF), record-cli.
 
+pub mod cadence;
 pub mod camera;
 pub mod color;
 pub mod ease;
 pub mod error;
 pub mod event;
+pub mod event_run_merge;
 pub mod fixtures;
 pub mod plan;
 pub mod project;
 
+#[cfg(test)]
+mod event_run_merge_tests;
+
 /// Project file schema tag (written into `RecordingProject.schema`).
 pub const SCHEMA: &str = "shellx-record/1";
 
+pub use cadence::{
+    backend_fps_v1, backend_requested_v1, CadenceError, CaptureCadence, FrameRate,
+    ProbedMediaCadence, CAPTURE_CADENCE_SCHEMA,
+};
 pub use camera::{
     CameraArtifact, CameraClockRange, CameraMediaFacts, CameraTerminalState, CAMERA_ARTIFACT_SCHEMA,
 };
@@ -39,6 +48,7 @@ pub use event::{
     ClickPositionQuality, ClickSample, CursorCoordinateSource, CursorCoordinateState,
     CursorCorrelation, CursorSample, EventTrack, KeySample, Monitor, MouseButton, ScrollSample,
 };
+pub use event_run_merge::{merge_sealed_event_tracks, MergedEventTrack, SealedEventTrackRun};
 pub use plan::{
     Anchor, Background, CaptionStyle, ClickFx, CursorStyle, EditPlan, FrameStyle, KeyCastEvent,
     Reframe, Shadow, WebcamKeyframe, WebcamOverlay, WebcamPlacement, WebcamShape, ZoomKey,

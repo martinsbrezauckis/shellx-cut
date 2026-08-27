@@ -94,6 +94,13 @@ unknown codes are not translated to `invalid_args` or `connector_failed`. Canoni
 present, while `job_unknown`, `job_expired`, and `job_not_visible` describe lookup failure rather
 than render failure.
 
+Motion follow-up `9172b3f` applies that same public envelope to typed executor exceptions across
+HTTP, MCP, stdio, terminal job state, events, and replay. It does not add a new Cut capability or
+protocol class: Cut preserves a safe unknown code plus the optional retry metadata already named
+above. `stack`, `detail`, `cause`, URLs, and path-bearing text are excluded from the connector
+boundary. This is source compatibility only; the exact Cut-server plus Motion-runtime process pair
+remains an R6 qualification requirement.
+
 PC2 and Mac independently passed the focused Core/connector/Debug/MCP/type gates and the complete
 contract, documentation, architecture, installed-bin and packed-package gates from the exact MCI-3
 source tree. Each packed 19 packages, 4,528 files, and 1,480 reachable shipping modules. This is

@@ -1,5 +1,6 @@
 //! Deterministic exact-hash plan construction and accepted selection.
 
+use super::metadata::{assess, candidate_metadata, MetadataAssessment};
 use super::scan::{full_sha256_under_root, hash_json, scan_folder};
 use super::*;
 use cut_core::store::{is_exact_sha256, RelinkGroupChange};
@@ -18,6 +19,7 @@ pub(super) fn build_plan(snapshot: RelinkSnapshot) -> Result<PreparedPlan, CutEr
                 .to_owned(),
             path: path.to_string_lossy().into_owned(),
             hash,
+            metadata: candidate_metadata(&path, &root)?,
         });
     }
     candidates.sort_by(|left, right| left.path.cmp(&right.path));
@@ -44,25 +46,32 @@ pub(super) fn build_plan(snapshot: RelinkSnapshot) -> Result<PreparedPlan, CutEr
             chosen_hash: None,
             diagnostics: Vec::new(),
         };
-        if !is_exact_sha256(&asset.expected_hash) {
-            row.disposition = "hash_unavailable".into();
-            row.diagnostics
-                .push("stored identity is sampled or unavailable; exact relink is refused".into());
-        } else if let Some(matches) = exact.get(&asset.expected_hash) {
-            match matches.as_slice() {
-                [candidate] => {
-                    row.disposition = "eligible_exact_hash".into();
-                    row.chosen_path = Some(candidate.path.clone());
-                    row.chosen_hash = Some(candidate.hash.clone());
+        let metadata =
+            metadata_for_source_identity(&asset.expected_hash, assess(&asset, &candidates));
+        if is_exact_sha256(&asset.expected_hash) {
+            if let Some(matches) = exact.get(&asset.expected_hash) {
+                match matches.as_slice() {
+                    [candidate] => {
+                        row.disposition = "eligible_exact_hash".into();
+                        row.chosen_path = Some(candidate.path.clone());
+                        row.chosen_hash = Some(candidate.hash.clone());
+                        row.diagnostics.push("complete_sha256_match".into());
+                    }
+                    _ => {
+                        row.disposition = "ambiguous_exact_hash".into();
+                        row.diagnostics.push("complete_sha256_ambiguous".into());
+                    }
                 }
-                _ => {
-                    row.disposition = "ambiguous_exact_hash".into();
-                    row.diagnostics
-                        .push(format!("{} exact candidates found", matches.len()));
-                }
+            } else {
+                row.disposition = metadata.disposition.into();
+                row.diagnostics = metadata.diagnostics;
             }
         } else {
-            classify_metadata_only(&mut row, &asset, &candidates);
+            // Sampled/missing source identities still receive constrained
+            // metadata diagnostics. They remain review-only; only exact hash
+            // rows can ever enter `media.relink_apply`.
+            row.disposition = metadata.disposition.into();
+            row.diagnostics = metadata.diagnostics;
         }
         rows.push(row);
     }
@@ -78,41 +87,22 @@ pub(super) fn build_plan(snapshot: RelinkSnapshot) -> Result<PreparedPlan, CutEr
     Ok(PreparedPlan { plan, plan_hash })
 }
 
-fn classify_metadata_only(
-    row: &mut PlanAsset,
-    asset: &OfflineAssetSnapshot,
-    candidates: &[Candidate],
-) {
-    let Some(kind) = asset.kind.as_deref() else {
-        row.diagnostics
-            .push("no recorded media kind for constrained metadata check".into());
-        return;
-    };
-    let Some(duration_ms) = asset.duration_ms else {
-        row.diagnostics
-            .push("no recorded duration for constrained metadata check".into());
-        return;
-    };
-    let matches = candidates
-        .iter()
-        .filter(|candidate| candidate.display_name == asset.display_name)
-        .filter(|candidate| {
-            cut_media::probe(Path::new(&candidate.path))
-                .map(|probe| probe.kind == kind && probe.duration_ms == Some(duration_ms))
-                .unwrap_or(false)
-        })
-        .count();
-    if matches == 1 {
-        row.disposition = "metadata_only".into();
-        row.diagnostics.push(
-            "filename, kind, and duration match but complete SHA-256 differs; refused".into(),
-        );
-    } else if matches > 1 {
-        row.disposition = "ambiguous_metadata".into();
-        row.diagnostics.push(format!(
-            "{matches} filename/kind/duration candidates; refused"
-        ));
+/// Retain safe metadata diagnostics for identities that lack a complete hash.
+/// This only selects a review/refusal label; `accepted_changes` independently
+/// admits `eligible_exact_hash` and nothing else.
+pub(super) fn metadata_for_source_identity(
+    expected_hash: &str,
+    mut metadata: MetadataAssessment,
+) -> MetadataAssessment {
+    if !is_exact_sha256(expected_hash) {
+        if metadata.disposition == "no_match" {
+            metadata.disposition = "hash_unavailable";
+        }
+        metadata
+            .diagnostics
+            .push("complete_sha256_unavailable".into());
     }
+    metadata
 }
 
 pub(super) fn preview_result(prepared: &PreparedPlan) -> Value {
@@ -121,14 +111,19 @@ pub(super) fn preview_result(prepared: &PreparedPlan) -> Value {
         .assets
         .iter()
         .map(|row| {
-            json!({
+            let mut result = json!({
                 "asset": row.asset_id,
                 "expected_hash": row.expected_hash,
                 "display_name": row.display_name,
                 "disposition": row.disposition,
                 "diagnostics": row.diagnostics,
-                "candidate": row.chosen_hash.as_ref().map(|hash| json!({"sha256": hash})),
-            })
+            });
+            if row.disposition == "eligible_exact_hash" {
+                if let Some(hash) = row.chosen_hash.as_ref() {
+                    result["candidate"] = json!({"sha256": hash});
+                }
+            }
+            result
         })
         .collect::<Vec<_>>();
     json!({

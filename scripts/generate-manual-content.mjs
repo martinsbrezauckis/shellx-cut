@@ -74,7 +74,7 @@ const content = indexed.map(({ id, label }) => {
   }
 })
 const unindexed = Object.keys(features).filter((id) => !seen.has(id))
-if (content.length !== 193) throw new Error(`expected 193 indexed manual features, found ${content.length}`)
+if (content.length !== 194) throw new Error(`expected 194 indexed manual features, found ${content.length}`)
 
 const appVersion = JSON.parse(packageJson).version
 const output = {

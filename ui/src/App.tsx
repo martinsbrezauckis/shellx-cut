@@ -53,9 +53,16 @@ import { useAppKeyboardController } from './app/useAppKeyboardController'
 import { useAppSurfaceEvents } from './app/useAppSurfaceEvents'
 import { useUiCommandController } from './app/useUiCommandController'
 import { useUiStatePublisher } from './app/useUiStatePublisher'
+import { createCutAppRootMountReporter } from './app/startupReadiness'
 import { preferredProjectLeftTab, shouldReturnToProjectsAfterResync } from './app/model'
 import { useManualFrontendBridge } from './manual/useManualFrontendBridge'
 import LocalManualPanel from './manual/LocalManualPanel'
+import {
+  INITIAL_LOCAL_MANUAL_STATE,
+  closeLocalManual,
+  openLocalManualArticle,
+  toggleLocalManual,
+} from './manual/localManualState'
 import { isEmbeddedManualFrontend } from './manual/protocol'
 import UserActionFeedback from './components/UserActionFeedback'
 import { runUserVerb } from './lib/userActionFeedback'
@@ -79,7 +86,11 @@ export default function App() {
   // real editor. A nested local panel there would be redundant and obscure the
   // exact control the outer manual is revealing.
   const embeddedManualFrontend = isEmbeddedManualFrontend()
-  const [localManualOpen, setLocalManualOpen] = useState(false)
+  const [localManual, setLocalManual] = useState(INITIAL_LOCAL_MANUAL_STATE)
+  const appRootMountReporter = useRef<((node: HTMLDivElement | null) => void) | null>(null)
+  if (appRootMountReporter.current === null) {
+    appRootMountReporter.current = createCutAppRootMountReporter(() => events.reportCutAppMounted())
+  }
   // The Find-media panel is intentionally remounted as its Find sub-surface
   // changes, and AppWorkspace itself swaps for Library/Record. Keep the one
   // active import coordinator here, at the app lifetime, so a remount cannot
@@ -198,8 +209,8 @@ export default function App() {
     setEnvOpen,
     setEnvCategory,
     onRefreshDoctor: () => refreshDoctor(true),
-    onOpenManual: () => {
-      if (!embeddedManualFrontend) setLocalManualOpen(true)
+    onOpenManual: (featureId) => {
+      if (!embeddedManualFrontend) setLocalManual((state) => openLocalManualArticle(state, featureId))
     },
     agentChatPromptSeq,
     setAgentChatPrefill,
@@ -649,7 +660,7 @@ export default function App() {
   // rail right. Three draggable dividers; sizes persisted via useLayout.
   return (
     <OfflineMediaProvider project={project} onProjectChanged={resync}>
-    <div className="app" data-cut-app-root>
+    <div ref={embeddedManualFrontend ? undefined : appRootMountReporter.current} className="app" data-cut-app-root>
       <TopBar
         project={project}
         onOpenMusic={() => toggleDrawer('music')}
@@ -681,9 +692,9 @@ export default function App() {
           setEnvOpen(true)
         }}
         onOpenManual={() => {
-          if (!embeddedManualFrontend) setLocalManualOpen((open) => !open)
+          if (!embeddedManualFrontend) setLocalManual(toggleLocalManual)
         }}
-        manualOpen={!embeddedManualFrontend && localManualOpen}
+        manualOpen={!embeddedManualFrontend && localManual.open}
       />
 
       <div
@@ -785,8 +796,10 @@ export default function App() {
       <HighlightOverlay spec={highlight} onClear={() => setHighlight(null)} />
 
       <LocalManualPanel
-        open={!embeddedManualFrontend && localManualOpen}
-        onClose={() => setLocalManualOpen(false)}
+        open={!embeddedManualFrontend && localManual.open}
+        requestedFeatureId={localManual.requestedFeatureId}
+        requestId={localManual.requestId}
+        onClose={() => setLocalManual(closeLocalManual)}
       />
 
       {/* Desktop drag-drop media import (Tauri only). With no project, the first

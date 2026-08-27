@@ -7,6 +7,9 @@ use super::*;
 use std::io::Read;
 use std::sync::Arc;
 
+mod cache_cleanup;
+use cache_cleanup::remove_owned_cache_outputs;
+
 // ---------------------------------------------------------------------------
 // media.* handlers — import chain + sidecar jobs
 // ---------------------------------------------------------------------------
@@ -563,62 +566,121 @@ pub(super) async fn media_remove(
         .get("rationale")
         .and_then(|r| r.as_str())
         .map(String::from);
-    let mut guard = state.project.write().await;
-    let store = guard.as_mut().ok_or_else(no_project)?;
-    if !store.project.assets.contains_key(&a.asset) {
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            format!("no asset '{}'", a.asset),
-            "list assets via project.state (project.assets)".to_string(),
-        ));
-    }
-    // SAFE DEFAULT: refuse while any timeline clip still references this asset —
-    // removing it would orphan those clips (and the rebuild would have no asset to
-    // resolve them against). The UI's linked-delete clears the clips cleanly first.
-    let used_by = store
-        .project
-        .all_sequence_tracks()
-        .flat_map(|t| &t.clips)
-        .filter(|c| matches!(c, cut_core::Clip::Media(m) if m.asset == a.asset))
-        .count();
-    if used_by > 0 {
-        let scope = if store.project.sequences.is_empty() {
-            "timeline"
-        } else {
-            "project sequence"
-        };
-        return Err(CutError::new(
-            error_codes::CONFLICT,
-            format!("asset '{}' is still used by {used_by} {scope} clip(s)", a.asset),
-            format!("{used_by} clip(s) reference it; removing the asset would orphan them"),
-        )
-        .with_suggested_action(
-            "delete those clips from every sequence first (switch sequences from the topbar; clip deletion is undoable), then media.remove",
-        ));
-    }
-    // Capture the derived-file roots before the mutating borrow.
-    let dir = store.dir.clone();
-    let receipts = store.receipts_dir();
-    // record_remove_asset drops the record AND commits the replay-safe op (which
-    // appends to ops.jsonl + saves project.json). It returns the removed Asset so
-    // we can unlink its derived files; it NEVER deletes `removed.path` (the source).
-    let (removed, op) = guard_call("media.remove", || {
-        store.record_remove_asset(&a.asset, actor, rationale)
-    })?;
+    let (removed, op, dir, receipts, source_deleted, mut freed) = {
+        let mut guard = state.project.write().await;
+        let store = guard.as_mut().ok_or_else(no_project)?;
+        if !store.project.assets.contains_key(&a.asset) {
+            return Err(CutError::new(
+                error_codes::NOT_FOUND,
+                format!("no asset '{}'", a.asset),
+                "list assets via project.state (project.assets)".to_string(),
+            ));
+        }
+        // SAFE DEFAULT: refuse while any timeline clip still references this asset —
+        // removing it would orphan those clips (and the rebuild would have no asset to
+        // resolve them against). The UI's linked-delete clears the clips cleanly first.
+        let used_by = store
+            .project
+            .all_sequence_tracks()
+            .flat_map(|t| &t.clips)
+            .filter(|c| matches!(c, cut_core::Clip::Media(m) if m.asset == a.asset))
+            .count();
+        if used_by > 0 {
+            let scope = if store.project.sequences.is_empty() {
+                "timeline"
+            } else {
+                "project sequence"
+            };
+            return Err(CutError::new(
+                error_codes::CONFLICT,
+                format!("asset '{}' is still used by {used_by} {scope} clip(s)", a.asset),
+                format!("{used_by} clip(s) reference it; removing the asset would orphan them"),
+            )
+            .with_suggested_action(
+                "delete those clips from every sequence first (switch sequences from the topbar; clip deletion is undoable), then media.remove",
+            ));
+        }
+        // Capture the derived-file roots before the mutating borrow.
+        let dir = store.dir.clone();
+        let receipts = store.receipts_dir();
+        // record_remove_asset drops the record AND commits the replay-safe op (which
+        // appends to ops.jsonl + saves project.json). It returns the removed Asset so
+        // we can unlink its derived files; it NEVER deletes `removed.path` (the source).
+        let (removed, op) = guard_call("media.remove", || {
+            store.record_remove_asset(&a.asset, actor, rationale)
+        })?;
+        // Generated media is project-owned, unlike a normal user import. Delete only
+        // a DIRECT child of the canonical assets/generated directory and only when no
+        // remaining asset points at the same source. This containment fence prevents a
+        // crafted project path/symlink from turning media.remove into arbitrary unlink.
+        let mut source_deleted = false;
+        let mut freed: Vec<String> = Vec::new();
+        let source = PathBuf::from(&removed.path);
+        let generated_root = dir.join("assets/generated");
+        let still_referenced = store
+            .project
+            .assets
+            .values()
+            .any(|asset| Path::new(&asset.path) == source);
+        if !still_referenced {
+            if let (Ok(root), Ok(source_path)) =
+                (generated_root.canonicalize(), source.canonicalize())
+            {
+                if source_path.parent() == Some(root.as_path()) {
+                    let sidecar = source_path.with_extension("json");
+                    if std::fs::remove_file(&source_path).is_ok() {
+                        source_deleted = true;
+                        freed.push(
+                            source_path
+                                .strip_prefix(&dir)
+                                .unwrap_or(&source_path)
+                                .display()
+                                .to_string(),
+                        );
+                        if sidecar.is_file() && std::fs::remove_file(&sidecar).is_ok() {
+                            freed.push(
+                                sidecar
+                                    .strip_prefix(&dir)
+                                    .unwrap_or(&sidecar)
+                                    .display()
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        (removed, op, dir, receipts, source_deleted, freed)
+    };
     let op_id = op.op_id.clone();
     state.events.publish(Event::OpApplied { op: op.clone() });
-    // Unlink the regenerable derived files (proxy/filmstrip/transcript/perception),
-    // best-effort: a leftover orphan is harmless (it's all rebuildable). NEVER the
-    // source file at `removed.path`.
-    let mut freed: Vec<String> = Vec::new();
-    for rel in [
-        removed.proxy.as_deref(),
-        removed.filmstrip.as_deref(),
-        removed.transcript.as_deref(),
-        removed.perception.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
+    // The cache lease comes strictly after the project write guard above is
+    // dropped. Proxy/filmstrip removal validates both the direct pointer and its
+    // ownership record before unlinking, then retires that exact record.
+    let mut warnings = Vec::new();
+    remove_owned_cache_outputs(
+        state,
+        &dir,
+        &a.asset,
+        [
+            (
+                crate::cache_lifecycle::CacheKind::Proxies,
+                removed.proxy.as_deref(),
+            ),
+            (
+                crate::cache_lifecycle::CacheKind::Thumbnails,
+                removed.filmstrip.as_deref(),
+            ),
+        ],
+        &mut freed,
+        &mut warnings,
+    )
+    .await;
+    // Transcript/perception are not owned by the cache ledger. They retain the
+    // established best-effort project-local cleanup behavior.
+    for rel in [removed.transcript.as_deref(), removed.perception.as_deref()]
+        .into_iter()
+        .flatten()
     {
         let p = dir.join(rel);
         if p.exists() && std::fs::remove_file(&p).is_ok() {
@@ -630,45 +692,6 @@ pub(super) async fn media_remove(
     if probe_receipt.exists() {
         let _ = std::fs::remove_file(&probe_receipt);
     }
-    // Generated media is project-owned, unlike a normal user import. Delete only
-    // a DIRECT child of the canonical assets/generated directory and only when no
-    // remaining asset points at the same source. This containment fence prevents a
-    // crafted project path/symlink from turning media.remove into arbitrary unlink.
-    let mut source_deleted = false;
-    let source = PathBuf::from(&removed.path);
-    let generated_root = dir.join("assets/generated");
-    let still_referenced = store
-        .project
-        .assets
-        .values()
-        .any(|asset| Path::new(&asset.path) == source);
-    if !still_referenced {
-        if let (Ok(root), Ok(source_path)) = (generated_root.canonicalize(), source.canonicalize())
-        {
-            if source_path.parent() == Some(root.as_path()) {
-                let sidecar = source_path.with_extension("json");
-                if std::fs::remove_file(&source_path).is_ok() {
-                    source_deleted = true;
-                    freed.push(
-                        source_path
-                            .strip_prefix(&dir)
-                            .unwrap_or(&source_path)
-                            .display()
-                            .to_string(),
-                    );
-                    if sidecar.is_file() && std::fs::remove_file(&sidecar).is_ok() {
-                        freed.push(
-                            sidecar
-                                .strip_prefix(&dir)
-                                .unwrap_or(&sidecar)
-                                .display()
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-        }
-    }
     Ok(VerbResult::ok_with_ops(
         json!({
             "removed": true,
@@ -679,7 +702,8 @@ pub(super) async fn media_remove(
             "op": op_for_result(&op, wants_legacy_inverse(&args)),
         }),
         vec![op_id],
-    ))
+    )
+    .with_warnings(warnings))
 }
 
 /// media.relink{asset, path} — repoint an imported asset at a new source file,
@@ -725,7 +749,7 @@ pub(super) async fn media_relink(
     // Probe the NEW file up front (off the lock): kind guard + duration warning.
     let s = src.clone();
     let new_probe = run_blocking("media.relink.probe", move || cut_media::probe(&s)).await?;
-    let (old, op, warnings) = {
+    let (old, op, mut warnings, dir, receipts) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
         let old = store.project.assets.get(&a.asset).cloned().ok_or_else(|| {
@@ -794,7 +818,7 @@ pub(super) async fn media_relink(
                 rationale,
             )
         })?;
-        (old, op, warnings)
+        (old, op, warnings, store.dir.clone(), store.receipts_dir())
     };
     let op_id = op.op_id.clone();
     state.events.publish(Event::OpApplied { op: op.clone() });
@@ -802,28 +826,43 @@ pub(super) async fn media_relink(
     let mut freed: Vec<String> = Vec::new();
     let mut job_id: Option<String> = None;
     if hash_changed {
-        // Stale derived files describe the OLD content — unlink them (best-effort,
-        // all regenerable; NEVER the old source file itself), then rerun the import
-        // chain so probe/proxy/filmstrip regenerate exactly like a fresh import.
-        if let Ok((dir, receipts, _proxies)) = project_paths(state).await {
-            for rel in [
-                old.proxy.as_deref(),
-                old.filmstrip.as_deref(),
-                old.transcript.as_deref(),
-                old.perception.as_deref(),
-            ]
+        // The project mutation committed above and released its write guard.
+        // Cache cleanup now takes the shared lifecycle lease, never in the
+        // inverse order. Only exact ledger-owned proxy/filmstrip files may be
+        // removed; a stale ledger stays visible as a warning and blocks later
+        // cache inventory rather than deleting another asset's output.
+        remove_owned_cache_outputs(
+            state,
+            &dir,
+            &a.asset,
+            [
+                (
+                    crate::cache_lifecycle::CacheKind::Proxies,
+                    old.proxy.as_deref(),
+                ),
+                (
+                    crate::cache_lifecycle::CacheKind::Thumbnails,
+                    old.filmstrip.as_deref(),
+                ),
+            ],
+            &mut freed,
+            &mut warnings,
+        )
+        .await;
+        // Transcript/perception are deliberately outside the cache-ownership
+        // ledger, so their long-standing best-effort cleanup is unchanged.
+        for rel in [old.transcript.as_deref(), old.perception.as_deref()]
             .into_iter()
             .flatten()
-            {
-                let p = dir.join(rel);
-                if p.exists() && std::fs::remove_file(&p).is_ok() {
-                    freed.push(rel.to_string());
-                }
+        {
+            let p = dir.join(rel);
+            if p.exists() && std::fs::remove_file(&p).is_ok() {
+                freed.push(rel.to_string());
             }
-            let probe_receipt = receipts.join(format!("{}.probe.json", a.asset));
-            if probe_receipt.exists() {
-                let _ = std::fs::remove_file(&probe_receipt);
-            }
+        }
+        let probe_receipt = receipts.join(format!("{}.probe.json", a.asset));
+        if probe_receipt.exists() {
+            let _ = std::fs::remove_file(&probe_receipt);
         }
         job_id = Some(spawn_import_chain(
             state.clone(),

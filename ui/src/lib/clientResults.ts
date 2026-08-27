@@ -95,6 +95,44 @@ export interface RestoreResult {
   rebased_over?: string[]
 }
 
+/** A source-revision-bound dry run for a user-visible portable project copy. */
+export interface PortablePackagePlan {
+  schema: 'shellx-cut/portable-package-plan/1'
+  project_identity: { schema: 'shellx-cut/project-identity/1'; origin_path_sha256: string; project_name: string }
+  project_revision: string
+  destination: string
+  name: string
+  target: string
+  /** Destination state at preview time; creation checks again without replacement. */
+  target_status: 'available' | 'occupied'
+  b5_receipt_sha256?: string | null
+  assets: Array<{ asset: string; bytes: number; sha256: string; package_path: string }>
+  total_source_bytes: number
+  total_package_bytes: number
+  source_file_count: number
+  unique_media_count: number
+  policy: {
+    only_referenced_media: boolean
+    derived_cache: 'excluded'
+    offline_media: 'refuse'
+    collision: 'refuse'
+    publication: 'atomic_no_replace_native'
+  }
+}
+
+export interface PortablePackagePlanResult {
+  plan: PortablePackagePlan
+  plan_hash: string
+}
+
+export interface PortablePackageCreateResult {
+  job_id: string
+  plan_hash: string
+  source_revision: string
+  target: string
+  status: 'queued'
+}
+
 /** Immediate verify.rerun handle. The independently persisted result arrives
  * in jobs.status and never replaces the source RenderReceipt. */
 export interface OutputCheckRerunHandle {
@@ -1229,6 +1267,8 @@ export interface OverwriteResult {
 /** Typed result payloads where the shape is pinned by the contract. */
 export interface VerbResults {
   'project.create': { path: string; project: Project; starter_asset_path?: string }
+  'project.package_plan': PortablePackagePlanResult
+  'project.package_create': PortablePackageCreateResult
   // Default project.state is always the materialized Project. Incremental
   // callers decode the sync-only delta in projectSync.ts after passing
   // since_revision; keeping this default type preserves existing readers.

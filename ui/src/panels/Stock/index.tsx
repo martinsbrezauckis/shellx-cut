@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { callVerb, type Project } from '../../lib/client'
+import NativeFolderPicker from '../../components/NativeFolderPicker'
 import {
   type AssetKind,
   type AssetProvider,
@@ -167,7 +168,7 @@ export default function StockDrawer({ project, projectScope, importCoordinator }
     const query = q.trim()
     const searchDir = dir.trim()
     if (providerNeedsDirectory(meta.name) && !searchDir) {
-      setErr('Enter a folder path to search.')
+      setErr('Choose a media folder to search.')
       return
     }
     if (!providerAllowsEmptyQuery(meta.name) && !query) {
@@ -307,11 +308,10 @@ export default function StockDrawer({ project, projectScope, importCoordinator }
           </div>
 
           {providerNeedsDirectory(meta.name) && (
-            <label className="cd-field">
-              <span className="cd-field-label">Folder</span>
-              <input className="cd-input cd-input--mono" data-cut-stock-dir type="text" spellCheck={false} disabled={importing}
-                placeholder="/path/to/your/media" value={dir} onChange={(event) => setDir(event.target.value)} />
-            </label>
+            <NativeFolderPicker kind="stock" label="Folder" dialogTitle="Choose media folder — ShellX Cut"
+              value={dir} disabled={importing} onChooseStart={() => setErr(null)}
+              onDesktopRequired={() => setNote('Open the desktop app to choose a local media folder.')}
+              onSelected={(selected) => { clearSearch(); setDir(selected); setNote('Media folder selected.') }} />
           )}
 
           <label className="cd-field">
@@ -322,7 +322,7 @@ export default function StockDrawer({ project, projectScope, importCoordinator }
               onKeyDown={(event) => { if (event.key === 'Enter') void search() }} />
           </label>
 
-          <button className="cd-btn cd-btn--primary" data-cut-stock-search disabled={searching || importing || meta.needsKey} onClick={() => void search()}>
+          <button className="cd-btn cd-btn--primary" data-cut-stock-search disabled={searching || importing || meta.needsKey || (providerNeedsDirectory(meta.name) && !dir.trim())} onClick={() => void search()}>
             {searching ? 'Searching…' : meta.name === 'stickers' && !q.trim() ? 'Browse stickers' : 'Search'}
           </button>
         </>}

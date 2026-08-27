@@ -12,6 +12,9 @@ use record_recovery::{
 };
 use serde::Serialize;
 
+mod ownership;
+use ownership::{has_sealed_normal_project, pause_session_ownership, PauseSessionOwnership};
+
 pub(crate) const CHECKPOINT_INTERVAL_MS: u64 = 15_000;
 
 pub(crate) fn validate_capture_id(capture_id: &str) -> Result<(), CutError> {
@@ -55,6 +58,9 @@ pub(crate) fn startup(project_dir: &Path) -> Result<(), CutError> {
 pub(crate) struct RecoveryScan {
     pub recovered: Vec<String>,
     pub deferred: Vec<String>,
+    /// Private classification retained so a v1 checkpoint scan cannot promote
+    /// a pause-session capture as an ordinary interrupted capture.
+    pub pause_session_deferred: Vec<String>,
     pub failed_closed: Vec<String>,
 }
 
@@ -129,6 +135,18 @@ pub(crate) fn scan(cache: &Path, ffmpeg: &str, ffprobe: &str) -> RecoveryScan {
                 .push("capture-id-unavailable: invalid_capture_id".into());
             continue;
         }
+        match pause_session_ownership(&root) {
+            Ok(PauseSessionOwnership::Present) => {
+                scan.pause_session_deferred.push(id.clone());
+                scan.deferred.push(id);
+                continue;
+            }
+            Ok(PauseSessionOwnership::Absent) => {}
+            Err(error) => {
+                failed_closed(&mut scan, &id, "pause_session_ownership_unsafe", &error);
+                continue;
+            }
+        }
         if !is_plain_regular_file(&root.join(MANIFEST_FILE)).unwrap_or(false) {
             scan.failed_closed.push(format!("{id}: manifest_invalid"));
             continue;
@@ -170,33 +188,6 @@ pub(crate) fn scan(cache: &Path, ffmpeg: &str, ffprobe: &str) -> RecoveryScan {
     }
     scan
 }
-/// A normal completion publishes `project.json` atomically before its manifest
-/// receipt. This deliberately recognizes only the local conventional source
-/// name; project metadata cannot redirect recovery to an arbitrary path.
-fn has_sealed_normal_project(root: &Path) -> bool {
-    let project = root.join("project.json");
-    let source = root.join("source.mp4");
-    if !is_plain_regular_file(&project).unwrap_or(false)
-        || !is_plain_regular_file(&source).unwrap_or(false)
-    {
-        return false;
-    }
-    let Ok(bytes) = std::fs::read(project) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return false;
-    };
-    let source_video = value
-        .get("source_video")
-        .and_then(serde_json::Value::as_str);
-    let names_source = source_video
-        .and_then(|path| Path::new(path).file_name())
-        .and_then(|name| name.to_str())
-        == Some("source.mp4");
-    names_source
-}
-
 /// Enumerate the capture-cache status without calling a media tool or changing
 /// anything on disk. Cursor values and source paths never escape this owner.
 pub(crate) fn status_page(

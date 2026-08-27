@@ -27,9 +27,14 @@ cut-media = { path = "../../media" }
 record-recovery = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 # rdevin (global input hook) is cross-platform; only compiled when a capture
 # feature is on (never on the plain Linux/WSL build).
-rdevin = { version = "0.1", optional = true }
+# `recorder/rdevin` is the narrow owned-listener maintenance fork of the
+# published 0.1.0 crate. Keep the package identity at the dependency edge so
+# event/key mapping remains upstream-compatible while lifecycle ownership stays
+# auditable in the workspace.
+rdevin = { path = "../rdevin", optional = true }
 cpal = { version = "0.15", optional = true }
 hound = { version = "3", optional = true }
 
@@ -53,10 +58,13 @@ windows-capture = { version = "2.0.1", optional = true }
 # Pin the SAME 0.62 windows-capture links to avoid a duplicate `windows` crate.
 windows = { version = "0.62", optional = true, features = [
     "Win32_Foundation",
+    "Win32_Devices_Display",
     "Win32_Media_Audio",
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",

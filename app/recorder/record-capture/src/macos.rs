@@ -1,11 +1,9 @@
 //! macos.rs — live screen + input capture on macOS.
 //!
 //! Compiled ONLY for `cfg(target_os = "macos")` + the `capture-macos` feature.
-//! - SCREEN: ffmpeg's `avfoundation` input device with `-capture_cursor 0` (hides
-//!   the OS cursor — we re-render synthetic). Chosen over hand-rolling
-//!   ScreenCaptureKit → AVAssetWriter: far simpler, robust, same "shell to ffmpeg"
-//!   approach as the rest of the pipeline. ffmpeg must be on PATH (or
-//!   SHELLX_RECORD_FFMPEG) and built with avfoundation.
+//! - SCREEN: ScreenCaptureKit direct-to-file capture. Its stream configuration
+//!   respects `CaptureConfig.capture_cursor`; normal recordings default to a
+//!   synthetic polished cursor while still captures may request the OS cursor.
 //! - INPUT: the shared rdevin hook (see input.rs).
 //!
 //! PERMISSIONS (TCC): the host process needs Screen Recording (for the capture)
@@ -115,9 +113,14 @@ pub(crate) fn list_monitors_checked() -> Result<Vec<MonitorInfo>> {
         .iter()
         .enumerate()
         .filter_map(|(pos, d)| {
+            // A later region picker must bind the exact native ScreenCaptureKit
+            // display id. Keep the legacy picker row, but never substitute an
+            // ordinal/title/geometry value if that identity is unavailable.
+            let id = crate::macos_monitor_target::monitor_id(d);
             let index = one_based_index(pos)?;
             let (width, height) = (d.width(), d.height());
             Some(MonitorInfo {
+                id,
                 index,
                 name: format!("Display {index} ({width}×{height})"),
                 width,
@@ -143,13 +146,19 @@ fn cap_err(ctx: &str, e: impl std::fmt::Display) -> RecordError {
 }
 
 fn requested_fps(fps: f64) -> u32 {
-    fps.max(1.0).round() as u32
+    record_core::backend_fps_v1(fps)
 }
 
-fn recording_stream_config(width: u32, height: u32, fps: u32) -> SCStreamConfiguration {
+pub(super) fn recording_stream_config(
+    width: u32,
+    height: u32,
+    fps: u32,
+    capture_cursor: bool,
+) -> SCStreamConfiguration {
     SCStreamConfiguration::new()
         .with_width(width)
         .with_height(height)
+        .with_shows_cursor(capture_cursor)
         // Without a minimum frame interval, macOS 26 can emit only a short
         // initial burst for a static desktop. The checkpoint journal then
         // truthfully rejects the mismatched wall-clock interval on stitch.
@@ -277,16 +286,34 @@ impl Capture for MacCapture {
                 None,
             )
         } else {
-            // cfg.monitor is the 1-based index from list_monitors(); map to the same ordering.
-            let idx = cfg
-                .monitor
-                .and_then(|m| usize::try_from(m).ok())
-                .map(|m| m.saturating_sub(1))
-                .unwrap_or(0);
-            let disp = displays
-                .get(idx)
-                .or_else(|| displays.first())
-                .ok_or_else(|| cap_err("select a display", "no displays available"))?;
+            let disp = if let Some(id) = cfg.monitor_id.as_deref() {
+                // The exact identity is authoritative. Re-enumeration already happened
+                // above, so only a current display whose opaque id matches may be
+                // selected; display order, title, primary state, and geometry are never
+                // replacement candidates.
+                displays
+                    .iter()
+                    .find(|display| {
+                        crate::macos_monitor_target::monitor_id(display).as_deref() == Some(id)
+                    })
+                    .ok_or_else(|| {
+                        cap_err(
+                            "resolve the selected monitor identity",
+                            "the selected display is no longer available; reopen the source picker",
+                        )
+                    })?
+            } else {
+                // cfg.monitor is the 1-based index from list_monitors(); map to the same ordering.
+                let idx = cfg
+                    .monitor
+                    .and_then(|m| usize::try_from(m).ok())
+                    .map(|m| m.saturating_sub(1))
+                    .unwrap_or(0);
+                displays
+                    .get(idx)
+                    .or_else(|| displays.first())
+                    .ok_or_else(|| cap_err("select a display", "no displays available"))?
+            };
             let fr = disp.frame();
             (
                 SCContentFilter::create()
@@ -318,7 +345,8 @@ impl Capture for MacCapture {
         // NO SCRecordingOutput), so the video path remains independent.
         let requested_w = cap_w & !1;
         let requested_h = cap_h & !1;
-        let stream_config = recording_stream_config(requested_w, requested_h, fps);
+        let stream_config =
+            recording_stream_config(requested_w, requested_h, fps, cfg.capture_cursor);
 
         let stream = SCStream::new(&filter, &stream_config);
         let mut checkpoints = Checkpoints::open(cfg.checkpoint.as_ref())?;
@@ -346,10 +374,18 @@ impl Capture for MacCapture {
             .as_ref()
             .map(crate::CaptureClock::start)
             .unwrap_or_else(Instant::now);
+        let mut input = Some(match input::InputListener::start(start, cfg.capture_keys) {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _ = stream.stop_capture();
+                return Err(error);
+            }
+        });
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
-            Some(crate::mic::spawn_mic(
+            Some(crate::mic_endpoint::spawn_microphone_capture(
                 format!("{out_dir}/mic.wav"),
+                cfg.microphone_source.clone(),
                 stop.clone(),
                 ready,
                 start,
@@ -357,7 +393,6 @@ impl Capture for MacCapture {
         } else {
             None
         };
-        let input = input::spawn_listener(start, stop.clone(), cfg.capture_keys);
         // SCK start returning is the first encoder-start boundary available from
         // this API. The journal's open reservation is intentionally not reused as
         // a capture timestamp.
@@ -386,7 +421,7 @@ impl Capture for MacCapture {
 
         // Rotate a detached, fully-finalized `SCRecordingOutput`; the stream itself
         // stays live. This is the SCK equivalent of WGC encoder rotation.
-        let duration_ms = loop {
+        let (duration_ms, sealed_input) = loop {
             let full_end = bounded_ms.unwrap_or(u64::MAX / 4);
             let checkpoint_end = checkpoints
                 .as_ref()
@@ -403,7 +438,7 @@ impl Capture for MacCapture {
             let capture_end_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             let final_segment =
                 stop.load(Ordering::Relaxed) || start.elapsed() >= Duration::from_millis(full_end);
-            if final_segment {
+            let sealed_input = if final_segment {
                 // Stop native video and Core Audio as one capture-end boundary.
                 // `wait_complete`/checkpoint probing/stitching may take seconds on
                 // a 4K sparse desktop and must not become recorded audio.
@@ -415,7 +450,18 @@ impl Capture for MacCapture {
                     &mut sys_tap,
                     SystemAudioTap::finish,
                 );
-            }
+                // `capture_end_ms` is the exact final-video boundary. Seal the
+                // listener before recording-output completion or any stitch/audio
+                // work can add late sidecar samples.
+                Some(
+                    input
+                        .take()
+                        .expect("input listener remains owned until the final segment")
+                        .seal(capture_end_ms)?,
+                )
+            } else {
+                None
+            };
             let _ = stream.remove_recording_output(recording.output());
             recording
                 .wait_complete()
@@ -437,7 +483,10 @@ impl Capture for MacCapture {
                         },
                     )?;
                 }
-                break capture_end_ms;
+                break (
+                    capture_end_ms,
+                    sealed_input.expect("final segment seals its input listener"),
+                );
             }
             let completed = segment.take();
             // Seal the only open segment before reserving another. Completion, probe,
@@ -471,13 +520,11 @@ impl Capture for MacCapture {
             segment = Some(next);
             recording = next_recording;
         };
-        let source_path = if let Some(owner) = checkpoints.as_ref() {
-            owner
-                .stitch(&ffmpeg_bin(), &ffprobe_bin(), "source.mp4")?
-                .display()
-                .to_string()
+        let (source_path, verified_media) = if let Some(owner) = checkpoints.as_ref() {
+            let (source, media) = owner.stitch(&ffmpeg_bin(), &ffprobe_bin(), "source.mp4")?;
+            (source.display().to_string(), Some(media))
         } else {
-            path.clone()
+            (path.clone(), None)
         };
 
         // Flush the Core Audio payload stopped at the video boundary to
@@ -527,27 +574,12 @@ impl Capture for MacCapture {
             }
         }
 
-        let audio =
-            mic_handle.and_then(
-                |h| match crate::mic::join_bounded(h, Duration::from_secs(2)) {
-                    Some(Ok(p)) => Some(p),
-                    Some(Err(e)) => {
-                        eprintln!("warning: mic capture failed, recording without audio: {e}");
-                        None
-                    }
-                    None => {
-                        eprintln!(
-                            "warning: mic capture did not stop within 2s, recording without audio"
-                        );
-                        None
-                    }
-                },
-            );
+        let (audio, microphone_outcome) = crate::microphone_result::finish(cfg.audio, mic_handle);
         // `SCStreamConfiguration` pins the requested physical frame dimensions. If
         // ffprobe is unavailable, use that known negotiated target rather than a
         // made-up 1920×1080 transform.
         let (w, h) = probe_dims(&source_path).unwrap_or((requested_w, requested_h));
-        let (cursor, mut clicks, scrolls, keys) = input.lock().unwrap().snapshot();
+        let (cursor, mut clicks, scrolls, keys) = sealed_input;
         let coordinates = if cfg.window.is_some() {
             surface_coordinates::unavailable_window_rdevin_input(cursor, &mut clicks, scrolls)
         } else {
@@ -577,12 +609,14 @@ impl Capture for MacCapture {
             camera_artifact: None,
             webcam_video: None,
             audio,
+            microphone_outcome,
             settings: Settings {
                 width: w,
                 height: h,
                 fps: fps as f32,
                 audio_rate: 48_000,
             },
+            verified_media,
         })
     }
 }
@@ -593,8 +627,10 @@ mod tests {
 
     #[test]
     fn recording_stream_config_preserves_requested_static_desktop_rate() {
-        let config = recording_stream_config(1920, 1080, requested_fps(29.6));
+        let config = recording_stream_config(1920, 1080, requested_fps(29.6), false);
         assert_eq!(config.fps(), 30);
+        assert!(!config.shows_cursor());
+        assert!(recording_stream_config(1920, 1080, 30, true).shows_cursor());
         assert_eq!(requested_fps(0.0), 1);
     }
 }

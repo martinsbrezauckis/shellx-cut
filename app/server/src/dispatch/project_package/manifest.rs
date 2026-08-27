@@ -97,7 +97,14 @@ fn package_manifest(
         members,
     })
 }
-fn verify_manifest_members(package_dir: &Path, manifest: &PackageManifest) -> Result<(), CutError> {
+fn verify_manifest_members(
+    package_dir: &Path,
+    manifest: &PackageManifest,
+    cancel: &crate::jobs::JobCancellation,
+) -> Result<(), CutError> {
+    if cancel.is_cancelled() {
+        return Err(cancelled());
+    }
     let mut expected = manifest
         .members
         .iter()
@@ -120,6 +127,9 @@ fn verify_manifest_members(package_dir: &Path, manifest: &PackageManifest) -> Re
         ));
     }
     for member in &manifest.members {
+        if cancel.is_cancelled() {
+            return Err(cancelled());
+        }
         if !is_manifest_member_path(&member.path) {
             return Err(CutError::new(
                 error_codes::CONFLICT,
@@ -127,7 +137,8 @@ fn verify_manifest_members(package_dir: &Path, manifest: &PackageManifest) -> Re
                 member.path.clone(),
             ));
         }
-        let (bytes, sha256) = hash_path(&package_dir.join(&member.path))?;
+        let mut file = open_plain_regular(&package_dir.join(&member.path))?;
+        let (bytes, sha256) = stream_sha256(&mut file, Some(cancel))?;
         if bytes != member.bytes || format!("sha256:{sha256}") != member.sha256 {
             return Err(CutError::new(
                 error_codes::CONFLICT,

@@ -1,7 +1,7 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.111",
-  "featureCount": 193,
+  "appVersion": "0.6.112",
+  "featureCount": 194,
   "features": [
     {
       "id": "cut.setup.ffmpeg",
@@ -79,9 +79,9 @@
       "group": "top",
       "title": "Projects",
       "where": "Top bar",
-      "description": "Open, switch, create, or return to recent Cut projects.",
-      "requirement": "Project files use .cutproj directories.",
-      "api": "project.list, project.open, project.create"
+      "description": "Open, switch, create, or return to recent Cut projects. With a project open, Make a copy prepares a portable .cutproj with only the media it uses.",
+      "requirement": "Project files use .cutproj directories. A portable copy needs an open project and the desktop app to choose its destination folder.",
+      "api": "project.list, project.open, project.create, project.package_plan, project.package_create"
     },
     {
       "id": "cut.top.library",
@@ -95,13 +95,13 @@
     },
     {
       "id": "cut.top.settings",
-      "label": "Settings",
+      "label": "Settings and cache cleanup",
       "group": "top",
-      "title": "Settings",
+      "title": "Settings and cache cleanup",
       "where": "Top bar",
-      "description": "Configure tools, environment readiness, agents, paths, and editor preferences.",
-      "requirement": "Some checks require FFmpeg or CLI tools installed locally.",
-      "api": "system.doctor, system.mcp_test"
+      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Settings > Health & Recovery previews only Cut-owned, aged, unreferenced proxy and filmstrip cache files before an explicit cancellable cleanup; source media, exports, captures, and receipts are never candidates.",
+      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Cache cleanup requires an open project and a complete ownership-ledger preview; partial, changed, foreign, or symlinked inventories are refused.",
+      "api": "system.doctor, system.mcp_test, project.cache_preview, project.cache_purge, jobs.cancel"
     },
     {
       "id": "cut.top.manual",
@@ -109,9 +109,9 @@
       "group": "top",
       "title": "Manual",
       "where": "Top bar",
-      "description": "Open the current ShellX Cut web manual at docs.theshellx.com/manual/cut/ from inside Cut.",
-      "requirement": "Requires a browser and network access for the latest online manual.",
-      "api": "CUT_MANUAL_URL, docs.theshellx.com/manual/cut/"
+      "description": "Open Cut's bundled, indexed manual. Selecting an entry reveals its real editor surface without running the highlighted action.",
+      "requirement": "Available in the desktop editor. The separately published online manual is a read-only reference.",
+      "api": "Manual panel, read-only reveal"
     },
     {
       "id": "cut.header.title",
@@ -199,8 +199,8 @@
       "group": "header",
       "title": "Assemble AI",
       "where": "Header tools",
-      "description": "Ask an agent to assemble a rough cut from prompts, selected media, or storyboard intent.",
-      "requirement": "Requires a configured CLI agent and source media.",
+      "description": "Ask an agent to assemble a rough cut from prompts, selected media, or storyboard intent. When a b-roll folder is needed, choose it with the desktop folder dialog; Cut shows only its final folder name rather than an editable local path.",
+      "requirement": "Requires a configured CLI agent and source media. Folder selection requires the desktop app.",
       "api": "assemble.repurpose, assemble.shorts, assemble.from_script, assemble.broll"
     },
     {
@@ -714,6 +714,16 @@
       "api": "project.create"
     },
     {
+      "id": "cut.top.projects.portable_copy",
+      "label": "Projects: take a copy with you",
+      "group": "top",
+      "title": "Take a copy with you",
+      "where": "Projects",
+      "description": "Open Make a copy, choose a destination folder, and preview the exact used-media count, dedupe, cache exclusion, and current collision state before confirming. The copy contains only media used in the project; the current project and original files remain unchanged.",
+      "requirement": "Requires an open project and the desktop app for the destination-folder picker.",
+      "api": "project.package_plan, project.package_create, jobs.status"
+    },
+    {
       "id": "cut.top.library.saved",
       "label": "Library: saved assets",
       "group": "top",
@@ -905,13 +915,13 @@
     },
     {
       "id": "cut.left.media_health",
-      "label": "Media Health",
+      "label": "Media Health and recover missing media",
       "group": "left",
-      "title": "Media Health",
+      "title": "Media Health and recover missing media",
       "where": "Assets tab",
-      "description": "Shows whether source files are missing, which large clips are using source playback, how many proxies are ready, and how many items need action.",
-      "requirement": "Requires imported media. Use Relink when a source file moved or was renamed.",
-      "api": "media.check, media.relink, proxy preference"
+      "description": "Shows whether source files are missing, which large clips are using source playback, how many proxies are ready, and how many items need action. When assets are offline, Recover missing media reviews a chosen folder and offers only uniquely exact full-file hash matches before it rechecks accepted selections as one grouped metadata operation. A unique strong metadata resemblance is labeled “Possible replacement — review individually” and sends you to normal one-file Relink; it is never selected for grouped apply.",
+      "requirement": "Requires imported media. Recover missing media appears only for offline assets; ambiguous, sampled, changed, symlinked, or merely similar files are not selectable. The review hint needs matching basename, kind, byte size, and duration or still dimensions; available format/codec/geometry conflicts refuse it.",
+      "api": "media.check, media.relink, media.relink_preview, media.relink_apply, proxy preference"
     },
     {
       "id": "cut.left.proxies",
@@ -1009,8 +1019,8 @@
       "group": "left",
       "title": "Find tab",
       "where": "Left sidebar",
-      "description": "Keep search available at all times in the sidebar. Use it for reusable media, local folders, source-backed stock, cited project moments, and the cross-sequence index.",
-      "requirement": "Find media searches external or local sources; Find moment needs an open project with imported media.",
+      "description": "Keep search available at all times in the sidebar. Use it for reusable media, local folders, source-backed stock, cited project moments, and the cross-sequence index. A local-folder search uses the desktop folder picker and displays only the chosen folder name; there is no typed filesystem-path field.",
+      "requirement": "Find media searches external or local sources; Find moment needs an open project with imported media. Local-folder selection requires the desktop app.",
       "api": "assets.providers, assets.search, assets.fetch, media.intelligence_status, media.intelligence_search, ui.open"
     },
     {
@@ -1409,8 +1419,8 @@
       "group": "context",
       "title": "Asset item menu",
       "where": "Assets card",
-      "description": "Right-click an asset card or use its More actions button. Video, audio, and still-image assets can open in Source Monitor; its All uses list is UI-only navigation over exact per-asset Sequence Index rows, switching and seeking to the chosen occurrence. A still shows an image preview with a bounded duration and an unlocked video target or Off; it has no pretend transport, source marks, range insert, or audio destination. Source Monitor can reveal that registered asset in Project Assets or Library, or ask the installed desktop shell to reveal its local source file; browser and unavailable-source cases explain why they refuse. An online asset can be added at the playhead; an offline asset gets Relink source. Remove from project is disabled while the asset still has timeline clips, and does not delete the original source file.",
-      "requirement": "Requires an imported asset. The exact actions vary by media kind, offline state, and whether Cut is already updating that asset.",
+      "description": "Right-click an asset card or use its More actions button. Video, audio, and still-image assets can open in Source Monitor; audio-bearing sources show a seekable waveform with amber In/Out marks and a white current-position line, while All uses remains UI-only navigation over exact per-asset Sequence Index rows. A still shows an image preview with a bounded duration and an unlocked video target or Off; it has no pretend transport, source marks, range insert, or audio destination. Source Monitor can reveal that registered asset in Project Assets or Library, or ask the installed desktop shell to reveal its local source file; browser and unavailable-source cases explain why they refuse. An online asset can be added at the playhead; an offline asset gets Relink source. Remove from project is disabled while the asset still has timeline clips, and does not delete the original source file.",
+      "requirement": "Requires an imported asset. Waveform seeking requires audio. The exact actions vary by media kind, offline state, and whether Cut is already updating that asset.",
       "api": "UI menu; exact asset target"
     },
     {
@@ -1499,8 +1509,8 @@
       "group": "inspector",
       "title": "Color tab",
       "where": "Inspector",
-      "description": "Adjust grade and color controls for the selected visual clip.",
-      "requirement": "Requires a selected visual clip.",
+      "description": "Adjust grade and color controls for the selected visual clip. Browse for a LUT with the native desktop file dialog; Cut shows the selected filename rather than exposing an editable absolute path.",
+      "requirement": "Requires a selected visual clip. LUT browsing requires the desktop app.",
       "api": "edit.grade"
     },
     {
@@ -1619,9 +1629,9 @@
       "group": "record",
       "title": "Studio preview",
       "where": "Record workspace",
-      "description": "The large Studio preview shows the screen composition and the elapsed recording state before and during capture.",
-      "requirement": "Requires the Record workspace. The preview is a composition guide; real capture still depends on OS screen permissions.",
-      "api": "screen_record.doctor, screen_record.start"
+      "description": "The large Studio preview shows the screen composition and elapsed recording state. Recording keeps a 30 FPS default, offers 24/25/30/50/60 presets plus custom 1–240 FPS validation, and can test System Default or one selected microphone before Start. Windows/macOS choices are private native endpoints behind expiring opaque UI tokens and safe labels; Linux remains System Default only.",
+      "requirement": "Requires the Record workspace. An unavailable saved microphone choice visibly blocks mic-enabled Start until another choice or System Default is selected. Invalid custom FPS and an in-progress microphone test also keep Start unavailable. Real capture still depends on OS permissions.",
+      "api": "screen_record.doctor, screen_record.microphone_selection, screen_record.start"
     },
     {
       "id": "cut.record.camera_enable",
@@ -1835,13 +1845,13 @@
     },
     {
       "id": "cut.workflow.recording",
-      "label": "Record, polish, and export",
+      "label": "Record, polish, export, and retry",
       "group": "workflow",
-      "title": "Record, polish, and export",
-      "where": "Record workspace",
-      "description": "Open Record, confirm FFmpeg/readiness, choose the source, audio and background, start capture, stop it, then let auto-edit polish the result or save raw streams for manual work. Windows system audio uses endpoint-independent process loopback on supported builds; live camera capture is unavailable in this release.",
-      "requirement": "Requires desktop capture permission and FFmpeg; system audio is optional. Security software may ask to allow audio capture for a new Windows build.",
-      "api": "screen_record.doctor, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export"
+      "title": "Record, polish, export, and retry",
+      "where": "Record workspace and status bar",
+      "description": "Open Record, confirm FFmpeg/readiness, choose source, frame rate, microphone choice, audio and background, test the resolved microphone when needed, then start capture. A lost microphone is reported honestly after the take; a valid prefix is retained when one was finalized. Windows system audio uses endpoint-independent process loopback on supported builds; live camera capture is unavailable in this release. A qualifying failed default-output Recording Studio export shows one Retry action after Cut rechecks the project revision, capture and edit-plan hashes, and output lease.",
+      "requirement": "Requires desktop capture permission and FFmpeg; system audio is optional. Custom FPS must be within 1–240. A missing selected microphone must be replaced or switched to System Default before mic-enabled Start. Retry is available only for an eligible failed Recording Studio export: cancelled, successful, changed-input, Save As, legacy, and already-retried jobs remain ineligible.",
+      "api": "screen_record.doctor, screen_record.microphone_selection, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export, jobs.retry, jobs.status"
     },
     {
       "id": "cut.workflow.review",
@@ -1859,8 +1869,8 @@
       "group": "workflow",
       "title": "Render and export",
       "where": "Top bar",
-      "description": "Render a preview, final file, range, or delivery bundle from the active project.",
-      "requirement": "Requires FFmpeg and a valid output folder.",
+      "description": "Render a preview, final file, range, or delivery bundle from the active project. Render Queue destinations use one native Save dialog per output and show path-light filenames instead of editable absolute paths.",
+      "requirement": "Requires FFmpeg and a valid output folder. Render Queue destination selection requires the desktop app.",
       "api": "render.preview, render.final, export.publish"
     },
     {

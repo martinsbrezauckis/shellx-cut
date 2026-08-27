@@ -281,4 +281,5 @@ pub enum DispatchTarget {
     MediaIntelligenceSearch,
     InspectMedia,
     InspectRange,
+    ScreenRecordMicrophoneSelection,
 }

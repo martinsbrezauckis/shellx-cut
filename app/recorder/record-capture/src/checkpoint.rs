@@ -1,5 +1,13 @@
 //! Backend-facing checkpoint adapter. It owns no encoder state: a backend asks for
 //! an `.open.mp4` path, closes that encoder, then atomically publishes the segment.
+#![cfg_attr(
+    not(any(
+        all(windows, feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos"),
+        all(target_os = "linux", feature = "capture-linux")
+    )),
+    allow(dead_code)
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -79,7 +87,7 @@ impl Checkpoints {
         sequence: u64,
         staging: &Path,
         facts: CheckpointFacts,
-    ) -> Result<()> {
+    ) -> Result<record_recovery::Checkpoint> {
         let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
         self.publish_with_tools(sequence, staging, facts, &ffmpeg, &ffprobe)
@@ -92,7 +100,7 @@ impl Checkpoints {
         facts: CheckpointFacts,
         ffmpeg: &str,
         ffprobe: &str,
-    ) -> Result<()> {
+    ) -> Result<record_recovery::Checkpoint> {
         // A closed encoder file is still not a checkpoint until both the container
         // facts and a full decode succeed. The manifest never names an open or merely
         // non-empty MP4.
@@ -106,19 +114,27 @@ impl Checkpoints {
         let media = normalize_video_only_checkpoint(staging, media, ffmpeg, ffprobe)?;
         self.owner
             .publish(sequence, staging, facts, media)
-            .map_err(|e| error(&e.to_string()))?;
-        Ok(())
+            .map_err(|e| error(&e.to_string()))
     }
 
-    pub(crate) fn stitch(&self, ffmpeg: &str, ffprobe: &str, source_name: &str) -> Result<PathBuf> {
-        record_recovery::stitch_complete(
+    /// Return the final path together with facts from the one verification pass
+    /// required before its publication. Do not make a later metadata consumer
+    /// re-probe the same long capture.
+    pub(crate) fn stitch(
+        &self,
+        ffmpeg: &str,
+        ffprobe: &str,
+        source_name: &str,
+    ) -> Result<(PathBuf, MediaFacts)> {
+        let stitched = record_recovery::stitch_complete_with_media(
             &self.root,
             &self.owner.manifest().checkpoints,
             ffmpeg,
             ffprobe,
             source_name,
         )
-        .map_err(|e| error(&e.to_string()))
+        .map_err(|e| error(&e.to_string()))?;
+        Ok((stitched.path, stitched.media))
     }
 }
 
@@ -250,7 +266,7 @@ mod tests {
             fs::set_permissions(tool, fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        checkpoints
+        let checkpoint = checkpoints
             .publish_with_tools(
                 sequence,
                 &staging,
@@ -265,6 +281,8 @@ mod tests {
             )
             .unwrap();
 
+        assert_eq!(checkpoint.sequence, 0);
+        assert_eq!(checkpoint.file, "checkpoints/segment-000000.mp4");
         let checkpoint = &checkpoints.owner.manifest().checkpoints[0];
         assert!(!checkpoint.media.as_ref().unwrap().has_audio);
         assert_eq!(checkpoint.media.as_ref().unwrap().decoded_video_frames, 3);

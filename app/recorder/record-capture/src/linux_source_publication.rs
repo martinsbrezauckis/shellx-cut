@@ -12,7 +12,7 @@ pub(crate) fn normalize_and_publish(
     fps: u32,
     ffmpeg: &str,
     ffprobe: &str,
-) -> Result<(), String> {
+) -> Result<record_recovery::MediaFacts, String> {
     let parent = final_path
         .parent()
         .ok_or_else(|| "normalized source path has no parent".to_string())?;
@@ -64,7 +64,7 @@ pub(crate) fn normalize_and_publish(
     record_recovery::publish_new_synced(&staged, final_path)
         .map_err(|error| format!("publish normalized source: {error}"))?;
     let _ = stage.cleanup();
-    Ok(())
+    Ok(normalized)
 }
 
 #[cfg(all(test, unix))]
@@ -80,12 +80,13 @@ mod tests {
         format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
     }
 
-    fn fake_tools(root: &Path, final_path: &Path) -> (String, String, PathBuf) {
+    fn fake_tools(root: &Path, final_path: &Path) -> (String, String, PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
 
         let ffmpeg = root.join("fake-ffmpeg");
         let ffprobe = root.join("fake-ffprobe");
         let args = root.join("ffmpeg-args.txt");
+        let probe_calls = root.join("ffprobe-calls.txt");
         fs::write(
             &ffmpeg,
             format!(
@@ -97,7 +98,10 @@ mod tests {
         .unwrap();
         fs::write(
             &ffprobe,
-            "#!/bin/sh\nprintf '{\"format\":{\"duration\":\"0.100\"},\"streams\":[{\"codec_type\":\"video\",\"nb_read_frames\":\"1\"}]}'\n",
+            format!(
+                "#!/bin/sh\nprintf 'probe\\n' >> {}\nprintf '{{\"format\":{{\"duration\":\"0.100\"}},\"streams\":[{{\"codec_type\":\"video\",\"nb_read_frames\":\"1\",\"avg_frame_rate\":\"30000/1001\",\"r_frame_rate\":\"30/1\"}}]}}'\n",
+                shell_quote(&probe_calls),
+            ),
         )
         .unwrap();
         for tool in [&ffmpeg, &ffprobe] {
@@ -107,6 +111,7 @@ mod tests {
             ffmpeg.display().to_string(),
             ffprobe.display().to_string(),
             args,
+            probe_calls,
         )
     }
 
@@ -122,16 +127,30 @@ mod tests {
     }
 
     #[test]
-    fn normalization_uses_a_private_ffmpeg_target_then_publishes_source_once() {
+    fn final_source_publication_uses_one_verifier_without_a_cadence_reprobe() {
         let root = tempdir().unwrap();
         let raw = root.path().join("raw.mp4");
         let final_path = root.path().join("source.mp4");
         fs::write(&raw, b"raw").unwrap();
-        let (ffmpeg, ffprobe, args) = fake_tools(root.path(), &final_path);
+        let (ffmpeg, ffprobe, args, probe_calls) = fake_tools(root.path(), &final_path);
 
-        normalize_and_publish(&raw, &final_path, 100, 30, &ffmpeg, &ffprobe).unwrap();
+        let verified =
+            normalize_and_publish(&raw, &final_path, 100, 30, &ffmpeg, &ffprobe).unwrap();
         assert_eq!(fs::read(&final_path).unwrap(), b"stage");
         assert_private_ffmpeg_target(&args, &final_path);
+        assert_eq!(
+            verified.avg_frame_rate,
+            record_core::FrameRate::from_ffprobe("30000/1001")
+        );
+        assert_eq!(
+            verified.r_frame_rate,
+            record_core::FrameRate::from_ffprobe("30/1")
+        );
+        assert_eq!(
+            fs::read_to_string(probe_calls).unwrap().lines().count(),
+            1,
+            "final source publication uses its mandatory verifier once, never a cadence re-probe"
+        );
         assert!(
             !fs::read_dir(root.path())
                 .unwrap()
@@ -164,7 +183,7 @@ mod tests {
                 fs::write(&final_path, b"existing final remains untouched").unwrap();
                 final_path.clone()
             };
-            let (ffmpeg, ffprobe, args) = fake_tools(root.path(), &final_path);
+            let (ffmpeg, ffprobe, args, _probe_calls) = fake_tools(root.path(), &final_path);
 
             assert!(normalize_and_publish(&raw, &final_path, 100, 30, &ffmpeg, &ffprobe).is_err());
             assert_private_ffmpeg_target(&args, &final_path);

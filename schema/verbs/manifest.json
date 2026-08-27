@@ -60,6 +60,7 @@
     "fragments/053-motion.json",
     "fragments/054-motion.json",
     "fragments/055-media.json",
-    "fragments/056-inspect.json"
+    "fragments/056-inspect.json",
+    "fragments/057-screen_record_microphone.json"
   ]
 }

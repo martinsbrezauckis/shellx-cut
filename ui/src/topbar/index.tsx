@@ -99,7 +99,7 @@ export interface TopBarProps {
   /** Environment doctor report — drives the Setup button's health nudge dot
    *  (amber = a degraded card, red = an essential dep missing). */
   doctor?: DoctorReport | null
-  /** Toggle the bundled local manual; the online route stays inside that panel. */
+  /** Toggle the bundled local manual. External docs require an explicit choice. */
   onOpenManual?: () => void
   manualOpen?: boolean
 }

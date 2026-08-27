@@ -35,12 +35,17 @@ pub(crate) fn list_monitors() -> Vec<MonitorInfo> {
         .iter()
         .enumerate()
         .filter_map(|(position, monitor)| {
+            // Never expose an ordinal/title/geometry-derived substitute for the
+            // exact-native id. The compatible full-display picker remains
+            // available through `index` if DisplayConfig cannot prove one.
+            let id = crate::windows_monitor_target::monitor_id(monitor);
             let index = monitor
                 .index()
                 .ok()
                 .and_then(|index| u32::try_from(index).ok())
                 .or_else(|| one_based_index(position))?;
             Some(MonitorInfo {
+                id,
                 index,
                 name: monitor
                     .name()

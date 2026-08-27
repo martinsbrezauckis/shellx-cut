@@ -359,6 +359,11 @@ export class EventsClient {
       // (Piggybacking on the first ui_state push raced the CONNECTING state
       // and could leave the tab unregistered → no_ui_client errors.)
       ws.send(JSON.stringify({ type: 'ui_hello' }))
+      // App's ref callback records this only once React has committed the real
+      // [data-cut-app-root]. Re-send it after reconnects; the server gate is
+      // one-shot, and the initial ui_hello frame keeps this inside the existing
+      // registered-UI WebSocket contract.
+      if (this.cutAppMounted) ws.send(JSON.stringify({ type: 'ui_mounted' }))
       // Replay the last known UI state right after announcing — a mount-time push
       // that raced this socket's CONNECTING state was dropped, leaving the server
       // with no ui_state (ui.state → no_ui_client). Sending it here closes the
@@ -527,9 +532,20 @@ export class EventsClient {
     }
   }
 
+  /** Record the first committed real Cut app root without blocking that paint. */
+  reportCutAppMounted(): void {
+    if (this.cutAppMounted) return
+    this.cutAppMounted = true
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'ui_mounted' }))
+    }
+  }
+
   /** The most recent ui_state pushed — replayed on (re)connect after ui_hello so
    *  the server always has this client's current view state. */
   private lastUiState: UiObservableState | null = null
+  /** True only after React committed [data-cut-app-root] in this UI document. */
+  private cutAppMounted = false
 }
 
 /** App-wide singleton (constructed at module load, connected by App.tsx). */

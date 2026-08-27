@@ -66,7 +66,7 @@ function SetupPath({ essentialMissing }: { essentialMissing: boolean }) {
         className="env-btn env-btn--ghost env-setup-manual"
         data-cut-setup-manual
         onClick={() => openCutManual('cut.preview.ffmpeg_setup')}
-        title="Open the setup guide in the online manual"
+        title="Open the setup guide in the bundled manual"
       >
         Setup guide
       </button>

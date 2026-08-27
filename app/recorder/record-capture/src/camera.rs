@@ -118,7 +118,7 @@ impl CameraBackend for ReplayCamera {
     }
 }
 
-fn validate_request_part(label: &str, value: &str) -> Result<()> {
+pub(crate) fn validate_request_part(label: &str, value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 128
         || !value

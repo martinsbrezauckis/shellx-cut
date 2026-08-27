@@ -41,6 +41,26 @@ fn sealed_project_repairs_the_missing_complete_receipt_without_recovery() {
 }
 
 #[test]
+fn v1_scanner_defers_pause_session_owned_capture_without_promoting_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = temp.path().join("screen_record");
+    let capture = cache.join("pause-owned");
+    begin(&capture, "pause-owned").unwrap();
+    std::fs::write(
+        capture.join(record_recovery::RECORDING_SESSION_JOURNAL_FILE),
+        b"intentionally not parsed by v1 recovery\n",
+    )
+    .unwrap();
+
+    let result = scan(&cache, "missing-ffmpeg", "missing-ffprobe");
+    assert_eq!(result.deferred, ["pause-owned"]);
+    assert_eq!(result.pause_session_deferred, ["pause-owned"]);
+    assert!(result.recovered.is_empty());
+    assert!(result.failed_closed.is_empty());
+    assert!(read_manifest(&capture).unwrap().receipt.is_none());
+}
+
+#[test]
 fn sealed_normal_project_retries_torn_tail_archive_without_remuxing_source() {
     use std::io::Write;
 

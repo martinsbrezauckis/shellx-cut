@@ -67,6 +67,7 @@ function initialRevealStatus(): RevealStatus {
 export default function ManualShell() {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const pendingReveals = useRef(new Map<string, string>())
+  const editorSelectionPending = useRef(false)
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState(featureIdFromLocation)
   const [embeddedReady, setEmbeddedReady] = useState(false)
@@ -139,7 +140,12 @@ export default function ManualShell() {
   }, [])
 
   useEffect(() => {
-    if (embeddedReady && selectedFeature) postReveal(selectedFeature.id)
+    if (!embeddedReady || !selectedFeature) return
+    if (editorSelectionPending.current) {
+      editorSelectionPending.current = false
+      return
+    }
+    postReveal(selectedFeature.id)
   }, [embeddedReady, postReveal, selectedFeature])
 
   useEffect(() => {
@@ -153,8 +159,13 @@ export default function ManualShell() {
       }
 
       if (event.data.type === 'selected') {
+        // The editor click already opened its own menu or subwindow. Reflect
+        // its article without replaying a passive opener and toggling it shut.
         const featureId = selectFeature(event.data.featureId, true)
-        if (featureId) setRevealStatus({ kind: 'shown', text: 'Selected in the editor.' })
+        if (featureId) {
+          if (featureId !== selectedId) editorSelectionPending.current = true
+          setRevealStatus({ kind: 'shown', text: 'Selected in the editor.' })
+        }
         return
       }
 

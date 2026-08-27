@@ -78,12 +78,16 @@ fn publish_package(
 
         progress(0.88, "verifying portable package manifest".into());
         let manifest = package_manifest(&prepared, &package_dir)?;
+        progress(0.89, "prepared portable package manifest".into());
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         let manifest_sha256 = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
         write_new_synced(&package_dir.join("package.manifest.json"), &manifest_bytes)?;
-        verify_manifest_members(&package_dir, &manifest)?;
+        progress(0.90, "wrote portable package manifest".into());
+        verify_manifest_members(&package_dir, &manifest, cancel)?;
+        progress(0.92, "verified portable package manifest".into());
         sync_dir(&package_dir)?;
         sync_dir(&stage.path)?;
+        progress(0.94, "synced portable package stage".into());
         if cancel.is_cancelled() {
             return Err(cancelled());
         }

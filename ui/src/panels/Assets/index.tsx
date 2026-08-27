@@ -847,6 +847,7 @@ export default function Assets({ project, doctor, playheadMs, onProjectChanged, 
               offlineCount={mediaHealth.offline}
               onProjectChanged={onProjectChanged}
               onRefresh={refreshOfflineNow}
+              onReviewIndividually={(assetId) => { void relinkAsset(assetId) }}
             />
           )}
           <details className="assets__health-advanced" data-cut-media-health-advanced>

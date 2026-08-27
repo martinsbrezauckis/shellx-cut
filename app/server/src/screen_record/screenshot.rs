@@ -1,10 +1,11 @@
 //! In-process still capture for the server-side `debug.screenshot` verb.
 
-use super::{align_ffmpeg_env, new_capture_id, record_err, reserve_capture};
+use super::{
+    align_ffmpeg_env, capture_session_control::CaptureSessionControl, new_capture_id, record_err,
+    reserve_capture,
+};
 use cut_core::{error_codes, CutError};
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 /// Capture a single still of the primary display (or a chosen monitor / opaque
 /// window id) to `out_png`, returning its dimensions. Unlike `ui.screenshot`,
@@ -24,8 +25,11 @@ pub fn capture_screenshot_png(
             "debug.screenshot needs a desktop session built with the capture feature",
         )
     })?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let _reservation = reserve_capture(new_capture_id(), stop.clone())?;
+    // Screenshot capture owns no input listener, even on builds whose recording
+    // backend does. Keep its private lifecycle stream declaration truthful.
+    let control = CaptureSessionControl::new(Some(220), false, false, false);
+    let stop = control.stop_signal();
+    let _reservation = reserve_capture(new_capture_id(), control.clone())?;
     let uniq = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -43,15 +47,19 @@ pub fn capture_screenshot_png(
         fps: 4.0,
         capture_cursor: true,
         monitor,
+        monitor_id: None,
         window,
         audio: false,
+        microphone_source: record_capture::MicrophoneSource::SystemDefault,
         system_audio: false,
         capture_keys: false,
         out_dir: tmp.to_string_lossy().into_owned(),
         checkpoint: None,
         clock: None,
     };
-    let result = cap.capture(&cfg, stop).map_err(record_err).and_then(|out| {
+    let captured = cap.capture(&cfg, stop);
+    control.terminalize();
+    let result = captured.map_err(record_err).and_then(|out| {
         let mut command = std::process::Command::new(cut_media::toolpath::ffmpeg());
         command
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])

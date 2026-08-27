@@ -62,6 +62,13 @@ pub fn projects_index_path() -> Option<PathBuf> {
     shellx_cut_home().map(|h| h.join("projects.json"))
 }
 
+/// `~/.shellx-cut/microphone-preference.json` — the private app-local recorder
+/// input preference. It stores only the selected native endpoint reference; UI
+/// capability tokens are short-lived and are never persisted.
+pub fn microphone_preference_path() -> Option<PathBuf> {
+    shellx_cut_home().map(|h| h.join("microphone-preference.json"))
+}
+
 /// `~/.shellx-cut/library` — the global asset library dir.
 pub fn library_dir() -> Option<PathBuf> {
     shellx_cut_home().map(|h| h.join("library"))

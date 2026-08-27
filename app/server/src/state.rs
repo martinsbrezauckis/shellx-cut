@@ -11,6 +11,7 @@ use crate::events::{Event, EventBus};
 use crate::framecache::FrameCache;
 use crate::jobs::JobManager;
 use crate::registry::VerbRegistry;
+use crate::startup_tasks::UiMountReadiness;
 use crate::ui_bridge::UiBridge;
 use cut_core::ProjectStore;
 use std::sync::atomic::AtomicU64;
@@ -42,8 +43,9 @@ pub struct AppState {
     /// response-receipt publication. Legacy calls keep their existing locks.
     pub request_gate: Arc<Mutex<()>>,
     /// Cooperating cache producers take a shared lease while publishing a
-    /// proxy/filmstrip and its ownership ledger record. A purge takes the
-    /// exclusive lease; it refuses to run instead of racing an active writer.
+    /// proxy/filmstrip and its ownership ledger record. Purge and committed
+    /// proxy/filmstrip retirement take the exclusive lease; they wait rather
+    /// than racing an active writer or another ledger mutation.
     pub cache_lifecycle_lease: Arc<RwLock<()>>,
     /// The one opaque, server-issued cleanup plan that may be confirmed. A
     /// plan is consumed before its background job starts, preventing replay.
@@ -60,11 +62,19 @@ pub struct AppState {
     pub ui_state: Arc<RwLock<Option<serde_json::Value>>>,
     /// Server→UI command channel + screenshot request correlation.
     pub ui_bridge: UiBridge,
+    /// First mounted real Cut app root for this server run. The startup doctor
+    /// waits on this one-shot handoff instead of guessing that a bound listener
+    /// means a desktop UI has painted.
+    pub ui_mount_readiness: UiMountReadiness,
     /// Cached environment doctor report (the `system.doctor` source of
     /// truth). None until the first scan (startup, or the first verb call).
     /// `system.doctor{refresh:true}` and a completed `system.fetch_tool`
     /// recompute it and publish `doctor_updated` on a capability change.
     pub doctor: Arc<RwLock<Option<DoctorReport>>>,
+    /// Serializes Doctor scans. A mount-triggered warm and the UI's first
+    /// cached `system.doctor` read can arrive together; the latter must reuse
+    /// the first result instead of launching a second hardware probe.
+    doctor_scan_gate: Arc<Mutex<()>>,
     /// The server's bind address, stamped onto every doctor report so an agent
     /// reading the card knows which cutd it is talking to. None for non-serve
     /// surfaces (CLI/MCP-standalone) — the report then omits `addr`.
@@ -95,7 +105,9 @@ impl AppState {
             registry: VerbRegistry::shared(),
             ui_state: Arc::new(RwLock::new(None)),
             ui_bridge: UiBridge::default(),
+            ui_mount_readiness: UiMountReadiness::default(),
             doctor: Arc::new(RwLock::new(None)),
+            doctor_scan_gate: Arc::new(Mutex::new(())),
             addr: Arc::new(RwLock::new(None)),
             frame_cache: Arc::new(FrameCache::new(FRAME_CACHE_CAP, FRAME_CACHE_BYTE_CAP)),
             frame_render_limiter: Arc::new(Semaphore::new(FRAME_RENDER_CONCURRENCY)),
@@ -115,7 +127,14 @@ impl AppState {
         if let Some(r) = self.doctor.read().await.clone() {
             return r;
         }
-        self.doctor_rescan().await
+        let _scan = self.doctor_scan_gate.lock().await;
+        // Re-check after joining an in-flight startup scan. This is the
+        // single-flight boundary that keeps UI connect/read behavior from
+        // duplicating the mount-triggered FFmpeg warm.
+        if let Some(r) = self.doctor.read().await.clone() {
+            return r;
+        }
+        self.doctor_rescan_after_lock().await
     }
 
     /// Re-run the environment scan, update the cache, and publish
@@ -124,6 +143,11 @@ impl AppState {
     /// Returns the fresh report. Used by `system.doctor{refresh:true}`, the
     /// startup scan, and `system.fetch_tool` on completion.
     pub async fn doctor_rescan(&self) -> DoctorReport {
+        let _scan = self.doctor_scan_gate.lock().await;
+        self.doctor_rescan_after_lock().await
+    }
+
+    async fn doctor_rescan_after_lock(&self) -> DoctorReport {
         let addr = self.addr.read().await.clone();
         // The scan blocks (subprocess version probes) — run it off the async
         // executor so the verb loop never stalls on a wedged binary.
@@ -156,7 +180,10 @@ impl AppState {
 /// is still running, and macOS GUI apps often have a stripped PATH even though
 /// the engine resolver can find Homebrew or the user's selected ffmpeg.
 fn align_sidecar_ffmpeg_env() {
-    if let Some(dir) = cut_media::toolpath::resolved_ffmpeg_dir() {
+    // Startup must select a usable ffmpeg for the sidecar without synchronously
+    // probing every hardware encoder before `cutd` can bind its listener.
+    // Render-time `ffmpeg()` retains automatic hardware selection.
+    if let Some(dir) = cut_media::toolpath::resolved_startup_ffmpeg_dir() {
         std::env::set_var(cut_media::toolpath::ENV_FFMPEG_DIR, dir);
     }
 }

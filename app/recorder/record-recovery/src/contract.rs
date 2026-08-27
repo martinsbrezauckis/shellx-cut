@@ -99,6 +99,27 @@ pub struct MediaFacts {
     pub duration_ms: u64,
     pub decoded_video_frames: u64,
     pub has_audio: bool,
+    /// Exact FFprobe facts from the same bounded verification pass. Older
+    /// manifests have no rate evidence, which remains unknown rather than
+    /// reconstructed from the legacy capture settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avg_frame_rate: Option<record_core::FrameRate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r_frame_rate: Option<record_core::FrameRate>,
+}
+
+impl MediaFacts {
+    /// Adapt final verified media facts to CaptureCadence@1 without launching
+    /// another probe. Duration and decoded-frame counts are mandatory for a
+    /// verified playable container; its exact rate facts remain optional.
+    pub fn probed_cadence(&self) -> record_core::ProbedMediaCadence {
+        record_core::ProbedMediaCadence {
+            avg_frame_rate: self.avg_frame_rate,
+            r_frame_rate: self.r_frame_rate,
+            decoded_video_frames: Some(self.decoded_video_frames),
+            duration_ms: Some(self.duration_ms),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

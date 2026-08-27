@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Icon } from '../icons'
-import { MANUAL_FEATURES, type ManualFeatureContent } from './content'
+import { MANUAL_FEATURES, resolveManualFeatureId, type ManualFeatureContent } from './content'
 import { CUT_MANUAL_PROTOCOL } from './protocol'
 import { manualFeatureTarget } from './targets'
 import './local-manual.css'
 
 interface LocalManualPanelProps {
   open: boolean
+  requestedFeatureId?: string
+  requestId: number
   onClose: () => void
 }
 
@@ -45,7 +47,7 @@ function revealFeature(featureId: string): void {
   }))
 }
 
-export default function LocalManualPanel({ open, onClose }: LocalManualPanelProps) {
+export default function LocalManualPanel({ open, requestedFeatureId, requestId, onClose }: LocalManualPanelProps) {
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('cut.left.assets')
   const visible = useMemo(() => MANUAL_FEATURES.filter((feature) => matches(feature, query)), [query])
@@ -71,6 +73,12 @@ export default function LocalManualPanel({ open, onClose }: LocalManualPanelProp
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [onClose, open])
+
+  useEffect(() => {
+    if (!open || !requestedFeatureId) return
+    const featureId = resolveManualFeatureId(requestedFeatureId)
+    if (featureId) setSelectedId(featureId)
+  }, [open, requestedFeatureId, requestId])
 
   if (!open || !selected) return null
 

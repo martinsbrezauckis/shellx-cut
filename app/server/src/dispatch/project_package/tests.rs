@@ -4,6 +4,11 @@ mod tests {
     use crate::dispatch::dispatch;
     use cut_core::Asset;
     use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
 
     fn actor() -> Actor {
         Actor {
@@ -26,6 +31,142 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("portable package job did not finish")
+    }
+
+    fn spawn_bounded_package_worker(
+        state: &AppState,
+        timeout: Duration,
+        work: impl FnOnce(crate::jobs::JobCancellation) -> Result<(), CutError> + Send + 'static,
+    ) -> String {
+        let job = state.jobs.create(PACKAGE_JOB_KIND);
+        let job_id = job.job_id.clone();
+        let task_id = job_id.clone();
+        let jobs = state.jobs.clone();
+        state
+            .jobs
+            .spawn_limited(&job_id, PACKAGE_JOB_KIND, 1, async move {
+                jobs.progress(
+                    &task_id,
+                    0.02,
+                    Some("validating portable package destination".into()),
+                );
+                let bounded = await_bounded_package_work(
+                    timeout,
+                    crate::dispatch::run_blocking_cancellable(
+                        "project.package_create.timeout-test",
+                        work,
+                    ),
+                )
+                .await;
+                match bounded {
+                    Ok(()) => jobs.finish(&task_id, json!({"status": "published"})),
+                    Err(error) => jobs.fail(&task_id, error),
+                }
+            });
+        job_id
+    }
+
+    #[test]
+    fn package_timeout_gives_zero_media_packages_a_prompt_deadline_and_scales_for_media() {
+        assert_eq!(package_timeout(0), Duration::from_secs(15));
+        assert_eq!(
+            package_timeout(PACKAGE_BYTES_PER_SECOND + 1),
+            Duration::from_secs(17),
+        );
+        assert_eq!(
+            package_timeout(u64::MAX),
+            PACKAGE_MAX_TIMEOUT,
+            "large packages must remain bounded",
+        );
+    }
+
+    #[test]
+    fn package_hashing_fits_a_bounded_blocking_worker_stack() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = root.path().join("fixture.bin");
+        let bytes = vec![0x5a; 2 * 1024 * 1024];
+        fs::write(&fixture, &bytes).unwrap();
+        let expected = format!("{:x}", Sha256::digest(&bytes));
+
+        let result = std::thread::Builder::new()
+            .name("portable-package-bounded-stack".into())
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let mut file = open_plain_regular(&fixture).unwrap();
+                stream_sha256(&mut file, None).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+
+        assert_eq!(result, (bytes.len() as u64, expected));
+    }
+
+    /// A filesystem worker may remain blocked after cancellation. The job must
+    /// still terminalize promptly, while the worker remains confined to its
+    /// private stage, so later project close/create calls stay available.
+    #[tokio::test]
+    async fn package_deadline_keeps_runtime_live_while_worker_stops_later() {
+        let root = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        let source = dispatch(
+            &state,
+            "project.create",
+            json!({"name":"source", "dir":root.path().join("source.cutproj")} ),
+            actor(),
+        )
+        .await;
+        assert!(source.ok, "{:?}", source.error);
+
+        let worker_stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped_for_job = worker_stopped.clone();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let job_id = spawn_bounded_package_worker(
+            &state,
+            Duration::from_millis(20),
+            move |_cancel| {
+                release_rx.recv().unwrap();
+                worker_stopped_for_job.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+
+        let terminal = wait_for_job(&state, &job_id).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the package job should terminalize without waiting on the worker"
+        );
+        assert_eq!(terminal.state, crate::jobs::JobState::Failed);
+        assert_eq!(
+            terminal.error.as_ref().map(|error| error.code.as_str()),
+            Some(error_codes::JOB_FAILED),
+        );
+        assert_eq!(
+            terminal.error.as_ref().map(|error| error.message.as_str()),
+            Some("portable package timed out"),
+        );
+        assert!(!worker_stopped.load(Ordering::SeqCst));
+
+        let closed = dispatch(&state, "project.close", json!({}), actor()).await;
+        assert!(closed.ok, "{:?}", closed.error);
+        let next = dispatch(
+            &state,
+            "project.create",
+            json!({"name":"next", "dir":root.path().join("next.cutproj")} ),
+            actor(),
+        )
+        .await;
+        assert!(next.ok, "{:?}", next.error);
+
+        release_tx.send(()).unwrap();
+        for _ in 0..100 {
+            if worker_stopped.load(Ordering::SeqCst) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("detached package worker did not stop after its test release");
     }
 
     #[tokio::test]
@@ -161,6 +302,80 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(source_revision, revision);
+    }
+
+    #[tokio::test]
+    async fn plan_reports_current_destination_collision_without_creating_a_job() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("packages");
+        fs::create_dir(&destination).unwrap();
+        let state = AppState::new();
+        assert!(dispatch(
+            &state,
+            "project.create",
+            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+            actor(),
+        )
+        .await
+        .ok);
+
+        let available = dispatch(
+            &state,
+            "project.package_plan",
+            json!({"destination":destination, "name":"packed"}),
+            actor(),
+        )
+        .await;
+        assert!(available.ok, "{:?}", available.error);
+        assert_eq!(available.result.as_ref().unwrap()["plan"]["target_status"], "available");
+
+        fs::create_dir(destination.join("packed.cutproj")).unwrap();
+        let occupied = dispatch(
+            &state,
+            "project.package_plan",
+            json!({"destination":destination, "name":"packed"}),
+            actor(),
+        )
+        .await;
+        assert!(occupied.ok, "{:?}", occupied.error);
+        assert_eq!(occupied.result.as_ref().unwrap()["plan"]["target_status"], "occupied");
+        assert_ne!(available.result.unwrap()["plan_hash"], occupied.result.unwrap()["plan_hash"]);
+        assert!(state.jobs.list().is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn plan_reports_a_dangling_destination_symlink_as_occupied_without_creating_a_job() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("packages");
+        fs::create_dir(&destination).unwrap();
+        let state = AppState::new();
+        assert!(dispatch(
+            &state,
+            "project.create",
+            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+            actor(),
+        )
+        .await
+        .ok);
+
+        let target = destination.join("packed.cutproj");
+        symlink(root.path().join("missing-package"), &target).unwrap();
+        assert!(fs::symlink_metadata(&target).unwrap().file_type().is_symlink());
+        assert!(!target.exists(), "fixture must remain a dangling link");
+
+        let plan = dispatch(
+            &state,
+            "project.package_plan",
+            json!({"destination":destination, "name":"packed"}),
+            actor(),
+        )
+        .await;
+        assert!(plan.ok, "{:?}", plan.error);
+        assert_eq!(plan.result.as_ref().unwrap()["plan"]["target_status"], "occupied");
+        assert!(state.jobs.list().is_empty());
     }
 
     #[tokio::test]

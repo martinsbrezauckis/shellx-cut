@@ -14,6 +14,7 @@ import { callVerb, type ProjectEntry } from '../../lib/client'
 import { confirmAction, showMessage } from '../../lib/tauri'
 import { Icon } from '../../icons'
 import ProjectContextMenu, { type ProjectContextMenuState } from './ProjectContextMenu'
+import PortableCopy from './PortableCopy'
 import './projects.css'
 
 export interface ProjectsPanelProps {
@@ -204,6 +205,8 @@ export default function ProjectsPanel({ onReopen, currentName, active }: Project
             timeline size and frame rate. Delivery size and quality are chosen when rendering.
           </span>
         </div>
+
+        <PortableCopy projectName={currentName} />
 
         {projects.length > 4 && (
           <input
