@@ -183,6 +183,14 @@ export default function HealthRecovery({
     toolchain,
     toolchainScanFailed,
   })
+  // A rebuild is admitted only from the completed, revision-bound aggregate.
+  // Sorting makes repeated 64-item batches deterministic without exposing the
+  // underlying ids to the UI.
+  const rebuildAssetIds = projectHealth?.complete && projectHealth.media.status === 'ready'
+    ? [...new Set(projectHealth.media.assets
+      .filter((asset) => asset.proxy === 'missing' || asset.proxy === 'not_recorded' || asset.filmstrip === 'missing' || asset.filmstrip === 'not_recorded')
+      .map((asset) => asset.asset))].sort()
+    : null
 
   return (
     <section className="settings-section" aria-labelledby="settings-health-recovery-title" data-cut-settings-section="health-recovery">
@@ -220,7 +228,7 @@ export default function HealthRecovery({
           )
         })}
       </div>
-      <CacheLifecycle hasProject={hasProject} projectSession={projectSession} onComplete={refresh} />
+      <CacheLifecycle hasProject={hasProject} projectSession={projectSession} rebuildAssetIds={rebuildAssetIds} onComplete={refresh} />
       <p className="settings-health-note" data-cut-health-confirmation>Recovery actions with ambiguous or destructive consequences stay in their owning workflow and require your confirmation.</p>
     </section>
   )

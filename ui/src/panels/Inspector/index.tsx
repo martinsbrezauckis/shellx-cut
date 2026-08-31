@@ -12,8 +12,6 @@
 // right rail). Deps: lib/client (verbs + Clip shape).
 
 import { useMemo } from 'react'
-import type { Project } from '../../lib/client'
-import type { DoctorReport } from '../../lib/doctor'
 import { baseVideoTrackId, isTrackLocked } from '../../lib/layerStack'
 import AudioInspectorTools from './AudioInspectorTools'
 import CaptionEditSection from './CaptionEditSection'
@@ -43,26 +41,17 @@ import {
 import { useInspectorAutoVideoControls } from './useInspectorAutoVideoControls'
 import { useInspectorClipActions } from './useInspectorClipActions'
 import { useInspectorColorControls } from './useInspectorColorControls'
+import type { InspectorProps } from './props'
+export type { InspectorProps } from './props'
 import './inspector.css'
 import './inspectorTasks.css'
 import './motion.css'
-export interface InspectorProps {
-  project: Project | null
-  /** Ephemeral project.state revision passed separately from durable Project. */
-  projectRevision?: string | null
-  /** The selected clip id (Timeline selection). */
-  selectedClipId: string | null
-  /** Live playhead (timeline ms) — the start anchor for a placed caption card. */
-  playheadMs?: number
-  /** Installed capability truth used to explain or enable environment-dependent actions. */
-  doctor: DoctorReport | null
-}
 /** Open a drawer the App already mounts (the generic open-drawer event). */
 function openDrawer(name: string) {
   document.dispatchEvent(new CustomEvent('cut:open-drawer', { detail: name }))
 }
 
-export default function Inspector({ project, projectRevision, selectedClipId, playheadMs = 0, doctor }: InspectorProps) {
+export default function Inspector({ project, projectRevision, selectedClipId, playheadMs = 0, onSeek, doctor }: InspectorProps) {
   // Resolve the selected clip + its track kind from project state.
   const sel = useMemo(() => {
     if (!project || !selectedClipId) return null
@@ -238,6 +227,7 @@ export default function Inspector({ project, projectRevision, selectedClipId, pl
             clipId={capSel.clip.id}
             text={capSel.clip.text}
             rangeMs={capSel.clip.range_ms}
+            onSeek={onSeek}
           />
         ) : titleSel ? (
           // A title clip is selected → edit its text in place (title-editing regression).
@@ -272,7 +262,7 @@ export default function Inspector({ project, projectRevision, selectedClipId, pl
               )}
               <p className="insp__hint">Select a clip on the timeline — its tools appear here.</p>
             </div>
-            <ProjectCaptionsSection project={project} playheadMs={playheadMs} />
+            <ProjectCaptionsSection project={project} playheadMs={playheadMs} onSeek={onSeek} />
           </>
         ) : (
           <>

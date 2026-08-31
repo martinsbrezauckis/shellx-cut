@@ -2,14 +2,22 @@ use super::*;
 use crate::screen_record::windows_pause_adapter::WindowsPauseEvidenceFactory;
 use record_capture::windows_pause_pilot::{
     WindowsPausePilotAcceptedCapture, WindowsPausePilotCaptureRange,
-    WindowsPausePilotCheckpointRange, WindowsSealedWgcCheckpoint,
+    WindowsPausePilotCheckpointRange, WindowsSealedAudioRun, WindowsSealedWgcCheckpoint,
 };
+use record_core::Settings;
 use record_recovery::{Checkpoint, CheckpointFacts, MediaFacts};
 use std::time::{Duration, Instant};
 
 struct AcceptArtifacts;
 impl WindowsPauseArtifactVerifier for AcceptArtifacts {
     fn verify(&self, _: &Checkpoint) -> Result<(), WindowsPauseAdapterError> {
+        Ok(())
+    }
+
+    fn verify_audio(
+        &self,
+        _: &record_capture::windows_pause_pilot::WindowsSealedAudioRun,
+    ) -> Result<(), WindowsPauseAdapterError> {
         Ok(())
     }
 }
@@ -66,6 +74,9 @@ fn checkpoint(sequence: u64, start_ms: u64, end_ms: u64) -> WindowsSealedWgcChec
                 duration_ms: end_ms - start_ms,
                 decoded_video_frames: 1,
                 has_audio: false,
+                width: None,
+                height: None,
+                codec_name: None,
                 avg_frame_rate: None,
                 r_frame_rate: None,
             }),
@@ -104,6 +115,30 @@ fn factory(
         ))
         .unwrap();
     factory
+}
+
+fn audio(stream: record_recovery::RecordingStream) -> WindowsSealedAudioRun {
+    let artifact = match stream {
+        record_recovery::RecordingStream::MicrophoneAudio => {
+            "recording-microphone-generation-00000000000000000001.wav"
+        }
+        record_recovery::RecordingStream::SystemAudio => {
+            "recording-system-generation-00000000000000000001.wav"
+        }
+        _ => panic!("test requires a sealed audio stream"),
+    };
+    WindowsSealedAudioRun {
+        stream,
+        source_generation: 1,
+        artifact: artifact.into(),
+        bytes: 48,
+        sha256: "a".repeat(64),
+        media_duration_ms: 90,
+        native_ready_unix_ms: 1_000,
+        native_ready_raw_ms: 88,
+        raw_start_ms: 77,
+        raw_end_ms: 177,
+    }
 }
 
 #[test]
@@ -208,5 +243,51 @@ fn physical_checkpoint_gap_is_provenance_but_overlap_is_rejected() {
     overlap.checkpoints[1].checkpoint.facts.event_offset_ms = 116;
     assert!(factory(&first)
         .verify_and_build(1, &overlap, at(origin, 130))
+        .is_err());
+}
+
+#[test]
+fn selected_audio_is_bound_to_the_opening_wgc_generation_and_exact_logical_span() {
+    let origin = Instant::now();
+    let first = started(origin, 77, 0);
+    let evidence = factory(&first)
+        .verify_and_build_with_audio(
+            1,
+            &run(77, 177),
+            &[
+                audio(record_recovery::RecordingStream::MicrophoneAudio),
+                audio(record_recovery::RecordingStream::SystemAudio),
+            ],
+            at(origin, 130),
+        )
+        .unwrap();
+    let audio_fragments = evidence
+        .run()
+        .fragments
+        .iter()
+        .filter(|fragment| fragment.stream != record_recovery::RecordingStream::ScreenVideo)
+        .collect::<Vec<_>>();
+    assert_eq!(audio_fragments.len(), 2);
+    assert!(audio_fragments.iter().all(|fragment| {
+        fragment.checkpoint_sequence.is_none()
+            && fragment.stream_sequence == 0
+            && fragment.facts.start_offset_ms == 0
+            && fragment.facts.end_offset_ms == 100
+            && fragment.facts.media_duration_ms == 90
+    }));
+}
+
+#[test]
+fn stale_generation_or_duplicate_audio_source_is_rejected_before_sidecar_construction() {
+    let origin = Instant::now();
+    let first = started(origin, 77, 0);
+    let mut stale = audio(record_recovery::RecordingStream::MicrophoneAudio);
+    stale.source_generation = 2;
+    assert!(factory(&first)
+        .verify_and_build_with_audio(1, &run(77, 177), &[stale], at(origin, 130))
+        .is_err());
+    let one = audio(record_recovery::RecordingStream::MicrophoneAudio);
+    assert!(factory(&first)
+        .verify_and_build_with_audio(1, &run(77, 177), &[one.clone(), one], at(origin, 130))
         .is_err());
 }

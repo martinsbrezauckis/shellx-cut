@@ -54,9 +54,9 @@ pub(super) fn read_bounded_json(
     Ok(bytes)
 }
 
-/// screen_record.autoedit{track, config?, webcam?, studio_events?} — run the
-/// recorder's auto-edit engine and optionally patch Recording Studio metadata
-/// into the polished plan.
+/// screen_record.autoedit{track, config?, webcam?, studio_events?, scene_receipt?}
+/// runs the recorder's auto-edit engine, then applies any validated Studio and
+/// Recording Scenes projections into its editable plan.
 pub(crate) async fn screen_record_autoedit(
     state: &AppState,
     args: Value,
@@ -68,6 +68,7 @@ pub(crate) async fn screen_record_autoedit(
         webcam: Option<String>,
         camera_artifact: Option<record_core::CameraArtifact>,
         studio_events: Option<String>,
+        scene_receipt: Option<String>,
     }
     let a: Args = parse_args(args)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
@@ -88,6 +89,18 @@ pub(crate) async fn screen_record_autoedit(
         "EventTrack",
         "run screen_record.stop first and pass the returned events path",
     )?;
+    let scene_receipt = a
+        .scene_receipt
+        .as_deref()
+        .map(|requested| {
+            super::scene_projection_start::receipt_for_autoedit(&dir, &track_path, requested)
+        })
+        .transpose()?;
+    let scene_camera = if let Some(receipt) = scene_receipt.as_ref() {
+        super::camera_artifact_for_capture(&receipt.capture_dir)?
+    } else {
+        None
+    };
     let stem = track_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -153,14 +166,48 @@ pub(crate) async fn screen_record_autoedit(
             summary = format!("{summary}; {studio_event_count} Studio camera event(s)");
         }
     }
+    if let Some(receipt) = scene_receipt.as_ref() {
+        let mut plan = load_plan(&out)?;
+        super::scene_projection_start::apply_to_edit_plan(
+            &mut plan,
+            receipt,
+            scene_camera.as_ref(),
+        )?;
+        std::fs::write(
+            &out,
+            serde_json::to_vec_pretty(&plan).map_err(|e| {
+                CutError::new(
+                    error_codes::IO,
+                    format!("could not serialize the Recording Scenes EditPlan: {e}"),
+                    "EditPlan serialization failed after applying Recording Scenes",
+                )
+            })?,
+        )
+        .map_err(|e| {
+            CutError::new(
+                error_codes::IO,
+                format!(
+                    "could not write the Recording Scenes EditPlan to {}: {e}",
+                    out.display()
+                ),
+                "writing the plan file failed after applying Recording Scenes",
+            )
+        })?;
+        summary = format!("{summary}; Recording Scenes replay");
+    }
+    let effective_camera_clock = scene_camera
+        .as_ref()
+        .map(|camera| camera.artifact.clock)
+        .or(camera_clock);
     Ok(VerbResult::ok(json!({
         "plan": out,
         "summary": summary,
         "config": config,
         "webcam": webcam_path,
-        "camera_clock": camera_clock,
+        "camera_clock": effective_camera_clock,
         "studio_events": studio_events_path,
         "studio_event_count": studio_event_count,
+        "scene_receipt": scene_receipt.as_ref().map(|receipt| &receipt.path),
     })))
 }
 

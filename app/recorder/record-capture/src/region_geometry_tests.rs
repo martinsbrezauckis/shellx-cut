@@ -3,6 +3,7 @@
 use crate::{
     region_geometry::{NativePixelCrop, NormalizedCaptureBounds},
     surface_coordinates::{map_rdevin_input, CaptureSurface},
+    CaptureRegion,
 };
 use record_core::{
     ClickPositionQuality, ClickSample, CursorCoordinateState, CursorSample, MouseButton,
@@ -112,6 +113,27 @@ fn malformed_normalized_and_stale_native_bounds_fail_without_clamping() {
 }
 
 #[test]
+fn internal_capture_region_keeps_the_native_crop_contract_without_clamping() {
+    let region =
+        CaptureRegion::new(200, 100, 600, 400, 1000, 800).expect("an exactly contained even crop");
+    assert_eq!(
+        NativePixelCrop::from_capture_region(region),
+        NativePixelCrop::new(200, 100, 600, 400, 1000, 800),
+        "the private server-to-native descriptor preserves the exact crop"
+    );
+    for rejected in [
+        CaptureRegion::new(201, 100, 600, 400, 1000, 800),
+        CaptureRegion::new(200, 100, 599, 400, 1000, 800),
+        CaptureRegion::new(200, 100, 600, 400, 799, 800),
+    ] {
+        assert!(
+            rejected.is_none(),
+            "malformed or stale geometry must refuse, not clamp"
+        );
+    }
+}
+
+#[test]
 fn region_mapping_preserves_half_open_output_edges_and_input_quality() {
     let surface = CaptureSurface::new(0.0, 0.0, 1000.0, 1000.0).unwrap();
     let region = surface
@@ -159,4 +181,35 @@ fn region_mapping_preserves_half_open_output_edges_and_input_quality() {
     );
     assert_eq!(output.correlation.exact_clicks, 1);
     assert_eq!(output.correlation.unavailable_clicks, 2);
+}
+
+#[test]
+fn negative_per_monitor_region_maps_physical_input_without_origin_substitution() {
+    // Windows low-level hooks report per-monitor-aware desktop coordinates.
+    // A Region on a negative-origin display must therefore retain its physical
+    // virtual-desktop origin instead of assuming the primary monitor starts at
+    // (0, 0) or applying another DPI scale.
+    let surface = CaptureSurface::new(-2560.0, -1440.0, 2560.0, 1440.0).unwrap();
+    let crop = NativePixelCrop::new(400, 200, 800, 600, 2560, 1440).unwrap();
+    let region = surface
+        .subsurface_from_native_crop(crop, 2560, 1440)
+        .expect("the exact physical Region stays within its selected monitor");
+    let mut clicks = [click(10, -1760.0, -940.0, true)];
+    let output = map_rdevin_input(
+        Some(region.capture_surface()),
+        800,
+        600,
+        vec![CursorSample {
+            t_ms: 9,
+            x: -1760.0,
+            y: -940.0,
+        }],
+        &mut clicks,
+        vec![],
+    );
+
+    assert_eq!((clicks[0].x, clicks[0].y), (400.0, 300.0));
+    assert_eq!(clicks[0].position_quality, ClickPositionQuality::Exact);
+    assert_eq!((output.cursor[0].x, output.cursor[0].y), (400.0, 300.0));
+    assert_eq!(output.correlation.state, CursorCoordinateState::Exact);
 }

@@ -8,7 +8,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 mod cache_cleanup;
-use cache_cleanup::remove_owned_cache_outputs;
+use cache_cleanup::remove_owned_cache_outputs_locked;
 
 // ---------------------------------------------------------------------------
 // media.* handlers — import chain + sidecar jobs
@@ -566,6 +566,11 @@ pub(super) async fn media_remove(
         .get("rationale")
         .and_then(|r| r.as_str())
         .map(String::from);
+    // Source-changing/removing mutations take this lease before their project
+    // write. A deterministic cache rebuild holds it exclusively from durable
+    // reservation through metadata publication, so it can never publish an
+    // old source after this mutation commits.
+    let _cache_lease = state.cache_lifecycle_lease.write().await;
     let (removed, op, dir, receipts, source_deleted, mut freed) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
@@ -654,12 +659,11 @@ pub(super) async fn media_remove(
     };
     let op_id = op.op_id.clone();
     state.events.publish(Event::OpApplied { op: op.clone() });
-    // The cache lease comes strictly after the project write guard above is
-    // dropped. Proxy/filmstrip removal validates both the direct pointer and its
-    // ownership record before unlinking, then retires that exact record.
+    // We keep the mutation lease through exact output retirement. The project
+    // guard above is dropped before filesystem work, while no producer can
+    // publish into these names between the committed mutation and cleanup.
     let mut warnings = Vec::new();
-    remove_owned_cache_outputs(
-        state,
+    remove_owned_cache_outputs_locked(
         &dir,
         &a.asset,
         [
@@ -674,8 +678,7 @@ pub(super) async fn media_remove(
         ],
         &mut freed,
         &mut warnings,
-    )
-    .await;
+    );
     // Transcript/perception are not owned by the cache ledger. They retain the
     // established best-effort project-local cleanup behavior.
     for rel in [removed.transcript.as_deref(), removed.perception.as_deref()]
@@ -749,6 +752,9 @@ pub(super) async fn media_relink(
     // Probe the NEW file up front (off the lock): kind guard + duration warning.
     let s = src.clone();
     let new_probe = run_blocking("media.relink.probe", move || cut_media::probe(&s)).await?;
+    // See media.remove: acquire before committing the source change so a cache
+    // rebuild cannot race from old input bytes into a new asset revision.
+    let _cache_lease = state.cache_lifecycle_lease.write().await;
     let (old, op, mut warnings, dir, receipts) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
@@ -831,8 +837,7 @@ pub(super) async fn media_relink(
         // inverse order. Only exact ledger-owned proxy/filmstrip files may be
         // removed; a stale ledger stays visible as a warning and blocks later
         // cache inventory rather than deleting another asset's output.
-        remove_owned_cache_outputs(
-            state,
+        remove_owned_cache_outputs_locked(
             &dir,
             &a.asset,
             [
@@ -847,8 +852,7 @@ pub(super) async fn media_relink(
             ],
             &mut freed,
             &mut warnings,
-        )
-        .await;
+        );
         // Transcript/perception are deliberately outside the cache-ownership
         // ledger, so their long-standing best-effort cleanup is unchanged.
         for rel in [old.transcript.as_deref(), old.perception.as_deref()]
@@ -2319,6 +2323,7 @@ pub(super) async fn media_perception(
 #[cfg(test)]
 mod media_security_tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[tokio::test]
     async fn attested_import_rejects_changed_bytes_before_project_mutation() {
@@ -2340,5 +2345,54 @@ mod media_security_tests {
 
         assert_eq!(error.code, error_codes::INVALID_ARGS);
         assert!(error.message.contains("changed before Cut imported"));
+    }
+
+    #[tokio::test]
+    async fn attested_import_persists_the_full_sha256_asset_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("attested-import.cutproj");
+        let state = AppState::new();
+        let created = crate::dispatch::dispatch(
+            &state,
+            "project.create",
+            json!({"name": "attested-import", "dir": project_dir}),
+            Actor::system(),
+        )
+        .await;
+        assert!(
+            created.ok,
+            "attested fixture project failed: {:?}",
+            created.error
+        );
+
+        let bytes = b"sealed artifact bytes";
+        let path = tmp.path().join("artifact.bin");
+        std::fs::write(&path, bytes).unwrap();
+        let expected_sha256 = format!("{:x}", Sha256::digest(bytes));
+        let imported = media_import(
+            &state,
+            json!({
+                "path": path,
+                "proxy": false,
+                "expected_sha256": expected_sha256,
+                "expected_byte_length": bytes.len(),
+            }),
+            Actor::system(),
+        )
+        .await
+        .unwrap();
+        let asset_id = imported.result.unwrap()["asset_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let guard = state.project.read().await;
+        let asset = guard
+            .as_ref()
+            .unwrap()
+            .project
+            .assets
+            .get(&asset_id)
+            .unwrap();
+        assert_eq!(asset.hash, format!("sha256:{expected_sha256}"));
     }
 }

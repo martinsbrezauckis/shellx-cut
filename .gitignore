@@ -11,6 +11,7 @@ dist/
 scripts/**/node_modules/
 testdata/
 .scratch/
+.targets/
 .shellx-scratch/
 **/.venv/
 **/__pycache__/

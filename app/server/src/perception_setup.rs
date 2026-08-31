@@ -32,6 +32,8 @@ use cut_core::{error_codes, CutError};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod optional_lock;
+
 /// Env override: use an EXISTING uv binary instead of downloading one. Test/dev
 /// seam (the build box already has uv) — never a verb arg.
 pub const ENV_UV: &str = "SHELLX_CUT_UV";
@@ -48,34 +50,6 @@ pub const ENV_UV: &str = "SHELLX_CUT_UV";
 /// the versioned managed interpreter directory and remains usable in every
 /// supported control path.
 const PYTHON_VERSION: &str = "3.12.13";
-
-/// CPU-only PyTorch wheel index for perception extras. A fresh user box has no
-/// NVIDIA GPU and no reason to pull the ~2 GB CUDA build + nvidia-* deps that the
-/// default PyPI torch drags in on Linux; the +cpu wheels here are small and exist
-/// for win/mac/linux. Used only for the best-effort extras phases below.
-const TORCH_CPU_INDEX: &str = "https://download.pytorch.org/whl/cpu";
-
-/// Extras the UI and release gate rely on for local, non-agent perception:
-/// Canary alignment, face/OCR redaction, auto-reframe/director sheets, scenes,
-/// silence, and beats. Installed before the heavier optional fallbacks so resolver
-/// churn there cannot block the normal user-facing tool setup.
-const CORE_PERCEPTION_EXTRAS: &[&str] = &[
-    "numpy<2.5",
-    "torch",
-    "torchvision",
-    "torchaudio",
-    "silero-vad",
-    "soundfile",
-    "scenedetect",
-    "supervision",
-    "rapidocr-onnxruntime",
-    "sentencepiece",
-];
-
-/// Nice-to-have extras. The primary STT path is onnx-asr; MediaPipe face framing
-/// is a precision enhancer with a saliency fallback. These must never block the
-/// core sidecar setup.
-const OPTIONAL_PERCEPTION_EXTRAS: &[&str] = &["whisperx", "mediapipe"];
 
 /// Result of a successful provisioning — becomes the job result + drives the
 /// doctor re-scan (the sidecar card flips missing → ready).
@@ -122,13 +96,15 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
             .with_suggested_action("reinstall the app — the perception payload is missing")
         })?;
     // The FULL perception extras (whisperX fallback, auto-reframe detector, face
-    // framing, beat grid, OCR) live in an OPTIONAL sibling file. Absent on an older
-    // bundle that shipped only requirements.txt → we install just the base and the
-    // extras phase is skipped (transcription still works).
-    let requirements_full = script
-        .parent()
-        .map(|d| d.join("requirements-full.txt"))
-        .filter(|p| p.is_file());
+    // framing, beat grid, OCR) are installed only from the matching fully-pinned
+    // platform lock. An older bundle without the optional source input remains
+    // base-only; a current bundle with a missing/invalid lock records an honest
+    // extras note without discarding a working transcription install.
+    let optional_lock = script.parent().and_then(|dir| {
+        dir.join("requirements-full.txt")
+            .is_file()
+            .then(|| optional_lock::resolve(dir, PYTHON_VERSION))
+    });
     let sidecar_dir = cut_perception::appdata_sidecar_dir().ok_or_else(|| {
         CutError::new(
             error_codes::IO,
@@ -231,62 +207,48 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
         model_warmed = warm.is_ok();
     }
 
-    // ---- 7. install the perception extras (BEST-EFFORT, split by risk) -------
+    // ---- 7. install the perception extras (BEST-EFFORT, platform locked) -----
     //
-    // CORE: Canary MMS_FA alignment + auto-reframe detector + scene/silence/beat
-    // grid + OCR. OPTIONAL: whisperX fallback + MediaPipe face precision. The split
-    // is intentional: whisperX/pyannote resolver churn must not prevent normal
-    // users from getting the compact, visible Environment tools installed. Both
-    // phases force wheel-only CPU torch. A FAILURE remains NON-FATAL: the base STT
-    // engine + model already work, so we record a note and continue rather than
-    // throwing away a working install.
-    let (full_perception_ready, extras_note) = if let Some(full) = requirements_full.as_ref() {
-        progress(
-            0.78,
-            "installing perception tools (captions, scenes, silence, auto-reframe, OCR)",
-        );
-        let core_res = install_perception_packages(
-            &uv,
-            vpy,
-            CORE_PERCEPTION_EXTRAS,
-            "uv pip install core perception extras",
-            progress,
-            0.78,
-            0.90,
-        );
-        match core_res {
-            Ok(()) => {
-                progress(0.91, "installing optional perception fallbacks");
-                let optional_res = install_perception_packages(
+    // The lock is resolved for the exact packaged target and contains every
+    // transitive version. Wheel-only CPU torch remains mandatory. A FAILURE is
+    // NON-FATAL: the base STT engine + model already work, so we record a note
+    // rather than throwing away a working install.
+    let (full_perception_ready, extras_note) = if let Some(lock) = optional_lock {
+        match lock {
+            Ok(lock) => {
+                progress(
+                    0.78,
+                    "installing perception tools (captions, scenes, silence, auto-reframe, OCR)",
+                );
+                let args = optional_lock::install_args(vpy, &lock);
+                let full_res = run_streaming(
                     &uv,
-                    vpy,
-                    OPTIONAL_PERCEPTION_EXTRAS,
-                    "uv pip install optional perception extras",
+                    &args,
+                    "uv pip install locked perception extras",
                     progress,
-                    0.91,
+                    0.78,
                     0.97,
                 );
-                match optional_res {
+                match full_res {
                     Ok(()) => (true, None),
                     Err(e) => {
+                        // Keep the working base; surface WHY the extras were skipped.
                         let note = format!(
-                            "the optional WhisperX/MediaPipe perception extras could not be installed ({}); \
-                             the main perception tools are ready",
-                            e.message
+                            "the locked perception tools could not be installed ({}); \
+                     transcription still works on the built-in engine. Lock: {}",
+                            e.message,
+                            lock.display()
                         );
                         progress(0.97, &note);
-                        (true, Some(note))
+                        (false, Some(note))
                     }
                 }
             }
             Err(e) => {
-                // Keep the working base; surface WHY the extras were skipped.
                 let note = format!(
-                    "the perception tools could not be installed ({}); \
-                     transcription still works on the built-in engine. \
-                     Bundled extras marker: {}",
-                    e.message,
-                    full.display()
+                    "the packaged optional-perception lock is unavailable or invalid ({}); \
+                     transcription still works on the built-in engine",
+                    e.message
                 );
                 progress(0.97, &note);
                 (false, Some(note))
@@ -313,31 +275,6 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
         full_perception_ready,
         extras_note,
     })
-}
-
-fn install_perception_packages(
-    uv: &Path,
-    vpy: &str,
-    packages: &[&str],
-    label: &'static str,
-    progress: &ProgressFn,
-    band_lo: f32,
-    band_hi: f32,
-) -> Result<(), CutError> {
-    let mut args = vec![
-        "pip",
-        "install",
-        "--python",
-        vpy,
-        "--only-binary",
-        ":all:",
-        "--extra-index-url",
-        TORCH_CPU_INDEX,
-        "--index-strategy",
-        "unsafe-best-match",
-    ];
-    args.extend_from_slice(packages);
-    run_streaming(uv, &args, label, progress, band_lo, band_hi)
 }
 
 // ===========================================================================
@@ -864,6 +801,10 @@ fn io_err(op: &'static str) -> impl Fn(std::io::Error) -> CutError {
 
 #[cfg(test)]
 mod tests {
+    use super::optional_lock::{
+        perception_lock_spec, validate_contents, PerceptionLockSpec, PERCEPTION_LOCKS,
+        PERCEPTION_LOCK_SCHEMA, REQUIRED_OPTIONAL_PERCEPTION_PACKAGES,
+    };
     use super::*;
 
     /// The dev-jargon line the fresh-Windows user actually saw must NEVER reach the
@@ -915,32 +856,79 @@ mod tests {
         }
     }
 
+    /// RUNTIME-PERCEPTION-LOCK-01: every currently packaged engine target has
+    /// a local, exact-version lock. This reads source files only; it must never
+    /// ask a package index to re-resolve the graph during a test run.
     #[test]
-    fn core_extras_are_isolated_from_optional_fallback_extras() {
-        for required in [
-            "torch",
-            "torchvision",
-            "torchaudio",
-            "silero-vad",
-            "scenedetect",
-            "supervision",
-            "rapidocr-onnxruntime",
-        ] {
-            assert!(
-                CORE_PERCEPTION_EXTRAS.contains(&required),
-                "core extras must install {required} before optional fallbacks"
-            );
+    fn supported_platform_locks_are_present_and_valid_without_network() {
+        let lock_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../perception/py");
+        assert_eq!(
+            PERCEPTION_LOCKS,
+            [
+                PerceptionLockSpec {
+                    platform: "linux-x86_64",
+                    os: "linux",
+                    arch: "x86_64",
+                    file: "requirements-full.linux-x86_64.lock",
+                },
+                PerceptionLockSpec {
+                    platform: "windows-x86_64",
+                    os: "windows",
+                    arch: "x86_64",
+                    file: "requirements-full.windows-x86_64.lock",
+                },
+                PerceptionLockSpec {
+                    platform: "macos-aarch64",
+                    os: "macos",
+                    arch: "aarch64",
+                    file: "requirements-full.macos-aarch64.lock",
+                },
+            ]
+        );
+        for spec in PERCEPTION_LOCKS {
+            assert_eq!(perception_lock_spec(spec.os, spec.arch), Some(*spec));
+            let contents = std::fs::read_to_string(lock_dir.join(spec.file)).unwrap();
+            validate_contents(&contents, *spec, PYTHON_VERSION)
+                .unwrap_or_else(|error| panic!("{}: {error}", spec.file));
         }
-        for optional in ["whisperx", "mediapipe"] {
-            assert!(
-                !CORE_PERCEPTION_EXTRAS.contains(&optional),
-                "{optional} must not be able to block core perception setup"
-            );
-            assert!(
-                OPTIONAL_PERCEPTION_EXTRAS.contains(&optional),
-                "{optional} should remain available as an optional precision/fallback extra"
-            );
+        assert!(perception_lock_spec("windows", "aarch64").is_none());
+        assert!(perception_lock_spec("macos", "x86_64").is_none());
+        assert!(perception_lock_spec("linux", "aarch64").is_none());
+    }
+
+    #[test]
+    fn lock_manifest_rejects_unpinned_or_mismatched_inputs() {
+        let spec = PERCEPTION_LOCKS[0];
+        let mut valid = format!(
+            "# {PERCEPTION_LOCK_SCHEMA}\n# python={PYTHON_VERSION}\n# platform={}\n",
+            spec.platform
+        );
+        for package in REQUIRED_OPTIONAL_PERCEPTION_PACKAGES {
+            valid.push_str(&format!(
+                "{package}==1.0 \\\n    --hash=sha256:{}\n",
+                "a".repeat(64)
+            ));
         }
+        assert!(validate_contents(&valid, spec, PYTHON_VERSION).is_ok());
+
+        let unpinned = valid.replacen("numpy==1.0", "numpy>=1.0", 1);
+        assert!(
+            validate_contents(&unpinned, spec, PYTHON_VERSION)
+                .unwrap_err()
+                .contains("exact-version"),
+            "a range must never be installed as a reviewed lock"
+        );
+
+        let wrong_platform = valid.replace("platform=linux-x86_64", "platform=windows-x86_64");
+        assert!(validate_contents(&wrong_platform, spec, PYTHON_VERSION)
+            .unwrap_err()
+            .contains("manifest header"));
+
+        let missing_hash =
+            valid.replacen(&format!("    --hash=sha256:{}\n", "a".repeat(64)), "", 1);
+        assert!(validate_contents(&missing_hash, spec, PYTHON_VERSION)
+            .unwrap_err()
+            .contains("no artifact hash"));
     }
 
     #[test]

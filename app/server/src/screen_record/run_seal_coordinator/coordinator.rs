@@ -7,7 +7,10 @@ use record_capture::{
     AcknowledgementResult, PauseStreamCoordinator, SelectedCaptureStreams, SessionPhase,
     StreamAcknowledgement,
 };
-use record_recovery::{RecordingSessionIntent, RecordingSessionState, TerminalDisposition};
+use record_recovery::{
+    RecordingInputSidecarPin, RecordingSessionIntent, RecordingSessionJournalEntry,
+    RecordingSessionState, TerminalDisposition,
+};
 use std::time::Instant;
 
 /// A bounded private coordinator for one fresh, intent-synced recording journal.
@@ -263,6 +266,31 @@ impl<J: RecordingSessionJournalSink> RunSealCoordinator<J> {
         Ok(())
     }
 
+    /// The immutable sidecar is published before its pin is appended. Journal
+    /// clone validation then makes the pin durable before the matching run can
+    /// be sealed; a reopen never discovers an unpinned file by directory scan.
+    pub(crate) fn pin_recording_input_sidecar(
+        &mut self,
+        evidence: &SealedRunEvidence,
+        pin: RecordingInputSidecarPin,
+    ) -> Result<(), RunSealCoordinatorError> {
+        if self.failed_after_append || self.logical.phase().is_terminal() {
+            return Err(self.pending_error());
+        }
+        if !self.intent.input_sidecars_required
+            || evidence.run.sequence != self.next_run_sequence
+            || pin.run_sequence != evidence.run.sequence
+        {
+            return Err(invalid(
+                "recording-input sidecar does not match the active private run",
+            ));
+        }
+        let entry = RecordingSessionJournalEntry::InputSidecar(pin);
+        self.preflight(std::slice::from_ref(&entry))?;
+        self.append_durable(entry)
+    }
+
+    #[allow(dead_code)] // Private pause-session reachability is test-only for now.
     pub(crate) fn phase(&self) -> SessionPhase {
         self.logical.phase()
     }

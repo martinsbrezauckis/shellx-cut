@@ -20,7 +20,7 @@ where
     J: RecordingSessionJournalSink,
     W: PauseSessionWorkerAdapter,
 {
-    seal: RunSealCoordinator<J>,
+    pub(super) seal: RunSealCoordinator<J>,
     workers: PauseWorkerCoordinator,
     adapter: W,
     streams: SelectedCaptureStreams,

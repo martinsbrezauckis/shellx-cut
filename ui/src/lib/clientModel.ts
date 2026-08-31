@@ -423,6 +423,8 @@ export interface SequenceSummary {
 export interface Project {
   schema: string
   name: string
+  /** Latest durable operation id returned by project.state / project sync. */
+  project_revision?: string
   settings: ProjectSettings
   assets: Record<string, Asset>
   tracks: Track[]

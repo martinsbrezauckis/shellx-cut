@@ -71,7 +71,7 @@ fn run(artifact: &str) -> SealedRun {
 
 fn valid_entries(artifact: &str) -> Vec<RecordingSessionJournalEntry> {
     vec![
-        RecordingSessionJournalEntry::Intent(intent()),
+        RecordingSessionJournalEntry::Intent(Box::new(intent())),
         RecordingSessionJournalEntry::Transition(transition(
             0,
             RecordingSessionState::Started,
@@ -121,7 +121,7 @@ fn creates_one_canonical_intent_entry_inside_the_fixed_capture_leaf() {
         RecordingSessionJournalFile::create_new(&root, "capture-io-create", intent()).unwrap();
     let expected_path = journal_path(&root, "capture-io-create");
     let expected_bytes = [
-        serde_json::to_vec(&RecordingSessionJournalEntry::Intent(intent())).unwrap(),
+        serde_json::to_vec(&RecordingSessionJournalEntry::Intent(Box::new(intent()))).unwrap(),
         b"\n".to_vec(),
     ]
     .concat();
@@ -130,7 +130,7 @@ fn creates_one_canonical_intent_entry_inside_the_fixed_capture_leaf() {
     assert_eq!(fs::read(file.path()).unwrap(), expected_bytes);
     assert_eq!(
         file.journal().entries(),
-        vec![RecordingSessionJournalEntry::Intent(intent())]
+        vec![RecordingSessionJournalEntry::Intent(Box::new(intent()))]
     );
 }
 
@@ -263,8 +263,8 @@ fn duplicate_intent_and_terminal_entries_are_rejected_without_read_path_mutation
     let path = journal_path(&root, "capture-io-duplicate");
     let cases = [
         vec![
-            RecordingSessionJournalEntry::Intent(intent()),
-            RecordingSessionJournalEntry::Intent(intent()),
+            RecordingSessionJournalEntry::Intent(Box::new(intent())),
+            RecordingSessionJournalEntry::Intent(Box::new(intent())),
         ],
         {
             let mut entries = valid_entries("screen/video-0.mp4");
@@ -294,7 +294,7 @@ fn append_after_terminal_and_duplicate_terminal_leave_journal_unchanged() {
     let before = fs::read(file.path()).unwrap();
 
     assert!(file
-        .append_entry(RecordingSessionJournalEntry::Intent(intent()))
+        .append_entry(RecordingSessionJournalEntry::Intent(Box::new(intent())))
         .is_err());
     assert!(file
         .append_entry(RecordingSessionJournalEntry::Terminal(terminal(0, 300)))

@@ -18,6 +18,7 @@ import { resolveCommentTime, type ResolvedCommentTime } from '../../lib/commentA
 import { isTauri, pickReviewFeedback } from '../../lib/tauri'
 import { timecode } from '../Timeline/layout'
 import { Icon } from '../../icons'
+import { TemporalRange } from '../../components/TemporalNavigation'
 import './comments.css'
 
 const FILTERS = ['all', 'open', 'addressed', 'dismissed'] as const
@@ -319,14 +320,17 @@ function CommentRow({ c, time, selected, busy, onToggle, onSeek, onDraft, onAppl
         >
           <Icon name={selected ? 'chevronDown' : 'chevronRight'} size={14} />
         </button>
-        <button
+        <TemporalRange
+          rangeMs={[time.atMs, time.endMs ?? time.atMs]}
+          format={timecode}
           className="cm__tc"
-          data-cut-action="comment-seek"
+          data={{ 'data-cut-action': 'comment-seek' }}
           title="Jump to this moment"
-          onClick={(e) => { e.stopPropagation(); onSeek() }}
+          onClick={(event) => event.stopPropagation()}
+          onActivate={onSeek}
         >
           {timecode(time.atMs)}{time.endMs != null ? `–${timecode(time.endMs)}` : ''}
-        </button>
+        </TemporalRange>
         <span className={`cm__dot cm__dot--${c.status}`} title={c.status} aria-hidden="true" />
         {time.status === 'stale' && <span className="cm__anchor cm__anchor--stale" title="Original clip was removed; showing the saved timeline time">Stale</span>}
         {draft && <span className="cm__drafted" title={`agent drafted ${draft.verbs?.length ?? 0} edit(s)`}><Wand /></span>}

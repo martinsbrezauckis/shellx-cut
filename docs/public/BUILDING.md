@@ -117,7 +117,7 @@ scripts/verbargs-sync.sh                     # every verb has a typed UI client 
 node scripts/generate-verb-contract.mjs --check
 npm --prefix ui run build
 npm --prefix ui run test:lib
-node --test scripts/public-tests/*.test.mjs
+node scripts/check-public-test-inventory.mjs
 ```
 
 `docs/public/FEATURE_SURFACE_CONTRACT.md` explains the observable human, agent,

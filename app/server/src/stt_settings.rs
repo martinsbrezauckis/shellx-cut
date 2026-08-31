@@ -18,7 +18,6 @@ pub(crate) async fn system_set_stt_model(
     args: Value,
 ) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize, Default)]
-    #[allow(dead_code)]
     struct Args {
         #[serde(default)]
         model: Option<String>,
@@ -27,7 +26,8 @@ pub(crate) async fn system_set_stt_model(
         /// Reset to the built-in default model (ignores model/language).
         #[serde(default)]
         clear: Option<bool>,
-        rationale: Option<String>,
+        #[serde(rename = "rationale")]
+        _rationale: Option<String>,
     }
     let a: Args = parse_args(args)?;
     let (model, language) = if a.clear.unwrap_or(false) {

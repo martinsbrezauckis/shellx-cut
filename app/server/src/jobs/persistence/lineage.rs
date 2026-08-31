@@ -42,7 +42,7 @@ pub(super) fn reconcile_retry_lineage(
                     return Err(retry_lineage_error(
                         "inconsistent persisted retry lineage",
                         format!(
-                            "retry descriptor owner does not match canonical screen-record export job kind for '{}'",
+                            "retry descriptor owner does not match canonical retry job kind for '{}'",
                             record.job_id
                         ),
                     ));
@@ -267,7 +267,7 @@ fn retry_descriptor_matches_kind(record: &JobRecord, descriptor: &JobRetryDescri
         (
             "screen_record_export",
             JobRetryDescriptor::ScreenRecordExport(_)
-        )
+        ) | ("verify-rerun", JobRetryDescriptor::VerifyRerun(_))
     )
 }
 

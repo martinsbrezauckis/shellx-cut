@@ -2,10 +2,13 @@ use std::path::{Path, PathBuf};
 
 use cut_core::{error_codes, CutError};
 use record_core::RecordingProject;
-use record_recovery::{is_plain_regular_file, CaptureRoot, RecordingSessionJournal};
+use record_recovery::{
+    is_plain_regular_file, CaptureRoot, RecordingInputSidecarPin, RecordingSessionJournal,
+};
 use serde::{Deserialize, Serialize};
 
 use super::artifacts::{read_nofollow, sha256};
+use super::audio::{PreparedPauseProjectionAudio, ProjectionAudioContract};
 use super::types::{PauseProjectionExecution, PauseProjectionResult};
 use crate::screen_record::pause_projection::LegacyRootProjectionPlan;
 
@@ -59,7 +62,10 @@ pub(super) struct ProjectionPayloads {
 }
 
 impl ProjectionPayloads {
-    pub(super) fn from_plan(plan: &LegacyRootProjectionPlan) -> Result<Self, CutError> {
+    pub(super) fn from_plan(
+        plan: &LegacyRootProjectionPlan,
+        audio: &PreparedPauseProjectionAudio,
+    ) -> Result<Self, CutError> {
         let events = serde_json::to_vec_pretty(&plan.merged_events().events)
             .map_err(|error| invalid(format!("serialize merged pause events: {error}")))?;
         let mut project = RecordingProject::new(
@@ -67,6 +73,7 @@ impl ProjectionPayloads {
             plan.merged_events().settings,
             plan.merged_events().events.clone(),
         );
+        project.audio = audio.microphone_file().map(str::to_owned);
         project.capture_cadence = plan.capture_cadence().cloned();
         let project = serde_json::to_vec_pretty(&project)
             .map_err(|error| invalid(format!("serialize merged pause project: {error}")))?;
@@ -79,14 +86,19 @@ pub(super) fn completed(
     journal: &RecordingSessionJournal,
     payloads: &ProjectionPayloads,
     expected_duration_ms: u64,
+    input_pins: &[RecordingInputSidecarPin],
+    audio: &ProjectionAudioContract,
 ) -> Result<Option<PauseProjectionResult>, CutError> {
     let Some(receipt) = read_receipt(&paths.receipt)? else {
         return Ok(None);
     };
     let expected_journal = journal_digest(journal)?;
+    let expected_inputs = input_pins_digest(input_pins)?;
     if receipt.schema != RECEIPT_SCHEMA
         || receipt.journal_sha256 != expected_journal
         || receipt.source_duration_ms != expected_duration_ms
+        || receipt.input_sidecars_sha256 != expected_inputs
+        || receipt.audio != *audio
     {
         return Err(invalid(
             "existing pause projection receipt does not match durable session evidence",
@@ -102,10 +114,29 @@ pub(super) fn completed(
             "existing pause projection outputs do not match their private receipt",
         ));
     }
+    audio.verify_published(paths.capture_dir())?;
     Ok(Some(PauseProjectionResult {
         execution: PauseProjectionExecution::AlreadyComplete,
         source_duration_ms: receipt.source_duration_ms,
     }))
+}
+
+/// Capture-output handoff has no mutable projection inputs left to compare.
+/// It still reopens the completed receipt and every receipt-bound audio leaf,
+/// so a post-receipt replacement cannot be returned as a successful capture.
+pub(super) fn verify_completed_audio(
+    paths: &OutputPaths<'_>,
+    expected_audio: &ProjectionAudioContract,
+) -> Result<(), CutError> {
+    let receipt = read_receipt(&paths.receipt)?.ok_or_else(|| {
+        invalid("completed private pause projection has no durable projection receipt")
+    })?;
+    if receipt.schema != RECEIPT_SCHEMA || receipt.audio != *expected_audio {
+        return Err(invalid(
+            "completed private pause projection receipt does not match sealed audio evidence",
+        ));
+    }
+    receipt.audio.verify_published(paths.capture_dir())
 }
 
 pub(super) fn publish(
@@ -114,10 +145,16 @@ pub(super) fn publish(
     payloads: &ProjectionPayloads,
     staged_source: &Path,
     source_duration_ms: u64,
+    input_pins: &[RecordingInputSidecarPin],
+    audio: &ProjectionAudioContract,
 ) -> Result<PauseProjectionResult, CutError> {
+    audio.verify_published(paths.capture_dir())?;
     publish_source(paths, staged_source)?;
+    audio.verify_published(paths.capture_dir())?;
     publish_bytes(paths, "events.json", &paths.events, &payloads.events)?;
+    audio.verify_published(paths.capture_dir())?;
     publish_bytes(paths, PROJECT_OUTPUT, &paths.project, &payloads.project)?;
+    audio.verify_published(paths.capture_dir())?;
     let receipt = ProjectionReceipt {
         schema: RECEIPT_SCHEMA.into(),
         journal_sha256: journal_digest(journal)?,
@@ -125,10 +162,13 @@ pub(super) fn publish(
         events_sha256: sha256(&paths.events)?,
         project_sha256: sha256(&paths.project)?,
         source_duration_ms,
+        input_sidecars_sha256: input_pins_digest(input_pins)?,
+        audio: audio.clone(),
     };
     let bytes = serde_json::to_vec(&receipt)
         .map_err(|error| invalid(format!("serialize pause projection receipt: {error}")))?;
     publish_bytes(paths, RECEIPT_OUTPUT, &paths.receipt, &bytes)?;
+    audio.verify_published(paths.capture_dir())?;
     Ok(PauseProjectionResult {
         execution: PauseProjectionExecution::Published,
         source_duration_ms,
@@ -211,6 +251,13 @@ fn journal_digest(journal: &RecordingSessionJournal) -> Result<String, CutError>
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn input_pins_digest(pins: &[RecordingInputSidecarPin]) -> Result<Option<String>, CutError> {
+    (!pins.is_empty())
+        .then(|| super::super::windows_pause_input_sidecar::pins_digest(pins))
+        .transpose()
+        .map_err(invalid)
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ProjectionReceipt {
     schema: String,
@@ -219,6 +266,9 @@ struct ProjectionReceipt {
     events_sha256: String,
     project_sha256: String,
     source_duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_sidecars_sha256: Option<String>,
+    audio: ProjectionAudioContract,
 }
 
 fn invalid(detail: impl Into<String>) -> CutError {
@@ -228,3 +278,7 @@ fn invalid(detail: impl Into<String>) -> CutError {
         detail.into(),
     )
 }
+
+#[cfg(test)]
+#[path = "output_tests.rs"]
+mod tests;

@@ -46,6 +46,18 @@ pub(crate) struct InputListener<L: NativeInputListener = rdevin::OwnedListener> 
 
 impl InputListener<rdevin::OwnedListener> {
     pub(crate) fn start(start: Instant, capture_keys: bool) -> Result<Self> {
+        Self::start_with_policy(start, capture_keys, false)
+    }
+
+    /// Start a listener that is mandatory for the caller's immutable stream
+    /// selection. Unlike [`Self::start`], this never turns an unavailable
+    /// native hook into an empty successful input stream.
+    #[cfg(all(windows, feature = "capture-windows"))]
+    pub(crate) fn start_required(start: Instant, capture_keys: bool) -> Result<Self> {
+        Self::start_with_policy(start, capture_keys, true)
+    }
+
+    fn start_with_policy(start: Instant, capture_keys: bool, required: bool) -> Result<Self> {
         let state = Arc::new(Mutex::new(InputState {
             accepting: true,
             input: Input::default(),
@@ -99,6 +111,12 @@ impl InputListener<rdevin::OwnedListener> {
         let native = match native {
             Ok(listener) => Some(listener),
             Err(error) => {
+                if required {
+                    return Err(listener_error(
+                        "start required passive input listener",
+                        error,
+                    ));
+                }
                 listener_start_policy(error)?;
                 None
             }

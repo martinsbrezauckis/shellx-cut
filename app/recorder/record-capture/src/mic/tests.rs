@@ -4,6 +4,7 @@ use super::wav::{
     discard_unpublished_staging, should_publish_microphone, wav_i16_sample_capacity,
     PendingMicSamples, WAV_HEADER_MARGIN_BYTES,
 };
+use super::wav_layout::{pads_first_packet_offset, MicrophoneWavLayout};
 use record_core::Result;
 use std::sync::mpsc;
 use std::thread;
@@ -66,6 +67,22 @@ fn microphone_peak_is_measured_without_a_fake_silence_floor() {
     assert_eq!(peak_dbfs(0), None);
     assert_eq!(peak_dbfs(u32::from(i16::MAX as u16)), Some(0));
     assert_eq!(peak_dbfs(3_277), Some(-20));
+}
+
+#[test]
+fn pause_microphone_sidecars_never_physically_pad_their_first_packet_offset() {
+    assert!(pads_first_packet_offset(
+        MicrophoneWavLayout::PaddedToCaptureClock,
+        7
+    ));
+    assert!(!pads_first_packet_offset(
+        MicrophoneWavLayout::PacketStart,
+        7
+    ));
+    assert!(!pads_first_packet_offset(
+        MicrophoneWavLayout::PaddedToCaptureClock,
+        u64::MAX
+    ));
 }
 
 #[test]

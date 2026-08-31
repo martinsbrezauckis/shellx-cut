@@ -42,6 +42,22 @@ pub struct AppState {
     /// Serializes caller-controlled idempotency preflight through durable
     /// response-receipt publication. Legacy calls keep their existing locks.
     pub request_gate: Arc<Mutex<()>>,
+    /// The latest server-issued Caption Find & Replace preview. It is volatile
+    /// on purpose: an apply may only materialize the exact preview issued by
+    /// this running engine, so a restart, a newer preview, or a stale revision
+    /// cannot turn a caller-supplied list of caption ids into an edit.
+    pub caption_bulk_preview: Arc<Mutex<Option<serde_json::Value>>>,
+    /// Private ownership for one native Timeline voiceover session. Its public
+    /// coordinator can expose only capability-gated lifecycle projections.
+    pub voiceover_timeline: Arc<Mutex<crate::voiceover_timeline_owner::VoiceoverTimelineOwner>>,
+    /// At most one server-to-Preview voiceover progression can await an
+    /// acknowledgement. Stop/Cancel remain independent so a stalled Preview
+    /// relay never prevents a person from terminating the native take.
+    pub voiceover_tick_gate: Arc<Mutex<()>>,
+    /// The recorder-owned append-only Studio journal. Marker hotkeys and Studio
+    /// style changes can overlap, so this owner assigns their durable logical
+    /// timestamps in one server acceptance order.
+    pub studio_journal: Arc<Mutex<crate::screen_record_studio_journal::StudioJournalOwner>>,
     /// Cooperating cache producers take a shared lease while publishing a
     /// proxy/filmstrip and its ownership ledger record. Purge and committed
     /// proxy/filmstrip retirement take the exclusive lease; they wait rather
@@ -51,6 +67,11 @@ pub struct AppState {
     /// plan is consumed before its background job starts, preventing replay.
     pub cache_purge_plan: Arc<Mutex<Option<crate::cache_lifecycle::CachePurgePlan>>>,
     pub cache_purge_plan_seq: Arc<AtomicU64>,
+    /// The one bounded cache-rebuild worker admitted for the open project in
+    /// this server run. Its durable per-output reservations live in the cache
+    /// ownership ledger, so a restart deliberately clears only this volatile
+    /// duplicate/mutation gate and lets a later request resume safely.
+    pub cache_rebuild_active: Arc<Mutex<Option<crate::cache_lifecycle::CacheRebuildActive>>>,
     /// Background jobs (transcribe/perception/render).
     pub jobs: JobManager,
     /// WS event fan-out.
@@ -97,9 +118,18 @@ impl AppState {
             project: Arc::new(RwLock::new(None)),
             project_transition: Arc::new(Mutex::new(())),
             request_gate: Arc::new(Mutex::new(())),
+            caption_bulk_preview: Arc::new(Mutex::new(None)),
+            voiceover_timeline: Arc::new(Mutex::new(
+                crate::voiceover_timeline_owner::VoiceoverTimelineOwner::default(),
+            )),
+            voiceover_tick_gate: Arc::new(Mutex::new(())),
+            studio_journal: Arc::new(Mutex::new(
+                crate::screen_record_studio_journal::StudioJournalOwner::default(),
+            )),
             cache_lifecycle_lease: Arc::new(RwLock::new(())),
             cache_purge_plan: Arc::new(Mutex::new(None)),
             cache_purge_plan_seq: Arc::new(AtomicU64::new(0)),
+            cache_rebuild_active: Arc::new(Mutex::new(None)),
             jobs: JobManager::new(events.clone()),
             events: events.clone(),
             registry: VerbRegistry::shared(),

@@ -4,7 +4,7 @@
 //! returned by final-source verification. It must not inspect the source path or
 //! start another FFprobe process.
 
-use record_core::{CaptureCadence, RecordingProject};
+use record_core::{CaptureCadence, CaptureSourceFacts, RecordingProject};
 
 use crate::CaptureOutput;
 
@@ -36,6 +36,7 @@ impl CaptureOutput {
             audio,
             microphone_outcome: _,
             settings,
+            capture_quality,
             verified_media,
         } = self;
         let mut project = RecordingProject::new(source_video, settings, events);
@@ -46,6 +47,10 @@ impl CaptureOutput {
         });
         project.camera_artifact = camera_artifact;
         project.audio = audio;
+        project.capture_quality = capture_quality;
+        project.capture_source_facts = verified_media.as_ref().and_then(|media| {
+            CaptureSourceFacts::new(media.width?, media.height?, media.codec_name.clone())
+        });
         project.capture_cadence = capture_cadence.map(|cadence| match verified_media {
             Some(media) => cadence.with_probed_media(media.probed_cadence()),
             None => cadence,
@@ -70,6 +75,7 @@ mod tests {
             audio: None,
             microphone_outcome: crate::MicrophoneCaptureOutcome::NotRequested,
             settings: Settings::default(),
+            capture_quality: None,
             verified_media,
         }
     }
@@ -80,6 +86,9 @@ mod tests {
             duration_ms: 10_010,
             decoded_video_frames: 300,
             has_audio: false,
+            width: Some(1_920),
+            height: Some(1_080),
+            codec_name: Some("h264".into()),
             avg_frame_rate: Some(FrameRate::new(30_000, 1_001).unwrap()),
             r_frame_rate: Some(FrameRate::new(30, 1).unwrap()),
         }))
@@ -91,6 +100,9 @@ mod tests {
         assert_eq!(probed.r_frame_rate, FrameRate::from_ffprobe("30/1"));
         assert_eq!(probed.decoded_video_frames, Some(300));
         assert_eq!(probed.duration_ms, Some(10_010));
+        let facts = project.capture_source_facts.unwrap();
+        assert_eq!((facts.width, facts.height), (1_920, 1_080));
+        assert_eq!(facts.codec_name.as_deref(), Some("h264"));
     }
 
     #[test]

@@ -15,6 +15,11 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+/// Keep legacy EDL JSON byte-identical when a track has unity gain.
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
 /// One contiguous segment of one track on the timeline.
 /// Media segments carry source ranges; gap segments have `asset: None`.
 /// Caption segments carry their text in `caption_text`.
@@ -37,8 +42,16 @@ pub struct EdlSegment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub src_out_ms: Option<u64>,
     /// Effective gain (clip gain + track gain) in dB, audio-bearing segments.
+    /// This remains the legacy static-gain value; volume keyframes use the
+    /// separately carried track gain below so a clip curve cannot erase it.
     #[serde(default)]
     pub gain_db: f64,
+    /// Track Gain, kept separately from the legacy effective `gain_db` so a
+    /// clip-local `edit.keyframe {param:"volume"}` curve can be evaluated
+    /// first and then receive the independent track contribution. Omitted at
+    /// unity to preserve pre-volume-keyframe EDL JSON byte-for-byte.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub track_gain_db: f64,
     /// Linear fade in/out (edit.fade), media segments only. Times are
     /// SEGMENT-LOCAL durations; the renderer applies them after PTS reset
     /// and clamps to the segment length.
@@ -435,6 +448,7 @@ fn ramp_segments(
             src_in_ms: Some(sub.src_in),
             src_out_ms: Some(sub.src_out),
             gain_db: c.gain_db + track.gain_db,
+            track_gain_db: track.gain_db,
             fade,
             crop: c.crop.clone(),
             // Crossfade-in only at the clip head; internal seams are hard joins.
@@ -530,6 +544,7 @@ pub fn edl_from_project(project: &Project) -> Edl {
                             src_in_ms: Some(c.src_in_ms),
                             src_out_ms: Some(c.src_out_ms),
                             gain_db: c.gain_db + track.gain_db,
+                            track_gain_db: track.gain_db,
                             fade: c.fade.clone(),
                             crop: c.crop.clone(),
                             xfade_in_ms: xfade,
@@ -572,6 +587,7 @@ pub fn edl_from_project(project: &Project) -> Edl {
                         src_in_ms: None,
                         src_out_ms: None,
                         gain_db: 0.0,
+                        track_gain_db: 0.0,
                         fade: None,
                         crop: None,
                         xfade_in_ms: 0,
@@ -607,6 +623,7 @@ pub fn edl_from_project(project: &Project) -> Edl {
                     src_in_ms: None,
                     src_out_ms: None,
                     gain_db: 0.0,
+                    track_gain_db: 0.0,
                     fade: None,
                     crop: None,
                     xfade_in_ms: 0,
@@ -698,6 +715,7 @@ mod window_tests {
             src_in_ms: Some(src_in),
             src_out_ms: Some(src_out),
             gain_db: 0.0,
+            track_gain_db: 0.0,
             fade: None,
             crop: None,
             xfade_in_ms: 0,
@@ -725,6 +743,21 @@ mod window_tests {
     fn one(edl: &Edl) -> &EdlSegment {
         assert_eq!(edl.segments.len(), 1, "expected exactly one segment");
         &edl.segments[0]
+    }
+
+    #[test]
+    fn legacy_edl_defaults_missing_track_gain_and_unity_skips_it() {
+        let segment = media(0, 1000, 0, 1000, 1.0);
+        let legacy = serde_json::to_value(&segment).expect("serialize unity segment");
+        assert!(
+            legacy.get("track_gain_db").is_none(),
+            "unity field stays absent from legacy EDL JSON"
+        );
+        let decoded: EdlSegment = serde_json::from_value(legacy).expect("decode legacy EDL JSON");
+        assert_eq!(
+            decoded.track_gain_db, 0.0,
+            "missing legacy field defaults to unity Track Gain"
+        );
     }
 
     #[test]
@@ -906,6 +939,7 @@ mod window_tests {
             src_in_ms: None,
             src_out_ms: None,
             gain_db: 0.0,
+            track_gain_db: 0.0,
             fade: None,
             crop: None,
             xfade_in_ms: 0,
@@ -1029,6 +1063,7 @@ mod window_tests {
         });
         let next = crate::edit::make_media_clip("c2", "a1", 0, 1000); // a normal follower
         p.track_mut("v1").unwrap().clips = vec![Clip::Media(ramped.clone()), Clip::Media(next)];
+        p.track_mut("v1").unwrap().gain_db = -4.0;
 
         let edl = edl_from_project(&p);
         let segs: Vec<&EdlSegment> = edl.track_segments("v1").collect();
@@ -1072,11 +1107,21 @@ mod window_tests {
             mid > speeds[0] && mid > *speeds.last().unwrap(),
             "middle should be fastest"
         );
+        assert!(
+            ramp_segs
+                .iter()
+                .all(|segment| segment.track_gain_db == -4.0),
+            "every speed-ramp segment carries the independent Track Gain"
+        );
         // The follower starts exactly where the ramp ends (no gap, no overlap).
         let follower = segs
             .iter()
             .find(|s| s.clip_id.as_deref() == Some("c2"))
             .unwrap();
+        assert_eq!(
+            follower.track_gain_db, -4.0,
+            "normal segments carry the same independent Track Gain"
+        );
         assert_eq!(
             follower.timeline_in_ms, total,
             "follower must butt the ramp end"

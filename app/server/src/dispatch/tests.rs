@@ -45,14 +45,17 @@ fn test_actor() -> Actor {
 }
 
 mod assets_fetch_transition;
+mod caption_bulk;
 mod caption_track_resolution;
 mod captions_kinetic_regression;
 mod detach_audio;
 mod generation_cli;
+mod group_review_request_idempotency;
 mod nest_media_io;
 mod output_contract;
 mod output_path_fencing;
 mod overwrite;
+mod preview_comparison;
 mod recipe_runner;
 mod render_verify;
 mod request_idempotency;
@@ -62,6 +65,7 @@ mod screen_record_cadence;
 mod screen_record_containment;
 mod screen_record_export_regression;
 mod screen_record_link_consumers;
+mod screen_record_quality;
 mod screen_record_sparse_export_regression;
 mod screen_record_terminal;
 mod sequence_index;

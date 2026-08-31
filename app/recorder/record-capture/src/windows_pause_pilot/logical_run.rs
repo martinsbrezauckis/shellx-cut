@@ -1,9 +1,11 @@
 //! Immutable logical-run accumulation for ordinary WGC checkpoint rotation.
 
+use super::audio_run::{seal_selected_after_screen, WindowsPauseAudioOwner};
+use super::input_run::WindowsPauseInputOwner;
 use super::{
     WindowsPausePilotAcceptedCapture, WindowsPausePilotCaptureRange,
-    WindowsPausePilotCheckpointRange, WindowsPausePilotStarted, WindowsSealedScreenRun,
-    WindowsSealedWgcCheckpoint,
+    WindowsPausePilotCheckpointRange, WindowsPausePilotStarted, WindowsSealedAudioRun,
+    WindowsSealedInputRun, WindowsSealedScreenRun, WindowsSealedWgcCheckpoint,
 };
 use crate::windows_wgc_run::SealedScreenRun;
 
@@ -14,14 +16,53 @@ pub(super) struct ActiveLogicalRun {
     observed_start_ms: u64,
     accepted: WindowsPausePilotAcceptedCapture,
     checkpoints: Vec<WindowsSealedWgcCheckpoint>,
+    input: Option<Box<dyn WindowsPauseInputOwner>>,
+    audio: Vec<Box<dyn WindowsPauseAudioOwner>>,
+}
+
+type SealedLogicalRunOwners = (
+    WindowsSealedScreenRun,
+    Option<Box<dyn WindowsPauseInputOwner>>,
+    Vec<Box<dyn WindowsPauseAudioOwner>>,
+);
+
+pub(super) fn seal_logical_run(
+    logical: ActiveLogicalRun,
+    selected_input: bool,
+    selected_audio: &[record_recovery::RecordingStream],
+) -> Result<
+    (
+        WindowsSealedScreenRun,
+        Option<WindowsSealedInputRun>,
+        Vec<WindowsSealedAudioRun>,
+    ),
+    (),
+> {
+    let (screen, input_owner, audio_owners) = logical.seal()?;
+    let input = match (selected_input, input_owner) {
+        (false, None) => None,
+        (true, Some(input)) => input
+            .seal_after_screen(screen.observed_end_ms - screen.observed_start_ms)
+            .map_err(|_| ())
+            .map(Some)?,
+        _ => return Err(()),
+    };
+    let audio = seal_selected_after_screen(audio_owners, selected_audio, screen.observed_end_ms)?;
+    Ok((screen, input, audio))
 }
 
 impl ActiveLogicalRun {
-    pub(super) fn with_observed_start(started: &WindowsPausePilotStarted) -> Self {
+    pub(super) fn with_observed_start(
+        started: &WindowsPausePilotStarted,
+        input: Option<Box<dyn WindowsPauseInputOwner>>,
+        audio: Vec<Box<dyn WindowsPauseAudioOwner>>,
+    ) -> Self {
         Self {
             observed_start_ms: started.observed_start_ms,
             accepted: started.accepted.clone(),
             checkpoints: Vec::new(),
+            input,
+            audio,
         }
     }
 
@@ -43,24 +84,28 @@ impl ActiveLogicalRun {
         Ok(())
     }
 
-    pub(super) fn seal(self) -> Result<WindowsSealedScreenRun, ()> {
+    pub(super) fn seal(self) -> Result<SealedLogicalRunOwners, ()> {
         let first = self.checkpoints.first().ok_or(())?;
         let last = self.checkpoints.last().ok_or(())?;
         if first.start_ms != self.observed_start_ms || last.end_ms <= self.observed_start_ms {
             return Err(());
         }
-        Ok(WindowsSealedScreenRun {
-            observed_start_ms: self.observed_start_ms,
-            observed_end_ms: last.end_ms,
-            accepted: self.accepted,
-            range: WindowsPausePilotCheckpointRange {
-                first_physical_generation: first.physical_generation,
-                last_physical_generation: last.physical_generation,
-                first_checkpoint_sequence: first.checkpoint.sequence,
-                last_checkpoint_sequence: last.checkpoint.sequence,
+        Ok((
+            WindowsSealedScreenRun {
+                observed_start_ms: self.observed_start_ms,
+                observed_end_ms: last.end_ms,
+                accepted: self.accepted,
+                range: WindowsPausePilotCheckpointRange {
+                    first_physical_generation: first.physical_generation,
+                    last_physical_generation: last.physical_generation,
+                    first_checkpoint_sequence: first.checkpoint.sequence,
+                    last_checkpoint_sequence: last.checkpoint.sequence,
+                },
+                checkpoints: self.checkpoints,
             },
-            checkpoints: self.checkpoints,
-        })
+            self.input,
+            self.audio,
+        ))
     }
 
     pub(super) fn accepts(&self, accepted: &WindowsPausePilotAcceptedCapture) -> bool {

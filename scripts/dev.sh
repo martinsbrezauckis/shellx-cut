@@ -23,7 +23,7 @@ if [[ ! -d "$ROOT/ui/node_modules" ]]; then
   echo "[dev] ui/node_modules missing — running npm ci first"
   ( cd "$ROOT/ui" && npm ci )
 fi
-( cd "$ROOT/ui" && npm run build )
+( cd "$ROOT/ui" && npm run build && npm run check:dist-identity )
 
 echo "[dev] open http://127.0.0.1:6161/ once cutd reports listening"
 exec cargo run --manifest-path "$ROOT/app/Cargo.toml" -p server -- serve "$@"

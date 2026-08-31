@@ -26,8 +26,34 @@ impl Default for OwnershipLedger {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct LedgerEntry {
     pub(super) kind: String,
-    asset: String,
+    pub(super) asset: String,
     pub(super) name: String,
+    /// Legacy entries predate deterministic rebuild reservations and therefore
+    /// deserialize as ready without provenance. They remain purgeable under the
+    /// original lifecycle, but are never silently adopted as a fresh rebuild.
+    #[serde(default)]
+    pub(super) state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) source_hash: Option<String>,
+    /// A pending reservation with this flag false still has an older final
+    /// output to retire. A completed worker only ever leaves a final file after
+    /// it has flipped this durable marker to true.
+    #[serde(default)]
+    pub(super) output_retired: bool,
+}
+
+impl LedgerEntry {
+    pub(super) fn is_ready(&self) -> bool {
+        self.state.is_empty() || self.state == "ready"
+    }
+
+    fn is_pending(&self) -> bool {
+        self.state == "pending"
+    }
+
+    fn matches(&self, kind: CacheKind, asset: &str, name: &str) -> bool {
+        self.kind == kind.directory() && self.asset == asset && self.name == name
+    }
 }
 
 /// The durable-cache outcome after a caller has committed an asset mutation.
@@ -38,7 +64,22 @@ pub(super) struct LedgerEntry {
 #[derive(Debug)]
 pub(crate) enum OwnedRemoval {
     Retired,
+    LedgerRetiredMissing,
     UnlinkedLedgerPending(CutError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RebuildOutputState {
+    /// A present, ready entry carries the exact current source identity.
+    ReadyVerified,
+    /// A present legacy entry has ownership but no source provenance.
+    ReadyLegacy,
+    /// A durable reservation for this source survived cancellation or restart.
+    Pending,
+    /// The output is absent, or an owned output belongs to another source.
+    MissingOrStale,
+    /// A recognized filename exists without an ownership ledger record.
+    UnownedPresent,
 }
 
 pub(super) fn cache_root(project_dir: &Path, kind: CacheKind) -> Result<PathBuf, CutError> {
@@ -228,13 +269,264 @@ fn matching_ledger_entry<'a>(
             "the cache output has no ownership ledger entry",
         )
     })?;
-    if entry.kind != kind.directory() || entry.asset != asset || entry.name != name {
+    if !entry.matches(kind, asset, name) {
         return Err(cache_error(
             "cache ownership cannot be verified",
             "the cache output ownership ledger entry does not match the asset",
         ));
     }
     Ok(entry)
+}
+
+pub(super) fn base_output_name(kind: CacheKind, asset: &str) -> Result<OsString, CutError> {
+    if !valid_asset_id(asset) {
+        return Err(cache_error(
+            "cache ownership cannot be verified",
+            "the asset id cannot own a recognized cache output",
+        ));
+    }
+    Ok(match kind {
+        CacheKind::Proxies => format!("{asset}.mp4").into(),
+        CacheKind::Thumbnails => format!("{asset}.jpg").into(),
+    })
+}
+
+pub(super) fn relative_output(kind: CacheKind, asset: &str) -> Result<String, CutError> {
+    let name = base_output_name(kind, asset)?;
+    Ok(format!("{}/{}", kind.directory(), name.to_string_lossy()))
+}
+
+/// Inspect only the exact base output that a deterministic rebuild may own.
+/// This never claims a file: a present filename without a matching ledger
+/// record remains unowned and blocks rebuild admission.
+pub(super) fn rebuild_output_state(
+    project_dir: &Path,
+    kind: CacheKind,
+    asset: &str,
+    source_hash: &str,
+) -> Result<RebuildOutputState, CutError> {
+    let name = base_output_name(kind, asset)?;
+    let name_text = name.to_string_lossy();
+    let root = cache_root(project_dir, kind)?;
+    let path = root.join(&name);
+    let exists = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(cache_error(
+                    "cache ownership cannot be verified",
+                    "a rebuildable cache output is not a plain file",
+                ));
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => {
+            return Err(cache_error(
+                "cache ownership cannot be verified",
+                "a rebuildable cache output cannot be inspected",
+            ))
+        }
+    };
+    let ledger = read_ledger(project_dir)?;
+    let entry_key = key(kind, &name).expect("validated cache names are text");
+    let Some(entry) = ledger.entries.get(&entry_key) else {
+        return Ok(if exists {
+            RebuildOutputState::UnownedPresent
+        } else {
+            RebuildOutputState::MissingOrStale
+        });
+    };
+    if !entry.matches(kind, asset, &name_text) {
+        return Err(cache_error(
+            "cache ownership cannot be verified",
+            "a rebuildable cache output ownership record does not match its asset",
+        ));
+    }
+    if entry.is_pending() && entry.source_hash.as_deref() == Some(source_hash) {
+        return Ok(RebuildOutputState::Pending);
+    }
+    if entry.is_ready() && entry.source_hash.as_deref() == Some(source_hash) && exists {
+        return Ok(RebuildOutputState::ReadyVerified);
+    }
+    if entry.is_ready() && entry.source_hash.is_none() && exists {
+        return Ok(RebuildOutputState::ReadyLegacy);
+    }
+    Ok(RebuildOutputState::MissingOrStale)
+}
+
+/// Publish a restart-safe reservation before a rebuild can create its final
+/// filename. If an old ledger-owned output exists, mark it pending first, then
+/// retire that exact file before a replacement is admitted. A crash at any
+/// point leaves a pending ledger entry, never an unowned cache output.
+pub(super) fn reserve_rebuild_output(
+    project_dir: &Path,
+    kind: CacheKind,
+    asset: &str,
+    source_hash: &str,
+) -> Result<(), CutError> {
+    let name = base_output_name(kind, asset)?;
+    let name_text = name.to_string_lossy().into_owned();
+    let entry_key = key(kind, &name).expect("validated cache names are text");
+    let root = cache_root(project_dir, kind)?;
+    let path = root.join(&name);
+    let mut ledger = read_ledger(project_dir)?;
+    let current = ledger.entries.get(&entry_key).cloned();
+    if let Some(entry) = &current {
+        if !entry.matches(kind, asset, &name_text) {
+            return Err(cache_error(
+                "cache ownership cannot be verified",
+                "a rebuild reservation would replace another asset's cache output",
+            ));
+        }
+    } else if std::fs::symlink_metadata(&path).is_ok() {
+        return Err(cache_error(
+            "cache ownership cannot be verified",
+            "a rebuildable cache filename exists without an ownership record",
+        ));
+    }
+
+    let already_current_pending = current.as_ref().is_some_and(|entry| {
+        entry.is_pending()
+            && entry.source_hash.as_deref() == Some(source_hash)
+            && entry.output_retired
+    });
+    if already_current_pending {
+        return Ok(());
+    }
+
+    ledger.entries.insert(
+        entry_key.clone(),
+        LedgerEntry {
+            kind: kind.directory().into(),
+            asset: asset.into(),
+            name: name_text.clone(),
+            state: "pending".into(),
+            source_hash: Some(source_hash.into()),
+            output_retired: false,
+        },
+    );
+    write_ledger(project_dir, &ledger)?;
+
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(cache_error(
+                    "cache ownership cannot be verified",
+                    "a rebuildable cache output is not a plain file",
+                ));
+            }
+            std::fs::remove_file(&path).map_err(|_| {
+                cache_error(
+                    "cache output could not be retired for rebuild",
+                    "the exact ledger-owned cache file could not be removed",
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            return Err(cache_error(
+                "cache ownership cannot be verified",
+                "a rebuildable cache output cannot be inspected",
+            ))
+        }
+    }
+    let entry = ledger
+        .entries
+        .get_mut(&entry_key)
+        .expect("reservation was just inserted");
+    entry.output_retired = true;
+    write_ledger(project_dir, &ledger)
+}
+
+/// Promote the exact pending reservation after the worker has published a
+/// complete plain output and has rechecked the unchanged source identity.
+pub(super) fn complete_rebuild_output(
+    project_dir: &Path,
+    kind: CacheKind,
+    asset: &str,
+    source_hash: &str,
+) -> Result<(), CutError> {
+    let name = base_output_name(kind, asset)?;
+    let name_text = name.to_string_lossy();
+    let entry_key = key(kind, &name).expect("validated cache names are text");
+    let root = cache_root(project_dir, kind)?;
+    let _ = identity(kind, name.clone(), &root.join(&name))?;
+    let mut ledger = read_ledger(project_dir)?;
+    let entry = ledger.entries.get_mut(&entry_key).ok_or_else(|| {
+        cache_error(
+            "cache rebuild reservation is no longer current",
+            "the pending ownership record disappeared before the output could be published",
+        )
+    })?;
+    if !entry.matches(kind, asset, &name_text)
+        || !entry.is_pending()
+        || entry.source_hash.as_deref() != Some(source_hash)
+        || !entry.output_retired
+    {
+        return Err(cache_error(
+            "cache rebuild reservation is no longer current",
+            "the pending ownership record changed before the output could be published",
+        ));
+    }
+    entry.state = "ready".into();
+    write_ledger(project_dir, &ledger)
+}
+
+/// Remove a failed source-identity reservation and only its exact pending
+/// output. Cancellation intentionally does not call this: its pending record
+/// is the durable resume point after restart.
+pub(super) fn abandon_rebuild_output(
+    project_dir: &Path,
+    kind: CacheKind,
+    asset: &str,
+    source_hash: &str,
+) -> Result<(), CutError> {
+    let name = base_output_name(kind, asset)?;
+    let name_text = name.to_string_lossy();
+    let entry_key = key(kind, &name).expect("validated cache names are text");
+    let root = cache_root(project_dir, kind)?;
+    let path = root.join(&name);
+    let mut ledger = read_ledger(project_dir)?;
+    let entry = ledger.entries.get(&entry_key).ok_or_else(|| {
+        cache_error(
+            "cache rebuild reservation is no longer current",
+            "the pending ownership record disappeared before cleanup",
+        )
+    })?;
+    if !entry.matches(kind, asset, &name_text)
+        || !entry.is_pending()
+        || entry.source_hash.as_deref() != Some(source_hash)
+    {
+        return Err(cache_error(
+            "cache rebuild reservation is no longer current",
+            "the pending ownership record changed before cleanup",
+        ));
+    }
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+            std::fs::remove_file(&path).map_err(|_| {
+                cache_error(
+                    "cache rebuild output could not be discarded",
+                    "the exact pending cache file could not be removed",
+                )
+            })?;
+        }
+        Ok(_) => {
+            return Err(cache_error(
+                "cache rebuild output could not be discarded",
+                "the pending cache path is no longer a plain file",
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            return Err(cache_error(
+                "cache rebuild output could not be discarded",
+                "the pending cache path cannot be inspected",
+            ))
+        }
+    }
+    ledger.entries.remove(&entry_key);
+    write_ledger(project_dir, &ledger)
 }
 
 pub(super) fn identity(
@@ -297,12 +589,24 @@ pub(crate) fn record_generated(
         )
     })?;
     let mut ledger = read_ledger(project_dir)?;
+    let existing = ledger.entries.get(&entry_key).cloned();
+    if let Some(entry) = &existing {
+        if !entry.matches(kind, asset, &filename.to_string_lossy()) {
+            return Err(cache_error(
+                "cache ownership cannot be recorded",
+                "the generated cache filename already has a different ownership record",
+            ));
+        }
+    }
     ledger.entries.insert(
         entry_key,
         LedgerEntry {
             kind: kind.directory().into(),
             asset: asset.into(),
             name: filename.to_string_lossy().into_owned(),
+            state: "ready".into(),
+            source_hash: existing.and_then(|entry| entry.source_hash),
+            output_retired: true,
         },
     );
     write_ledger(project_dir, &ledger)
@@ -337,19 +641,46 @@ pub(crate) fn remove_owned_output(
     let path = root.join(&name);
     let mut ledger = read_ledger(project_dir)?;
     matching_ledger_entry(&ledger, &entry_key, kind, asset, name_text)?;
-    let _ = identity(kind, name.clone(), &path)?;
-    std::fs::remove_file(&path).map_err(|_| {
-        cache_error(
+    let exists = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => true,
+        Ok(_) => {
+            return Err(cache_error(
+                "cache output could not be removed",
+                "the exact ledger-owned cache path is not a plain file",
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => {
+            return Err(cache_error(
+                "cache output could not be removed",
+                "the exact ledger-owned cache file cannot be inspected",
+            ))
+        }
+    };
+    if exists {
+        std::fs::remove_file(&path).map_err(|_| {
+            cache_error(
+                "cache output could not be removed",
+                "the exact ledger-owned cache file could not be removed",
+            )
+        })?;
+    } else if !ledger
+        .entries
+        .get(&entry_key)
+        .is_some_and(LedgerEntry::is_pending)
+    {
+        return Err(cache_error(
             "cache output could not be removed",
-            "the exact ledger-owned cache file could not be removed",
-        )
-    })?;
+            "a ready ownership record has no cache file",
+        ));
+    }
     // We already matched this record above; preserve that exactness at removal
     // instead of ever accepting an arbitrary same-key replacement.
     matching_ledger_entry(&ledger, &entry_key, kind, asset, name_text)?;
     ledger.entries.remove(&entry_key);
     match write_ledger(project_dir, &ledger) {
-        Ok(()) => Ok(OwnedRemoval::Retired),
+        Ok(()) if exists => Ok(OwnedRemoval::Retired),
+        Ok(()) => Ok(OwnedRemoval::LedgerRetiredMissing),
         Err(error) => Ok(OwnedRemoval::UnlinkedLedgerPending(error)),
     }
 }

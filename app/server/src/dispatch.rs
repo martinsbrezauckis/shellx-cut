@@ -36,6 +36,7 @@ use crate::output_paths::{
 use crate::recipes;
 use crate::registry::verb_contract::DispatchTarget;
 use crate::state::AppState;
+use crate::voiceover_timeline_coordinator as voiceover;
 use cut_core::{
     error_codes, Actor, CutError, InverseOp, OpEffect, OpRecord, ProjectStore, VerbResult,
 };
@@ -75,24 +76,24 @@ pub async fn dispatch(state: &AppState, name: &str, args: Value, actor: Actor) -
             Ok(None) => {}
             Err(error) => return VerbResult::err(error),
         }
-        return dispatch_validated(
+        return Box::pin(dispatch_validated(
             state,
             name,
             dispatch_target,
             prepared.args,
             prepared.actor,
             true,
-        )
+        ))
         .await;
     }
-    dispatch_validated(
+    Box::pin(dispatch_validated(
         state,
         name,
         dispatch_target,
         prepared.args,
         prepared.actor,
         false,
-    )
+    ))
     .await
 }
 
@@ -124,6 +125,7 @@ async fn dispatch_validated(
         DispatchTarget::ProjectState => project_state(state, args).await.into(),
         DispatchTarget::ProjectHealth => project_health(state, args).await.into(),
         DispatchTarget::ProjectCachePreview => project_cache_preview(state).await.into(),
+        DispatchTarget::ProjectCacheRebuild => project_cache_rebuild(state, args).await.into(),
         DispatchTarget::ProjectCachePurge => project_cache_purge(state, args).await.into(),
         DispatchTarget::ProjectSequenceList => project_sequence_list(state).await.into(),
         DispatchTarget::ProjectSequenceIndex => project_sequence_index(state, args).await.into(),
@@ -140,6 +142,8 @@ async fn dispatch_validated(
             project_sequence_delete(state, args, actor).await.into()
         }
         DispatchTarget::ProjectOps => project_ops(state, args).await.into(),
+        DispatchTarget::ProjectGroupPreview => project_group_preview(state, args).await.into(),
+        DispatchTarget::ProjectGroupReject => project_group_reject(state, args, actor).await.into(),
         DispatchTarget::ProjectClose => project_close(state).await.into(),
         DispatchTarget::ProjectCheckpoint => project_checkpoint(state, args, actor).await.into(),
         DispatchTarget::ProjectRename => project_rename(state, args, actor).await.into(),
@@ -393,12 +397,15 @@ async fn dispatch_validated(
         DispatchTarget::CaptionsShift => captions_shift(state, args, actor).await.into(),
         DispatchTarget::CaptionsSetRange => captions_set_range(state, args, actor).await.into(),
         DispatchTarget::CaptionsSetText => captions_set_text(state, args, actor).await.into(),
+        DispatchTarget::CaptionsBulkPreview => captions_bulk_preview(state, args).await.into(),
+        DispatchTarget::CaptionsBulkApply => captions_bulk_apply(state, args, actor).await.into(),
 
         // ------------------------------------------------------------------
         // render.* / verify.* / export.*
         // ------------------------------------------------------------------
         DispatchTarget::RenderPreview => render_preview(state, args).await.into(),
         DispatchTarget::RenderFrame => render_frame(state, args).await.into(),
+        DispatchTarget::RenderCompare => render_compare(state, args).await.into(),
         DispatchTarget::RenderStoryboard => render_storyboard(state, args).await.into(),
         DispatchTarget::RenderFinal => render_final(state, args, actor).await.into(),
         DispatchTarget::RenderReframe => render_reframe(state, args, actor).await.into(),
@@ -546,46 +553,43 @@ async fn dispatch_validated(
         }
         DispatchTarget::ScoreClip => speech_text::score_clip(state, args).await.into(),
 
-        // ------------------------------------------------------------------
-        // screen_record.* — screen recorder integration (sidecar)
-        // ------------------------------------------------------------------
-        DispatchTarget::ScreenRecordDoctor => crate::screen_record::screen_record_doctor(args)
-            .await
-            .into(),
+        // screen_record.* — recorder-specific routing stays together so this
+        // top-level contract dispatcher remains bounded.
+        DispatchTarget::ScreenRecordDoctor => screen_record_routes::doctor(args).await,
         DispatchTarget::ScreenRecordMicrophoneSelection => {
-            crate::screen_record::microphone::selection_handler(args)
-                .await
-                .into()
+            screen_record_routes::microphone_selection(args).await
         }
         DispatchTarget::ScreenRecordSystemAudioProbe => {
-            crate::screen_record::system_audio_capture::probe_handler(args)
-                .await
-                .into()
+            screen_record_routes::system_audio_probe(args).await
         }
-        DispatchTarget::ScreenRecordStart => crate::screen_record::screen_record_start(state, args)
-            .await
-            .into(),
+        DispatchTarget::ScreenRecordStart => screen_record_routes::start(state, args).await,
+        DispatchTarget::ScreenRecordSceneActivate => {
+            screen_record_routes::scene_activate(state, args).await
+        }
+        DispatchTarget::ScreenRecordSceneTimer => {
+            screen_record_routes::scene_timer(state, args).await
+        }
+        DispatchTarget::ScreenRecordPause => screen_record_routes::pause(args).await,
+        DispatchTarget::ScreenRecordResume => screen_record_routes::resume(args).await,
         DispatchTarget::ScreenRecordRecoveryStatus => {
-            crate::screen_record::recovery_status_handler(state, args)
-                .await
-                .into()
+            screen_record_routes::recovery_status(state, args).await
         }
-        DispatchTarget::ScreenRecordStop => screen_record_stop(state, args, actor).await.into(),
+        DispatchTarget::ScreenRecordStatus => screen_record_routes::status(args).await,
+        DispatchTarget::ScreenRecordStop => screen_record_routes::stop(state, args, actor).await,
         DispatchTarget::ScreenRecordStudioEvent => {
-            crate::screen_record_studio::screen_record_studio_event(state, args)
-                .await
-                .into()
+            screen_record_routes::studio_event(state, args).await
         }
-        DispatchTarget::ScreenRecordAutoedit => {
-            crate::screen_record::screen_record_autoedit(state, args)
-                .await
-                .into()
+        DispatchTarget::ScreenRecordAutoedit => screen_record_routes::autoedit(state, args).await,
+        DispatchTarget::ScreenRecordPolish => {
+            screen_record_routes::polish(state, args, actor).await
         }
-        DispatchTarget::ScreenRecordPolish => screen_record_polish(state, args, actor).await.into(),
-        DispatchTarget::ScreenRecordExport => {
-            crate::screen_record::screen_record_export(state, args)
-                .await
-                .into()
+        DispatchTarget::ScreenRecordExport => screen_record_routes::export(state, args).await,
+        DispatchTarget::VoiceoverStart => voiceover::start(state, args, actor).await.into(),
+        DispatchTarget::VoiceoverTick => voiceover::tick(state, args, actor).await.into(),
+        DispatchTarget::VoiceoverStop => voiceover::stop(state, args, actor).await.into(),
+        DispatchTarget::VoiceoverCancel => voiceover::cancel(state, args, actor).await.into(),
+        DispatchTarget::VoiceoverObservePlayhead => {
+            voiceover::observe_playhead(state, args, actor).await.into()
         }
 
         // ------------------------------------------------------------------
@@ -1156,15 +1160,17 @@ use project_workspace::{
     comment_add, comment_apply, comment_draft, comment_list, comment_resolve, library_add,
     library_add_to_project, library_favorite, library_folder_add, library_folder_remove,
     library_folder_rename, library_list, library_move, library_relink, library_remove, library_tag,
-    library_use, project_brand, project_cache_preview, project_cache_purge, project_checkpoint,
-    project_close, project_color, project_create, project_delete, project_diff, project_forget,
-    project_format, project_health, project_list, project_open, project_ops, project_redo,
-    project_rename, project_revert, project_save, project_sequence_create, project_sequence_delete,
-    project_sequence_list, project_sequence_rename, project_sequence_switch, project_state,
-    project_undo,
+    library_use, project_brand, project_cache_preview, project_cache_purge, project_cache_rebuild,
+    project_checkpoint, project_close, project_color, project_create, project_delete, project_diff,
+    project_forget, project_format, project_health, project_list, project_open, project_ops,
+    project_redo, project_rename, project_revert, project_save, project_sequence_create,
+    project_sequence_delete, project_sequence_list, project_sequence_rename,
+    project_sequence_switch, project_state, project_undo,
 };
 mod project_package;
 use project_package::{project_package_create, project_package_plan};
+mod group_review;
+use group_review::{project_group_preview, project_group_reject};
 mod sequence_index;
 use sequence_index::project_sequence_index;
 mod brand;
@@ -1270,6 +1276,9 @@ use captions::{
     reflow_cues, replace_caption_texts_by_identity, CaptionTranslateSrcCue, ReflowOpts,
 };
 
+mod caption_bulk;
+use caption_bulk::{captions_bulk_apply, captions_bulk_preview};
+
 // ---------------------------------------------------------------------------
 // render.* / verify.* / export.* handlers
 // ---------------------------------------------------------------------------
@@ -1277,8 +1286,9 @@ use captions::{
 mod rendering;
 use rendering::{
     autopilot_run, clip_candidates, export_audio, export_frame, export_gif, export_publish,
-    export_range, render_bundle, render_direct, render_final, render_frame, render_preview,
-    render_qc, render_queue, render_reframe, render_storyboard, snapshot_for_media_io,
+    export_range, render_bundle, render_compare, render_direct, render_final, render_frame,
+    render_preview, render_qc, render_queue, render_reframe, render_storyboard,
+    snapshot_for_media_io,
 };
 #[cfg(test)]
 use rendering::{
@@ -1321,6 +1331,8 @@ mod screen_record_handlers;
 #[cfg(test)]
 use screen_record_handlers::screen_record_polish_subverb_error;
 use screen_record_handlers::{screen_record_polish, screen_record_stop};
+
+mod screen_record_routes;
 
 mod ui_system;
 use ui_system::{

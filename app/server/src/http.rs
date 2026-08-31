@@ -68,6 +68,10 @@ async fn stream_file_response(
 
 /// Default bind address (server contract: loopback only; Cut has no remote mode).
 pub const DEFAULT_ADDR: &str = "127.0.0.1:6161";
+/// Explicit development-only escape for testing a non-loopback listener. It is
+/// deliberately ignored by release/packaged builds; Cut has no authenticated
+/// remote-server mode.
+pub const ENV_ALLOW_NON_LOCAL_DEV: &str = "SHELLX_CUT_ALLOW_NON_LOCAL";
 
 /// Build the full router. `ui_dist` points at ui/dist (serves a 404-with-hint
 /// JSON if the UI was never built — the API must work headless regardless).
@@ -80,6 +84,13 @@ pub fn build_router(state: AppState, ui_dist: Option<std::path::PathBuf>) -> Rou
         .route("/agent-doc/*path", get(serve_agent_doc))
         .route("/frame", get(get_frame))
         .route("/events", get(ws_events));
+    // This route is absent unless the current cutd was spawned by the one
+    // foreground Tauri desktop with fresh private bridge material. It is not
+    // an API/verb surface for headless, MCP, or adopted engines.
+    #[cfg(target_os = "macos")]
+    let api = crate::screen_record::macos_region_bridge::install_route(api);
+    #[cfg(windows)]
+    let api = crate::screen_record::windows_region_bridge::install_route(api);
 
     let mut router = Router::new()
         .nest("/api", api)
@@ -204,35 +215,58 @@ pub(crate) fn authority_is_loopback(authority: &str) -> bool {
         .unwrap_or(host == "localhost")
 }
 
-/// Is it safe to bind `addr` as a listen address? `cutd` is a
-/// loopback-only machine-reachability boundary — the HTTP guard stops browser
-/// DNS rebinding, but a non-loopback BIND (`0.0.0.0`, a LAN IP, `::`) exposes
-/// the full mutation surface to the network where a non-browser client can
-/// forge a `Host: localhost` and slip past the header guard. Loopback does not
-/// authenticate local callers. Refuse a non-loopback address unless the
-/// operator explicitly opts in with the same env the HTTP guard honors; that
-/// unsupported escape hatch is not a Cut remote mode and Cut supplies no remote
-/// authentication for it.
+/// Does a build deliberately enable the non-loopback test route? A source/debug
+/// executable may use the explicit environment variable for an isolated local
+/// integration test. A release build — including a packaged desktop engine —
+/// always returns false, even when its inherited environment contains the
+/// variable. This keeps distribution mode loopback-only by construction.
+fn non_local_development_escape_enabled() -> bool {
+    non_local_escape_enabled_for(
+        cfg!(debug_assertions),
+        std::env::var(ENV_ALLOW_NON_LOCAL_DEV).as_deref() == Ok("1"),
+    )
+}
+
+/// Pure policy seam for source and packaged-mode tests. Do not weaken this to
+/// an environment-only check: installer, launcher, and parent-process
+/// environments can all carry variables into a packaged engine.
+fn non_local_escape_enabled_for(is_development_build: bool, explicit_opt_in: bool) -> bool {
+    is_development_build && explicit_opt_in
+}
+
+/// Is it safe to bind `addr` as a listen address? `cutd` is a loopback-only
+/// machine-reachability boundary — the HTTP guard stops browser DNS rebinding,
+/// but a non-loopback BIND (`0.0.0.0`, a LAN IP, `::`) exposes the full mutation
+/// surface to the network where a non-browser client can forge a `Host:
+/// localhost` and slip past the header guard. Loopback does not authenticate
+/// local callers. Only an explicit debug-build test route can bypass the
+/// refusal; packaged builds have no remote mode or Cut authentication.
 /// Returns Ok(()) when binding is allowed, Err(reason) when it must be refused.
 pub fn check_bind_addr(addr: &str) -> Result<(), String> {
-    if std::env::var("SHELLX_CUT_ALLOW_NON_LOCAL").as_deref() == Ok("1") {
-        return Ok(()); // explicit unsupported bind escape; Cut adds no remote auth
+    check_bind_addr_with_escape(addr, non_local_development_escape_enabled())
+}
+
+fn check_bind_addr_with_escape(addr: &str, allow_non_local: bool) -> Result<(), String> {
+    if allow_non_local {
+        return Ok(()); // explicit development route; Cut adds no remote auth
     }
     if authority_is_loopback(addr) {
         return Ok(());
     }
     Err(format!(
         "refusing to bind non-loopback address '{addr}': cutd listens on loopback only by default \
-         (server contract). Bind 127.0.0.1 / [::1] / localhost. SHELLX_CUT_ALLOW_NON_LOCAL=1 is an unsupported \
-         bind escape, not a Cut remote mode: Cut itself does not authenticate remote callers."
+         (server contract). Bind 127.0.0.1 / [::1] / localhost. {ENV_ALLOW_NON_LOCAL_DEV}=1 is available only to \
+         an explicit debug-build development route and is ignored by packaged/release builds; Cut itself does not \
+         authenticate remote callers."
     ))
 }
 
 /// N1 guard: reject browser-driven cross-origin / DNS-rebinding access. Honors
-/// `SHELLX_CUT_ALLOW_NON_LOCAL=1` as an explicit unsupported bind escape
-/// (default off = loopback only); it does not add a Cut remote-auth contract.
+/// the explicit debug-only non-loopback route. Packaged/release builds always
+/// enforce this loopback guard; a development route does not add a Cut
+/// remote-auth contract.
 async fn guard_local_origin(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    if std::env::var("SHELLX_CUT_ALLOW_NON_LOCAL").as_deref() == Ok("1") {
+    if non_local_development_escape_enabled() {
         return next.run(req).await;
     }
     let headers = req.headers();
@@ -338,21 +372,20 @@ mod tests {
         assert!(!UI_CSP.contains("unsafe-eval"));
     }
 
-    /// The bind guard refuses non-loopback addresses by default; loopback forms
-    /// pass. (The env opt-in is process-global so not unit-tested here.)
+    /// Packaged/release mode refuses a non-loopback address even if an inherited
+    /// environment asks for the developer escape. Loopback forms still pass.
     #[test]
-    fn bind_guard_refuses_non_loopback() {
-        // Only assert behavior when the opt-in env is NOT set (CI default).
-        if std::env::var("SHELLX_CUT_ALLOW_NON_LOCAL").as_deref() == Ok("1") {
-            return;
-        }
+    fn packaged_bind_guard_refuses_non_loopback() {
         for ok in [
             "127.0.0.1:6161",
             "[::1]:6161",
             "localhost:6161",
             "127.0.0.1",
         ] {
-            assert!(check_bind_addr(ok).is_ok(), "{ok} should bind");
+            assert!(
+                check_bind_addr_with_escape(ok, false).is_ok(),
+                "{ok} should bind in packaged mode"
+            );
         }
         for bad in [
             "0.0.0.0:6161",
@@ -360,8 +393,32 @@ mod tests {
             "[::]:6161",
             "10.0.0.1:6161",
         ] {
-            assert!(check_bind_addr(bad).is_err(), "{bad} must be refused");
+            assert!(
+                check_bind_addr_with_escape(bad, false).is_err(),
+                "{bad} must be refused in packaged mode"
+            );
         }
+    }
+
+    /// LOCAL-BIND-HARDEN-01: the escape requires both a development build and
+    /// an explicit opt-in. A release/packaged build must never become remote
+    /// merely because a launcher inherited the environment variable.
+    #[test]
+    fn non_loopback_escape_is_explicit_and_development_only() {
+        assert!(non_local_escape_enabled_for(true, true));
+        assert!(!non_local_escape_enabled_for(true, false));
+        assert!(
+            !non_local_escape_enabled_for(false, true),
+            "packaged/release mode ignores {ENV_ALLOW_NON_LOCAL_DEV}=1"
+        );
+        assert!(
+            check_bind_addr_with_escape("0.0.0.0:6161", true).is_ok(),
+            "the explicit debug integration route remains available"
+        );
+        assert!(
+            check_bind_addr_with_escape("0.0.0.0:6161", false).is_err(),
+            "the same address remains refused outside that route"
+        );
     }
 
     #[test]

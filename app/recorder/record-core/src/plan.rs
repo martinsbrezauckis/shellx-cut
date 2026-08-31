@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::color::Rgba;
 use crate::ease::Ease;
 use crate::event::CursorSample;
+use crate::scene_projection::EditableSceneTimeline;
 
 /// One auto-zoom keyframe: focus center (fraction of source) + zoom scale.
 /// `ease` describes interpolation FROM this key to the next.
@@ -157,6 +158,10 @@ impl Default for FrameStyle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Background {
+    /// Preserve the output's transparent margins instead of painting a
+    /// backdrop. Studio's "None" preset uses this; it is intentionally not a
+    /// dark solid that merely happens to look minimal in the editor preview.
+    Transparent,
     Solid {
         color: Rgba,
     },
@@ -344,6 +349,11 @@ pub struct EditPlan {
     pub background: Background,
     #[serde(default)]
     pub webcam: Option<WebcamOverlay>,
+    /// A bounded recording-scene projection derived from the capture journal.
+    /// This remains editable plan data; renderers consume the companion camera
+    /// timeline rather than consulting any ambient clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_timeline: Option<EditableSceneTimeline>,
     #[serde(default)]
     pub reframe: Reframe,
     #[serde(default)]
@@ -365,6 +375,7 @@ impl EditPlan {
             frame: FrameStyle::default(),
             background: Background::default(),
             webcam: None,
+            scene_timeline: None,
             reframe: Reframe::None,
             captions: None,
         }
@@ -457,6 +468,24 @@ impl EditPlan {
                         ));
                     }
                 }
+            }
+        }
+        if let Some(scene_timeline) = &self.scene_timeline {
+            scene_timeline
+                .validate()
+                .map_err(|error| bad(&format!("scene timeline is invalid: {error}")))?;
+            if scene_timeline.logical_duration_ms != self.duration_ms {
+                return Err(bad("scene timeline duration must match the plan duration"));
+            }
+            if scene_timeline
+                .camera
+                .iter()
+                .any(|segment| segment.presenter.is_some())
+                && self.webcam.is_none()
+            {
+                return Err(bad(
+                    "scene timeline presenter spans require an editable webcam source",
+                ));
             }
         }
         Ok(())

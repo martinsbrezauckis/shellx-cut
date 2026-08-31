@@ -453,14 +453,33 @@ for (const selector of ['data-cut-health-refresh', 'data-cut-health-row', 'data-
 for (const evidence of ['data-cut-health-refresh-id', 'data-cut-health-settled', 'data-cut-health-capture-complete', 'data-cut-health-capture-count']) {
   assert.ok(surface.includes(evidence), `Health & Recovery exposes settled model evidence through ${evidence}`)
 }
-for (const selector of ['data-cut-cache-lifecycle', 'data-cut-cache-preview', 'data-cut-cache-preview-status', 'data-cut-cache-purge', 'data-cut-cache-confirm', 'data-cut-cache-confirm-cancel', 'data-cut-cache-confirm-purge', 'data-cut-cache-job', 'data-cut-cache-cancel', 'data-cut-cache-remeasure']) {
+for (const selector of ['data-cut-cache-lifecycle', 'data-cut-cache-rebuild-section', 'data-cut-cache-rebuild', 'data-cut-cache-rebuild-status', 'data-cut-cache-rebuild-attention', 'data-cut-cache-rebuild-attention-toggle', 'data-cut-cache-rebuild-disabled', 'data-cut-cache-rebuild-success', 'data-cut-cache-rebuild-error', 'data-cut-cache-cleanup', 'data-cut-cache-preview', 'data-cut-cache-preview-status', 'data-cut-cache-purge', 'data-cut-cache-confirm', 'data-cut-cache-confirm-cancel', 'data-cut-cache-confirm-purge', 'data-cut-cache-job', 'data-cut-cache-cancel', 'data-cut-cache-remeasure']) {
   assert.ok(cacheSurface.includes(selector), `Cache lifecycle has stable ${selector}`)
 }
-for (const verb of ["project.cache_preview", "project.cache_purge", "jobs.status", "jobs.cancel"]) {
+for (const verb of ["project.cache_preview", "project.cache_rebuild", "project.cache_purge", "jobs.status", "jobs.cancel"]) {
   assert.ok(cacheSurface.includes(verb), `Cache lifecycle uses ${verb} through the typed verb client`)
 }
 assert.ok(cacheSurface.includes('void onComplete()'), 'a terminal cache job remeasures the Health surface')
 assert.ok(!cacheSurface.includes('window.confirm'), 'cache deletion uses a visible in-panel confirmation step')
+assert.ok(cacheSurface.includes('Rebuild missing cache'), 'the existing editing-cache surface offers one non-destructive rebuild action')
+assert.ok(cacheSurface.includes('Original media stays unchanged.'), 'cache rebuild explicitly preserves source media')
+assert.ok(cacheSurface.includes('scheduled_assets') && cacheSurface.includes('fresh_assets') && cacheSurface.includes('attentionReasons'), 'cache rebuild reports queued/up-to-date state and discloses only human attention reasons without a filesystem inventory')
+assert.ok(cacheSurface.includes('disabled={rebuildDisabled}'), 'the rebuild action disables while scheduling or another cache job is active')
+assert.ok(cacheSurface.includes('data-cut-cache-job-kind') && cacheSurface.includes("kind: 'rebuild'"), 'rebuild work uses the existing cancellable jobs status path')
+assert.match(cacheSurface, /result\.status === 'already_queued'[\s\S]*already queued/, 'an already-queued rebuild has a distinct, count-bearing UI summary')
+assert.match(cacheSurface, /item\{[^\n]+\? ' needs' : 's need'\} attention/, 'novice-facing attention copy keeps singular and plural grammar correct')
+assert.ok(!cacheSurface.includes('refused.'), 'novice-facing rebuild copy never exposes the internal refusal term')
+assert.ok(surface.includes('projectHealth?.complete') && surface.includes("asset.proxy === 'missing'") && surface.includes("asset.filmstrip === 'not_recorded'"), 'the complete revision-bound Health aggregate selects only missing or unrecorded cache assets')
+assert.ok(cacheSurface.includes('rebuildAssetIds?.slice(0, 64)') && cacheSurface.includes("{ asset_ids: rebuildBatch }"), 'the one-click rebuild submits a deterministic bounded batch rather than an unbounded project request')
+assert.ok(cacheSurface.includes('rebuildAssetIds === null') && cacheSurface.includes('Finish the Health & Recovery check'), 'rebuild stays disabled until media inventory is complete and available')
+assert.ok(cacheSurface.includes('more item') && cacheSurface.includes('after this batch completes'), 'a project with more than one bounded batch is told how to continue without exposing ids')
+assert.ok(cacheSurface.includes("record.outcome === 'cancelled'"), 'a cancellation outcome is terminal even when the durable job state remains failed')
+assert.ok(!/\bpath\b/i.test(cacheSurface.replace(/cache-lifecycle|CacheLifecycle|project\.cache_/g, '')), 'cache rebuild UI never displays filesystem paths')
+
+const clientSurface = readFileSync(new URL('../src/lib/client.ts', import.meta.url), 'utf8')
+const clientResultsSurface = readFileSync(new URL('../src/lib/clientResults.ts', import.meta.url), 'utf8')
+assert.ok(clientSurface.includes("'project.cache_rebuild': { asset_ids?: string[] }"), 'typed client accepts the bounded cache rebuild request')
+assert.match(clientResultsSurface, /interface ProjectCacheRebuildResult[\s\S]*status: 'queued' \| 'already_queued' \| 'not_needed'[\s\S]*scheduled_assets: number[\s\S]*scheduled_outputs: number[\s\S]*counts: ProjectCacheRebuildCounts/, 'all cache rebuild statuses carry the uniform count-bearing result contract')
 assert.ok(!surface.includes('media.relink'), 'Health & Recovery cannot relink media without an owning confirmed workflow')
 assert.ok(surface.includes('const doctorRefresh = useRef(onRefreshDoctor)'), 'ordinary App refresh callbacks are held in a ref')
 assert.ok(surface.includes('}, [projectSession, refresh])'), 'health loading does not rerun for ordinary project object updates')
@@ -470,6 +489,7 @@ assert.ok(surface.includes('attempt(doctorRefresh.current())'), 'the system Doct
 assert.ok(surface.includes('setToolchainScanFailed(true)'), 'a failed system Doctor request cannot render the shared stale report as healthy')
 
 const recordSurface = readFileSync(new URL('../src/panels/Record/index.tsx', import.meta.url), 'utf8')
-assert.ok(recordSurface.includes("system_audio: 'System audio'"), 'Record gives the passive system-audio card a human label')
+const recordUiModel = readFileSync(new URL('../src/panels/Record/recordingUiModel.ts', import.meta.url), 'utf8')
+assert.ok(recordSurface.includes('recordCardLabel(c.name)') && recordUiModel.includes("system_audio: 'System audio'"), 'Record gives the passive system-audio card a human label through its shared UI model')
 
 console.log('health-recovery.test.ts passed')

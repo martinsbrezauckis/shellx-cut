@@ -1,4 +1,5 @@
 use super::super::pause_projection::SealedLegacyProjectionRun;
+use super::super::windows_pause_evidence::RecordingInputDraft;
 use record_capture::StreamBoundary;
 use record_recovery::{
     RecordingSessionJournal, RecordingSessionJournalEntry, RecordingSessionJournalFile,
@@ -79,6 +80,7 @@ pub(crate) struct SealedRunEvidence {
     pub(super) run: SealedRun,
     pub(super) legacy_projection_run: SealedLegacyProjectionRun,
     pub(super) sealed_streams: Vec<RecordingStream>,
+    pub(super) recording_input: Option<RecordingInputDraft>,
 }
 
 impl SealedRunEvidence {
@@ -93,6 +95,7 @@ impl SealedRunEvidence {
             run,
             legacy_projection_run,
             sealed_streams,
+            recording_input: None,
         }
     }
 
@@ -100,6 +103,16 @@ impl SealedRunEvidence {
         self.generation
     }
 
+    pub(crate) fn with_recording_input(mut self, recording_input: RecordingInputDraft) -> Self {
+        self.recording_input = Some(recording_input);
+        self
+    }
+
+    pub(crate) fn recording_input(&self) -> Option<&RecordingInputDraft> {
+        self.recording_input.as_ref()
+    }
+
+    #[allow(dead_code)] // The exact run accessor is exercised by private evidence tests.
     pub(crate) fn run(&self) -> &SealedRun {
         &self.run
     }

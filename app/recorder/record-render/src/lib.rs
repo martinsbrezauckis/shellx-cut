@@ -102,6 +102,7 @@ pub(crate) fn fill_background(pm: &mut Pixmap, bg: &Background) {
     let w = pm.width() as f32;
     let h = pm.height() as f32;
     match bg {
+        Background::Transparent => pm.fill(Color::from_rgba8(0, 0, 0, 0)),
         Background::Solid { color: c } => pm.fill(color(*c)),
         Background::LinearGradient {
             from,

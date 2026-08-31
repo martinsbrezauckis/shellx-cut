@@ -17,8 +17,9 @@ interface AssetWordsProps {
   activeIdx: number
   sel: [number, number] | null
   pending: [number, number] | null
-  onWordDown: (asset: string, idx: number, ev: MouseEvent) => void
-  onWordEnter: (asset: string, idx: number) => void
+  onWordDown: (asset: string, idx: number, atMs: number, ev: MouseEvent) => void
+  onWordEnter: (asset: string, idx: number, atMs: number) => void
+  onWordActivate: (asset: string, idx: number, atMs: number) => void
   onRestore: (opId: string) => void
 }
 
@@ -39,6 +40,7 @@ export default function AssetWords({
   pending,
   onWordDown,
   onWordEnter,
+  onWordActivate,
   onRestore,
 }: AssetWordsProps) {
   const cutAt = useMemo(() => {
@@ -89,8 +91,14 @@ export default function AssetWords({
               ? 'muted (non-destructive) — select and Unmute to restore'
               : undefined
         }
-        onMouseDown={(e) => onWordDown(assetId, w.idx, e)}
-        onMouseEnter={() => onWordEnter(assetId, w.idx)}
+        {...(!removed ? { role: 'button', tabIndex: 0, 'aria-label': `Open source at ${w.start_ms} milliseconds for word ${w.word}` } : {})}
+        onMouseDown={(e) => onWordDown(assetId, w.idx, w.start_ms, e)}
+        onMouseEnter={() => onWordEnter(assetId, w.idx, w.start_ms)}
+        onKeyDown={(e) => {
+          if (removed || (e.key !== 'Enter' && e.key !== ' ')) return
+          e.preventDefault()
+          onWordActivate(assetId, w.idx, w.start_ms)
+        }}
       >
         {w.word}{' '}
       </span>

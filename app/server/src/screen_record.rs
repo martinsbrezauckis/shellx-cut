@@ -28,16 +28,23 @@
 //!
 //! Dependencies: record-core/-engine/-render/-capture, cut_core (CutError). Primary
 //! callers: dispatch.rs (`screen_record_doctor`/`_start`/`_autoedit`/`_polish`/`_export`).
-use crate::dispatch::{parse_args, snapshot};
+#[cfg(any(windows, target_os = "macos"))]
 use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
-use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 mod autoedit_args;
 mod cadence;
+mod camera_capture_sidecar;
+mod camera_public;
 mod capture_artifacts;
+// REC-CAMERA-01d is the private Windows server/project owner. It is not
+// selected by screen_record.start or any verb/UI/Doctor route until installed
+// native proof explicitly admits that separate product surface.
+#[cfg(windows)]
+#[allow(dead_code)]
+mod camera_server_owner;
 mod capture_files;
 mod capture_registry;
 mod capture_session_control;
@@ -50,6 +57,48 @@ mod export_progress;
 pub(crate) mod finalization_budget;
 pub(crate) mod microphone;
 mod monitor_start_admission;
+// The macOS-only Region start path receives a ticket only from the private
+// foreground desktop bridge. It still enters the ordinary capture reservation
+// below and has no schema/verb/UI representation.
+#[cfg(target_os = "macos")]
+mod macos_pause_capture;
+#[cfg(target_os = "macos")]
+mod macos_pause_session_start;
+#[cfg(target_os = "macos")]
+mod macos_pause_transition;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_region_bridge;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_region_start;
+// The Windows-only Region handoff proves foreground ownership and one-use
+// DisplayConfig admission before it enters the ordinary recorder reservation.
+// The live WGC backend crops Direct3D frames on-GPU and maps input against the
+// same physical subsurface; it has no schema, UI, or public capability
+// representation.
+#[cfg(windows)]
+pub(crate) mod windows_region_bridge;
+#[cfg(windows)]
+mod windows_region_parent;
+#[cfg(windows)]
+pub(crate) mod windows_region_start;
+
+/// Synchronously retain and scrub the foreground-desktop handoff before the
+/// async runtime exists. Only the host-native private bridge is eligible.
+pub(crate) fn initialize_private_foreground_region_bridge(allow_foreground_bridge: bool) {
+    #[cfg(target_os = "macos")]
+    macos_region_bridge::initialize_from_child_environment(allow_foreground_bridge);
+    #[cfg(windows)]
+    windows_region_bridge::initialize_from_child_environment(allow_foreground_bridge);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let _ = allow_foreground_bridge;
+}
+// Linux has a real portal/PipeWire capture backend, but it does not yet expose
+// a pause-safe owner for the portal-selected screen or per-run audio sidecars.
+// Keep its private admission fail-closed until those native boundaries can be
+// sealed and projected without re-entering portal consent.
+#[allow(dead_code)]
+mod linux_pause_private_admission;
+pub(crate) mod live_controls;
 mod polish;
 // REC-PAUSE-01 is a pure internal projection contract. It intentionally has no
 // verb, filesystem writer, or live-worker caller until the pause-aware capture
@@ -60,14 +109,15 @@ mod pause_projection;
 // no writer, verb, live capture, or public product surface.
 #[allow(dead_code)]
 mod pause_projection_frame_grid;
-// REC-PAUSE-01 execution remains a private seam: it is not wired to a verb,
-// native worker, or capture lifecycle until those owners can supply sealed facts.
-#[allow(dead_code)]
+// REC-PAUSE-01 execution remains internal. The bounded macOS pause bridge
+// reaches it only after the native owner seals the durable journal; Windows
+// and Linux have no public pause/resume routing.
+#[allow(dead_code)] // Linux builds retain the private Windows-only owner seam.
 mod pause_projection_executor;
-// REC-PAUSE-01 private session ownership. This is a platform-neutral command,
-// fact, journal, and projection-admission seam only; no public caller or live
-// native adapter exists in this slice.
-#[allow(dead_code)]
+// REC-PAUSE-01 private session ownership. Windows WGC and macOS
+// ScreenCaptureKit share this durable owner; only the bounded macOS bridge
+// exposes public controls after its durable transitions.
+#[allow(dead_code)] // Linux builds retain the private Windows-only owner seam.
 mod pause_session_owner;
 #[cfg(test)]
 mod pause_session_owner_tests;
@@ -77,23 +127,39 @@ mod pause_session_owner_tests;
 mod pause_worker_protocol;
 #[cfg(test)]
 mod pause_worker_protocol_tests;
-// REC-PAUSE-01 binds only logical boundaries and durable private evidence. It
-// deliberately has no live-worker caller until native capture can prove each
-// selected stream's per-run seal and restart facts.
+// The raw-capture stop path calls this muxer when `mux_raw:true`; it combines
+// the sealed video and optional mic/system tracks without inventing an edit.
+#[cfg(target_os = "macos")]
+mod macos_pause_control;
 mod raw_mux;
+mod recording_controls;
+mod recording_scenes;
 pub(crate) mod recovery;
-// REC-REGION-01 owns short-lived native-picker selections privately. It has no
-// verb, UI, native-picker caller, marker, receipt, or capture-start wiring
-// until a later slice can consume its exact monitor and crop contract.
+// Region tickets and geometry remain a private admission foundation pending
+// compiled/native foreground qualification. Do not expose a coordinate-taking
+// verb or an abstract overlay in the meantime.
 #[allow(dead_code)]
 mod region_selection;
 #[cfg(test)]
 mod region_selection_tests;
 #[allow(dead_code)]
+mod region_selection_value;
 mod run_seal_coordinator;
 #[cfg(test)]
 mod run_seal_coordinator_tests;
+// Historical private Screen-only receipt seam. Public Recording Scenes uses
+// recording_scenes + scene_projection_start instead; retain this module for
+// its focused legacy tests without letting it surface a second receipt.
+#[cfg(any(windows, target_os = "macos"))]
+mod private_pause_capture_projection;
+#[allow(dead_code)]
+mod scene_live_start;
+mod scene_projection_receipt_support;
+mod scene_projection_start;
+#[cfg(test)]
+mod scene_projection_start_tests;
 mod screenshot;
+mod start_handler;
 mod start_readiness;
 pub(crate) mod system_audio;
 pub(crate) mod system_audio_capture;
@@ -108,14 +174,25 @@ mod windows_pause_adapter_events;
 // has injected Linux ordering tests; it remains absent from every public path.
 #[allow(dead_code)]
 mod windows_pause_evidence;
+// Private immutable per-run input evidence shared by native pause owners and
+// recovery/projection seams; no verb or project schema names these sidecars.
 #[allow(dead_code)]
 mod windows_pause_evidence_artifacts;
 #[allow(dead_code)]
 mod windows_pause_evidence_contract;
 #[allow(dead_code)]
+mod windows_pause_input_sidecar;
+#[allow(dead_code)] // Linux builds retain the private Windows-only owner seam.
 mod windows_pause_session;
-// The private constructor is deliberately unwired until native qualification.
-#[allow(dead_code)]
+mod windows_pause_session_types;
+// The private Windows admission accepts only exact screen plus owned
+// microphone/system-audio streams; every other selected stream is refused.
+#[allow(dead_code)] // It is called only by the Windows-private owner.
+mod windows_pause_private_admission;
+// Windows-only internal capture owner. It uses the ordinary reservation, Stop,
+// project, and recovery path, but remains absent from public start routing.
+#[cfg(windows)]
+mod windows_pause_capture;
 #[cfg(windows)]
 mod windows_pause_session_start;
 pub(crate) use autoedit_args::for_capture as autoedit_args_for_capture;
@@ -123,6 +200,8 @@ pub(crate) use capture_artifacts::{camera_artifact_for_capture, resolve_stop_art
 pub(crate) use capture_files::{
     optional_plain_file_in_dir, plain_existing_file_under_dir, plain_existing_file_under_project,
 };
+#[cfg(test)]
+pub(crate) use capture_registry::capture_test_lock;
 pub use capture_registry::stop_capture;
 use capture_registry::{capture_sessions, reserve_capture};
 use capture_session_control::CaptureSessionControl;
@@ -130,6 +209,14 @@ pub(crate) use capture_terminal::read_failure as capture_terminal_failure;
 pub(crate) use containment::{
     capture_file, create_capture_dir, existing_capture_dir, publish_marker,
 };
+use doctor_projection::required_capture_card;
+pub(crate) use doctor_projection::RecordStartAdmission;
+#[cfg(test)]
+use doctor_projection::{apply_capture_access_failure, ready_rollup, record_card};
+pub use doctor_projection::{MonitorInfo, RecordCard, RecordDoctor};
+// Preserves the module-level public WindowInfo path from doctor_projection.
+#[allow(unused_imports)]
+pub use doctor_projection::WindowInfo;
 pub(crate) use export_audio::{for_source as export_audio_for_source, CaptureExportAudio};
 pub(crate) use export_job::{retry_screen_record_export, screen_record_export};
 #[cfg(test)]
@@ -140,10 +227,11 @@ pub(crate) use polish::{
 };
 pub(crate) use raw_mux::mux_raw_sources;
 pub(crate) use recovery::recovery_status_handler;
+pub(crate) use scene_projection_start::completed_receipt_for_stop;
 pub use screenshot::capture_screenshot_png;
+pub(crate) use start_handler::{readiness_status_handler, screen_record_start};
 
-const MIN_CAPTURE_FPS: f64 = 1.0;
-const MAX_CAPTURE_FPS: f64 = 240.0;
+const CAPTURE_FPS_RANGE: std::ops::RangeInclusive<f64> = 1.0..=240.0;
 
 /// Whether this server build configures the live recorder with a passive
 /// cursor/click/scroll source. The target-specific dependency declarations
@@ -165,7 +253,7 @@ fn validate_capture_settings(duration_ms: Option<u64>, fps: f64) -> Result<(), C
             "omit duration_ms for an open-ended recording",
         ));
     }
-    if !fps.is_finite() || !(MIN_CAPTURE_FPS..=MAX_CAPTURE_FPS).contains(&fps) {
+    if !fps.is_finite() || !CAPTURE_FPS_RANGE.contains(&fps) {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             "fps must be finite and between 1 and 240",
@@ -218,324 +306,23 @@ fn align_ffmpeg_env() {
     }
 }
 
-/// One capability card (kept field-stable for the `screen_record.doctor` result
-/// the UI/agent already consume): `name` = the record card id, `status` verbatim
-/// (`ok`|`missing`|`degraded`|`unknown`), `detail` the human hint. `unknown`
-/// means the backend is present but Cut deliberately avoided a prompt-prone proof;
-/// it is never ready/green.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecordStartAdmission {
-    Strict,
-    LinuxPortalPromptDeferred,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct RecordCard {
-    pub name: String,
-    pub status: String,
-    pub detail: String,
-    /// Server-only action provenance; clients receive explicit `start_allowed`, never card prose.
-    #[serde(skip_serializing)]
-    pub(crate) start_admission: RecordStartAdmission,
-}
-
-/// One display the user can pick as the capture target (mirrors
-/// `record_capture::MonitorInfo`, kept field-stable for the
-/// `screen_record.doctor` result the UI's monitor PICKER consumes). The opaque
-/// `id` is passed unchanged to `screen_record.start{monitor_id}` when present;
-/// the 1-based `index` remains the compatible path when it is absent.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct MonitorInfo {
-    /// Opaque native display identity when available. It has no
-    /// title/ordinal/geometry fallback.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub index: u32,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    pub primary: bool,
-}
-
-/// One application window the user can pick for the in-app WINDOW picker (mirror of
-/// `record_capture::WindowInfo`). `id` is the opaque live native identity consumed by
-/// `screen_record.start{window}`; `title` is display copy only.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct WindowInfo {
-    pub id: String,
-    pub title: String,
-    pub app: String,
-}
-
-/// The doctor result: every capability card plus a strict `ready` health rollup and
-/// action-specific `start_allowed` admission. The latter can be true only for the
-/// user-initiated Linux portal picker while `ready` remains false/unknown.
-///
-/// `ready` is true iff the
-/// three capabilities a recording NEEDS (`ffmpeg`, `screen_capture`, `input_hook`)
-/// are all `ok`. Optional cards (`system_audio`, `webcam`, …) don't gate `ready`.
-///
-/// `monitors` lists the displays the user can pick from for the in-app monitor
-/// PICKER. It is populated on Windows and macOS, and empty on Linux because the
-/// XDG portal owns source selection. The UI shows a `<select>` only when there
-/// are at least two entries.
-#[derive(Debug, Clone, Serialize)]
-pub struct RecordDoctor {
-    pub cards: Vec<RecordCard>,
-    pub ready: bool,
-    pub start_allowed: bool,
-    pub monitors: Vec<MonitorInfo>,
-    /// Application windows for the in-app WINDOW picker (record one app, not the whole
-    /// screen). Populated on Windows and macOS; empty on Linux/headless. The UI
-    /// offers a window option per entry.
-    pub windows: Vec<WindowInfo>,
-}
-
-fn required_capture_card(cards: &[RecordCard], name: &str) -> bool {
-    matches!(name, "ffmpeg" | "screen_capture" | "input_hook")
-        || (matches!(name, "gstreamer" | "wayland_input")
-            && cards.iter().any(|card| card.name == name))
-}
-
-/// `ready` rollup from a card list. Linux emits additional required cards for
-/// its GStreamer encode path and session-specific input hook.
-fn ready_rollup(cards: &[RecordCard]) -> bool {
-    [
-        "ffmpeg",
-        "screen_capture",
-        "input_hook",
-        "gstreamer",
-        "wayland_input",
-    ]
-    .into_iter()
-    .filter(|name| required_capture_card(cards, name))
-    .all(|name| {
-        cards
-            .iter()
-            .any(|card| card.name == name && card.status == "ok")
-    })
-}
-
-fn apply_capture_access_failure(cards: &mut [RecordCard]) {
-    let Some(card) = cards
-        .iter_mut()
-        .find(|card| card.name == "screen_capture" && card.status == "ok")
-    else {
-        return;
-    };
-    card.status = "degraded".into();
-    card.detail = "Screen capture permission is unavailable — allow ShellX Cut in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS), then quit and reopen the app".into();
-}
-
-/// In-process capability cards (`record_capture::doctor()`). Honestly reports what
-/// this build compiled + what the runtime environment proves. A native backend is
-/// `ok` only after it delivers a discarded frame to Cut; `unknown` is not ready.
+/// In-process capability cards (`record_capture::doctor()`). Honestly reports
+/// what this build compiled plus what the runtime proves.
 pub fn doctor() -> RecordDoctor {
-    align_ffmpeg_env();
-    let mut cards: Vec<RecordCard> = record_capture::doctor()
-        .into_iter()
-        .map(record_card)
-        .collect();
-    // Preserve ScreenCaptureKit/TCC enumeration failures. The old Vec-only API
-    // collapsed permission denial to an empty picker while leaving ready=true.
-    let monitor_probe = record_capture::list_monitors_checked();
-    if monitor_probe.is_err() {
-        apply_capture_access_failure(&mut cards);
-    }
-    let ready = ready_rollup(&cards);
-    let start_allowed = start_readiness::start_allowed(&cards);
-    // Enumerate displays for the in-app picker. Linux deliberately returns an
-    // empty successful result because its portal owns source selection.
-    let monitors = doctor_projection::monitors(monitor_probe.unwrap_or_default());
-    // Enumerate application windows for the in-app picker (Windows/macOS; empty
-    // on Linux). Mirror record_capture::WindowInfo 1:1.
-    let windows = record_capture::list_windows()
-        .into_iter()
-        .map(|w| WindowInfo {
-            id: w.id,
-            title: w.title,
-            app: w.app,
-        })
-        .collect();
-    RecordDoctor {
-        cards,
-        ready,
-        start_allowed,
-        monitors,
-        windows,
-    }
-}
-
-fn record_card(c: record_capture::Card) -> RecordCard {
-    let start_admission = if record_capture::is_linux_portal_prompt_deferred(&c.status, &c.detail) {
-        RecordStartAdmission::LinuxPortalPromptDeferred
-    } else {
-        RecordStartAdmission::Strict
-    };
-    RecordCard {
-        name: c.id,
-        status: c.status,
-        detail: c.detail,
-        start_admission,
-    }
+    doctor_projection::doctor()
 }
 
 pub(crate) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutError> {
-    #[derive(serde::Deserialize, Default)]
-    struct Args {
-        // Warm is an explicit Test, audio off→on, or Start action only. Doctor
-        // enumeration itself must never open a microphone stream.
-        #[serde(default)]
-        warm_mic: bool,
-    }
-    let a: Args = parse_args(args)?;
-    let d = doctor();
-    let mic_warm = if a.warm_mic {
-        // cpal may enter an unbounded native-driver call on Windows. Keep that
-        // blocking work off the async request runtime, and return an honest
-        // bounded result even if the driver ignores the low-level stop flag.
-        let task = tokio::task::spawn_blocking(microphone::warm_projection);
-        Some(
-            match tokio::time::timeout(std::time::Duration::from_secs(4), task).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(error)) => json!({
-                    "live": false,
-                    "supported": true,
-                    "error": format!("microphone warm-up worker failed: {error}"),
-                }),
-                Err(_) => json!({
-                    "live": false,
-                    "supported": true,
-                    "timed_out": true,
-                    "error": "microphone warm-up exceeded 4 seconds",
-                }),
-            },
-        )
-    } else {
-        None
-    };
-    let microphone = microphone::doctor_projection();
-    Ok(VerbResult::ok(json!({
-        "cards": d.cards,
-        "ready": d.ready,
-        "start_allowed": d.start_allowed,
-        "monitors": d.monitors,
-        "windows": d.windows,
-        "mic_warm": mic_warm,
-        "microphones": microphone.microphones,
-        "microphone_selection": microphone.microphone_selection,
-    })))
+    doctor_projection::screen_record_doctor(args).await
 }
 
-/// screen_record.start{duration_ms?, fps?, audio?, system_audio?, studio?,
-/// keys?, monitor?, monitor_id?, window?, rationale?} —
-/// kick off a live, duration-bounded or open-ended capture in the background. `window`
-/// accepts only an opaque id from the latest `screen_record.doctor.windows` enumeration;
-/// titles are display-only, and a vanished identity fails instead of falling back.
-/// `monitor_id` likewise accepts only a current exact Doctor identity, and is
-/// revalidated by the native backend immediately before capture.
-pub(crate) async fn screen_record_start(
-    state: &AppState,
-    args: Value,
-) -> Result<VerbResult, CutError> {
-    #[derive(serde::Deserialize)]
-    #[allow(dead_code)] // `rationale` is operator metadata only (capture is not an op).
-    struct Args {
-        duration_ms: Option<u64>,
-        fps: Option<f64>,
-        #[serde(default)]
-        audio: bool,
-        #[serde(default)]
-        system_audio: bool,
-        studio: Option<Value>,
-        #[serde(default)]
-        keys: bool,
-        monitor: Option<u32>,
-        monitor_id: Option<String>,
-        window: Option<String>,
-        rationale: Option<String>,
-    }
-    let a: Args = parse_args(args)?;
-    let duration_ms: Option<u64> = a.duration_ms;
-    let fps = a.fps.unwrap_or(30.0);
-    validate_capture_settings(duration_ms, fps)?;
-    let cadence = cadence::from_server_fps(fps)?;
-    let (_project, _edl, dir, _at) = snapshot(state).await?;
+/// Voiceover shares the admitted native capture build/readiness model with the
+/// Record workspace. This deliberately does not warm or open a microphone:
+/// actual input readiness starts only after an authenticated voiceover request
+/// reserves its fixed private source.
+pub(crate) fn ensure_voiceover_ready() -> Result<(), CutError> {
     let recorder_doctor = doctor();
-    start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
-    let monitor_target = monitor_start_admission::admit(
-        a.monitor,
-        a.monitor_id.as_deref(),
-        a.window.is_some(),
-        &recorder_doctor.monitors,
-    )?;
-    // `audio:false` retains its historical behavior and never reads this
-    // preference. A missing selected microphone refuses before any worker starts.
-    let microphone_source = if a.audio {
-        microphone::source_for_start()?
-    } else {
-        record_capture::MicrophoneSource::SystemDefault
-    };
-    let capture_id = new_capture_id();
-    windows_path::ensure_pre_marker_path(&dir, &capture_id)?;
-    let recovery_scan = recovery::scan_recovery_for_project(&dir)?;
-    let out_dir = create_capture_dir(&dir, &capture_id)?;
-    recovery::begin(&out_dir, &capture_id)?;
-    let project_path = capture_file(&dir, &capture_id, "project.json")?;
-    let pid = std::process::id();
-    let marker_body = json!({
-        "pid": pid,
-        "duration_ms": duration_ms,
-        "open_ended": duration_ms.is_none(),
-        "fps": fps,
-        "cadence": cadence,
-        "audio": a.audio,
-        "system_audio": a.system_audio,
-        "studio": a.studio,
-        "keys": a.keys,
-    });
-    publish_marker(
-        &dir,
-        &capture_id,
-        &serde_json::to_vec_pretty(&marker_body).unwrap_or_default(),
-    )?;
-
-    let record_log = out_dir.join("record.log");
-    if let Err(error) = start_capture(
-        capture_id.clone(),
-        duration_ms,
-        fps,
-        a.audio,
-        microphone_source,
-        a.system_audio,
-        a.keys,
-        monitor_target.legacy_index,
-        monitor_target.exact_id,
-        a.window,
-        dir.clone(),
-        out_dir.clone(),
-        project_path.clone(),
-        record_log,
-    ) {
-        let _ = std::fs::remove_dir_all(&out_dir);
-        return Err(error);
-    }
-
-    Ok(VerbResult::ok(json!({
-        "capture_id": capture_id,
-        "out_dir": out_dir,
-        "status": "recording",
-        "duration_ms": duration_ms,
-        "open_ended": duration_ms.is_none(),
-        "cadence": cadence,
-        "studio_events": crate::screen_record_studio::studio_events_path(&out_dir),
-        "recovery_scan": { "recovered": recovery_scan.recovered, "deferred": recovery_scan.deferred, "failed_closed": recovery_scan.failed_closed },
-        "note": if duration_ms.is_none() {
-            "OPEN-ENDED capture: runs until screen_record.stop. The first capture pops a one-time XDG ScreenCast consent dialog on the desktop"
-        } else {
-            "capture runs up to duration_ms (or until screen_record.stop). The first capture pops a one-time XDG ScreenCast consent dialog on the desktop"
-        },
-    })))
+    start_readiness::ensure_start_ready(&recorder_doctor.cards)
 }
 
 /// Resolve a `<cutproj>/cache/screen_record/` path, creating the dir.
@@ -579,11 +366,13 @@ fn strip_verbatim_prefix(p: &Path) -> PathBuf {
     }
 }
 
+#[cfg(any(windows, target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
 pub fn start_capture(
     capture_id: String,
     duration_ms: Option<u64>,
     fps: f64,
+    quality: Option<record_core::CaptureQualityRequest>,
     audio: bool,
     microphone_source: record_capture::MicrophoneSource,
     system_audio: bool,
@@ -591,6 +380,55 @@ pub fn start_capture(
     monitor: Option<u32>,
     monitor_id: Option<String>,
     window: Option<String>,
+    region: Option<record_capture::CaptureRegion>,
+    camera_id: Option<String>,
+    project_dir: PathBuf,
+    out_dir: PathBuf,
+    project_path: PathBuf,
+    log_path: PathBuf,
+) -> Result<(), CutError> {
+    start_capture_with_recording_scenes(
+        capture_id,
+        duration_ms,
+        fps,
+        quality,
+        audio,
+        microphone_source,
+        system_audio,
+        keys,
+        monitor,
+        monitor_id,
+        window,
+        region,
+        camera_id,
+        None,
+        false,
+        project_dir,
+        out_dir,
+        project_path,
+        log_path,
+    )
+}
+
+/// Ordinary `screen_record.start` supplies an accepted frozen public scene
+/// snapshot here. Private region/pause callers deliberately pass `None`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_capture_with_recording_scenes(
+    capture_id: String,
+    duration_ms: Option<u64>,
+    fps: f64,
+    quality: Option<record_core::CaptureQualityRequest>,
+    audio: bool,
+    microphone_source: record_capture::MicrophoneSource,
+    system_audio: bool,
+    keys: bool,
+    monitor: Option<u32>,
+    monitor_id: Option<String>,
+    window: Option<String>,
+    region: Option<record_capture::CaptureRegion>,
+    camera_id: Option<String>,
+    recording_scene_snapshot: Option<record_core::AcceptedStartSnapshot>,
+    recording_scene_camera_admitted: bool,
     project_dir: PathBuf,
     out_dir: PathBuf,
     project_path: PathBuf,
@@ -600,6 +438,7 @@ pub fn start_capture(
         capture_id,
         duration_ms,
         fps,
+        quality,
         audio,
         microphone_source,
         system_audio,
@@ -607,10 +446,15 @@ pub fn start_capture(
         monitor,
         monitor_id,
         window,
+        region,
+        camera_id,
+        recording_scene_snapshot,
+        recording_scene_camera_admitted,
         project_dir,
         out_dir,
         project_path,
         log_path,
+        configured_passive_input_capture(),
         || {
             record_capture::live_capture().ok_or_else(|| {
                 record_core::RecordError::new(
@@ -628,6 +472,7 @@ fn start_capture_with_backend<F>(
     capture_id: String,
     duration_ms: Option<u64>,
     fps: f64,
+    quality: Option<record_core::CaptureQualityRequest>,
     audio: bool,
     microphone_source: record_capture::MicrophoneSource,
     system_audio: bool,
@@ -635,10 +480,15 @@ fn start_capture_with_backend<F>(
     monitor: Option<u32>,
     monitor_id: Option<String>,
     window: Option<String>,
+    region: Option<record_capture::CaptureRegion>,
+    camera_id: Option<String>,
+    recording_scene_snapshot: Option<record_core::AcceptedStartSnapshot>,
+    recording_scene_camera_admitted: bool,
     project_dir: PathBuf,
     out_dir: PathBuf,
     project_path: PathBuf,
     log_path: PathBuf,
+    passive_input_capture_active: bool,
     backend: F,
 ) -> Result<(), CutError>
 where
@@ -647,26 +497,50 @@ where
     align_ffmpeg_env();
     validate_capture_settings(duration_ms, fps)?;
     let capture_cadence = cadence::from_server_fps(fps)?;
-    // Normalize the `\\?\` verbatim prefix off the capture dir BEFORE deriving
-    // any path. On Windows the caller canonicalizes the project dir → verbatim path;
-    // the windows-capture backend + ffmpeg reject it (os error 123 — "filename,
-    // directory name, or volume label syntax is incorrect"), so Windows recording
-    // produced only a record.log and no video until this strip. `source.mp4` and
-    // `system.wav` are both derived from `out_dir`, so one strip fixes both.
+    // Normalize the `\\?\` verbatim prefix off every runtime capture path before
+    // constructing the scene owner or entering a native backend. On Windows the
+    // caller canonicalizes these paths, while windows-capture and ffmpeg reject the
+    // verbatim spelling (os error 123). Keeping only `out_dir` plain made the same
+    // capture directory compare unequal to the verbatim project-owned path during
+    // Recording Scenes receipt publication.
+    let project_dir = strip_verbatim_prefix(&project_dir);
     let out_dir = strip_verbatim_prefix(&out_dir);
+    let project_path = strip_verbatim_prefix(&project_path);
+    let log_path = strip_verbatim_prefix(&log_path);
     windows_path::ensure_wgc_checkpoint_path_supported(&out_dir)?;
-    let control = CaptureSessionControl::new(
-        duration_ms,
-        audio,
-        system_audio,
-        configured_passive_input_capture(),
-    );
+    let public_recording_scenes = recording_scene_snapshot.is_some();
+    let control = match recording_scene_snapshot {
+        Some(snapshot) => CaptureSessionControl::new_recording_scenes_live(
+            duration_ms,
+            audio,
+            system_audio,
+            passive_input_capture_active,
+            &project_dir,
+            &capture_id,
+            snapshot,
+            recording_scene_camera_admitted,
+        )
+        .map_err(|error| {
+            CutError::new(
+                error_codes::IO,
+                "could not create durable recording scene journal",
+                error.to_string(),
+            )
+        })?,
+        None => CaptureSessionControl::new(
+            duration_ms,
+            audio,
+            system_audio,
+            passive_input_capture_active,
+        ),
+    };
     let clock = record_capture::CaptureClock::new();
     let cfg = record_capture::CaptureConfig {
         // Pass `None` straight through for OPEN-ENDED ("record until I stop").
         // The backend treats None as "run until the external stop flag is set".
         duration_ms,
         fps,
+        quality,
         capture_cursor: false, // hide the OS cursor; polish re-renders a synthetic one
         monitor,
         // When set, this exact opaque Doctor identity is authoritative over the
@@ -674,6 +548,7 @@ where
         // substituting a display if it disappeared.
         monitor_id,
         window, // exact opaque app-window id from Doctor (None = whole screen)
+        region,
         audio,
         microphone_source,
         // On macOS the SCK backend captures desktop/system audio inside the same
@@ -688,11 +563,12 @@ where
             interval_ms: recovery::CHECKPOINT_INTERVAL_MS,
         }),
         clock: Some(clock.clone()),
+        readiness: Some(control.readiness()),
     };
     let system_audio_lease = system_audio_capture::reserve(system_audio)?;
     let reservation = reserve_capture(capture_id.clone(), control.clone())?;
     if let Err(error) = control.observe_backend_start(clock) {
-        control.terminalize();
+        let _ = control.terminalize();
         return Err(CutError::new(
             error_codes::IO,
             "could not observe screen-record backend start",
@@ -706,55 +582,119 @@ where
             let _reservation = reservation;
             let _terminal_guard = control_for_thread.terminal_guard();
             let _system_audio_lease = system_audio_lease;
-            // Linux/Windows capture system audio beside the screen backend and
-            // join it before completion; macOS owns its tap inside native capture.
-            let system_audio_worker = if system_audio && !cfg!(target_os = "macos") {
-                let sys_out = out_dir.join("system.wav");
-                let sys_log = log_path.clone();
-                let sys_stop = control_for_thread.stop_signal();
-                let clock = cfg.clock.clone();
-                std::thread::Builder::new()
-                    .name("cut-system-audio".into())
-                    .spawn(move || {
-                        let Some(capture_started) = clock
-                            .as_ref()
-                            .and_then(|clock| clock.wait_started(&sys_stop))
-                        else {
-                            return;
-                        };
-                        if let Err(e) = system_audio::capture_system_audio_artifact(
-                            &sys_out,
-                            duration_ms,
-                            sys_stop,
-                            capture_started,
-                        ) {
-                            if let Ok(mut f) = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&sys_log)
-                            {
-                                use std::io::Write;
-                                let _ = writeln!(f, "system-audio capture skipped: {e}");
-                            }
-                        }
-                    })
-                    .ok()
+            let result: Result<(), record_core::RecordError> = if !control_for_thread
+                .claim_native_launch()
+            {
+                // `screen_record.stop` linearized before this queued worker
+                // reached its native handoff. Do not open a portal/WGC/SCK
+                // session or start input/audio sidecars after that terminal
+                // request; publish the usual typed terminal evidence instead.
+                Err(record_core::RecordError::new(
+                    record_core::error_codes::CAPTURE,
+                    "screen capture stopped before native start",
+                    "screen_record.stop won before the recorder opened its native capture backend",
+                )
+                .with_action("start a new recording when you are ready to capture"))
             } else {
-                None
-            };
-            // Resolve the backend INSIDE the thread (the trait object is not moved across
-            // threads; only this factory crosses the spawn boundary).
-            let captured = (|| {
-                let cap = backend()?;
-                cap.capture(&cfg, control_for_thread.stop_signal())
-            })();
-            // A natural deadline and a backend error both stop the private
-            // lifecycle before they wake sidecars for finalization.
-            control_for_thread.terminalize();
-            let result: Result<(), record_core::RecordError> =
+                let camera_sidecar = camera_capture_sidecar::CameraCaptureSidecar::start(
+                    camera_id,
+                    &capture_id,
+                    &out_dir,
+                    cfg.clock.clone(),
+                    control_for_thread.stop_signal(),
+                );
+                match camera_sidecar {
+                    Err(error) => Err(error),
+                    Ok(camera_sidecar) => {
+                // Linux/Windows capture system audio beside the screen backend and
+                // join it before completion; macOS owns its tap inside native capture.
+                let system_audio_worker = if system_audio && !cfg!(target_os = "macos") {
+                    let sys_out = out_dir.join("system.wav");
+                    let sys_log = log_path.clone();
+                    let sys_stop = control_for_thread.stop_signal();
+                    let clock = cfg.clock.clone();
+                    std::thread::Builder::new()
+                        .name("cut-system-audio".into())
+                        .spawn(move || {
+                            let Some(capture_started) = clock
+                                .as_ref()
+                                .and_then(|clock| clock.wait_started(&sys_stop))
+                            else {
+                                return;
+                            };
+                            if let Err(e) = system_audio::capture_system_audio_artifact(
+                                &sys_out,
+                                duration_ms,
+                                sys_stop,
+                                capture_started,
+                            ) {
+                                if let Ok(mut f) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(&sys_log)
+                                {
+                                    use std::io::Write;
+                                    let _ = writeln!(f, "system-audio capture skipped: {e}");
+                                }
+                            }
+                        })
+                        .ok()
+                } else {
+                    None
+                };
+                // Resolve the backend INSIDE the thread (the trait object is not moved across
+                // threads; only this factory crosses the spawn boundary). Stop can
+                // still race after the launch claim, so check it once more before
+                // entering native code; once native code is entered, all existing
+                // platform backends share this same stop signal.
+                let captured = (|| {
+                    let cap = backend()?;
+                    if control_for_thread.stop_requested() {
+                        return Err(record_core::RecordError::new(
+                            record_core::error_codes::CAPTURE,
+                            "screen capture stopped before native start",
+                            "screen_record.stop arrived while the recorder was preparing its native capture backend",
+                        )
+                        .with_action("start a new recording when you are ready to capture"));
+                    }
+                    let prepublished_project = cap.prepublished_project();
+                    admit_public_scene_capture_owner(
+                        public_recording_scenes,
+                        prepublished_project,
+                    )?;
+                    cap.capture(&cfg, control_for_thread.stop_signal())
+                        .map(|output| (output, prepublished_project))
+                })();
+                // A natural deadline and a backend error both stop the private
+                // lifecycle before they wake sidecars for finalization.
+                let scene_terminal = match captured.as_ref() {
+                    Ok((output, _)) => control_for_thread
+                        .terminalize_after_capture(output.events.duration_ms),
+                    Err(_) => control_for_thread.terminalize(),
+                }
+                .map_err(|error| {
+                    record_core::RecordError::new(
+                        record_core::error_codes::IO,
+                        "seal private Screen-only scene receipt",
+                        error.to_string(),
+                    )
+                });
+                // Join even when screen capture failed: the camera owner must
+                // close its native writer before this exact capture can publish
+                // terminal evidence or release its reservation.
+                let camera_artifact = camera_capture_sidecar::CameraCaptureSidecar::finish_for_screen(
+                    camera_sidecar,
+                    captured.is_ok(),
+                );
                 system_audio_capture::finalize_worker(system_audio_worker, &log_path)
                     .and(captured)
-                    .and_then(|out| {
+                    .and_then(|(mut out, prepublished_project)| {
+                        scene_terminal?;
+                        out.camera_artifact = camera_artifact?;
+                        out.webcam_video = out
+                            .camera_artifact
+                            .as_ref()
+                            .map(|artifact| artifact.video.clone());
                         // Current macOS capture writes Core Audio system.wav beside a
                         // video-only source. Keep the compatibility normalizer for an
                         // older source that still carries embedded SCK audio.
@@ -771,13 +711,36 @@ where
                                 e.to_string(),
                             )
                         })?;
+                        // A public Recording Scenes receipt commits the exact
+                        // source and serialized project bytes first. Stop only
+                        // polls project.json, so it cannot observe a finalized
+                        // project before its scene replay is durable.
+                        scene_projection_start::publish_completed_projection(
+                            &control_for_thread,
+                            &project_dir,
+                            &capture_id,
+                            &out_dir,
+                            &project_path,
+                            &project,
+                            &bytes,
+                        )?;
                         // The final project projection is published before the manifest's
-                        // authoritative Complete receipt. If cutd dies in this tiny window,
-                        // recovery::scan recognizes this sealed local projection and appends
-                        // the receipt instead of falsely publishing recovered.mp4.
-                        record_recovery::replace_synced(&project_path, &bytes).map_err(|e| {
-                            record_core::RecordError::new("io", "write project.json", e.to_string())
-                        })?;
+                        // authoritative Complete receipt. A private pause owner may already
+                        // have atomically published the same checked projection alongside its
+                        // source/events receipt; never replace that no-replace evidence.
+                        if prepublished_project {
+                            verify_prepublished_project(&project_path, &bytes)?;
+                        } else {
+                            record_recovery::replace_synced(&project_path, &bytes).map_err(
+                                |e| {
+                                    record_core::RecordError::new(
+                                        "io",
+                                        "write project.json",
+                                        e.to_string(),
+                                    )
+                                },
+                            )?;
+                        }
                         recovery::complete(&out_dir, Path::new(&project.source_video)).map_err(
                             |e| {
                                 record_core::RecordError::new(
@@ -788,7 +751,14 @@ where
                             },
                         )?;
                         Ok(())
-                    });
+                    })
+                    }
+                }
+            };
+            // Covers a Stop-before-launch rejection as well as the ordinary
+            // native completion path. The operation is idempotent and preserves
+            // the one terminal state before recovery/error publication.
+            let _ = control_for_thread.terminalize();
             if let Err(e) = result {
                 if let Err(terminal_error) =
                     capture_terminal::publish_failure(&project_dir, &capture_id, &e)
@@ -812,11 +782,51 @@ where
             }
         });
     if let Err(error) = worker {
-        control.terminalize();
+        let _ = control.terminalize();
         return Err(CutError::new(
             error_codes::IO,
             "could not start the screen-record worker",
             error.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// A prepublished owner makes `project.json` visible inside its native capture
+/// transaction. Public scenes instead seal a create-only receipt first, so it
+/// is refused before that owner can enter `Capture::capture` until it can join
+/// both publications atomically.
+fn admit_public_scene_capture_owner(
+    public_recording_scenes: bool,
+    prepublished_project: bool,
+) -> record_core::Result<()> {
+    if public_recording_scenes && prepublished_project {
+        return Err(record_core::RecordError::new(
+            record_core::error_codes::CAPTURE,
+            "Recording Scenes cannot start on a prepublished capture owner",
+            "this capture owner would make project.json visible before the required Recording Scenes receipt",
+        )
+        .with_action("start an ordinary screen capture or use a capture owner that atomically publishes the public scene receipt"));
+    }
+    Ok(())
+}
+
+fn verify_prepublished_project(project_path: &Path, expected: &[u8]) -> record_core::Result<()> {
+    if !record_recovery::is_plain_regular_file(project_path).unwrap_or(false) {
+        return Err(record_core::RecordError::new(
+            "io",
+            "verify prepublished project.json",
+            "the private capture owner did not publish a local project projection",
+        ));
+    }
+    let actual = std::fs::read(project_path).map_err(|error| {
+        record_core::RecordError::new("io", "read prepublished project.json", error.to_string())
+    })?;
+    if actual != expected {
+        return Err(record_core::RecordError::new(
+            "io",
+            "verify prepublished project.json",
+            "the private capture projection differs from its returned recording project",
         ));
     }
     Ok(())
@@ -834,6 +844,7 @@ pub(crate) fn start_capture_with_test_backend<F>(
     monitor: Option<u32>,
     monitor_id: Option<String>,
     window: Option<String>,
+    region: Option<record_capture::CaptureRegion>,
     project_dir: PathBuf,
     out_dir: PathBuf,
     project_path: PathBuf,
@@ -847,6 +858,7 @@ where
         capture_id,
         duration_ms,
         fps,
+        None,
         audio,
         record_capture::MicrophoneSource::SystemDefault,
         system_audio,
@@ -854,10 +866,15 @@ where
         monitor,
         monitor_id,
         window,
+        region,
+        None,
+        None,
+        false,
         project_dir,
         out_dir,
         project_path,
         log_path,
+        configured_passive_input_capture(),
         backend,
     )
 }
@@ -1013,11 +1030,11 @@ pub fn capture_system_audio(out: &Path, duration_ms: u64) -> Result<(), CutError
 mod tests {
     use super::*;
 
-    /// The capture dir's `\\?\` verbatim prefix must be stripped before it
-    /// reaches the windows-capture backend / ffmpeg (which reject it with os error
-    /// 123). Plain and Unix paths pass through unchanged.
+    /// Every runtime capture path uses the same plain spelling before native
+    /// capture and Recording Scenes ownership checks. Plain and Unix paths pass
+    /// through unchanged.
     #[test]
-    fn capture_out_dir_strips_verbatim_prefix() {
+    fn capture_runtime_paths_strip_verbatim_prefix() {
         assert_eq!(
             strip_verbatim_prefix(Path::new(
                 r"\\?\C:\Example\User\Documents\ShellX Cut Projects\rec.cutproj\cache"
@@ -1238,59 +1255,6 @@ mod tests {
         assert_eq!(v["message"], "boom");
         assert_eq!(v["cause"], "bad pipe");
         assert_eq!(v["suggested_action"], "install ffmpeg");
-    }
-
-    /// A reservation owns the devices until worker cleanup. `stop_capture`
-    /// terminalizes the control before signaling it, but deliberately retains
-    /// the reservation while finalization runs.
-    #[test]
-    fn capture_registry_enforces_single_owner_until_worker_release() {
-        let id = format!("cap_test_{}", std::process::id());
-        let second_id = format!("cap_test_second_{}", std::process::id());
-        let control = CaptureSessionControl::new(None, false, false, false);
-        let reservation = reserve_capture(id.clone(), control.clone()).unwrap();
-        let conflict = reserve_capture(
-            second_id.clone(),
-            CaptureSessionControl::new(None, false, false, false),
-        )
-        .err()
-        .expect("a second capture must be rejected");
-        assert_eq!(conflict.code, error_codes::CONFLICT);
-
-        // The backend has not been told to stop yet.
-        assert!(!control.status().stop_requested, "stop signal starts unset");
-
-        // Stop terminalizes first but keeps ownership until every worker has finished.
-        assert!(
-            stop_capture(&id),
-            "stop_capture found the registered control"
-        );
-        assert!(
-            control.status().stop_requested,
-            "the signal the backend polls is now set — its loop will finalize"
-        );
-        assert_eq!(
-            control.status().phase,
-            record_capture::SessionPhase::Stopped,
-            "stop is terminal before the physical signal"
-        );
-
-        assert!(
-            stop_capture(&id),
-            "repeat stop remains idempotent while finalization owns the devices"
-        );
-        assert!(
-            capture_sessions().lock().unwrap().contains_key(&id),
-            "registry retains the capture until worker cleanup"
-        );
-        drop(reservation);
-        assert!(!stop_capture(&id), "worker release removes the reservation");
-        let second = reserve_capture(
-            second_id,
-            CaptureSessionControl::new(None, false, false, false),
-        )
-        .unwrap();
-        drop(second);
     }
 
     /// cutd-RESTART fallback: stopping a capture id that was never registered (or

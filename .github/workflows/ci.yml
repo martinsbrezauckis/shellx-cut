@@ -12,6 +12,9 @@
 #
 # `fail-fast: false` keeps every platform reporting when one breaks — whether a
 # failure is universal or platform-specific is the first thing worth knowing.
+# Each job also marks independent checks `continue-on-error` and ends with one
+# collected verdict. Test runners use their own no-bail mode, so one failure
+# does not hide later failures on the same platform.
 
 name: CI
 
@@ -35,51 +38,106 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install Rust stable for exact public MCP coverage
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - name: Install Linux build deps for exact cutd
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y \
+            build-essential pkg-config clang libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libdbus-1-dev \
+            libx11-dev libxi-dev libxtst-dev
+
       - name: UI install
+        id: ui_install
+        continue-on-error: true
         run: npm ci --ignore-scripts
         working-directory: ui
 
       - name: UI build
+        id: ui_build
+        continue-on-error: true
         run: npm run build
         working-directory: ui
 
       - name: Install Playwright Chromium
+        id: playwright_install
+        continue-on-error: true
         # package-command-contract runs the real layout verifier. A fresh
         # runner has the Playwright package after npm ci, but no browser binary.
         run: npx playwright install --with-deps chromium
         working-directory: ui
 
       - name: UI library tests
-        run: npm run test:lib
+        id: ui_library_tests
+        continue-on-error: true
+        run: npm run test:lib -- --no-bail
         working-directory: ui
 
       - name: Install cargo-audit
+        id: cargo_audit_install
+        continue-on-error: true
         # Preinstalled on the ubuntu-22.04 runner image but absent from the
         # leaner ubuntu-24.04 image; the dependency audit shells out to it.
         uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
         with:
           tool: cargo-audit
 
-      - name: Public release-check tests
-        run: >
-          node --test
-          scripts/public-tests/cross-host-media.test.mjs
-          scripts/public-tests/dependency-audit.test.mjs
-          scripts/public-tests/hq-media-gate.test.mjs
-          scripts/public-tests/safe-data.test.mjs
-          scripts/public-tests/third-party-notice.test.mjs
+      - name: Build exact cutd for public MCP coverage
+        id: exact_cutd_build
+        continue-on-error: true
+        run: cargo build --manifest-path app/Cargo.toml -p server --bin cutd
+
+      - name: Public release-check inventory and tests
+        id: public_release_tests
+        continue-on-error: true
+        env:
+          # Agent Chat containment must exercise this checkout's binary, never
+          # cold-compile inside its bounded MCP exchange timer.
+          CUTD_BIN: ${{ github.workspace }}/app/target/debug/cutd
+        run: node scripts/check-public-test-inventory.mjs --ci --run --no-bail
 
       - name: Dependency audit
+        id: dependency_audit
+        continue-on-error: true
         run: node scripts/release/dependency-audit.mjs
 
       - name: Generated verb aggregate is current
+        id: generated_verbs
+        continue-on-error: true
         run: node scripts/generate-verbs.mjs --check
 
       - name: Generated verb behavior is current
+        id: generated_verb_contract
+        continue-on-error: true
         run: node scripts/generate-verb-contract.mjs --check
 
       - name: Verb-argument sync check
+        id: verb_argument_sync
+        continue-on-error: true
         run: bash scripts/verbargs-sync.sh
+
+      - name: Fail after all Node/UI checks are collected
+        if: always()
+        env:
+          SHELLX_CI_COLLECTED_RESULTS: >-
+            {"schema":"shellx-cut/github-collected-checks@1","checks":[
+              {"name":"UI install","outcome":"${{ steps.ui_install.outcome }}"},
+              {"name":"UI build","outcome":"${{ steps.ui_build.outcome }}"},
+              {"name":"Playwright install","outcome":"${{ steps.playwright_install.outcome }}"},
+              {"name":"UI library tests","outcome":"${{ steps.ui_library_tests.outcome }}"},
+              {"name":"cargo-audit install","outcome":"${{ steps.cargo_audit_install.outcome }}"},
+              {"name":"exact cutd build","outcome":"${{ steps.exact_cutd_build.outcome }}"},
+              {"name":"public release tests","outcome":"${{ steps.public_release_tests.outcome }}"},
+              {"name":"dependency audit","outcome":"${{ steps.dependency_audit.outcome }}"},
+              {"name":"generated verbs","outcome":"${{ steps.generated_verbs.outcome }}"},
+              {"name":"generated verb contract","outcome":"${{ steps.generated_verb_contract.outcome }}"},
+              {"name":"verb argument sync","outcome":"${{ steps.verb_argument_sync.outcome }}"}
+            ]}
+        run: node scripts/release/collect-github-check-results.mjs
 
   rust:
     name: Rust (${{ matrix.platform }})
@@ -150,6 +208,8 @@ jobs:
       # is exactly how the first macOS CI run presented. Check the capability here
       # and name what is missing, so the environment is blamed where it is at fault.
       - name: Verify ffmpeg carries the filters the render path needs
+        id: ffmpeg_filters
+        continue-on-error: true
         shell: bash
         run: |
           echo "ffmpeg on PATH: $(command -v ffmpeg)"
@@ -168,11 +228,15 @@ jobs:
       # would only spend wall-clock. Clippy is NOT redundant across platforms:
       # it type-checks the cfg-gated bodies that this runner alone compiles.
       - name: cargo fmt --check
+        id: rustfmt
+        continue-on-error: true
         if: matrix.platform == 'ubuntu-24.04'
         run: cargo fmt --check
         working-directory: app
 
       - name: cargo clippy -D warnings
+        id: clippy
+        continue-on-error: true
         run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: app
 
@@ -182,15 +246,35 @@ jobs:
       # is a generated release payload, so a fresh source checkout omits it;
       # the separate smoke-build workflow rebuilds and stages that exact payload.
       - name: Prepare clean-source Tauri resources
+        id: tauri_resources
+        continue-on-error: true
         shell: bash
         run: mkdir -p ui/dist
 
       - name: Desktop shell cargo check
+        id: desktop_check
+        continue-on-error: true
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
         run: cargo check --lib
         working-directory: app/desktop/src-tauri
 
       - name: cargo test --workspace
-        run: cargo test --workspace
+        id: cargo_test
+        continue-on-error: true
+        run: cargo test --workspace --no-fail-fast
         working-directory: app
+
+      - name: Fail after all Rust checks are collected
+        if: always()
+        env:
+          SHELLX_CI_COLLECTED_RESULTS: >-
+            {"schema":"shellx-cut/github-collected-checks@1","checks":[
+              {"name":"ffmpeg filter contract","outcome":"${{ steps.ffmpeg_filters.outcome }}"},
+              {"name":"rustfmt","outcome":"${{ steps.rustfmt.outcome }}","allowSkipped":true},
+              {"name":"clippy","outcome":"${{ steps.clippy.outcome }}"},
+              {"name":"Tauri clean-source resources","outcome":"${{ steps.tauri_resources.outcome }}"},
+              {"name":"desktop shell cargo check","outcome":"${{ steps.desktop_check.outcome }}"},
+              {"name":"cargo test workspace","outcome":"${{ steps.cargo_test.outcome }}"}
+            ]}
+        run: node scripts/release/collect-github-check-results.mjs

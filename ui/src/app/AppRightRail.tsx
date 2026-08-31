@@ -39,6 +39,7 @@ interface AppRightRailProps {
   receipts: RenderReceipt[]
   selectedClipId: string | null
   playheadMs: number
+  onSeek: (atMs: number) => void
   agentChatPrefill: AgentChatPrefill | null
   onReject: (opId: string) => void
   onUndo: () => void
@@ -103,6 +104,7 @@ export default function AppRightRail({
   receipts,
   selectedClipId,
   playheadMs,
+  onSeek,
   agentChatPrefill,
   onReject,
   onUndo,
@@ -312,6 +314,7 @@ export default function AppRightRail({
                         projectRevision={projectRevision}
                         selectedClipId={selectedClipId}
                         playheadMs={playheadMs}
+                        onSeek={onSeek}
                         doctor={doctor}
                       />
                     )}

@@ -1355,6 +1355,29 @@ fn volume_kf_filter(keyframes: &[cut_core::Keyframe]) -> String {
     }
 }
 
+/// Build the clip-volume and track-gain portion of an audio chain. Static
+/// segments retain the legacy combined `gain_db` exactly; a clip-local volume
+/// keyframe curve instead receives the separately carried Track Gain after the
+/// curve, so the two independent controls compose rather than one replacing
+/// the other.
+fn audio_gain_filters(seg: &EdlSegment) -> String {
+    let has_volume_keyframes = seg
+        .keyframes
+        .iter()
+        .any(|kf| kf.param == cut_core::KfParam::Volume);
+    if has_volume_keyframes {
+        let mut filters = volume_kf_filter(&seg.keyframes);
+        if seg.track_gain_db != 0.0 {
+            write!(filters, ",volume={:.2}dB", seg.track_gain_db).unwrap();
+        }
+        filters
+    } else if seg.gain_db != 0.0 {
+        format!(",volume={:.2}dB", seg.gain_db)
+    } else {
+        String::new()
+    }
+}
+
 /// The audio MUTE-RANGE gate (edit.mute_range / transcript.mute_words) for a
 /// segment, or "" when it carries none. One `volume` expression forcing 0 over
 /// each SOURCE-time range's overlap with the segment's visible window, mapped
@@ -2698,22 +2721,10 @@ fn build_graph(
             let seg_dur = seg.timeline_out_ms - seg.timeline_in_ms;
             match (&seg.asset, seg.src_in_ms, seg.src_out_ms) {
                 (Some(asset), Some(src_in), Some(src_out)) => {
-                    // Gain (clip+track, already summed into the EDL) via the
-                    // volume filter; skipped at unity to keep graphs minimal.
-                    // Keyframed VOLUME (edit.keyframe param=volume) OVERRIDES the
-                    // static gain: a per-sample-window `volume` expression (linear
-                    // multiplier) in clip-local time `t`. Else the static gain dB.
-                    let gain = if seg
-                        .keyframes
-                        .iter()
-                        .any(|kf| kf.param == cut_core::KfParam::Volume)
-                    {
-                        volume_kf_filter(&seg.keyframes)
-                    } else if seg.gain_db != 0.0 {
-                        format!(",volume={:.2}dB", seg.gain_db)
-                    } else {
-                        String::new()
-                    };
+                    // Static gain retains the legacy clip+track EDL sum. A
+                    // keyframed clip volume is clip-local, followed by the
+                    // independent Track Gain held in the EDL.
+                    let gain = audio_gain_filters(seg);
                     // Audio fades (edit.fade): linear afade in segment time.
                     let afade = fade_suffix(seg.fade.as_ref(), seg_dur, false, false);
                     // Speed retime (edit.speed): pitch-preserved tempo change

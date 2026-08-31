@@ -145,7 +145,6 @@ impl JobManager {
 
     /// Mark a worker whose output a newer request made obsolete. Call this from
     /// the worker's own replacement path after it has stopped its subprocesses.
-    #[allow(dead_code)] // Reserved for the first replacement worker; outcome is persisted now.
     pub(crate) fn supersede(&self, job_id: &str) {
         self.terminate(
             job_id,

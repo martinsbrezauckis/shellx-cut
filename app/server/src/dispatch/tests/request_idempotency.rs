@@ -1,6 +1,6 @@
 use super::*;
 
-async fn create_project(state: &AppState, dir: &std::path::Path) -> VerbResult {
+pub(super) async fn create_project(state: &AppState, dir: &std::path::Path) -> VerbResult {
     dispatch(
         state,
         "project.create",

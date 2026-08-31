@@ -259,6 +259,26 @@ impl<'a> Compositor<'a> {
             );
         }
 
+        // Recording-scene timers reuse the plan's existing text-chip primitive.
+        // Their label is reconstructed from the sealed logical-media segments,
+        // never from `Instant`/wall time, so normal render and export replay the
+        // same value after a project reopen.
+        if let Some(label) = plan
+            .scene_timeline
+            .as_ref()
+            .and_then(|timeline| timeline.timer_label_at(t_ms).ok().flatten())
+        {
+            let px = (self.out_h as f32 * 0.038).max(15.0);
+            crate::text::draw_bottom_chip(
+                &mut out,
+                &label,
+                px,
+                self.out_h as f32 * 0.24,
+                record_core::Rgba::WHITE,
+                record_core::Rgba::new(18, 20, 28, 215),
+            );
+        }
+
         out
     }
 }
@@ -320,7 +340,12 @@ pub fn compose_frame(source: &Pixmap, plan: &EditPlan, t_ms: u64) -> Pixmap {
 mod tests {
     use super::*;
     use record_core::{
-        Anchor, Ease, EditPlan, WebcamKeyframe, WebcamOverlay, WebcamShape, ZoomKey,
+        scene_projection::{
+            EditableSceneTimeline, SceneCameraSegment, SceneFixtureDescriptor, SceneScreenSegment,
+            SceneTimerFixture, SceneTimerSegment, EDITABLE_SCENE_TIMELINE_SCHEMA,
+        },
+        Anchor, Ease, EditPlan, SceneComposition, SceneId, TimerPhase, WebcamKeyframe,
+        WebcamOverlay, WebcamShape, ZoomKey,
     };
     use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 
@@ -411,6 +436,17 @@ mod tests {
         let a = compose_frame(&src, &plan, 500);
         let b = compose_frame(&src, &plan, 500);
         assert_eq!(a.data(), b.data(), "same inputs must give identical pixels");
+    }
+
+    #[test]
+    fn transparent_background_with_no_frame_is_full_bleed() {
+        let src = solid_source(320, 180, Color::from_rgba8(40, 80, 180, 255));
+        let mut plan = EditPlan::empty(320, 180, 1_000, 30.0);
+        plan.background = record_core::Background::Transparent;
+        plan.frame.enabled = false;
+        let out = compose_frame(&src, &plan, 0);
+        assert_eq!(pixel_rgba(&out, 0, 0), [40, 80, 180, 255]);
+        assert_eq!(pixel_rgba(&out, 319, 179), [40, 80, 180, 255]);
     }
 
     #[test]
@@ -531,5 +567,54 @@ mod tests {
             !is_red(pixel_rgba(&hidden, 59, 63)),
             "hidden camera event should remove the overlay from polished frames"
         );
+    }
+
+    #[test]
+    fn sealed_scene_timer_is_rendered_from_logical_export_time() {
+        let src = solid_source(320, 180, Color::from_rgba8(40, 80, 180, 255));
+        let mut plan = EditPlan::empty(320, 180, 2_000, 30.0);
+        let screen = SceneId::parse("screen").unwrap();
+        plan.scene_timeline = Some(EditableSceneTimeline {
+            schema: EDITABLE_SCENE_TIMELINE_SCHEMA.into(),
+            logical_duration_ms: 2_000,
+            journal_sha256: "a".repeat(64),
+            screen: vec![SceneScreenSegment {
+                start_ms: 0,
+                end_ms: 2_000,
+                scene_id: screen.clone(),
+            }],
+            camera: vec![SceneCameraSegment {
+                start_ms: 0,
+                end_ms: 2_000,
+                presenter: None,
+            }],
+            timer: vec![SceneTimerSegment {
+                start_ms: 0,
+                end_ms: 2_000,
+                at_start: SceneTimerFixture::Elapsed {
+                    phase: TimerPhase::Running,
+                    elapsed_ms: 0,
+                },
+                at_end: SceneTimerFixture::Elapsed {
+                    phase: TimerPhase::Running,
+                    elapsed_ms: 2_000,
+                },
+            }],
+            terminal: SceneFixtureDescriptor {
+                active_scene_id: screen,
+                composition: SceneComposition::ScreenOnly,
+                timer: SceneTimerFixture::Elapsed {
+                    phase: TimerPhase::Ended,
+                    elapsed_ms: 2_000,
+                },
+            },
+        });
+
+        let at_half_second = compose_frame(&src, &plan, 500);
+        let at_one_and_half_seconds = compose_frame(&src, &plan, 1_500);
+        let repeat_half_second = compose_frame(&src, &plan, 500);
+
+        assert_ne!(at_half_second.data(), at_one_and_half_seconds.data());
+        assert_eq!(at_half_second.data(), repeat_half_second.data());
     }
 }

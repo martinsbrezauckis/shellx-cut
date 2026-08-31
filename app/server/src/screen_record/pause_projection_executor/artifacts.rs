@@ -50,7 +50,8 @@ where
                         invalid("source stitch plan is not backed by a sealed screen artifact")
                     })?;
                 let path = contained_artifact(capture_dir, artifact)?;
-                let metadata = std::fs::metadata(&path).map_err(source_error)?;
+                let metadata = open_read_nofollow(&path)
+                    .and_then(|file| file.metadata().map_err(source_error))?;
                 if fragment.sha256 != expected_sha256
                     || fragment.facts.media_duration_ms != expected_duration_ms
                     || metadata.len() != fragment.bytes
@@ -92,7 +93,8 @@ pub(super) fn validate_staged_source(
             "staged source duration differs from the compact sealed timeline",
         ));
     }
-    let metadata = std::fs::metadata(path).map_err(source_error)?;
+    let metadata =
+        open_read_nofollow(path).and_then(|file| file.metadata().map_err(source_error))?;
     if !is_plain_regular_file(path).map_err(source_error)? || metadata.len() == 0 {
         return Err(invalid(
             "staged source is not a non-empty local regular file",
@@ -132,7 +134,8 @@ pub(super) fn validate_frame_grid_staged_source(
             "staged source does not prove the exact qualified frame-grid policy",
         ));
     }
-    let metadata = std::fs::metadata(path).map_err(source_error)?;
+    let metadata =
+        open_read_nofollow(path).and_then(|file| file.metadata().map_err(source_error))?;
     if !is_plain_regular_file(path).map_err(source_error)? || metadata.len() == 0 {
         return Err(invalid(
             "staged source is not a non-empty local regular file",
@@ -275,6 +278,14 @@ fn open_read_nofollow(path: &Path) -> Result<File, CutError> {
             "projection file is missing, linked, or not a local regular file",
         ));
     }
+    open_checked_nofollow(path)
+}
+
+/// Every projection reader comes through this opened-handle validation. The
+/// preflight above narrows the literal leaf, while this check proves that the
+/// handle obtained after a concurrent swap is still a plain file (and not a
+/// Windows reparse point) before any bytes are hashed, copied, or decoded.
+fn open_checked_nofollow(path: &Path) -> Result<File, CutError> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -288,15 +299,32 @@ fn open_read_nofollow(path: &Path) -> Result<File, CutError> {
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options.open(path).map_err(source_error)?;
-    if is_plain_regular_file(path).map_err(source_error)?
-        && file.metadata().map_err(source_error)?.is_file()
-    {
+    let metadata = file.metadata().map_err(source_error)?;
+    if is_open_plain_regular(&metadata) {
         Ok(file)
     } else {
         Err(invalid(
             "projection file changed while opening without following links",
         ))
     }
+}
+
+fn is_open_plain_regular(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
+}
+
+#[cfg(windows)]
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 fn source_error(error: impl std::fmt::Display) -> CutError {
@@ -310,3 +338,7 @@ fn invalid(detail: impl Into<String>) -> CutError {
         detail.into(),
     )
 }
+
+#[cfg(test)]
+#[path = "artifacts_tests.rs"]
+mod tests;

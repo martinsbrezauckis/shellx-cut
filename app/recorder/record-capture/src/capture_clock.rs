@@ -31,6 +31,29 @@ impl CaptureClock {
         origin
     }
 
+    /// Return the backend-owned origin if capture has actually opened it.
+    ///
+    /// This is intentionally a non-blocking observation: terminal owners use
+    /// it to consume an already-open capture clock before they signal Stop,
+    /// so a short successful capture cannot depend on a scheduled observer
+    /// thread winning that race.
+    #[doc(hidden)]
+    pub fn started_at(&self) -> Option<Instant> {
+        let (lock, _) = &*self.state;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Measure one instant against the sole backend-owned capture origin.
+    ///
+    /// Callers that need a durable media timestamp (such as Recording Scenes)
+    /// must use this instead of retaining an independent wall-clock origin.
+    /// An instant preceding the source origin is rejected rather than clamped.
+    pub fn elapsed_at(&self, at: Instant) -> Option<Duration> {
+        at.checked_duration_since(self.started_at()?)
+    }
+
     /// Wait for the backend-owned origin without holding up a failed/stopped
     /// capture. The wait is interruptible so a permission/portal error cannot
     /// strand an audio worker.
@@ -60,7 +83,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn sidecar_waits_for_backend_owned_origin() {
@@ -79,5 +102,18 @@ mod tests {
             Some(origin)
         );
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn elapsed_at_refuses_instants_before_the_backend_owned_origin() {
+        let clock = CaptureClock::new();
+        let before = Instant::now();
+        let origin = clock.start();
+        assert_eq!(clock.elapsed_at(before), None);
+        assert_eq!(clock.elapsed_at(origin), Some(Duration::ZERO));
+        assert_eq!(
+            clock.elapsed_at(origin + Duration::from_millis(25)),
+            Some(Duration::from_millis(25))
+        );
     }
 }

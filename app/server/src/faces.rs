@@ -68,10 +68,10 @@ pub struct FaceBox {
 /// The runner's JSON output (`width`/`height` informational — boxes are fractions).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FaceResult {
-    #[allow(dead_code)]
-    pub width: u32,
-    #[allow(dead_code)]
-    pub height: u32,
+    #[serde(rename = "width")]
+    _width: u32,
+    #[serde(rename = "height")]
+    _height: u32,
     pub boxes: Vec<FaceBox>,
 }
 

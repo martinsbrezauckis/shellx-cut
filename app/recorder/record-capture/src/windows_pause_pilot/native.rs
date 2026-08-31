@@ -5,7 +5,7 @@
 //! returned lifecycle owner beside the existing private dispatch adapter and
 //! event translator.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use record_core::{Result, Settings};
@@ -18,6 +18,8 @@ use windows_capture::{
     },
 };
 
+use super::audio_run::RequiredWindowsPauseAudioFactory;
+use super::input_run::RequiredWindowsPauseInputFactory;
 use super::{
     lifecycle::spawn_owned, WindowsPausePilotProfile, WindowsPausePilotStartError,
     WindowsPausePilotThread,
@@ -77,6 +79,8 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
             h: height,
             fps: self.fps,
             path: destination.display().to_string(),
+            crop: None,
+            readiness: None,
         };
         let control = Handler::start_free_threaded(WcSettings::new(
             *monitor,
@@ -118,6 +122,7 @@ pub(super) fn start_private(
     // interval, never a short command-polling loop: each elapsed interval seals
     // and publishes an immutable WGC checkpoint before reopening.
     let rollover_interval = Duration::from_millis(checkpoint.interval_ms);
+    let audio_capture_dir = PathBuf::from(&checkpoint.manifest_dir);
     // These WGC facts use a fresh worker-local recording clock. They are not
     // yet `RunSealCoordinator`-normalized: the later durable server owner must
     // establish its session origin from the returned `Started.monotonic_at`
@@ -138,6 +143,11 @@ pub(super) fn start_private(
                 WindowsCheckpointPublisher { checkpoints },
             ))
         },
+        Box::new(RequiredWindowsPauseInputFactory),
+        Box::new(RequiredWindowsPauseAudioFactory::new(
+            audio_capture_dir,
+            crate::MicrophoneSource::SystemDefault,
+        )),
         move || u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
         move || observe_wgc_start(started_at),
         move || {

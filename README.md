@@ -10,14 +10,19 @@ checks, sampled-frame review, transcript timing, loudness, silence, and delivery
 facts. ShellX Cut makes the edit itself a verifiable object instead of treating
 AI output as an opaque final file.
 
-> **STATUS — 0.6.112 release.** The public contract is 278 verbs across 33
+<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
+> **STATUS — 0.6.113 release line.** This is candidate source; v0.6.112 is the
+> latest published release.
+> The public contract is 294 verbs across 34
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
-> include Projects, Library, native editable Generate, cited Find moment search, transcription with
+> include Projects, Library, native editable Generate, cited Find moment search,
+> transcription with exact time-linked ranges,
 > Parakeet/Canary/Whisper tiers, dubbing, diarization, render verification,
 > review comments, Recording Studio workflows, and setup cards for installable tools and
-> model runtimes. Provider-backed media generation remains optional via the
+> model runtimes, and a locked exact-frame Before/Current Preview comparison.
+> Provider-backed media generation remains optional via the
 > user's own CLI; native Generate produces editable timeline elements through
 > normal ops.
 
@@ -48,10 +53,11 @@ integrations.
 
 ## Quickstart
 
-> **Installing 0.6.112:** download and run the installer or package from the
-> GitHub release. Users already on 0.6.107 can use the in-app update when it is
-> offered. Versions older than 0.6.107 must install 0.6.107 manually before
-> using the in-app update, or install 0.6.112 directly.
+> **Installing:** v0.6.112 is the current published installer/package from the
+> GitHub release. v0.6.113 is candidate source only: it is not yet a published,
+> signed, or installed-qualified release. Users already on 0.6.107 can use the
+> in-app update when it is offered. Versions older than 0.6.107 must install
+> 0.6.107 manually before using the in-app update.
 
 Contract first: read `docs/public/FEATURES.md` for the public feature inventory and
 `schema/verbs.json` for the verb registry, which is the source of truth for the
@@ -86,7 +92,9 @@ scripts/verbargs-sync.sh        # asserts every verbs.json verb has a typed UI c
 npm --prefix ui run test:lib    # focused public UI contracts
 npm --prefix ui run build       # typecheck and production bundle
 node --test scripts/public-tests/*.test.mjs
-                                # public source, dependency, and safety contracts
+                                # source-only public contract suite (no installed app claim)
+node scripts/check-public-test-inventory.mjs --run
+                                # classify and run the source-safe public test set
 scripts/make-test-assets.sh     # espeak-ng+ffmpeg → testdata/ with known ground truth
 
 # cutd directly (cargo run -p server --manifest-path app/Cargo.toml -- …):
@@ -150,7 +158,7 @@ Cut. See
 [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
 for the supported deployment and residual risk.
 
-## Verb API (278 verbs, 33 domains — `schema/verbs.json` is the contract)
+## Verb API (294 verbs, 34 domains — `schema/verbs.json` is the contract)
 
 Envelope: `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}`.
 Every mutating verb takes optional `rationale`. Long tasks return `{job_id}`.
@@ -159,11 +167,11 @@ Every verb also advertises shared optional `request_id` and
 reject stale revisions atomically, and return the original durable response for
 an identical lost-response retry; changed payloads conflict.
 Representative verbs per domain below — `skill/shellx-cut/reference.md` is the
-full 278-verb table.
+full 294-verb table.
 
 | Domain | Verbs | Notes |
 |---|---|---|
-| **project** | create · open · save · state · **health · cache_preview · cache_purge · package_plan · package_create** · **sequence_list · sequence_index · sequence_create · sequence_switch · sequence_rename · sequence_delete** · ops · checkpoint · revert · **undo · redo** · diff · **rename · brand** · close · **list** · **forget** · **delete** | each project can hold independent sequences with scoped undo/checkpoints while sharing media; **health is a read-only, revision-bound, path-free Health & Recovery page for journal recovery evidence and registered source/proxy/filmstrip checks; aggregate all pages before calling the project healthy, and continue only while `has_more` supplies `next_cursor`. Settings reads capture recovery separately through `screen_record.recovery_status`, then labels all of this evidence as reported in that check rather than a timeless snapshot**; **cache_preview is a separate read-only ownership check and cache_purge starts only after an exact one-use preview confirmation: it may remove only aged, unreferenced, ledger-owned flat proxy/filmstrip files, and fails closed on legacy, foreign, symlinked, partial, or changed roots. Sources, exports, captures, and receipts are never candidates**; **package_plan/package_create are the agent-only portable-project workflow: they include only referenced media, deduplicate exact content, exclude regenerable caches, refuse offline or stale inputs, and publish a new Cut-native package without replacement while leaving the source unchanged**; **sequence_index searches path-light clip/marker metadata across every active and inactive timeline, filters live offline media/gaps/effects/hidden/locked/muted tracks, copies the bounded table as spreadsheet-safe CSV, and navigates results from Find → Sequence**; checkpoint/revert/undo/redo are append-only ops; revert appends one materialized target-timeline result, never rewrites; rename and brand are durable non-timeline metadata ops; **brand stores delivery constraints used automatically by verify.brand and render.bundle**; **list = recent-projects index (~/.shellx-cut/projects.json), reopen by path; forget drops the index entry (≠ delete); delete PERMANENTLY removes the `.cutproj` dir + forgets it (guardrailed: only `*.cutproj`, never the open project)** |
+| **project** | create · open · save · state · **health · cache_preview · cache_rebuild · cache_purge · package_plan · package_create** · **sequence_list · sequence_index · sequence_create · sequence_switch · sequence_rename · sequence_delete** · ops · **group_preview · group_reject** · checkpoint · revert · **undo · redo** · diff · **rename · brand** · close · **list** · **forget** · **delete** | each project can hold independent sequences with scoped undo/checkpoints while sharing media; **health is a read-only, revision-bound, path-free Health & Recovery page for journal recovery evidence and registered source/proxy/filmstrip checks; aggregate all pages before calling the project healthy, and continue only while `has_more` supplies `next_cursor`. Settings reads capture recovery separately through `screen_record.recovery_status`, then labels all of this evidence as reported in that check rather than a timeless snapshot**; **cache_rebuild is a bounded, cancellable non-destructive backfill for missing or stale ledger-owned base proxies/filmstrips: it rechecks current source identity, reserves ownership before output, returns queued/up-to-date/items-needing-attention counts without paths, and leaves a pending reservation for safe later resume after cancellation or restart. cache_preview is a separate read-only ownership check and cache_purge starts only after an exact one-use preview confirmation: it may remove only aged, unreferenced, ledger-owned flat proxy/filmstrip files, and fails closed on legacy, foreign, symlinked, partial, or changed roots. Sources, exports, captures, and receipts are never candidates**; **group_preview/group_reject are the agent-only review boundary for an existing adjacent compound action: the revision-bound reject is tip-only, appends one normal restore, and never generically replays selected history**; **package_plan/package_create are the agent-only portable-project workflow: they include only referenced media, deduplicate exact content, exclude regenerable caches, refuse offline or stale inputs, and publish a new Cut-native package without replacement while leaving the source unchanged**; **sequence_index searches path-light clip/marker metadata across every active and inactive timeline, filters live offline media/gaps/effects/hidden/locked/muted tracks, copies the bounded table as spreadsheet-safe CSV, and navigates results from Find → Sequence**; checkpoint/revert/undo/redo are append-only ops; revert appends one materialized target-timeline result, never rewrites; rename and brand are durable non-timeline metadata ops; **brand stores delivery constraints used automatically by verify.brand and render.bundle**; **list = recent-projects index (~/.shellx-cut/projects.json), reopen by path; forget drops the index entry (≠ delete); delete PERMANENTLY removes the `.cutproj` dir + forgets it (guardrailed: only `*.cutproj`, never the open project)** |
 | **library** | **list · add · remove · move · tag · favorite · use · add_to_project · folder_add · folder_rename · folder_remove** | global cross-project media library (~/.shellx-cut/library/): video/audio/image, folders + tags. HYBRID storage (link original by path, or copy:true → content-addressed stored copy); kind is ffprobe-derived; add_to_project reuses media.import. Assets is project-local; human Assets imports mirror explicitly, while agent imports use `library.add {asset}` only when cross-project reuse is intended. Blobs served fenced via /api/library-blob |
 | **assets** | providers · search · fetch · generate · generated_list | Find media reads the matching server's source catalog (local folders, Openverse, Internet Archive, Wikimedia, NASA, and offline built-in stickers), shows each source's valid kinds plus license/credit before import, and keeps normal project import paths; network sources are contacted when you search or import a result |
 | **media** | import · **remove** · probe · transcribe · perception · waveform · **filmstrip · relink_preview · relink_apply** | import kicks probe→proxy→filmstrip→**ready-to-edit** (fast); transcribe+perception run as a separate background **enrich** job (`enrich_job` in the result) so slow transcription never blocks editing; first import auto-places onto an empty timeline; filmstrip = per-clip timeline thumbnails; **remove = the inverse of import — drop an asset from the open project + unlink its regenerable proxy/thumbnails (source file kept, replay-safe; refuses while clips still use it)**; **relink_preview/relink_apply scan an explicitly selected folder and repair only uniquely exact SHA-256 matches through a preview-bound atomic receipt; a strong metadata hint is disabled and routes to normal one-file Relink**; the Assets tray includes Media Health for missing sources, proxy/source playback state, and one-click relink |
@@ -174,7 +182,7 @@ full 278-verb table.
 | **grade** | **save · apply · list** | grade GALLERY (the grade gallery — "copy a look between shots"). **save** snapshots a clip's current grade as a named project preset; **apply** copies a saved look onto a target clip (lowers to a replay-safe `edit.grade`); **list** reads the gallery. Pure data — `save` is a non-timeline metadata op, `apply` is the undoable per-clip grade |
 | **audio** | add_music · cleanup_voice · **dub** | music bed + auto-duck under speech + beat:N markers; **dub = native AI dubbing — re-voice an asset's speech into another language in a cloned voice, time-fit to the original, added as a NEW audio track (original kept); reuses transcript.translate, synthesizes via the OmniVoice TTS service (CUT_DUB_ENDPOINT)** |
 | **transcript** | get · cut_words · **ignore_words** · remove_silences · remove_fillers · search · assemble | text-based editing; never cuts inside a word; `ignore_words` hides selected source words from transcript-derived captions/reels without cutting or muting; `aggressiveness` REQUIRED on remove_silences; assemble builds a highlight reel |
-| **captions** | generate · add_text · **kinetic** · set_style · set_range · shift · reflow | static burn-in + animated kinetic captions: Lines uses caption cues; One word at a time uses a timeline transcript; reflow satisfies verify.captions |
+| **captions** | generate · add_text · **bulk_preview · bulk_apply** · **kinetic** · set_style · set_range · shift · reflow | static burn-in + animated kinetic captions: Lines uses caption cues; One word at a time uses a timeline transcript; reviewed Find & Replace pins a track/range preview and applies it in one Undo step; reflow satisfies verify.captions |
 | **title** | **add** | native motion-graphics title (resvg, in-house) — animated, distinct from captions.add_text's static card |
 | **shape** | update | update a placed native shape without recreating its clip identity |
 | **generate** | **list · describe · preview · insert · from_prompt · storyboard** | native editable Generate workspace beside Library: built-in templates, Motion-backed rendered templates through `motion.template_to_cut`, scripted-video renders through `motion.script_to_cut`, and attested/idempotent connector plans through `motion.map_import` / `motion.apply_import`; current SDK renders carry verified two-/five-hash package lineage and replay-backed path-free origin attestations, while an optional current package is independently reported as `exact`, `changed`, or `unavailable` and older connector plans are labeled `legacy-unverified`. Motion receipt `warning` is accepted as successful with deduplicated advisories; failed receipts are rejected. Supported Motion backgrounds/text/shapes plus opacity and x/y position automation arrive as normal editable Cut objects with stable source-layer bindings and changed plans update those objects in place, while unsupported constructs retain rendered-media fallback. Background apply is cancellable through `jobs.*`; distinct from `assets.generate`, which imports provider-backed media through the user's Codex image, Grok Imagine image/video, or Antigravity (`agy`) image CLI; Antigravity retains its native sandbox/non-interactive contract and is not advertised for video |
@@ -185,7 +193,8 @@ full 278-verb table.
 | **assemble** | repurpose · shorts · from_script · broll | human-visible Assemble workflows for highlight selection, short planning, script-to-footage matching, and b-roll placement; every applied result remains normal timeline ops |
 | **autopilot** | **run** | workflow: render → verify → MECHANICALLY self-fix from the receipt's fix_actions → re-verify, capped, under one auto-checkpoint (one-step revert). policy:preview (plan only) \| auto_low_risk (apply). Never fakes a pass; no-progress guard |
 | **recipe** | **list · describe · run** | declarative pipeline MANIFESTS — named, gated WORKFLOWS over the existing verbs (built-ins in `schema/recipes.json`: a guided first edit; preview-first **Edit for clarity** with intensity; podcast/talking-head/screen-demo/phone cleanup; social bundle; privacy mask; captions; YouTube and TikTok export). list/describe are pure reads; **run is a PURE ORCHESTRATOR** (like autopilot.run/audio.cleanup_voice): no op of its own, ONE auto-checkpoint (one-step revert), dispatches each stage through the normal verb path, polls sub-jobs, evaluates a per-stage gate (receipt checks and/or render-free state facts), and STOPS + reports on the first failed verb or gate. policy:dry_run returns the resolved PLAN without dispatching (pre-render-gate seam) |
-| **screen_record** | doctor · **microphone_selection · system_audio_probe** · start · stop · **recovery_status · studio_event** · autoedit · polish · export | Recording Studio uses System Default by default; on Windows/macOS a human can select a current opaque token that is immediately stored as a private endpoint reference. Public/UI copy is only generic `Microphone N` plus ephemeral tokens, Linux is System Default only, and an unavailable saved choice blocks mic-enabled start rather than falling back. Explicit Test microphone uses the resolved source; idle device changes refresh enumeration only. Stop reports whether a microphone loss retained a valid prefix or no mic track was saved. This is source-only v0.6.112 behavior, not native or installed-release qualification. |
+| **screen_record** | doctor · **microphone_selection · system_audio_probe** · start · stop · **recovery_status · studio_event · scene_activate · scene_timer** · autoedit · polish · export | Recording Studio uses System Default by default; on Windows/macOS a human can select current opaque microphone and camera choices while native identities remain private. Camera is explicit, Auto-edit-only, and recorded as a separate editable take with shared-clock metadata rather than baked into the screen source. Named Screen and Presenter PiP scenes can switch during capture, with one elapsed/countdown timer whose saved transitions use that same recording clock. Missing permission, no first frame, or device loss fails honestly instead of substituting a device. This is candidate-source behavior, not native or installed-release qualification. |
+| **voiceover** | start · tick · stop · cancel · observe_playhead | Timeline-track voiceover remains disabled unless the current Record Doctor admits native capture. The server binds one current unlocked audio track and playhead/In–Out range to a retry identity, then issues a memory-only per-tab owner claim for every tick, Stop, Cancel, and correlated Preview Out. An exact active A retry wins over later ordinary revision changes; a different B remains refused while A is active, and only `voiceover_start_retry_rejected` lets the UI discard its non-secret retry identity. It counts in, correlates exact request/fingerprint/epoch playback, and only places a sealed WAV as one asset-plus-clip operation (one Undo). Direct monitoring is off; Cancel and unplaceable outcomes add no edit. This is candidate-source behavior, not native or installed-release qualification. |
 | **verify** | checks · **rerun** · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); **rerun rechecks the exact immutable rendered bytes from a selected receipt, re-fencing and re-hashing the output before and after its owned sidecar/probe, then writes a separate verification receipt without re-rendering or replacing the source receipt; it intentionally excludes source-, caption-, word-cut-, and current-timeline checks**; judge = pluggable watch+listen reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only QC receipts |
 | **export** | xml (fcpxml/premiere/resolve) · srt · vtt · chapters · transcript · frame · range · **audio** · **gif** · **publish** | file-writing paths are FENCED (the output-fencing contract); users can set a default export folder or use per-export Save As, default-name collisions auto-suffix, and confirmed Save As targets can replace existing export media/sidecar files; frame/range extract a still / a timeline window AS reusable assets; **audio = timeline mix as mp3/m4a/wav/flac/opus; publish = one-click platform export (youtube/tiktok/reels/x/…) using platform geometry and bitrate presets through render.final** |
 | **import** | otio | hash-bound OTIO preflight and one-operation timeline replacement; the desktop UI owns the native picker/confirmation while agents pass an explicit path |
@@ -255,7 +264,9 @@ ui/   Vite + React + TS — an API client, NOTHING more. Zero local mutation:
       dedicated cross-project Library workspace · Review rail · status bar.
       Design follows the public feature-surface contract and the local UI rules:
       compact operational panels, stable selectors, wired controls, and
-      advanced diagnostics hidden until needed.
+      advanced diagnostics hidden until needed. Recording source choice keeps
+      Display and Window as separate target classes; Region stays hidden until
+      a real native picker is available.
 ```
 
 Headless-first: `cutd` runs without UI; open the UI at any moment and see live
@@ -269,8 +280,10 @@ metadata): same input + EDL ⇒ same output hash.
    historic snapshot-era records) an optional inverse payload.
 2. `project.json` is only a cache, rebuilt from the log on demand.
 3. Ctrl+Z/Ctrl+Shift+Z use `project.undo`/`project.redo`; review rejection uses
-   `edit.restore`. Each appends a NEW operation with a materialized replay result;
-   history is never rewritten.
+   `edit.restore`. A reviewed adjacent compound action may instead use the
+   revision-bound, tip-only `project.group_preview` / `project.group_reject`
+   pair, which appends one normal restore and never replays an arbitrary set of
+   historical operations. History is never rewritten.
 4. Checkpoints are pointers into the log; diff = ops between two pointers.
 5. Imported assets get `perception.json`: measured facts (word timestamps,
    silences, scenes, beats, LUFS) from local instruments.

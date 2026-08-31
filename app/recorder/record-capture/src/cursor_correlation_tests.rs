@@ -214,6 +214,35 @@ fn x11_uses_finalized_video_dimensions_not_portal_logical_size() {
 }
 
 #[test]
+fn missing_session_type_keeps_wayland_pipewire_when_xwayland_display_is_present() {
+    // A controlled desktop launch commonly provides both display variables but
+    // omits XDG_SESSION_TYPE.  DISPLAY names Xwayland in that situation; it is
+    // not evidence that the compositor/session is X11.
+    let mode = session_input_mode_from(None, true, true, None, None);
+    assert_eq!(
+        mode,
+        SessionInputMode {
+            wayland: true,
+            use_evdev: true,
+            use_pipewire_metadata: true,
+        }
+    );
+}
+
+#[test]
+fn explicit_x11_session_overrides_a_stray_wayland_display() {
+    let mode = session_input_mode_from(Some("x11"), true, true, None, None);
+    assert_eq!(
+        mode,
+        SessionInputMode {
+            wayland: false,
+            use_evdev: false,
+            use_pipewire_metadata: false,
+        }
+    );
+}
+
+#[test]
 fn x11_unknown_finalized_dimensions_keep_global_input_unavailable() {
     let x11 = session_input_mode_from(Some("x11"), false, true, None, None);
     let mut clicks = [click(10)];

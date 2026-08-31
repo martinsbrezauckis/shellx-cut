@@ -213,6 +213,44 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
     let plan_path = cap_dir.join("plan.json");
     std::fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
 
+    // Simulate a process loss immediately after the durable media.import op:
+    // there is one legitimate camera asset but no camera track or clip yet.
+    // Recovery must adopt it by its sealed source identity, not import it again.
+    let imported_before_restart = dispatch(
+        &state,
+        "media.import",
+        json!({"path": camera.display().to_string(), "proxy": false}),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        imported_before_restart.ok,
+        "pre-restart camera import failed: {:?}",
+        imported_before_restart.error
+    );
+    let pre_restart_camera_asset_id = imported_before_restart.result.unwrap()["asset_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        dispatch(&state, "project.close", json!({}), test_actor())
+            .await
+            .ok
+    );
+    let state = AppState::new();
+    let opened = dispatch(
+        &state,
+        "project.open",
+        json!({"path": project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        opened.ok,
+        "camera project reopen after import failed: {:?}",
+        opened.error
+    );
+
     let polished = dispatch(
         &state,
         "screen_record.polish",
@@ -223,7 +261,15 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
     assert!(polished.ok, "{:?}", polished.error);
     let result = polished.result.unwrap();
     assert_eq!(result["camera_artifact_id"], "camera_03");
-    assert_eq!(result["camera_track_id"], "v_camera");
+    let camera_track_id = result["camera_track_id"]
+        .as_str()
+        .expect("camera placement must return its durable identity")
+        .to_string();
+    assert!(
+        camera_track_id.starts_with("v_camera_"),
+        "camera track identity is private, deterministic server ownership"
+    );
+    assert_eq!(result["camera_asset_id"], pre_restart_camera_asset_id);
     assert_eq!(result["camera_first_frame_offset_ms"], 500);
     let camera_clip_id = result["camera_clip_id"].as_str().unwrap();
 
@@ -232,7 +278,7 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
     let camera_track = project
         .tracks
         .iter()
-        .find(|track| track.id == "v_camera")
+        .find(|track| track.id == camera_track_id)
         .expect("camera must be a separate editable video track");
     assert_eq!(camera_track.kind, cut_core::TrackKind::Video);
     assert!(
@@ -260,6 +306,60 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
     assert_eq!(
         placement_ms, 500,
         "camera clip must retain CaptureClock offset"
+    );
+    drop(guard);
+
+    // A restart can happen after every individual lowered op (import, track
+    // creation, visibility, or insert). Once all have committed, retrying the
+    // same sealed capture must adopt that durable identity rather than add a
+    // second camera asset or clip.
+    let first_camera_asset_id = result["camera_asset_id"].as_str().unwrap().to_string();
+    let first_camera_clip_id = camera_clip_id.to_string();
+    assert!(
+        dispatch(&state, "project.close", json!({}), test_actor())
+            .await
+            .ok
+    );
+    let reopened = AppState::new();
+    let opened = dispatch(
+        &reopened,
+        "project.open",
+        json!({"path": project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(opened.ok, "camera project reopen failed: {:?}", opened.error);
+
+    let retried = dispatch(
+        &reopened,
+        "screen_record.polish",
+        json!({"source": source.display().to_string(), "plan": plan_path.display().to_string(), "raw": true}),
+        test_actor(),
+    )
+    .await;
+    assert!(retried.ok, "camera polish retry failed: {:?}", retried.error);
+    let retried = retried.result.unwrap();
+    assert_eq!(retried["camera_track_id"], camera_track_id);
+    assert_eq!(retried["camera_asset_id"], first_camera_asset_id);
+    assert_eq!(retried["camera_clip_id"], first_camera_clip_id);
+
+    let reopened_guard = reopened.project.read().await;
+    let reopened_camera_track = reopened_guard
+        .as_ref()
+        .unwrap()
+        .project
+        .tracks
+        .iter()
+        .find(|track| track.id == camera_track_id)
+        .expect("camera track must survive reopen");
+    assert_eq!(
+        reopened_camera_track
+            .clips
+            .iter()
+            .filter(|clip| matches!(clip, cut_core::Clip::Media(media) if media.id == first_camera_clip_id))
+            .count(),
+        1,
+        "retry must not duplicate the durable camera clip"
     );
 }
 

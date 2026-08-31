@@ -45,9 +45,11 @@ pub fn capture_screenshot_png(
     let cfg = record_capture::CaptureConfig {
         duration_ms: Some(220),
         fps: 4.0,
+        quality: None,
         capture_cursor: true,
         monitor,
         monitor_id: None,
+        region: None,
         window,
         audio: false,
         microphone_source: record_capture::MicrophoneSource::SystemDefault,
@@ -56,9 +58,10 @@ pub fn capture_screenshot_png(
         out_dir: tmp.to_string_lossy().into_owned(),
         checkpoint: None,
         clock: None,
+        readiness: None,
     };
     let captured = cap.capture(&cfg, stop);
-    control.terminalize();
+    let _ = control.terminalize();
     let result = captured.map_err(record_err).and_then(|out| {
         let mut command = std::process::Command::new(cut_media::toolpath::ffmpeg());
         command

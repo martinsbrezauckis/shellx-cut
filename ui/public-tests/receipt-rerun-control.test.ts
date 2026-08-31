@@ -9,7 +9,13 @@ const root = resolve(import.meta.dirname, '..')
 const control = readFileSync(resolve(root, 'src/panels/Review/ReceiptRerunControl.tsx'), 'utf8')
 const model = readFileSync(resolve(root, 'src/panels/Review/receiptRerunModel.ts'), 'utf8')
 const receipts = readFileSync(resolve(root, 'src/panels/Review/Receipts.tsx'), 'utf8')
-const server = readFileSync(resolve(root, '../app/server/src/dispatch/verify_handlers/rerun.rs'), 'utf8')
+const server = [
+  'rerun.rs',
+  'rerun_execution.rs',
+  'rerun_output.rs',
+  'rerun_preparation.rs',
+  'rerun_receipt.rs',
+].map((path) => readFileSync(resolve(root, '../app/server/src/dispatch/verify_handlers', path), 'utf8')).join('\n')
 const verbs = JSON.parse(readFileSync(resolve(root, '../schema/verbs.json'), 'utf8'))
 
 for (const selector of [

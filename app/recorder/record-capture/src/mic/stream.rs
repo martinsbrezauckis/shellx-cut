@@ -1,9 +1,10 @@
 use super::device::MicStreamControl;
-use super::stream_callback::{mark_first_packet, record_peak};
+use super::stream_callback::{capture_origin, mark_first_packet, record_peak};
 use super::wav::{
     discard_unpublished_staging, should_publish_microphone, wav_i16_sample_capacity,
     PendingMicSamples,
 };
+use super::wav_layout::pads_first_packet_offset;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::SampleFormat;
 use record_core::{error_codes, RecordError, Result};
@@ -12,13 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// cpal capture body for the default microphone. The real-time callback only converts and
-/// queues samples; this worker drains them to disk so long recordings use bounded memory.
-/// `ready` flips true on the first audio callback.
-pub(super) struct MicStreamEnd {
-    pub(super) microphone_lost: bool,
-    pub(super) samples_written: bool,
-}
+mod types;
+use types::MicStreamEnd;
 
 const MIC_PENDING_SECONDS: u64 = 2;
 
@@ -34,6 +30,8 @@ pub(super) fn run_stream(
         ready,
         capture_started,
         meter_peak,
+        recording_gate,
+        wav_layout,
     } = control;
     let fmt = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
@@ -73,11 +71,17 @@ pub(super) fn run_stream(
     let meter_f32 = meter_peak.clone();
     let meter_i16 = meter_peak.clone();
     let meter_u16 = meter_peak;
+    let gate_f32 = recording_gate.clone();
+    let gate_i16 = recording_gate.clone();
+    let gate_u16 = recording_gate;
     let stream = match fmt {
         SampleFormat::F32 => device.build_input_stream(
             &config,
             move |d: &[f32], _: &cpal::InputCallbackInfo| {
-                mark_first_packet(&rdy, &first, capture_started);
+                let Some(origin) = capture_origin(&rdy, gate_f32.as_ref(), capture_started) else {
+                    return;
+                };
+                mark_first_packet(&rdy, &first, origin);
                 if let Some(peak) = meter_f32.as_deref() {
                     for &sample in d {
                         record_peak(peak, (sample.clamp(-1.0, 1.0) * 32767.0) as i16);
@@ -96,7 +100,10 @@ pub(super) fn run_stream(
         SampleFormat::I16 => device.build_input_stream(
             &config,
             move |d: &[i16], _: &cpal::InputCallbackInfo| {
-                mark_first_packet(&rdy, &first, capture_started);
+                let Some(origin) = capture_origin(&rdy, gate_i16.as_ref(), capture_started) else {
+                    return;
+                };
+                mark_first_packet(&rdy, &first, origin);
                 if let Some(peak) = meter_i16.as_deref() {
                     for &sample in d {
                         record_peak(peak, sample);
@@ -112,7 +119,10 @@ pub(super) fn run_stream(
         SampleFormat::U16 => device.build_input_stream(
             &config,
             move |d: &[u16], _: &cpal::InputCallbackInfo| {
-                mark_first_packet(&rdy, &first, capture_started);
+                let Some(origin) = capture_origin(&rdy, gate_u16.as_ref(), capture_started) else {
+                    return;
+                };
+                mark_first_packet(&rdy, &first, origin);
                 if let Some(peak) = meter_u16.as_deref() {
                     for &sample in d {
                         record_peak(peak, (i32::from(sample) - 32768) as i16);
@@ -202,7 +212,7 @@ pub(super) fn run_stream(
             }
             if !leading_silence_written && !drain_buffer.is_empty() {
                 let first_offset_ms = first_packet_offset_ms.load(Ordering::Relaxed);
-                if first_offset_ms != u64::MAX {
+                if pads_first_packet_offset(wav_layout, first_offset_ms) {
                     let wanted = crate::mic_timing::leading_silence_samples(
                         first_offset_ms,
                         sample_rate,
@@ -312,6 +322,7 @@ pub(super) fn run_stream(
         return Ok(MicStreamEnd {
             microphone_lost,
             samples_written: false,
+            first_packet_offset_ms: None,
         });
     }
     if let Err(error) = writer.finalize() {
@@ -333,5 +344,7 @@ pub(super) fn run_stream(
     Ok(MicStreamEnd {
         microphone_lost,
         samples_written,
+        first_packet_offset_ms: (first_packet_offset_ms.load(Ordering::Relaxed) != u64::MAX)
+            .then(|| first_packet_offset_ms.load(Ordering::Relaxed)),
     })
 }

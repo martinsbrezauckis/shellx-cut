@@ -52,6 +52,9 @@ impl RecordingSessionJournalSink for MemoryJournalSink {
             RecordingSessionJournalEntry::Transition(transition) => {
                 self.journal.append_transition(transition)
             }
+            RecordingSessionJournalEntry::InputSidecar(pin) => {
+                self.journal.append_input_sidecar(pin)
+            }
             RecordingSessionJournalEntry::Run(run) => self.journal.seal_run(run),
             RecordingSessionJournalEntry::Terminal(terminal) => {
                 self.journal.seal_terminal(terminal)

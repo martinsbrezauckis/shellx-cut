@@ -68,6 +68,7 @@ import UserActionFeedback from './components/UserActionFeedback'
 import { runUserVerb } from './lib/userActionFeedback'
 import type { AgentChatPrefill } from './lib/evidenceAttachments'
 import { OfflineMediaProvider } from './app/OfflineMediaContext'
+import { VolumeAutomationProvider } from './app/VolumeAutomationContext'
 import { createStockImportCoordinator, type StockImportCoordinator } from './panels/Stock/importCoordinator'
 
 const EnvironmentPanel = lazy(() =>
@@ -660,6 +661,7 @@ export default function App() {
   // rail right. Three draggable dividers; sizes persisted via useLayout.
   return (
     <OfflineMediaProvider project={project} onProjectChanged={resync}>
+    <VolumeAutomationProvider key={projectSession}>
     <div ref={embeddedManualFrontend ? undefined : appRootMountReporter.current} className="app" data-cut-app-root>
       <TopBar
         project={project}
@@ -759,6 +761,7 @@ export default function App() {
           receipts={receipts}
           selectedClipId={selectedClipIds[0] ?? null}
           playheadMs={playheadMs}
+          onSeek={onSeek}
           agentChatPrefill={agentChatPrefill}
           onReject={onRestore}
           onUndo={onUndo}
@@ -850,6 +853,7 @@ export default function App() {
       />
       <UserActionFeedback />
     </div>
+    </VolumeAutomationProvider>
     </OfflineMediaProvider>
   )
 }

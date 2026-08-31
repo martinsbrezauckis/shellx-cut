@@ -452,7 +452,7 @@ fn replay_rejects_video_probe_rates_on_non_video_fragments() {
             audio.facts.r_frame_rate = Some(FrameRate::new(30, 1).unwrap());
         }
         let entries = vec![
-            RecordingSessionJournalEntry::Intent(multi_stream_intent.clone()),
+            RecordingSessionJournalEntry::Intent(Box::new(multi_stream_intent.clone())),
             RecordingSessionJournalEntry::Transition(transition(
                 0,
                 RecordingSessionState::Started,

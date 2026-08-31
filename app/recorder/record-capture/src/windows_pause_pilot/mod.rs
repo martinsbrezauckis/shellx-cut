@@ -4,7 +4,11 @@
 //! capable of one exact monitor, screen video, and integer FPS. No record server
 //! type enters this module and it owns neither a journal nor lifecycle truth.
 
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod audio_run;
 mod channel;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod input_run;
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
 pub(crate) mod lifecycle;
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
@@ -19,6 +23,8 @@ mod worker;
 mod worker_commands;
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
 mod worker_facts;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod worker_rollover;
 
 pub use channel::{
     channel, WindowsPausePilotChannelError, WindowsPausePilotCommandReceiver,
@@ -45,5 +51,6 @@ pub use types::{
     WindowsPausePilotCheckpointRange, WindowsPausePilotCommand, WindowsPausePilotEvent,
     WindowsPausePilotOperation, WindowsPausePilotProfile, WindowsPausePilotRefusal,
     WindowsPausePilotRequest, WindowsPausePilotStartError, WindowsPausePilotStarted,
-    WindowsSealedScreenRun, WindowsSealedWgcCheckpoint,
+    WindowsSealedAudioRun, WindowsSealedInputRun, WindowsSealedScreenRun,
+    WindowsSealedWgcCheckpoint,
 };

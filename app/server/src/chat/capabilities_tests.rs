@@ -20,7 +20,7 @@ fn restricted_mcp_marker_requires_the_agent_chat_actor() {
 }
 
 #[test]
-fn schema_classifies_every_registry_verb_and_preserves_the_safe_100_178_split() {
+fn schema_classifies_every_registry_verb_and_preserves_the_safe_103_191_split() {
     let registry = crate::registry::VerbRegistry::load();
     let mut allowed = 0;
     let mut denied = 0;
@@ -30,8 +30,8 @@ fn schema_classifies_every_registry_verb_and_preserves_the_safe_100_178_split() 
             AgentChatCapability::Deny => denied += 1,
         }
     }
-    assert_eq!(allowed, 100, "schema-derived safe capability count");
-    assert_eq!(denied, 178, "schema-derived denied capability count");
+    assert_eq!(allowed, 103, "schema-derived safe capability count");
+    assert_eq!(denied, 191, "schema-derived denied capability count");
     assert_eq!(allowed + denied, registry.verbs.len());
 }
 
@@ -84,6 +84,7 @@ fn bounded_engine_interactions_stay_truthful_and_independent_of_agent_capability
         "project.ops",
         "project.diff",
         "project.cache_preview",
+        "project.group_preview",
         "media.check",
         "media.bin_list",
     ] {
@@ -120,6 +121,7 @@ fn bounded_engine_interactions_stay_truthful_and_independent_of_agent_capability
             "media.intelligence_status",
             "project.cache_preview",
             "project.diff",
+            "project.group_preview",
             "project.health",
             "project.ops",
             "project.sequence_index",

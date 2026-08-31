@@ -72,12 +72,21 @@ pub(crate) fn resolve_stop_artifacts(
             })
             .transpose()?
     };
+    // New live events are newline journal records. Existing captures retain the
+    // v1 JSON log until they are finalized, so consume either contained plain
+    // leaf without silently following a link or reparse point.
     let studio_events_path = optional_plain_file_in_dir(
         capture_dir,
         crate::screen_record_studio::STUDIO_EVENTS_FILENAME,
         "Studio event metadata",
         RETRY_CAPTURE_ACTION,
-    )?;
+    )?
+    .or(optional_plain_file_in_dir(
+        capture_dir,
+        crate::screen_record_studio::LEGACY_STUDIO_EVENTS_FILENAME,
+        "legacy Studio event metadata",
+        RETRY_CAPTURE_ACTION,
+    )?);
     let studio_events = studio_events_path
         .as_deref()
         .map(|path| {

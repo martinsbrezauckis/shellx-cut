@@ -12,6 +12,24 @@ These crates are the in-process recorder stack used by `cutd`:
 They were integrated into the Cut workspace so recording builds, tests, and
 release packaging no longer depend on a sibling `shellx-record` checkout.
 
+## Camera adapter admission
+
+`record-capture` owns a private camera runtime registry that keeps passive
+enumeration/readiness separate from the explicit **Use camera** intent and from
+the screen recording owner's matching Stop action. A terminal camera prefix can
+therefore be sealed only as its own `CameraArtifact@1`, with measured shared-clock
+timing and an exact file SHA-256; a zero-frame terminal has no artifact.
+
+No native camera adapter is registered yet, and Cut must continue to report the
+camera surface as unavailable. The existing reviewed dependencies are screen
+capture paths only: Windows `windows-capture` is WGC/DXGI, macOS
+`screencapturekit` is ScreenCaptureKit, and Linux `ashpd`/PipeWire is the
+ScreenCast route. A camera capability requires a separately reviewed maintained
+Media Foundation, AVFoundation, or Camera-portal/V4L2 adapter respectively,
+including enumeration, permission/refusal, bounded first-frame, finalization,
+and recovery proof. It must not be exposed through a server verb or UI before
+that platform evidence exists.
+
 ## Crash recovery contract
 
 Live encoder containers are never recovery inputs. Linux closes a GStreamer or

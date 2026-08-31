@@ -1,17 +1,20 @@
 use super::*;
 use crate::screen_record::pause_projection::SealedLegacyProjectionRun;
-use crate::screen_record::pause_session_owner::{PauseSessionFactOutcome, PauseSessionOwner};
+use crate::screen_record::pause_session_owner::PauseSessionOwner;
+use crate::screen_record::run_seal_coordinator::SealedRunEvidence;
 use crate::screen_record::run_seal_coordinator::{RecordingSessionJournalSink, SessionTimeOrigin};
 use record_capture::windows_pause_pilot::{
     channel, WindowsPausePilotAcceptedCapture, WindowsPausePilotCaptureRange,
-    WindowsPausePilotCheckpointRange, WindowsPausePilotEventSender, WindowsSealedWgcCheckpoint,
+    WindowsPausePilotCheckpointRange, WindowsPausePilotCommand, WindowsPausePilotEvent,
+    WindowsPausePilotEventSender, WindowsPausePilotStarted, WindowsSealedScreenRun,
+    WindowsSealedWgcCheckpoint,
 };
 use record_capture::SelectedCaptureStreams;
 use record_core::{CursorCorrelation, EventTrack, Settings};
 use record_recovery::{
     Checkpoint, CheckpointFacts, CheckpointSequenceRange, RecordingSessionIntent,
-    RecordingSessionJournal, RecordingSessionJournalEntry, RecordingSessionState, SealedRun,
-    SessionJournalError, StreamFragment, StreamFragmentFacts, TerminalDisposition,
+    RecordingSessionJournal, RecordingSessionJournalEntry, RecordingSessionState, RecordingStream,
+    SealedRun, SessionJournalError, StreamFragment, StreamFragmentFacts, TerminalDisposition,
 };
 use std::time::{Duration, Instant};
 
@@ -33,6 +36,7 @@ impl RecordingSessionJournalSink for MemoryJournal {
             RecordingSessionJournalEntry::Transition(transition) => {
                 self.0.append_transition(transition)
             }
+            RecordingSessionJournalEntry::InputSidecar(pin) => self.0.append_input_sidecar(pin),
             RecordingSessionJournalEntry::Run(run) => self.0.seal_run(run),
             RecordingSessionJournalEntry::Terminal(terminal) => self.0.seal_terminal(terminal),
         }
@@ -150,6 +154,16 @@ impl WindowsPauseEvidenceFactory for Factory {
             vec![RecordingStream::ScreenVideo],
         ))
     }
+
+    fn verify_and_build_with_audio(
+        &mut self,
+        generation: u64,
+        native: &WindowsSealedScreenRun,
+        _audio: &[record_capture::windows_pause_pilot::WindowsSealedAudioRun],
+        at: Instant,
+    ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
+        self.verify_and_build(generation, native, at)
+    }
 }
 
 fn run(physical_generation: u64, start_ms: u64, end_ms: u64) -> WindowsSealedScreenRun {
@@ -201,6 +215,13 @@ fn owner(
     commands: WindowsPausePilotCommandSender,
 ) -> PauseSessionOwner<MemoryJournal, WindowsPauseDispatchAdapter> {
     let streams = SelectedCaptureStreams::screen_only();
+    owner_with_streams(commands, streams)
+}
+
+fn owner_with_streams(
+    commands: WindowsPausePilotCommandSender,
+    streams: SelectedCaptureStreams,
+) -> PauseSessionOwner<MemoryJournal, WindowsPauseDispatchAdapter> {
     let intent = RecordingSessionIntent::new(
         "windows-pause-adapter-test",
         1_000,
@@ -211,10 +232,11 @@ fn owner(
         "shellx-monitor-v1:windows:test",
         streams.streams().to_vec(),
     );
+    let adapter = WindowsPauseDispatchAdapter::with_streams(commands, streams.clone());
     PauseSessionOwner::new(
         MemoryJournal(RecordingSessionJournal::new(intent).unwrap()),
         streams,
-        WindowsPauseDispatchAdapter::new(commands),
+        adapter,
     )
     .unwrap()
 }
@@ -233,6 +255,8 @@ fn send_stop(
         .send(WindowsPausePilotEvent::StopSealed {
             epoch,
             run: Some(native),
+            input: None,
+            audio: Vec::new(),
             observed_at,
         })
         .unwrap();
@@ -282,47 +306,8 @@ fn owner_stop_then_translator_binds_any_correlated_physical_checkpoint() {
         .any(|transition| transition.state == RecordingSessionState::Stopping));
 }
 
-#[test]
-fn pause_fact_and_evidence_arrive_together_but_owner_keeps_durable_order() {
-    let (commands, command_rx, event_tx, event_rx) = channel();
-    let mut owner = owner(commands);
-    let mut translator = WindowsPauseEventTranslator::new(event_rx, Factory { reject: false });
-    let origin = Instant::now();
-    owner
-        .start_after_backend_origin(SessionTimeOrigin::observed(origin, 1_000))
-        .unwrap();
-    owner.request_pause_at(at(origin, 100)).unwrap();
-    assert!(matches!(
-        command_rx.try_recv().unwrap(),
-        Some(WindowsPausePilotCommand::Pause {
-            generation: 1,
-            epoch: 1
-        })
-    ));
-    event_tx
-        .send(WindowsPausePilotEvent::PauseSealed {
-            generation: 1,
-            epoch: 1,
-            run: run(44, 0, 120),
-            observed_at: at(origin, 120),
-        })
-        .unwrap();
-    let WindowsPauseAdapterEvent::PauseSealed { fact, evidence, .. } =
-        translator.try_next().unwrap().unwrap()
-    else {
-        panic!("translated pause seal required")
-    };
-    assert_eq!(
-        owner.accept_worker_fact(fact, at(origin, 120)).unwrap(),
-        PauseSessionFactOutcome::PauseFactsComplete { generation: 1 }
-    );
-    owner.seal_pause_at(evidence, at(origin, 121)).unwrap();
-    assert_eq!(owner.journal().sealed_runs().len(), 1);
-    assert_eq!(
-        owner.journal().transitions().last().unwrap().state,
-        RecordingSessionState::Paused
-    );
-}
+#[path = "windows_pause_adapter_selected_audio_tests.rs"]
+mod selected_audio_tests;
 
 #[path = "windows_pause_adapter_rejections_tests.rs"]
 mod rejections_tests;

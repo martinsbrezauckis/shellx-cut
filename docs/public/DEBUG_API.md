@@ -1,10 +1,13 @@
 # The debug API — REST, WebSocket, and MCP
 
+<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
+
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API shipped with ShellX Cut v0.6.112.
+This reference describes the candidate Debug API in v0.6.113. v0.6.112 remains
+the latest published release.
 
 ## Starting the server
 
@@ -134,7 +137,7 @@ check, not that it is a timeless snapshot. A malformed, partial, or failed
 inventory is attention, never a capture-health pass, and the page offers no
 repair action.
 
-### Confirmed rebuildable-cache cleanup
+### Deterministic editing-cache rebuild and cleanup
 
 `project.cache_preview {}` is a separate, read-only path-free check. It only
 accepts flat `proxies/` and `filmstrip/` entries that have matching durable
@@ -144,6 +147,19 @@ foreign file, symlink, unexpected directory, malformed/stale ledger, oversized
 root, journal drift, or cooperating producer makes the operation fail closed;
 it does not return a plan. It neither modifies `project.health` nor treats file
 age as last-use evidence.
+
+`project.cache_rebuild {asset_ids?}` is a separate, non-destructive bounded
+backfill for missing or stale base proxies and filmstrips. It accepts at most
+64 registered asset ids (or every registered asset only when the project has at
+most 64), verifies the current source hash before admission and publication,
+and writes a durable ownership reservation before creating an output. Its
+path-free result always reports `status`, queued asset/output totals, and
+queued/up-to-date/items-needing-attention counts. Existing legacy or unowned files, source
+changes, unavailable sources, and unsupported media are reported or refused;
+they are never adopted or removed. Poll the returned `cache_rebuild` job with
+`jobs.status` and use `jobs.cancel` for cooperative stop. Cancellation or a
+restart leaves only the pending reservation, so a later identical rebuild can
+resume safely; source media, exports, captures, and receipts are untouched.
 
 `project.cache_purge {plan_id, confirm:true}` consumes that one preview plan
 and returns a cancellable `cache_purge` job. The job takes an exclusive cache
@@ -158,7 +174,7 @@ verbs' deletion roots.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 278 schemas once at startup and applies the selected schema at the shared
+all 291 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -174,6 +190,14 @@ Every live input schema also includes optional mutation controls:
   op IDs. Reusing the ID with changed input conflicts. If an op committed but
   its response receipt did not, Cut reports the committed op IDs and refuses to
   duplicate the mutation.
+
+`project.group_preview {op_id}` is the bounded review read for one existing
+adjacent durable compound action. When its `reject.status` is `ready`, submit
+the returned first/last operation ids and `preview_hash` unchanged to
+`project.group_reject` with a fresh `request_id` and that exact revision. The
+reject route is tip-only and appends one materialized-prefix restore record;
+it refuses newer history rather than attempting a generic selected-operation
+replay. One `project.undo` restores the complete group.
 
 Validation failures use the normal `invalid_args` envelope and identify the
 verb, exact JSON Pointer, failed keyword, concise constraint, and recovery:
@@ -250,8 +274,11 @@ Long-running verbs return `{job_id}` immediately — poll `jobs.status`, list vi
 `jobs.list`, abort via `jobs.cancel`. An engine-eligible failed default-output
 `screen_record.export` can start exactly one linked child through `jobs.retry`;
 it validates the active revision, source/EditPlan/capture-audio SHA-256 inputs,
-and a fresh default-output lease rather than replaying raw old arguments.
-Explicit Save As jobs and changed inputs are refused. Cancellation does not claim success until
+and a fresh default-output lease. An eligible failed `verify.rerun` can likewise
+start one linked child only after the active revision, immutable RenderReceipt,
+and exact rendered-output hash are revalidated. Neither route replays raw old
+arguments; explicit Save As exports, changed inputs, and all unowned job kinds
+are refused. Cancellation does not claim success until
 tracked blocking workers and their synchronous child processes have finished.
 If that bounded drain is still in progress, `job_cancel_pending` asks the
 caller to wait and retry. A project switch uses the same fail-closed boundary:
@@ -458,6 +485,34 @@ native frame-delivery time are real cloned-frame video time on that same clock. 
 timing, mic first-packet silence padding, and system-audio placement therefore remain
 aligned to the playable source instead of an earlier portal/setup clock.
 
+Automation that must act only after live capture is real uses
+`screen_record.status{capture_id}`. The result becomes `ready:true` only after
+the platform's screen path delivers a real frame to Cut (including encoder
+acceptance on Windows and observable PipeWire/GStreamer delivery on Linux).
+Continue only while `terminal:false`; once the capture terminalizes, readiness
+cannot become true again. Process startup, elapsed time, or output-file growth
+is not equivalent evidence, and inactive captures return `not_found`.
+
+On Windows and macOS, passive Doctor enumeration may advertise opaque camera
+choices without opening a device or prompting for permission. Camera use is
+explicit through `screen_record.start{camera_id}` and is limited to Auto-edit
+mode. Start revalidates the current opaque identity and admits it only after a
+real native first frame. Stop returns camera media only as a validated
+`CameraArtifact` with its capture id, relative video leaf, content hash, terminal
+state, and shared-clock range. The screen source and camera take remain separate
+editable assets; Cut never substitutes a different camera after permission,
+busy-device, disappearance, or no-frame failure.
+
+`screen_record.doctor` also advertises the bounded Recording Scenes contract
+without opening a device. `screen_record.start{scenes}` freezes 1–32 uniquely
+named Screen or Presenter PiP presets and exactly one capture-wide Off,
+Elapsed, or Countdown timer. Its `scenes.saved:true` acknowledgement means the
+catalog and initial scene header are durably journaled; it does not claim that
+the camera or timer has started. During capture, `screen_record.scene_activate`
+and `screen_record.scene_timer` return only after the reducer-validated event is
+saved at a logical time issued by the capture's shared `CaptureClock`.
+Presenter PiP activation fails closed until the selected camera is admitted.
+
 On Windows, `screen_record.start` calculates the exact compact WGC checkpoint output
 path before it creates a capture marker or starts a worker. A project whose checkpoint
 would exceed the legacy 260 UTF-16-code-unit path limit (including its terminator)
@@ -538,6 +593,16 @@ only when that stream is not all-silent. Green UI readiness requires both facts.
 It returns no audio bytes or path. Its
 temporary Linux/Windows WAV is removed before the response; macOS samples never
 leave memory.
+
+Doctor also reports `quality:{supported,output_sizes,profiles,detail}`. This is
+an admission capability, not a generic encoder inventory. Current Linux capture
+may offer Source/1080p/720p with Standard/High because its final-source
+normalizer owns downscale-only sizing and libx264. Windows/macOS currently
+return empty choices. Pass an advertised pair as
+`screen_record.start{quality:{output_size,profile}}`; direct requests on an
+unsupported backend fail. `screen_record.stop.quality` appears only when the
+same final verification still matches the requested height cap, nonzero output
+dimensions, H.264 container facts, and the actual libx264 selection.
 
 For microphone setup, `screen_record.doctor{warm_mic:true}` is the bounded
 user-visible test path for the resolved System Default or selected input. Doctor
@@ -869,7 +934,7 @@ handshake and tool discovery; Claude health-checks approved entries; Codex
 Antigravity's `/mcp` overlay exposes live status and connection logs. For
 **all four clients**, finish by calling the MCP tool `system_mcp_test {}`
 (`system.mcp_test` in Cut verb notation) through that client. That Cut-owned
-read-only check proves protocol negotiation, ping, all 278 tools, and that the
+read-only check proves protocol negotiation, ping, all 291 tools, and that the
 MCP proxy resolves to the same running Cut engine.
 
 REST and MCP are generated from the same canonical verb registry. Use

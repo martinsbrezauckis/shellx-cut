@@ -11,6 +11,7 @@ pub(crate) fn for_capture(
     recording_project: &Value,
     webcam: Option<&str>,
     studio_events: Option<&str>,
+    scene_receipt: Option<&str>,
 ) -> Result<Value, CutError> {
     let fps = recording_project
         .get("settings")
@@ -41,6 +42,9 @@ pub(crate) fn for_capture(
     if let Some(studio_events) = studio_events {
         map.insert("studio_events".into(), Value::String(studio_events.into()));
     }
+    if let Some(scene_receipt) = scene_receipt {
+        map.insert("scene_receipt".into(), Value::String(scene_receipt.into()));
+    }
     Ok(args)
 }
 
@@ -56,18 +60,23 @@ mod tests {
             &json!({"settings":{"fps":25.0}}),
             Some("capture/webcam.mp4"),
             Some("capture/studio-events.json"),
+            Some("capture/recording-scene.receipt.json"),
         )
         .unwrap();
         assert_eq!(args["config"]["out_fps"], 25.0);
         assert_eq!(args["webcam"], "capture/webcam.mp4");
         assert!(args.get("camera_artifact").is_none());
         assert_eq!(args["studio_events"], "capture/studio-events.json");
+        assert_eq!(
+            args["scene_receipt"],
+            "capture/recording-scene.receipt.json"
+        );
     }
 
     #[test]
     fn rejects_an_absent_or_invalid_capture_timebase() {
         for project in [json!({}), json!({"settings":{"fps":0}})] {
-            assert!(for_capture("events.json".into(), &project, None, None).is_err());
+            assert!(for_capture("events.json".into(), &project, None, None, None).is_err());
         }
     }
 }

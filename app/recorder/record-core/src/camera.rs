@@ -28,7 +28,7 @@ pub struct CameraArtifact {
     /// Relative path from the capture directory to the camera video.  Absolute,
     /// parent-traversing, and platform-path-like values are invalid.
     pub video: String,
-    /// First and last delivered camera-frame times measured on the shared
+    /// First sample start and final sample end measured on the shared
     /// screen-capture `CaptureClock`.
     pub clock: CameraClockRange,
     /// Measured media facts and a full-content SHA-256 integrity commitment.
@@ -38,7 +38,9 @@ pub struct CameraArtifact {
     pub terminal_state: CameraTerminalState,
 }
 
-/// Camera frame interval measured from the screen capture's `CaptureClock`.
+/// Covered camera-sample interval measured from the screen capture's
+/// `CaptureClock`. `end_frame_offset_ms` is the final sample's real end, not
+/// the start time of that sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraClockRange {
     pub first_frame_offset_ms: u64,
@@ -103,9 +105,9 @@ impl CameraArtifact {
         validate_identity("capture_id", &self.capture_id)?;
         validate_identity("artifact_id", &self.artifact_id)?;
         validate_relative_video(&self.video)?;
-        if self.clock.end_frame_offset_ms < self.clock.first_frame_offset_ms {
+        if self.clock.end_frame_offset_ms <= self.clock.first_frame_offset_ms {
             return Err(bad(
-                "camera artifact end_frame_offset_ms precedes first_frame_offset_ms",
+                "camera artifact must cover a non-empty camera sample interval",
             ));
         }
         if self.media.width == 0 || self.media.height == 0 {
@@ -248,6 +250,10 @@ mod tests {
 
         let mut artifact = fixture_artifact();
         artifact.media.duration_ms = 999;
+        assert!(artifact.validate().is_err());
+
+        let mut artifact = fixture_artifact();
+        artifact.clock.end_frame_offset_ms = artifact.clock.first_frame_offset_ms;
         assert!(artifact.validate().is_err());
     }
 }

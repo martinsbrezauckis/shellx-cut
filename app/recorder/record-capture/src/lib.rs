@@ -9,8 +9,9 @@
 //!   video from disk. Powers tests AND the "import an existing recording" path.
 //! - `LiveCapture` (per-OS, behind `capture-windows` / `capture-macos` features):
 //!   Windows = windows-capture (WGC) + rdevin; macOS = ScreenCaptureKit + rdevin.
-//!   Camera capture is not implemented; callers must not present the optional
-//!   webcam output as available.
+//!   Windows Media Foundation and macOS AVFoundation camera adapters remain
+//!   behind crate-private construction. Their sole public admission is the
+//!   screen-recording owner's explicit selected-camera Start path.
 //!
 //! `doctor()` reports capability cards (mirrors ShellX Cut's system.doctor) so the
 //! UI/agent can tell what's present vs needs install/permission.
@@ -21,13 +22,52 @@ pub mod camera;
 // compile in ordinary builds so that boundary remains explicit and reviewable.
 #[allow(
     dead_code,
+    reason = "private staged camera finalization awaits one reviewed native adapter"
+)]
+mod camera_finalization;
+mod camera_finalization_anchored;
+mod camera_finalization_durability;
+mod camera_finalization_error;
+mod camera_finalization_identity;
+mod camera_finalization_owner;
+mod camera_finalization_paths;
+mod camera_finalization_publication;
+#[allow(
+    dead_code,
     reason = "private camera-session spine awaits server wiring"
 )]
 mod camera_session;
+mod camera_session_evidence;
+mod camera_session_start;
+mod camera_timing;
+// REC-CAMERA-01b provides the private adapter registry and explicit-use/Stop
+// ownership seam. Platform adapters remain crate-private; the server reaches
+// them only through the selected-camera screen-recording owner.
+#[cfg(test)]
+mod camera_finalization_post_sync_tests;
+#[cfg(test)]
+mod camera_finalization_race_tests;
+#[cfg(test)]
+mod camera_finalization_test_support;
+#[cfg(test)]
+mod camera_finalization_tests;
+#[allow(
+    dead_code,
+    reason = "private camera runtime stays crate-private behind the platform camera owner"
+)]
+mod camera_runtime;
+#[cfg(test)]
+mod camera_runtime_tests;
 #[cfg(test)]
 mod camera_session_lifecycle_tests;
 #[cfg(test)]
+mod camera_session_tamper_tests;
+#[cfg(test)]
+mod camera_session_test_support;
+#[cfg(test)]
 mod camera_session_tests;
+#[cfg(test)]
+mod camera_session_timing_tests;
 mod capture_clock;
 mod capture_output;
 mod checkpoint;
@@ -46,6 +86,24 @@ mod pause_stream_coordinator;
 mod pause_stream_coordinator_tests;
 mod pause_stream_selection;
 mod pause_stream_types;
+// REC-PAUSE-01 macOS pause ownership is composed with the server's private
+// journal/projection path. Public admission, UI, and installed capability
+// remain closed until native qualification and passive-input parity exist.
+#[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
+#[allow(
+    dead_code,
+    reason = "macOS pause integration remains behind private server admission"
+)]
+mod macos_pause_pilot;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+#[doc(hidden)]
+pub mod private_macos_pause_owner;
+mod recording_scenes;
+mod recording_scenes_config;
+mod recording_scenes_engine;
+mod recording_scenes_projection;
+#[cfg(test)]
+mod recording_scenes_tests;
 #[allow(dead_code)]
 #[cfg(any(
     test,
@@ -60,6 +118,28 @@ mod replay;
 mod session_clock;
 #[cfg(test)]
 mod session_clock_tests;
+// REC-SCENES-01 owns only a private, capture-contained scene receipt journal.
+// It intentionally has no server verb, UI registration, device access, or live
+// switch behavior until an explicit capture coordinator consumes it.
+#[allow(
+    dead_code,
+    reason = "private scene journal awaits capture-coordinator wiring"
+)]
+mod scene_journal;
+#[cfg(test)]
+mod scene_journal_fault_tests;
+mod scene_journal_io;
+mod scene_journal_parse;
+mod scene_journal_test_hooks;
+#[cfg(test)]
+mod scene_journal_tests;
+#[cfg(windows)]
+mod scene_journal_windows;
+// REC-SCENES-02 connects the receipt to a private live owner, but only for
+// Screen-only snapshots. Camera layouts and all UI/verb surfaces remain absent.
+mod scene_live_coordinator;
+#[cfg(test)]
+mod scene_live_coordinator_tests;
 #[cfg(any(
     test,
     all(windows, feature = "capture-windows"),
@@ -100,6 +180,10 @@ mod mic_endpoint;
 mod mic_timing;
 #[cfg(feature = "mic")]
 mod microphone_result;
+// REC-VOICEOVER-01 is a reusable microphone-only capture/session owner. It is
+// deliberately absent from server verbs and UI until a project-owned atomic
+// materialization/import/placement owner can make its artifact one Undoable
+// revision instead of exposing a misleading record affordance.
 #[cfg(any(
     test,
     all(windows, feature = "capture-windows"),
@@ -109,6 +193,8 @@ mod monitor_identity;
 mod system_audio_probe;
 #[cfg(feature = "mic")]
 mod system_audio_timing;
+#[cfg(feature = "mic")]
+mod voiceover_capture;
 mod window_target;
 
 // REC-PAUSE-01 Windows-only native seam. It owns neutral command/event values
@@ -128,11 +214,38 @@ mod windows_wgc_run_types;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows;
 #[cfg(all(windows, feature = "capture-windows"))]
+mod windows_gpu_crop;
+#[cfg(all(windows, feature = "capture-windows"))]
 mod windows_monitor_target;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_picker;
 #[cfg(all(windows, feature = "capture-windows"))]
+mod windows_region_capture;
+#[cfg(all(windows, feature = "capture-windows"))]
 mod windows_runtime;
+
+// REC-CAMERA-01c is a private Media Foundation Capture Engine adapter. It has
+// no server verb, UI registration, Doctor card, or public device identity.
+// The constructor requires the capture owner's already-reserved directory, so
+// a future server owner must make that ownership hand-off explicit.
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_camera;
+// The only cross-crate shape for the reviewed Windows Camera Capture Engine.
+// It is doc-hidden and server-only: no generic runtime, enumeration, device
+// label, verb, Doctor card, or UI registration is exported from this crate.
+#[cfg(all(windows, feature = "capture-windows"))]
+#[doc(hidden)]
+pub mod private_windows_camera_owner;
+
+// Public Recorder wiring consumes only this explicit-use, opaque-device owner.
+// The module name is hidden from generated docs; native identities stay inside
+// the platform adapters and camera permission is never requested by Doctor.
+#[cfg(any(
+    all(windows, feature = "capture-windows"),
+    all(target_os = "macos", feature = "capture-macos")
+))]
+#[doc(hidden)]
+pub mod private_camera_owner;
 
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_probe;
@@ -140,11 +253,19 @@ mod windows_probe;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_camera;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_camera_finalization;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_camera_native;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_checkpoint;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_finalization;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_monitor_target;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_readiness;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_region_capture;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
@@ -158,9 +279,9 @@ mod linux;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_capture_state;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
-mod linux_input;
+mod linux_gst_capture;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
-mod linux_media;
+mod linux_input;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
 mod linux_portal;
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
@@ -186,7 +307,9 @@ mod input_evdev;
 #[doc(hidden)]
 pub mod wayland_pw;
 
+pub(crate) use camera::CameraUseIntent;
 pub use camera::{CameraBackend, CameraDevice, CameraReadiness, CameraRequest, ReplayCamera};
+pub(crate) use camera_timing::CameraFrameObservation;
 pub use capture_clock::CaptureClock;
 pub use doctor::{doctor, Card};
 pub use doctor_portal::{is_linux_portal_prompt_deferred, LINUX_PORTAL_PROMPT_DEFERRED_DETAIL};
@@ -202,7 +325,17 @@ pub use pause_stream_types::{
     StreamBoundaryKind, StreamRefusal,
 };
 pub use record_recovery::RecordingStream;
+pub use recording_scenes::{
+    RecordingSceneConfig, RecordingSceneEngine, RecordingSceneEngineError, RecordingSceneLayout,
+    RecordingScenePipCorner, RecordingScenePipShape, RecordingScenePresetConfig,
+    RecordingSceneProjection, RecordingSceneTimerAction, RecordingSceneTimerConfig,
+    RECORDING_SCENE_PROJECTION_SCHEMA,
+};
 pub use replay::ReplayCapture;
+#[doc(hidden)]
+pub use scene_live_coordinator::{
+    PrivateSceneCoordinator, PrivateSceneCoordinatorError, PrivateSceneProjection,
+};
 pub use session_clock::{
     LogicalSessionClock, SessionPhase, SessionTransition, SessionTransitionIgnored,
     SessionTransitionResult,
@@ -210,6 +343,77 @@ pub use session_clock::{
 pub use system_audio_probe::{
     probe_system_audio, reserve_system_audio, SystemAudioLease, SystemAudioProbe, DEFAULT_WINDOW_MS,
 };
+#[cfg(feature = "mic")]
+pub use voiceover_capture::{
+    VoiceoverArtifact, VoiceoverCaptureOutcome, VoiceoverCaptureSession, VoiceoverFinalize,
+};
+
+/// Convert a CoreGraphics display number obtained inside the private macOS
+/// visual-picker bridge into the same opaque identity used by the capture
+/// backend. This is deliberately not a public picker API: it exists solely so
+/// the in-process server can immediately replace the native value before it
+/// enters its one-use selection registry.
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+#[doc(hidden)]
+pub fn private_macos_monitor_identity_from_display_id(display_id: u32) -> Option<String> {
+    macos_monitor_target::monitor_id_from_native_display_id(display_id)
+}
+
+/// Re-enumerate one exact macOS display and prove that a private picker crop
+/// still names its original physical-pixel parent before cutd consumes the
+/// one-use ticket. This is intentionally not a general region API: callers
+/// receive only a boolean and must keep the crop in a typed private boundary.
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+#[doc(hidden)]
+pub fn private_macos_region_selection_is_current(identity: &str, crop: CaptureRegion) -> bool {
+    macos_region_capture::selection_is_current(identity, crop)
+}
+
+/// Convert the physical target path captured in the private Windows overlay's
+/// atomic DisplayConfig snapshot into the opaque identity used by WGC. A later
+/// ticket owner must first revalidate the snapshot's topology fingerprint; it
+/// must never resolve a mutable GDI source name after crop selection.
+#[cfg(all(windows, feature = "capture-windows"))]
+#[doc(hidden)]
+pub fn private_windows_monitor_identity_from_target_path(target_path: &str) -> Option<String> {
+    windows_monitor_target::monitor_id_from_target_path(target_path)
+}
+
+/// Re-enumerate the exact active Windows DisplayConfig topology captured by
+/// the foreground picker, then verify that its physical target still hashes to
+/// the child ticket's opaque WGC monitor identity. This is private bridge
+/// plumbing only: a successful check does not claim that the pinned encoder
+/// can crop frames, and callers must still refuse before reservation until an
+/// exact GPU-side WGC crop consumer exists.
+#[cfg(all(windows, feature = "capture-windows"))]
+#[doc(hidden)]
+pub fn private_windows_region_selection_is_current(
+    source_gdi: &str,
+    target_path: &str,
+    topology_digest: [u8; 32],
+    monitor_id: &str,
+    crop: CaptureRegion,
+) -> bool {
+    windows_region_capture::selection_is_current(
+        source_gdi,
+        target_path,
+        topology_digest,
+        monitor_id,
+        crop,
+    )
+}
+
+/// Construct the private Windows Camera runtime for one already-reserved
+/// capture directory. This is intentionally not a general camera API: it is
+/// unavailable to server verbs and UI until installed Windows proof admits a
+/// separate owner. Native device identities stay inside `windows_camera`.
+#[cfg(all(windows, feature = "capture-windows"))]
+#[doc(hidden)]
+pub(crate) fn private_windows_camera_runtime(
+    capture_directory: &std::path::Path,
+) -> record_core::Result<camera_runtime::CameraRuntime> {
+    windows_camera::private_runtime(capture_directory)
+}
 
 /// One physical display the user can pick as the capture target.
 ///
@@ -383,7 +587,10 @@ pub fn live_capture() -> Option<Box<dyn Capture>> {
     }
 }
 
-use record_core::{CameraArtifact, EventTrack, Result, Settings};
+use record_core::{
+    error_codes, CameraArtifact, CaptureOutputSize, CaptureQualityProfile, CaptureQualityRequest,
+    CaptureQualityResolution, EventTrack, RecordError, Result, Settings,
+};
 use serde::{Deserialize, Serialize};
 
 /// Debug probe: run ONLY the evdev input listener for `seconds` and return the
@@ -415,12 +622,87 @@ pub fn evdev_probe(_seconds: u64, _capture_keys: bool) -> Option<(usize, usize, 
     None
 }
 
+/// The small output-quality surface is advertised only where the final source
+/// normalizer owns its scale and encoder configuration. Other native backends
+/// must refuse a direct request rather than letting a client imply support.
+#[derive(Debug, Clone, Serialize)]
+pub struct CaptureQualityCapability {
+    pub supported: bool,
+    pub output_sizes: Vec<CaptureOutputSize>,
+    pub profiles: Vec<CaptureQualityProfile>,
+    pub detail: String,
+}
+
+pub fn capture_quality_capability() -> CaptureQualityCapability {
+    if cfg!(all(target_os = "linux", feature = "capture-linux")) {
+        CaptureQualityCapability {
+            supported: true,
+            output_sizes: vec![
+                CaptureOutputSize::Source,
+                CaptureOutputSize::P1080,
+                CaptureOutputSize::P720,
+            ],
+            profiles: vec![CaptureQualityProfile::Standard, CaptureQualityProfile::High],
+            detail: "Linux final-source normalization resolves output dimensions, cadence, and the libx264 encoder after final verification.".into(),
+        }
+    } else {
+        CaptureQualityCapability {
+            supported: false,
+            output_sizes: Vec::new(),
+            profiles: Vec::new(),
+            detail: "This recorder backend does not yet have a verified output-size and quality-profile path.".into(),
+        }
+    }
+}
+
+/// Admit only the request a live backend can actually fulfill. This remains a
+/// server-side guard as clients can be older, handcrafted, or stale.
+pub fn admit_capture_quality(
+    quality: Option<CaptureQualityRequest>,
+) -> Result<Option<CaptureQualityRequest>> {
+    if quality.is_none() || capture_quality_capability().supported {
+        return Ok(quality);
+    }
+    Err(RecordError::new(
+        error_codes::UNIMPLEMENTED,
+        "output quality is unavailable on this recorder backend",
+        "the active backend has no verified output-size and encoder-profile admission path",
+    )
+    .with_action(
+        "record at Source quality, or use a Linux capture backend that reports output quality support",
+    ))
+}
+
+#[cfg(test)]
+mod capture_quality_tests {
+    use super::*;
+
+    #[test]
+    fn direct_quality_requests_are_admitted_only_by_the_advertised_backend() {
+        let request =
+            CaptureQualityRequest::new(CaptureOutputSize::P720, CaptureQualityProfile::High);
+        let capability = capture_quality_capability();
+        let admitted = admit_capture_quality(Some(request.clone()));
+        if capability.supported {
+            assert_eq!(admitted.unwrap(), Some(request));
+        } else {
+            let error = admitted.unwrap_err();
+            assert_eq!(error.code, error_codes::UNIMPLEMENTED);
+            assert!(error.message.contains("unavailable"));
+        }
+    }
+}
+
 /// What to capture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureConfig {
     /// Stop after this many ms (None = until `stop`/Ctrl-C; live backends only).
     pub duration_ms: Option<u64>,
     pub fps: f64,
+    /// A server-admitted simple output request. Native backends that do not
+    /// own a verified resize/profile path never receive a non-None value.
+    #[serde(skip, default)]
+    pub quality: Option<CaptureQualityRequest>,
     /// Capture the OS cursor into the video? Default false — we HIDE it and
     /// re-render a synthetic cursor during capture polish.
     pub capture_cursor: bool,
@@ -432,6 +714,11 @@ pub struct CaptureConfig {
     /// recording artifacts or receipts.
     #[serde(skip, default)]
     pub monitor_id: Option<String>,
+    /// A native-picker-admitted crop for the exact monitor in [`Self::monitor_id`].
+    /// It is private transport only and is never serialized into an argument,
+    /// receipt, or public recorder response.
+    #[serde(skip, default)]
+    pub region: Option<CaptureRegion>,
     /// Capture just ONE application window by opaque id from [`list_windows`]
     /// (None = whole monitor/screen). Takes precedence over `monitor` when set.
     /// The backend revalidates that exact native identity immediately before use.
@@ -462,6 +749,11 @@ pub struct CaptureConfig {
     /// and screenshot captures leave it empty.
     #[serde(skip, default)]
     pub clock: Option<CaptureClock>,
+    /// Per-capture readiness proof owned by the live server reservation. Native
+    /// backends may set it only after receiving an actual screen frame; it is
+    /// deliberately absent from replay, screenshot, and serialized configs.
+    #[serde(skip, default)]
+    pub readiness: Option<CaptureReadiness>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -475,9 +767,11 @@ impl Default for CaptureConfig {
         Self {
             duration_ms: None,
             fps: 30.0,
+            quality: None,
             capture_cursor: false,
             monitor: None,
             monitor_id: None,
+            region: None,
             window: None,
             audio: false,
             microphone_source: MicrophoneSource::SystemDefault,
@@ -486,7 +780,214 @@ impl Default for CaptureConfig {
             out_dir: ".".to_string(),
             checkpoint: None,
             clock: None,
+            readiness: None,
         }
+    }
+}
+
+/// Monotonic proof that an active live capture has received a real screen
+/// frame. This is intentionally separate from the capture clock: opening a
+/// native backend, reserving an output, or starting a process is not media
+/// delivery.
+#[derive(Debug, Clone)]
+pub struct CaptureReadiness(std::sync::Arc<std::sync::atomic::AtomicU8>);
+
+/// The public, read-only projection of [`CaptureReadiness`]. `ready` is an
+/// admission fact, so it is false after terminalization even if a real frame
+/// arrived earlier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureReadinessStatus {
+    pub ready: bool,
+    pub terminal: bool,
+    pub state: CaptureReadinessState,
+}
+
+/// A capture never returns from a terminal readiness state to `Ready`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureReadinessState {
+    AwaitingFirstScreenFrame,
+    Ready,
+    TerminalBeforeFirstScreenFrame,
+    TerminalAfterFirstScreenFrame,
+}
+
+impl CaptureReadinessState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingFirstScreenFrame => "awaiting_first_screen_frame",
+            Self::Ready => "ready",
+            Self::TerminalBeforeFirstScreenFrame => "terminal_before_first_screen_frame",
+            Self::TerminalAfterFirstScreenFrame => "terminal_after_first_screen_frame",
+        }
+    }
+}
+
+impl Default for CaptureReadiness {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)))
+    }
+}
+
+impl CaptureReadiness {
+    const AWAITING: u8 = 0;
+    const READY: u8 = 1;
+    const TERMINAL_BEFORE_FRAME: u8 = 2;
+    const TERMINAL_AFTER_FRAME: u8 = 3;
+
+    /// Mark a real native screen frame as delivered to the active capture
+    /// path. A late callback cannot revive an already-terminal capture.
+    pub fn mark_first_screen_frame_delivered(&self) {
+        let _ = self.0.compare_exchange(
+            Self::AWAITING,
+            Self::READY,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    /// Close readiness at the same boundary as the live capture Stop signal.
+    /// Preserve whether a frame was observed for diagnostics, but never leave
+    /// a terminal capture admitted as ready.
+    pub fn mark_terminal(&self) {
+        loop {
+            let current = self.0.load(std::sync::atomic::Ordering::Acquire);
+            let next = match current {
+                Self::AWAITING => Self::TERMINAL_BEFORE_FRAME,
+                Self::READY => Self::TERMINAL_AFTER_FRAME,
+                Self::TERMINAL_BEFORE_FRAME | Self::TERMINAL_AFTER_FRAME => return,
+                _ => return,
+            };
+            if self
+                .0
+                .compare_exchange(
+                    current,
+                    next,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    pub fn status(&self) -> CaptureReadinessStatus {
+        let state = match self.0.load(std::sync::atomic::Ordering::Acquire) {
+            Self::READY => CaptureReadinessState::Ready,
+            Self::TERMINAL_BEFORE_FRAME => CaptureReadinessState::TerminalBeforeFirstScreenFrame,
+            Self::TERMINAL_AFTER_FRAME => CaptureReadinessState::TerminalAfterFirstScreenFrame,
+            _ => CaptureReadinessState::AwaitingFirstScreenFrame,
+        };
+        CaptureReadinessStatus {
+            ready: matches!(state, CaptureReadinessState::Ready),
+            terminal: matches!(
+                state,
+                CaptureReadinessState::TerminalBeforeFirstScreenFrame
+                    | CaptureReadinessState::TerminalAfterFirstScreenFrame
+            ),
+            state,
+        }
+    }
+}
+
+#[cfg(test)]
+mod capture_readiness_tests {
+    use super::{CaptureReadiness, CaptureReadinessState};
+
+    #[test]
+    fn real_frame_is_the_only_transition_that_admits_capture_progress() {
+        let readiness = CaptureReadiness::default();
+        assert_eq!(
+            readiness.status().state,
+            CaptureReadinessState::AwaitingFirstScreenFrame
+        );
+        assert!(!readiness.status().ready);
+
+        readiness.mark_first_screen_frame_delivered();
+        assert_eq!(readiness.status().state, CaptureReadinessState::Ready);
+        assert!(readiness.status().ready);
+        assert!(!readiness.status().terminal);
+    }
+
+    #[test]
+    fn terminalization_wins_over_a_late_frame_and_revokes_ready_admission() {
+        let before_frame = CaptureReadiness::default();
+        before_frame.mark_terminal();
+        before_frame.mark_first_screen_frame_delivered();
+        assert_eq!(
+            before_frame.status().state,
+            CaptureReadinessState::TerminalBeforeFirstScreenFrame
+        );
+        assert!(!before_frame.status().ready);
+
+        let after_frame = CaptureReadiness::default();
+        after_frame.mark_first_screen_frame_delivered();
+        after_frame.mark_terminal();
+        assert_eq!(
+            after_frame.status().state,
+            CaptureReadinessState::TerminalAfterFirstScreenFrame
+        );
+        assert!(!after_frame.status().ready);
+        assert!(after_frame.status().terminal);
+    }
+}
+
+/// Exact H.264-compatible native crop selected against one current monitor
+/// frame. The retained parent dimensions make a backend refuse a stale display
+/// mode or DPI scale rather than applying the rectangle to a changed frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureRegion {
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    parent_width: u32,
+    parent_height: u32,
+}
+
+impl CaptureRegion {
+    pub fn new(
+        left: u32,
+        top: u32,
+        width: u32,
+        height: u32,
+        parent_width: u32,
+        parent_height: u32,
+    ) -> Option<Self> {
+        let right = left.checked_add(width)?;
+        let bottom = top.checked_add(height)?;
+        (parent_width > 0
+            && parent_height > 0
+            && left.is_multiple_of(2)
+            && top.is_multiple_of(2)
+            && width >= 2
+            && height >= 2
+            && width.is_multiple_of(2)
+            && height.is_multiple_of(2)
+            && right <= parent_width
+            && bottom <= parent_height)
+            .then_some(Self {
+                left,
+                top,
+                width,
+                height,
+                parent_width,
+                parent_height,
+            })
+    }
+
+    /// Native bridge only. Selected desktop coordinates must never appear in a
+    /// public argument, response, or receipt.
+    pub fn native_parts(self) -> (u32, u32, u32, u32, u32, u32) {
+        (
+            self.left,
+            self.top,
+            self.width,
+            self.height,
+            self.parent_width,
+            self.parent_height,
+        )
     }
 }
 
@@ -504,6 +1005,9 @@ pub struct CaptureOutput {
     /// Sanitized microphone result. Endpoint identity and local paths remain private.
     pub microphone_outcome: MicrophoneCaptureOutcome,
     pub settings: Settings,
+    /// Final quality evidence, present only when a backend both accepted the
+    /// request and verified the emitted source against that request.
+    pub capture_quality: Option<CaptureQualityResolution>,
     /// Facts from the mandatory final-source verification pass, when this
     /// backend has one. A direct/unverified backend leaves this absent instead
     /// of causing a second probe solely for presentation metadata.
@@ -535,6 +1039,19 @@ pub trait Capture {
         cfg: &CaptureConfig,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<CaptureOutput>;
+
+    /// Whether this server-private backend has already atomically published the
+    /// exact `RecordingProject` represented by its [`CaptureOutput`].
+    ///
+    /// Normal backends leave this `false` and the server writes `project.json`
+    /// after capture returns. A pause-aware backend may need to publish its
+    /// source, events, project, and private receipt as one validated projection
+    /// before the ordinary recovery receipt is appended. Such a backend may set
+    /// this only when the server can byte-verify the prepublished project against
+    /// the returned output; it is not a public recording mode.
+    fn prepublished_project(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -654,6 +1171,7 @@ mod stop_tests {
                     fps: 30.0,
                     audio_rate: 48_000,
                 },
+                capture_quality: None,
                 verified_media: None,
             })
         }

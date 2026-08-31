@@ -11,6 +11,7 @@ use std::time::Instant;
 
 pub(super) fn worker_fact(
     kind: WorkerBoundaryKind,
+    stream: RecordingStream,
     generation: u64,
     epoch: u64,
     observed_at: Instant,
@@ -18,12 +19,12 @@ pub(super) fn worker_fact(
     let observed = observed(epoch, observed_at);
     match kind {
         WorkerBoundaryKind::Pause => PauseWorkerFact::PauseSealed {
-            stream: RecordingStream::ScreenVideo,
+            stream,
             generation,
             observed_boundary: observed,
         },
         WorkerBoundaryKind::Resume => PauseWorkerFact::ResumeReady {
-            stream: RecordingStream::ScreenVideo,
+            stream,
             generation,
             observed_boundary: observed,
         },

@@ -60,7 +60,7 @@ export function useRecordingExport({ capture, format, outputPath, setNote }: Pro
       if (status.state === 'done') {
         const ms = status.result?.elapsed_ms
         const duration = typeof ms === 'number' ? ` (${(ms / 1000).toFixed(1)}s)` : ''
-        setNote(`Saved ${job.format.toUpperCase()} → ${status.result?.path ?? job.path}${duration}`)
+        setNote(`Saved ${job.format.toUpperCase()}.${duration}`)
         setJob(null)
         return
       }
@@ -70,8 +70,7 @@ export function useRecordingExport({ capture, format, outputPath, setNote }: Pro
           setJob(null)
           return
         }
-        const detail = status.error?.cause ? `: ${status.error.cause}` : ''
-        setNote(`export failed: ${status.error?.message ?? 'render failed'}${detail}`)
+        setNote(`export failed: ${status.error?.message ?? 'render failed'}`)
         setJob(null)
         return
       }
@@ -119,7 +118,7 @@ export function useRecordingExport({ capture, format, outputPath, setNote }: Pro
     } catch (error) {
       const reason = failureReason(error)
       setNote(path
-        ? `export failed: ${reason} — ${OUTPUT_PATH_HINT} (${path})`
+        ? `export failed: ${reason} — ${OUTPUT_PATH_HINT}`
         : `export failed: ${reason}`)
     }
   }, [capture, format, job, outputPath, setNote])

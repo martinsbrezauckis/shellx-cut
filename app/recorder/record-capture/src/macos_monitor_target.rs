@@ -8,7 +8,16 @@ use screencapturekit::prelude::{SCDisplay, SCShareableContent};
 use crate::monitor_identity::{opaque_native_monitor_id, resolve_exact, NativeMonitorPlatform};
 
 pub(crate) fn monitor_id(display: &SCDisplay) -> Option<String> {
-    native_display_key(display)
+    monitor_id_from_native_display_id(display.display_id())
+}
+
+/// Convert only the transient CoreGraphics display number delivered by the
+/// native visual picker into an opaque identity. The raw number never crosses
+/// the private picker/server boundary; capture later re-enumerates this opaque
+/// identity exactly before it starts.
+pub(crate) fn monitor_id_from_native_display_id(display_id: u32) -> Option<String> {
+    (display_id != 0)
+        .then(|| display_id.to_string())
         .and_then(|key| opaque_native_monitor_id(NativeMonitorPlatform::Macos, &key))
 }
 

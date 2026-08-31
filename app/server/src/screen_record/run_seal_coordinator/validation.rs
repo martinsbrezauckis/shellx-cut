@@ -191,6 +191,9 @@ impl<J: RecordingSessionJournalSink> RunSealCoordinator<J> {
                 RecordingSessionJournalEntry::Transition(transition) => {
                     journal.append_transition(transition.clone())?;
                 }
+                RecordingSessionJournalEntry::InputSidecar(pin) => {
+                    journal.append_input_sidecar(pin.clone())?;
+                }
                 RecordingSessionJournalEntry::Run(run) => journal.seal_run(run.clone())?,
                 RecordingSessionJournalEntry::Terminal(terminal) => {
                     journal.seal_terminal(terminal.clone())?;

@@ -69,6 +69,7 @@ mod tests {
             Some(completed(CapturedMicrophone {
                 path: Some("mic.wav".into()),
                 microphone_lost: true,
+                first_packet_offset_ms: Some(0),
             })),
         );
         assert_eq!(path.as_deref(), Some("mic.wav"));
@@ -80,6 +81,7 @@ mod tests {
                 Some(completed(CapturedMicrophone {
                     path: None,
                     microphone_lost: false,
+                    first_packet_offset_ms: None,
                 })),
             ),
             (None, MicrophoneCaptureOutcome::MicrophoneLostNoTrack)

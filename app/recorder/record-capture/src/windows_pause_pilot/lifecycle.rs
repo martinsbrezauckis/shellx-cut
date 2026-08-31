@@ -15,6 +15,8 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use super::audio_run::WindowsPauseAudioFactory;
+use super::input_run::WindowsPauseInputFactory;
 use super::worker::WindowsPausePilotWorker;
 use super::{
     channel, WindowsPausePilotChannelError, WindowsPausePilotCommand,
@@ -120,10 +122,13 @@ impl Drop for WindowsPausePilotThread {
 /// Spawn the generic owned lifecycle. Production passes the actual WGC target
 /// resolver/factory/publisher from the Windows-only `native` module; tests
 /// inject deterministic equivalents without requiring a desktop session.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_owned<T, F, P, R, B, RS, OS, OB>(
     profile: WindowsPausePilotProfile,
     resolve: R,
     make_owner: B,
+    input_factory: Box<dyn WindowsPauseInputFactory>,
+    audio_factory: Box<dyn WindowsPauseAudioFactory>,
     reserve_start_ms: RS,
     observe_started: OS,
     observe_boundary: OB,
@@ -158,6 +163,8 @@ where
                 profile,
                 resolve,
                 make_owner,
+                input_factory,
+                audio_factory,
                 command_receiver,
                 event_sender,
                 reserve_start_ms,
@@ -204,6 +211,8 @@ fn run_owned<T, F, P, R, B, RS, OS, OB>(
     profile: WindowsPausePilotProfile,
     resolve: R,
     make_owner: B,
+    input_factory: Box<dyn WindowsPauseInputFactory>,
+    audio_factory: Box<dyn WindowsPauseAudioFactory>,
     command_receiver: WindowsPausePilotCommandReceiver,
     event_sender: WindowsPausePilotEventSender,
     mut reserve_start_ms: RS,
@@ -232,6 +241,8 @@ where
         profile,
         resolve,
         make_owner,
+        input_factory,
+        audio_factory,
         &mut reserve_start_ms,
         &mut observe_started,
     ) {

@@ -25,6 +25,12 @@ pub(crate) use self_test::run as self_test;
 /// Protocol version we advertise (matches the office-suite implementation era).
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_TOOLS_LIST_BYTES: usize = 384 * 1024;
+// Keep tools/list below the client ceiling as the public registry grows. The
+// tool name, argument names, types, enums, required fields, and output schema
+// remain intact; only explanatory prose is compacted for the list response.
+const MAX_TOOL_DESCRIPTION_CHARS: usize = 400;
+const MAX_TOOL_RESULT_DESCRIPTION_CHARS: usize = 180;
+const MAX_INPUT_SCHEMA_DESCRIPTION_CHARS: usize = 80;
 
 /// How tools/call executes a verb (the public single-state-holder contract: one state holder).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,8 +266,12 @@ where
         .map(|v| {
             let mut tool = json!({
                 "name": VerbRegistry::mcp_tool_name(&v.name),
-                "description": format!("{} Returns: {}", concise(&v.description, 400), concise(&v.result, 200)),
-                "inputSchema": trim_schema_descriptions(&v.args, 120),
+                "description": format!(
+                    "{} Returns: {}",
+                    concise(&v.description, MAX_TOOL_DESCRIPTION_CHARS),
+                    concise(&v.result, MAX_TOOL_RESULT_DESCRIPTION_CHARS),
+                ),
+                "inputSchema": trim_schema_descriptions(&v.args, MAX_INPUT_SCHEMA_DESCRIPTION_CHARS),
             });
             // Forward the machine-readable result contract as MCP outputSchema
             // when the verb declares one, but only if it is self-contained.

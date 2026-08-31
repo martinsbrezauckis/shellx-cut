@@ -118,6 +118,54 @@ async fn nested_required_and_unknown_paths_are_exact() {
 }
 
 #[tokio::test]
+async fn screen_record_readiness_status_requires_an_exact_active_capture_id() {
+    let state = AppState::new();
+    assert_schema_error(
+        dispatch(&state, "screen_record.status", json!({}), test_actor()).await,
+        "screen_record.status",
+        "/capture_id",
+        "required",
+    );
+    assert_schema_error(
+        dispatch(
+            &state,
+            "screen_record.status",
+            json!({"capture_id":"../not-a-capture"}),
+            test_actor(),
+        )
+        .await,
+        "screen_record.status",
+        "/capture_id",
+        "pattern",
+    );
+    assert_schema_error(
+        dispatch(
+            &state,
+            "screen_record.status",
+            json!({"capture_id":"cap_status", "extra":true}),
+            test_actor(),
+        )
+        .await,
+        "screen_record.status",
+        "/extra",
+        "additionalProperties",
+    );
+
+    let inactive = dispatch(
+        &state,
+        "screen_record.status",
+        json!({"capture_id":"cap_status"}),
+        test_actor(),
+    )
+    .await;
+    assert_eq!(
+        inactive.error.as_ref().map(|error| error.code.as_str()),
+        Some(error_codes::NOT_FOUND),
+        "a valid but inactive capture must not be inferred ready: {inactive:?}"
+    );
+}
+
+#[tokio::test]
 async fn legacy_inverse_compatibility_option_is_deprecated_and_type_checked() {
     let state = AppState::new();
     let spec = state

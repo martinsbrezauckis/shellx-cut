@@ -1,18 +1,92 @@
-use super::stream::run_stream;
-use cpal::traits::DeviceTrait;
+use super::device_run::{run_device, DeviceCaptureRequest};
+use super::wav_layout::MicrophoneWavLayout;
 use record_core::{error_codes, RecordError, Result};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const MIC_JOIN_GRACE: Duration = Duration::from_millis(750);
 static MIC_WARM_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MIC_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MIC_WARM_SEQ: AtomicU64 = AtomicU64::new(0);
+static MIC_ADMISSION: Mutex<()> = Mutex::new(());
+
+/// One process-local ownership claim for the native microphone stream.
+///
+/// A voiceover and a screen-record microphone sidecar must never race each
+/// other for the same CPAL input. The claim is intentionally held by the
+/// worker, rather than its caller, through native finalization.
+pub(crate) struct MicrophoneCaptureReservation(());
+
+impl Drop for MicrophoneCaptureReservation {
+    fn drop(&mut self) {
+        MIC_CAPTURE_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+pub(crate) fn reserve_microphone_capture() -> Result<MicrophoneCaptureReservation> {
+    let _admission = MIC_ADMISSION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if MIC_WARM_ACTIVE.load(Ordering::Acquire) {
+        return Err(RecordError::new(
+            error_codes::CAPTURE,
+            "microphone warm-up is still stopping",
+            "the native microphone driver is reserved by the bounded microphone test",
+        )
+        .with_action("retry after the microphone test finishes"));
+    }
+    MIC_CAPTURE_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| {
+            RecordError::new(
+                error_codes::CAPTURE,
+                "microphone is already in use",
+                "another Cut capture still owns the native microphone stream",
+            )
+            .with_action("stop the active recording and wait for it to finish")
+        })?;
+    Ok(MicrophoneCaptureReservation(()))
+}
 
 pub(crate) struct CapturedMicrophone {
     pub path: Option<String>,
     pub microphone_lost: bool,
+    /// Native callback readiness, measured from the caller's capture origin.
+    #[cfg_attr(
+        not(all(windows, feature = "capture-windows")),
+        allow(
+            dead_code,
+            reason = "consumed by the Windows pause-sidecar native path"
+        )
+    )]
+    pub first_packet_offset_ms: Option<u64>,
+}
+
+/// A one-way recording-clock arm for a microphone stream that must prove the
+/// device is live before it starts retaining samples.  The stream still opens
+/// only after an explicit capture intent; this gate merely prevents pre-roll
+/// callbacks from becoming part of the durable WAV.
+#[derive(Debug, Default)]
+pub(crate) struct MicRecordingGate(OnceLock<Instant>);
+
+impl MicRecordingGate {
+    pub(crate) fn arm(&self) -> Result<Instant> {
+        let origin = Instant::now();
+        self.0.set(origin).map_err(|_| {
+            RecordError::new(
+                error_codes::GUARDRAIL,
+                "microphone recording has already started",
+                "the recording clock is one-way and cannot be restarted inside one take",
+            )
+        })?;
+        Ok(origin)
+    }
+
+    pub(crate) fn origin(&self) -> Option<Instant> {
+        self.0.get().copied()
+    }
 }
 
 pub(crate) struct WarmResult {
@@ -25,6 +99,8 @@ pub(super) struct MicStreamControl<'a> {
     pub(super) ready: &'a Arc<AtomicBool>,
     pub(super) capture_started: Instant,
     pub(super) meter_peak: Option<Arc<AtomicU32>>,
+    pub(super) recording_gate: Option<Arc<MicRecordingGate>>,
+    pub(super) wav_layout: MicrophoneWavLayout,
 }
 
 fn wait_for_thread<T>(handle: &JoinHandle<T>, max_wait: Duration) -> bool {
@@ -53,20 +129,96 @@ pub(crate) fn spawn_device_mic(
     ready: Arc<AtomicBool>,
     capture_started: Instant,
 ) -> JoinHandle<Result<CapturedMicrophone>> {
-    if MIC_WARM_ACTIVE.load(Ordering::Acquire) {
-        return thread::spawn(|| {
-            Err(RecordError::new(
-                error_codes::CAPTURE,
-                "microphone warm-up is still stopping",
-                "the native microphone driver did not finish its bounded warm-up",
-            )
-            .with_action("retry after the microphone test finishes"))
-        });
+    match reserve_microphone_capture() {
+        Ok(reservation) => spawn_device_mic_reserved(
+            path,
+            device,
+            stop,
+            ready,
+            capture_started,
+            reservation,
+            None,
+        ),
+        Err(error) => thread::spawn(move || Err(error)),
     }
-    thread::spawn(move || run_device(path, device, stop, ready, capture_started, None))
+}
+
+pub(crate) fn spawn_device_mic_reserved(
+    path: String,
+    device: cpal::Device,
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    capture_started: Instant,
+    reservation: MicrophoneCaptureReservation,
+    recording_gate: Option<Arc<MicRecordingGate>>,
+) -> JoinHandle<Result<CapturedMicrophone>> {
+    spawn_device_mic_reserved_with_layout(
+        path,
+        device,
+        stop,
+        ready,
+        capture_started,
+        reservation,
+        recording_gate,
+        MicrophoneWavLayout::PaddedToCaptureClock,
+    )
+}
+
+#[cfg_attr(
+    not(all(windows, feature = "capture-windows")),
+    allow(dead_code, reason = "private Windows pause-sidecar capture path")
+)]
+pub(crate) fn spawn_device_mic_reserved_unpadded(
+    path: String,
+    device: cpal::Device,
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    capture_started: Instant,
+    reservation: MicrophoneCaptureReservation,
+    recording_gate: Option<Arc<MicRecordingGate>>,
+) -> JoinHandle<Result<CapturedMicrophone>> {
+    spawn_device_mic_reserved_with_layout(
+        path,
+        device,
+        stop,
+        ready,
+        capture_started,
+        reservation,
+        recording_gate,
+        MicrophoneWavLayout::PacketStart,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_device_mic_reserved_with_layout(
+    path: String,
+    device: cpal::Device,
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    capture_started: Instant,
+    reservation: MicrophoneCaptureReservation,
+    recording_gate: Option<Arc<MicRecordingGate>>,
+    wav_layout: MicrophoneWavLayout,
+) -> JoinHandle<Result<CapturedMicrophone>> {
+    thread::spawn(move || {
+        let _reservation = reservation;
+        run_device(DeviceCaptureRequest {
+            path,
+            device,
+            stop,
+            ready,
+            capture_started,
+            meter_peak: None,
+            recording_gate,
+            wav_layout,
+        })
+    })
 }
 
 pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> WarmResult {
+    let _admission = MIC_ADMISSION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if MIC_WARM_ACTIVE
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -76,6 +228,14 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
             peak_dbfs: None,
         };
     }
+    if MIC_CAPTURE_ACTIVE.load(Ordering::Acquire) {
+        MIC_WARM_ACTIVE.store(false, Ordering::Release);
+        return WarmResult {
+            live: false,
+            peak_dbfs: None,
+        };
+    }
+    drop(_admission);
 
     let stop = Arc::new(AtomicBool::new(false));
     let ready = Arc::new(AtomicBool::new(false));
@@ -98,14 +258,16 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
                 "no microphone found",
             )
         })?;
-        run_device(
-            worker_tmp.to_string_lossy().into_owned(),
+        run_device(DeviceCaptureRequest {
+            path: worker_tmp.to_string_lossy().into_owned(),
             device,
-            worker_stop,
-            worker_ready,
-            Instant::now(),
-            Some(worker_peak),
-        )
+            stop: worker_stop,
+            ready: worker_ready,
+            capture_started: Instant::now(),
+            meter_peak: Some(worker_peak),
+            recording_gate: None,
+            wav_layout: MicrophoneWavLayout::PaddedToCaptureClock,
+        })
     });
     let started = std::time::Instant::now();
     let budget = Duration::from_millis(max_ms.max(200));
@@ -139,35 +301,6 @@ pub(crate) fn warm_device(input_device: Option<cpal::Device>, max_ms: u64) -> Wa
             .then(|| peak_dbfs(peak.load(Ordering::Relaxed)))
             .flatten(),
     }
-}
-
-fn run_device(
-    path: String,
-    device: cpal::Device,
-    stop: Arc<AtomicBool>,
-    ready: Arc<AtomicBool>,
-    capture_started: Instant,
-    meter_peak: Option<Arc<AtomicU32>>,
-) -> Result<CapturedMicrophone> {
-    let supported = device
-        .default_input_config()
-        .map_err(|e| RecordError::new(error_codes::CAPTURE, "mic config", e.to_string()))?;
-    let end = run_stream(
-        &device,
-        supported,
-        &path,
-        None,
-        MicStreamControl {
-            stop: &stop,
-            ready: &ready,
-            capture_started,
-            meter_peak,
-        },
-    )?;
-    Ok(CapturedMicrophone {
-        path: end.samples_written.then_some(path),
-        microphone_lost: end.microphone_lost,
-    })
 }
 
 /// Convert an actual integer sample peak into a restrained, display-safe dBFS

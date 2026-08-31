@@ -35,9 +35,14 @@ export const EDGE_SCROLL_MAX_PX = 15
 
 /** Track lane heights by kind. */
 export const TRACK_HEIGHT: Record<string, number> = { video: 56, audio: 40, caption: 32 }
-/** Ruler height + left track-header rail width. */
+/** Ruler height + left track-header rail width.
+ *
+ * Audio headers keep their identity/lock above seven persistent controls.
+ * 216px leaves the 198px action row inside its sticky rail (including gaps),
+ * rather than letting its leading actions slide underneath the viewport edge.
+ */
 export const RULER_H = 28
-export const RAIL_W = 176
+export const RAIL_W = 216
 
 // ---------------------------------------------------------------------------
 // Time ↔ pixel transform (timeline behavior contract — ONE transform, used everywhere)

@@ -24,8 +24,6 @@ pub const VERBS_JSON: &str = include_str!("../../../schema/verbs.json");
 
 /// One verb entry from schema/verbs.json (subset of fields we consume; the
 /// args schema stays raw JSON because we forward it verbatim to MCP clients).
-// Domain and result are contract surfaces consumed by the server and parity gate.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct VerbSpec {
     /// Fully-qualified name, e.g. "transcript.cut_words".
@@ -78,11 +76,10 @@ struct RawVerbRegistry {
 }
 
 /// Parsed registry plus one compiled validator per public verb.
-// The schema tag is asserted in tests and used by the parity gate.
-#[allow(dead_code)]
+// The schema tag is type-checked on load and asserted by the validation test.
 #[derive(Debug, Clone)]
 pub struct VerbRegistry {
-    pub schema: String,
+    _schema: String,
     pub verbs: Vec<VerbSpec>,
     validators: CompiledVerbSchemas,
     public_json: serde_json::Value,
@@ -121,7 +118,7 @@ impl VerbRegistry {
                 .insert("args".into(), spec.args.clone());
         }
         Ok(Self {
-            schema: raw.schema,
+            _schema: raw.schema,
             verbs: raw.verbs,
             validators,
             public_json,
@@ -146,6 +143,11 @@ impl VerbRegistry {
 
     pub fn public_json(&self) -> &serde_json::Value {
         &self.public_json
+    }
+
+    #[cfg(test)]
+    fn schema(&self) -> &str {
+        &self._schema
     }
 
     /// MCP tool name for a verb: dots → underscores ("transcript.cut_words"
@@ -238,10 +240,10 @@ mod tests {
     #[test]
     fn registry_parses_with_all_verbs() {
         let reg = VerbRegistry::load();
-        assert_eq!(reg.schema, "shellx-cut/verbs/1");
+        assert_eq!(reg.schema(), "shellx-cut/verbs/1");
         assert_eq!(
             reg.verbs.len(),
-            278,
+            294,
             "verb count is a deliberate-contract tripwire: bump this AND README + \
              skill/shellx-cut/reference.md when verbs.json changes"
         );
@@ -320,6 +322,7 @@ mod tests {
             "audio.cleanup_voice",
             "audio.add_music",
             "audio.dub",
+            "voiceover.start",
             "transcript.cut_words",
             "transcript.chapters",
             "transcript.remove_retakes",

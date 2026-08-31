@@ -27,11 +27,13 @@ import { callVerb, type OpRecord, type Project, type Transcript as TranscriptDat
 import { events } from '../../lib/events'
 import { fetchDoctor, setupPerception, type DoctorCard } from '../../lib/doctor'
 import AssetWords from './AssetWords'
+import ChapterNavigation from './ChapterNavigation'
 import ReelTray from './ReelTray'
-import TimelineView from './TimelineView'
+import TranscriptPhraseList from './TranscriptPhraseList'
 import TranscriptSetupCard from './TranscriptSetupCard'
 import type { TimelineWord } from '../../lib/client'
 import { chaptersOf, isObject, numberField, reelSnippet, searchResultFrom, selRange, timelineEntriesFrom, type Aggressiveness, type ReelSpan, type Sel } from './model'
+import { type ChapterAssetAvailability, type TranscriptChapter } from './chapterNavigationModel'
 import { activeCutSpans, dispatchVerb, fmtDur, fmtTc, seekPlayhead, type CutSpan } from '../Review/shared'
 import { sourceAtPlayhead } from '../Timeline/layout'
 import { Icon } from '../../icons'
@@ -85,6 +87,11 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   const [aggr, setAggr] = useState<'' | Aggressiveness>('')
   const [passBusy, setPassBusy] = useState<'' | 'silence' | 'fillers' | 'captions' | 'retakes' | 'chapters'>('')
   const [passNote, setPassNote] = useState('')
+  /** transcript.chapters returns SOURCE starts. Current occurrence resolution
+   * stays live in ChapterNavigation; this state retains no translated time. */
+  const [chapterResult, setChapterResult] = useState<{ asset: string; chapters: TranscriptChapter[] } | null>(null)
+  const [chapterAvailability, setChapterAvailability] = useState<ChapterAssetAvailability>('checking')
+  const chapterRequestRef = useRef(0)
   // --- reel authoring (highlight reel) — pure VIEW state, zero-local-mutation contract ------------
   /** Reel mode toggle: when on, the selection toolbar offers "Add to reel"
    *  instead of building a one-shot cut. */
@@ -206,9 +213,15 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   const bodyRef = useRef<HTMLDivElement>(null)
   const mouseDownRef = useRef(false)
   const draggedRef = useRef(false)
-  /** Last clicked word — the anchor a later shift-click extends from,
-      surviving the plain-click path that clears the visual selection. */
-  const lastDownRef = useRef<{ asset: string; idx: number } | null>(null)
+  /** Last clicked word — preserves the exact occurrence/source route through
+      the mouseup selection state machine. */
+  const lastDownRef = useRef<{
+    asset: string
+    idx: number
+    atMs: number
+    location: 'source' | 'timeline'
+    clipId?: string | null
+  } | null>(null)
   /** Auto-scroll pause: user wheel/drag pauses follow until this timestamp. */
   const pausedUntilRef = useRef(0)
 
@@ -223,6 +236,13 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
       return Object.keys(keep).length === Object.keys(prev).length ? prev : keep
     })
   }, [project])
+
+  useEffect(() => {
+    chapterRequestRef.current++
+    setChapterResult(null)
+    setChapterAvailability('checking')
+    setPassBusy((busy) => busy === 'chapters' ? '' : busy)
+  }, [project?.active_sequence, project?.name])
 
   // Load transcripts for assets that have one and aren't provided via props.
   useEffect(() => {
@@ -341,28 +361,49 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setTimeout(() => setSearchNote(null), 4000)
   }, [searchQuery, all, seek])
 
+  const seekSource = useCallback((asset: string, atMs: number) => {
+    document.dispatchEvent(new CustomEvent('cut:open-source-monitor', {
+      detail: { asset, at_ms: Math.max(0, Math.round(atMs)) },
+    }))
+  }, [])
+
   const onWordDown = useCallback(
-    (asset: string, idx: number, ev: React.MouseEvent) => {
+    (
+      asset: string,
+      idx: number,
+      route: { atMs: number; location: 'source' | 'timeline'; clipId?: string | null },
+      ev: React.MouseEvent,
+    ) => {
       ev.preventDefault() // suppress native text selection — spans are the unit
       mouseDownRef.current = true
       draggedRef.current = false
       // shift-click extends from the live selection OR the last clicked word
-      const anchor = sel?.asset === asset ? sel.anchor : lastDownRef.current?.asset === asset ? lastDownRef.current.idx : null
+      const sameSelectionRoute = sel?.asset === asset
+        && sel.location === route.location
+        && (sel.clipId ?? null) === (route.clipId ?? null)
+      const sameLastRoute = lastDownRef.current?.asset === asset
+        && lastDownRef.current.location === route.location
+        && (lastDownRef.current.clipId ?? null) === (route.clipId ?? null)
+      const anchor = sameSelectionRoute
+        ? sel!.anchor
+        : sameLastRoute
+          ? lastDownRef.current!.idx
+          : null
       if (ev.shiftKey && anchor !== null) {
-        setSel({ asset, anchor, head: idx }) // shift-click = range select
+        setSel({ asset, anchor, head: idx, location: route.location, clipId: route.clipId })
         draggedRef.current = true // not a seek-click
       } else {
-        lastDownRef.current = { asset, idx }
-        setSel({ asset, anchor: idx, head: idx })
+        lastDownRef.current = { asset, idx, ...route }
+        setSel({ asset, anchor: idx, head: idx, location: route.location, clipId: route.clipId })
       }
     },
     [sel],
   )
 
-  const onWordEnter = useCallback((asset: string, idx: number) => {
+  const onWordEnter = useCallback((asset: string, idx: number, route: { location: 'source' | 'timeline'; clipId?: string | null }) => {
     if (!mouseDownRef.current) return
     setSel((prev) => {
-      if (!prev || prev.asset !== asset || prev.head === idx) return prev
+      if (!prev || prev.asset !== asset || prev.location !== route.location || (prev.clipId ?? null) !== (route.clipId ?? null) || prev.head === idx) return prev
       draggedRef.current = true
       return { ...prev, head: idx }
     })
@@ -374,10 +415,11 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
       if (!mouseDownRef.current) return
       mouseDownRef.current = false
       if (!draggedRef.current) {
+        const route = lastDownRef.current
         setSel((prev) => {
-          if (prev && prev.anchor === prev.head) {
-            const w = all[prev.asset]?.words[prev.anchor]
-            if (w) seek(w.start_ms)
+          if (prev && route && prev.anchor === prev.head && prev.asset === route.asset) {
+            if (route.location === 'source') seekSource(route.asset, route.atMs)
+            else seek(route.atMs)
             return null // plain click: seek, no selection left behind
           }
           return prev
@@ -386,7 +428,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     }
     window.addEventListener('mouseup', up)
     return () => window.removeEventListener('mouseup', up)
-  }, [all, seek])
+  }, [seek, seekSource])
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => {
@@ -399,10 +441,14 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   const doCut = useCallback(() => {
     if (!sel) return
     const range = selRange(sel)
-    onCutWords(sel.asset, range) // human cut: rationale stays empty (the rationale-preservation contract — optional)
+    if (sel.location === 'timeline') {
+      cutTimelineWords(sel.asset, range, sel.clipId ?? null)
+    } else {
+      onCutWords(sel.asset, range) // human cut: rationale stays empty (the rationale-preservation contract — optional)
+    }
     setPendingCut(sel) // ghost tint until op_applied confirms (rule 8)
     setSel(null)
-  }, [sel, onCutWords])
+  }, [sel, onCutWords, cutTimelineWords])
 
   // --- Non-destructive mute-word ---------------------------------------------
   // Per-asset UNION of mute ranges across audio-track clips (SOURCE ms) — the
@@ -600,29 +646,40 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setPassNote(r.ok ? `retakes pass: ${r.op_ids?.length ?? 0} cuts` : `retakes pass failed: ${r.error?.message ?? 'error'}`)
   }, [])
 
-  // "Generate chapters" — auto-segment the transcript into topic chapters
-  // (transcript.chapters, NON-MUTATING) and DROP one timeline marker per chapter
-  // start (edit.add_marker), so the chapters are visible + navigable on the ruler.
-  // Uses the first transcribed asset (the talking-head case). Always ≥1 chapter
-  // for a non-empty transcript; an un-transcribed asset → the verb's error.
+  // "Generate chapters" segments the transcript non-destructively. Its starts
+  // are SOURCE timestamps, so they are never written as timeline markers here:
+  // ChapterNavigation resolves every current exact video occurrence before a
+  // user can seek (and asks when the source is reused).
   const runChapters = useCallback(async () => {
     const asset = Object.keys(all)[0]
     if (!asset) { setPassNote('chapters: no transcript yet'); return }
+    const request = ++chapterRequestRef.current
     setPassBusy('chapters')
     setPassNote('')
+    setChapterResult(null)
+    setChapterAvailability('checking')
+    setToolsOpen(false)
     const r = await callVerb('transcript.chapters', { asset })
+    if (request !== chapterRequestRef.current) return
     if (r.ok && r.result) {
       const chapters = chaptersOf(r.result)
-      let dropped = 0
-      for (const ch of chapters) {
-        const m = await callVerb('edit.add_marker', { at_ms: Math.round(ch.start_ms), label: (ch.title || `Chapter ${dropped + 1}`).slice(0, 80), rationale: 'transcript: chapter marker' })
-        if (m.ok) dropped++
+      if (chapters.length === 0) {
+        setPassNote('chapters: no chapter starts returned')
+        if (request === chapterRequestRef.current) setPassBusy('')
+        return
       }
-      setPassNote(`chapters: ${chapters.length} found, ${dropped} marker${dropped === 1 ? '' : 's'} added`)
+      setChapterResult({ asset, chapters })
+      setPassNote(`chapters: ${chapters.length} found`)
+      const availability = await callVerb('media.check', { asset })
+      if (request !== chapterRequestRef.current) return
+      const row = availability.ok && availability.result
+        ? availability.result.assets.find((entry) => entry.asset === asset)
+        : undefined
+      setChapterAvailability(row?.exists === true ? 'available' : row?.exists === false ? 'offline' : 'unknown')
     } else {
       setPassNote(`chapters failed: ${r.error?.message ?? r.error?.code ?? 'error'}`)
     }
-    setPassBusy('')
+    if (request === chapterRequestRef.current) setPassBusy('')
   }, [all])
 
   // "Generate captions" builds a caption track from the transcript.
@@ -646,9 +703,22 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     const from = words[a]
     const to = words[b]
     if (!from || !to) return null
+    const occurrenceWords = sel.location === 'timeline'
+      ? tlEntries.filter((word) => word.asset === sel.asset && word.clip_id === sel.clipId && word.word_index >= a && word.word_index <= b)
+      : []
+    const timelineFrom = occurrenceWords[0]?.timeline_start_ms
+    const timelineTo = occurrenceWords.at(-1)?.timeline_end_ms
     const range: [number, number] = [a, b]
-    return { asset: sel.asset, range, count: b - a + 1, fromMs: from.start_ms, toMs: to.end_ms }
-  }, [sel, all])
+    return {
+      asset: sel.asset,
+      range,
+      count: b - a + 1,
+      fromMs: from.start_ms,
+      toMs: to.end_ms,
+      displayFromMs: timelineFrom ?? from.start_ms,
+      displayToMs: timelineTo ?? to.end_ms,
+    }
+  }, [sel, all, tlEntries])
   const [toolbarXY, setToolbarXY] = useState<{ x: number; y: number } | null>(null)
   useEffect(() => {
     if (!toolbar || !bodyRef.current) {
@@ -790,15 +860,15 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
                 {passBusy === 'retakes' ? 'cutting…' : 'Remove retakes'}
               </button>
               <div className="tx__tools-sep" />
-              {/* Generate chapters — topic chapters as ruler markers
-                  (transcript.chapters → edit.add_marker per chapter). */}
+              {/* Generate chapters — source starts resolve through the current
+                  video edit before ChapterNavigation offers a seek. */}
               <button
                 className="tx__tools-item"
                 role="menuitem"
                 data-cut-action="generate-chapters"
                 disabled={passBusy !== ''}
                 onClick={() => void runChapters()}
-                title="Find topic changes and add chapter markers"
+                title="Find topic changes, then navigate exact current video occurrences"
               >
                 {passBusy === 'chapters' ? 'segmenting…' : 'Generate chapters'}
               </button>
@@ -842,6 +912,15 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
           onRemove={removeFromReel}
         />
       )}
+      {chapterResult && (
+        <ChapterNavigation
+          asset={chapterResult.asset}
+          chapters={chapterResult.chapters}
+          availability={chapterAvailability}
+          project={project}
+          onSeek={seekTimeline}
+        />
+      )}
       <div className="panel__body tx__body" ref={bodyRef} onWheel={pauseFollow} onMouseDown={pauseFollow}>
         {!hasAssets && (
           hasProject ? (
@@ -876,12 +955,34 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
         {/* : timeline-mapped views (Clip / Program) are the default; the
             legacy raw per-source view is kept behind the Source toggle. */}
         {hasAssets && assetIds.length > 0 && txView === 'timeline' && (
-          <TimelineView
+          <TranscriptPhraseList
             entries={tlEntries}
             scope={txScope}
             playheadMs={playheadMs}
+            selection={sel?.location === 'timeline' ? sel : null}
             onSeek={seekTimeline}
-            onCut={cutTimelineWords}
+            onWordDown={(word, event) => onWordDown(word.asset, word.word_index, {
+              atMs: word.timeline_start_ms,
+              location: 'timeline',
+              clipId: word.clip_id,
+            }, event)}
+            onWordEnter={(word) => onWordEnter(word.asset, word.word_index, {
+              location: 'timeline',
+              clipId: word.clip_id,
+            })}
+            onWordActivate={(word) => seekTimeline(word.timeline_start_ms)}
+            onSelectPhrase={(phrase) => {
+              const first = phrase.words[0]
+              const last = phrase.words.at(-1)
+              if (!first || !last) return
+              setSel({
+                asset: phrase.asset,
+                anchor: first.word_index,
+                head: last.word_index,
+                location: 'timeline',
+                clipId: phrase.clipId,
+              })
+            }}
           />
         )}
         {hasAssets && assetIds.length > 0 && txView === 'source' && assetIds.map((assetId) => (
@@ -893,15 +994,21 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
             muted={mutedByAsset.get(assetId) ?? []}
             ignored={ignoredByAsset.get(assetId) ?? []}
             activeIdx={active?.asset === assetId ? active.idx : -1}
-            sel={sel?.asset === assetId ? selRange(sel) : null}
-            pending={pendingCut?.asset === assetId ? selRange(pendingCut) : null}
-            onWordDown={onWordDown}
-            onWordEnter={onWordEnter}
+            sel={sel?.location === 'source' && sel.asset === assetId ? selRange(sel) : null}
+            pending={pendingCut?.location === 'source' && pendingCut.asset === assetId ? selRange(pendingCut) : null}
+            onWordDown={(asset, idx, atMs, event) => onWordDown(asset, idx, { atMs, location: 'source' }, event)}
+            onWordEnter={(asset, idx) => onWordEnter(asset, idx, { location: 'source' })}
+            onWordActivate={(asset, _idx, atMs) => seekSource(asset, atMs)}
             onRestore={onRestore}
           />
         ))}
         {toolbar && toolbarXY && (
-          <div className="tx__cut-toolbar" style={{ left: toolbarXY.x, top: toolbarXY.y }} data-cut-toolbar="">
+          <div
+            className="tx__cut-toolbar"
+            style={{ left: toolbarXY.x, top: toolbarXY.y }}
+            data-cut-toolbar=""
+            {...(sel?.location === 'timeline' ? { 'data-cut-timeline-cutbar': '' } : {})}
+          >
             {/* Reel mode → primary action is "Add to reel"; Cut stays available
                 as a secondary action. canAddSel enforces single-asset scope. */}
             {reelMode ? (
@@ -917,9 +1024,15 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
               </button>
             ) : (
               <>
-                <button className="tx__cut-btn" data-cut-action="cut-words" onMouseDown={(e) => e.preventDefault()} onClick={doCut}>
-                  Cut {toolbar.count} word{toolbar.count === 1 ? '' : 's'}
-                </button>
+                {sel?.location === 'timeline' ? (
+                  <button className="tx__cut-btn" data-cut-action="timeline-cut-words" onMouseDown={(e) => e.preventDefault()} onClick={doCut}>
+                    Cut {toolbar.count} word{toolbar.count === 1 ? '' : 's'}
+                  </button>
+                ) : (
+                  <button className="tx__cut-btn" data-cut-action="cut-words" onMouseDown={(e) => e.preventDefault()} onClick={doCut}>
+                    Cut {toolbar.count} word{toolbar.count === 1 ? '' : 's'}
+                  </button>
+                )}
                 {(ignoredByAsset.get(toolbar.asset) ?? []).some((r) => r[0] <= toolbar.range[1] && r[1] >= toolbar.range[0]) ? (
                   <button
                     className="tx__cut-btn tx__ignore-btn"
@@ -965,8 +1078,27 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
               </>
             )}
             <span className="tx__cut-tc">
-              {fmtTc(toolbar.fromMs)} – {fmtTc(toolbar.toMs)}
+              {sel?.location === 'timeline' ? 'Timeline ' : ''}{fmtTc(toolbar.displayFromMs)} – {fmtTc(toolbar.displayToMs)}
             </span>
+            {sel?.location === 'timeline' ? (
+              <button
+                type="button"
+                className="txv__cut-x"
+                data-cut-action="timeline-clear-sel"
+                onClick={() => setSel(null)}
+                aria-label="Clear selected transcript words"
+                title="Clear selection"
+              ><Icon name="close" size={14} label="clear selection" /></button>
+            ) : (
+              <button
+                type="button"
+                className="txv__cut-x"
+                data-cut-action="clear-sel"
+                onClick={() => setSel(null)}
+                aria-label="Clear selected transcript words"
+                title="Clear selection"
+              ><Icon name="close" size={14} label="clear selection" /></button>
+            )}
           </div>
         )}
       </div>

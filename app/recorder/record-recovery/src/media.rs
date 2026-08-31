@@ -25,6 +25,9 @@ struct ProbeFormat {
 #[derive(Deserialize)]
 struct ProbeStream {
     codec_type: Option<String>,
+    codec_name: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
     nb_read_frames: Option<String>,
     avg_frame_rate: Option<String>,
     r_frame_rate: Option<String>,
@@ -55,7 +58,7 @@ pub(crate) fn verify_checkpoint_media(
             "error",
             "-count_frames",
             "-show_entries",
-            "format=duration:stream=codec_type,nb_read_frames,avg_frame_rate,r_frame_rate",
+            "format=duration:stream=codec_type,codec_name,width,height,nb_read_frames,avg_frame_rate,r_frame_rate",
             "-of",
             "json",
         ])
@@ -128,6 +131,14 @@ fn media_facts_from_ffprobe(bytes: &[u8]) -> Result<Option<MediaFacts>, Manifest
         duration_ms,
         decoded_video_frames,
         has_audio,
+        width: video.width.filter(|width| *width > 0),
+        height: video.height.filter(|height| *height > 0),
+        codec_name: video
+            .codec_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|codec| !codec.is_empty())
+            .map(str::to_owned),
         avg_frame_rate: video
             .avg_frame_rate
             .as_deref()
@@ -160,6 +171,16 @@ pub(crate) fn matches_expected(expected: &MediaFacts, actual: &MediaFacts) -> bo
         && expected.has_audio == actual.has_audio
         && expected.duration_ms.abs_diff(actual.duration_ms) <= 20
         && expected
+            .width
+            .is_none_or(|width| actual.width == Some(width))
+        && expected
+            .height
+            .is_none_or(|height| actual.height == Some(height))
+        && expected
+            .codec_name
+            .as_ref()
+            .is_none_or(|codec| actual.codec_name.as_ref() == Some(codec))
+        && expected
             .avg_frame_rate
             .is_none_or(|rate| actual.avg_frame_rate == Some(rate))
         && expected
@@ -174,13 +195,16 @@ mod tests {
     #[test]
     fn verification_keeps_exact_rates_and_rejects_zero_over_zero() {
         let media = media_facts_from_ffprobe(
-            br#"{"format":{"duration":"10.010"},"streams":[{"codec_type":"video","nb_read_frames":"300","avg_frame_rate":"30000/1001","r_frame_rate":"30/1"}]}"#,
+            br#"{"format":{"duration":"10.010"},"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"nb_read_frames":"300","avg_frame_rate":"30000/1001","r_frame_rate":"30/1"}]}"#,
         )
         .unwrap()
         .unwrap();
         assert_eq!(media.avg_frame_rate, FrameRate::from_ffprobe("30000/1001"));
         assert_eq!(media.r_frame_rate, FrameRate::from_ffprobe("30/1"));
         assert_eq!(media.probed_cadence().decoded_video_frames, Some(300));
+        assert_eq!(media.width, Some(1920));
+        assert_eq!(media.height, Some(1080));
+        assert_eq!(media.codec_name.as_deref(), Some("h264"));
 
         let invalid = media_facts_from_ffprobe(
             br#"{"format":{"duration":"1"},"streams":[{"codec_type":"video","nb_read_frames":"1","avg_frame_rate":"0/0","r_frame_rate":"0/0"}]}"#,
@@ -199,5 +223,8 @@ mod tests {
         .unwrap();
         assert!(facts.avg_frame_rate.is_none());
         assert!(facts.r_frame_rate.is_none());
+        assert!(facts.width.is_none());
+        assert!(facts.height.is_none());
+        assert!(facts.codec_name.is_none());
     }
 }

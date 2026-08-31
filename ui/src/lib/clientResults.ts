@@ -95,6 +95,65 @@ export interface RestoreResult {
   rebased_over?: string[]
 }
 
+/** One contiguous existing `group_id` action, never a generic transaction. */
+export interface CompoundActionIdentity {
+  group_id: string
+  first_op_id: string
+  last_op_id: string
+  op_ids: string[]
+  operation_count: number
+  sequence_id: string
+}
+
+/** Read-only, revision-bound eligibility for rejecting one grouped action. */
+export interface CompoundActionPreviewResult {
+  schema: 'shellx-cut/compound-action-preview/1'
+  project_revision: string
+  preview_hash: string
+  group: CompoundActionIdentity
+  reject:
+    | { status: 'ready'; mode: 'tip_only'; message: string }
+    | { status: 'not_current_tip'; current_tip_op_id?: string | null; message: string }
+}
+
+/** Durable outcome of one exact tip-only group rejection. */
+export interface CompoundActionRejectResult {
+  schema: 'shellx-cut/compound-action-reject/1'
+  pre_revision: string
+  post_revision: string
+  group: CompoundActionIdentity
+  restored_op_id: string
+  restore_op_id: string
+  scope: {
+    mode: 'tip_only'
+    append_only: true
+    replay: 'materialized_prefix_before_group'
+    generic_transaction_replay: false
+    undo: string
+  }
+}
+
+/** One exact frame returned by the read-only Preview A/B comparison. The
+ * bytes stay inline so the two revision-bound frames cannot be confused with
+ * a later `/api/frame` request after an edit changes. */
+export interface PreviewComparisonFrame {
+  revision: string
+  mime: 'image/jpeg'
+  width: number
+  height: number
+  base64: string
+}
+
+export interface PreviewComparisonResult {
+  schema: 'shellx-cut/preview-comparison/1'
+  at_ms: number
+  current_revision: string
+  prior_revision: string
+  compared_operation: { id: string; verb: string }
+  before: PreviewComparisonFrame
+  current: PreviewComparisonFrame
+}
+
 /** A source-revision-bound dry run for a user-visible portable project copy. */
 export interface PortablePackagePlan {
   schema: 'shellx-cut/portable-package-plan/1'
@@ -1144,6 +1203,26 @@ export interface ProjectCachePurgeResult {
   status: 'queued'
 }
 
+/** Path-free admission summary for the non-destructive editing-cache rebuild. */
+export interface ProjectCacheRebuildCounts {
+  fresh_assets: number
+  source_changed: number
+  source_unavailable: number
+  unowned_outputs: number
+  legacy_outputs: number
+  unsupported_assets: number
+}
+
+export interface ProjectCacheRebuildResult {
+  schema: 'shellx-cut/cache-rebuild/1'
+  status: 'queued' | 'already_queued' | 'not_needed'
+  job_id?: string
+  deduplicated?: boolean
+  scheduled_assets: number
+  scheduled_outputs: number
+  counts: ProjectCacheRebuildCounts
+}
+
 export interface ProjectHealthResult {
   schema: 'shellx-cut/project-health/1'
   project_revision?: string
@@ -1274,6 +1353,7 @@ export interface VerbResults {
   // since_revision; keeping this default type preserves existing readers.
   'project.state': Project
   'project.cache_preview': ProjectCachePreviewResult
+  'project.cache_rebuild': ProjectCacheRebuildResult
   'project.cache_purge': ProjectCachePurgeResult
   'project.sequence_list': { active_sequence: string; sequences: SequenceSummary[] }
   'project.sequence_index': SequenceIndexResult
@@ -1282,9 +1362,12 @@ export interface VerbResults {
   'project.sequence_rename': { id: string; name: string }
   'project.sequence_delete': { deleted: boolean; id: string }
   'project.ops': { ops: OpRecord[]; cursor?: string; next_cursor?: string; has_more: boolean; limit: number; encoded_bytes: number; undo_available: boolean; redo_available: boolean; project_revision?: string | null }
+  'project.group_preview': CompoundActionPreviewResult
+  'project.group_reject': CompoundActionRejectResult
   'project.undo': { to_op: string | null; cursor: number; undo_available: boolean; redo_available: boolean }
   'project.redo': { to_op: string | null; cursor: number; undo_available: boolean; redo_available: boolean }
   'ui.state': UiStateResult
+  'render.compare': PreviewComparisonResult
   'project.brand': { brand: BrandKit | null; cleared: boolean }
   'verify.brand': BrandCheckResult
   // agent.chat — SUCCESS path is {ok:true, agent, reply, actions, attachments, cost_usd}.
@@ -1316,7 +1399,16 @@ export interface VerbResults {
   'jobs.status': JobRecord
   'jobs.list': JobsListResult
   'jobs.cancel': { job_id: string; cancelled: boolean }
-  'jobs.retry': { job_id: string; retry_of: string; root_job_id: string; attempt: number; path: string; format: 'mp4' | 'gif'; status: 'queued' }
+  'jobs.retry': {
+    job_id: string
+    retry_of: string
+    root_job_id: string
+    attempt: number
+    status: 'queued'
+  } & (
+    | { path: string; format: 'mp4' | 'gif' }
+    | { render_id: string; output_hash: string }
+  )
   'system.mcp_test': McpSelfTestResult
   'assets.generate': AssetsGenerateResult
   'assets.generated_list': GeneratedAssetsListResult

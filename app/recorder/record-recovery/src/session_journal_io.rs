@@ -52,7 +52,7 @@ impl RecordingSessionJournalFile {
         append_canonical_entry(
             &mut file,
             &path,
-            &RecordingSessionJournalEntry::Intent(journal.intent().clone()),
+            &RecordingSessionJournalEntry::Intent(Box::new(journal.intent().clone())),
         )?;
 
         Ok(Self {
@@ -137,6 +137,9 @@ impl RecordingSessionJournalFile {
             }
             RecordingSessionJournalEntry::Transition(transition) => {
                 next.append_transition(transition.clone())?
+            }
+            RecordingSessionJournalEntry::InputSidecar(pin) => {
+                next.append_input_sidecar(pin.clone())?
             }
             RecordingSessionJournalEntry::Run(run) => next.seal_run(run.clone())?,
             RecordingSessionJournalEntry::Terminal(terminal) => {

@@ -1,9 +1,4 @@
-// panels/Preview — monitor playback engine (preview-panel contract).
-// Shows the clip under the playhead, falls back to composed frames when needed,
-// and owns playback timing/key handling. Render-only controls and chips live in
-// sibling components so selectors stay isolated from the timing code.
-// Callers: App.tsx. Dependencies: lib/client (frameUrl, types), preview.css.
-
+// Preview monitor playback; render-only monitor chrome stays in sibling modules.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { baseVideoTrackId } from '../../lib/layerStack'
 import { matchesAction } from '../../lib/keymap'
@@ -16,7 +11,7 @@ import { MaskOverlay, type MaskShape, type MaskGeometry } from './MaskOverlay'
 import PreviewEmptyState from './PreviewEmptyState'
 import { CaptionText, OverlayVideo } from './PreviewLayers'
 import PreviewExactReview from './PreviewExactReview'
-import PreviewMonitorBadges from './PreviewMonitorBadges'
+import PreviewMonitorOverlay from './PreviewMonitorOverlay'
 import PreviewTransport, { type Rate } from './PreviewTransport'
 import PreviewContextMenu from './PreviewContextMenu'
 import { monitorAudioResyncTarget } from './audioSync'
@@ -24,6 +19,7 @@ import { activeVideo, previewFrameMs, RVFC_SUPPORTED, videoFrameCallbacks } from
 import { PreviewFrameError, PreviewOfflineOverlays, PreviewOfflineStage, usePreviewOfflineMedia } from './PreviewOffline'
 import { usePreviewExportActions } from './usePreviewExportActions'
 import { usePreviewViewOptions } from './usePreviewViewOptions'
+import { useVoiceoverPlayback } from './useVoiceoverPlayback'
 import { GuideOverlay } from './GuideOverlay'
 import { useContainBox } from './useContainBox'
 import { events } from '../../lib/events'
@@ -44,7 +40,6 @@ import {
   shouldUseLivePreviewSurface,
 } from './composite'
 import './preview.css'
-
 declare global {
   interface Window {
     webkitAudioContext?: typeof AudioContext
@@ -413,6 +408,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // time → timeline position without re-subscribing each frame.
   const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, rate, video })
   cfg.current = { playheadMs, durationMs, frameMs, onSeek, rate, video }
+  const voiceoverPlayback = useVoiceoverPlayback({ playheadMs, durationMs, rate, onSeek, setRate })
 
   // --- playback clock --------------------------------------------------------
   // FREE-RUN (forward 1×, <video> mounted): the element plays itself, hardware-
@@ -795,7 +791,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
 
   const playing = rate !== 0
   return (
-    <section ref={rootRef} tabIndex={-1} className="panel pv-root" data-panel="preview" data-cut-panel="preview" data-cut-playing={playing ? 'true' : 'false'} data-cut-fullscreen={isFullscreen ? 'true' : 'false'}>
+    <section ref={rootRef} tabIndex={-1} className="panel pv-root" data-panel="preview" data-cut-panel="preview" data-cut-playing={playing ? 'true' : 'false'} data-cut-voiceover-playback={voiceoverPlayback ? `${voiceoverPlayback.requestId}:${voiceoverPlayback.bridgeEpoch}` : undefined} data-cut-fullscreen={isFullscreen ? 'true' : 'false'}>
       {/* Hidden timeline-audio element: the sole sound source — the preview
           <video>s are muted, so this plays the full mix synced to the playhead. */}
       <audio
@@ -1006,7 +1002,11 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
           />
         )}
 
-        <PreviewMonitorBadges
+        <PreviewMonitorOverlay
+          project={project}
+          playheadMs={playheadMs}
+          revision={headOpId}
+          onPause={() => setRate(0)}
           showVideo={showVideo}
           video={video}
           proxyBuilding={proxyBuilding}

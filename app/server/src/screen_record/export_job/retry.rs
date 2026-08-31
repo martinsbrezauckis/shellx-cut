@@ -25,7 +25,7 @@ pub(crate) async fn retry_screen_record_export(
     }
     let descriptor = match record.retry.and_then(|retry| retry.descriptor) {
         Some(crate::jobs::JobRetryDescriptor::ScreenRecordExport(descriptor)) => descriptor,
-        None => {
+        _ => {
             return Err(retry_conflict(
                 "this export used an explicit Save As path or predates retry support",
             ))

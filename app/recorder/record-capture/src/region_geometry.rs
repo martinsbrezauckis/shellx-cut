@@ -4,7 +4,7 @@
 //! future region-capture geometry, while that module owns event mapping into a
 //! validated output frame.
 
-use crate::surface_coordinates::CaptureSurface;
+use crate::{surface_coordinates::CaptureSurface, CaptureRegion};
 
 /// A strictly contained crop in normalized parent-frame coordinates.
 ///
@@ -55,6 +55,11 @@ pub(crate) struct NativePixelCrop {
 }
 
 impl NativePixelCrop {
+    pub(crate) fn from_capture_region(region: CaptureRegion) -> Option<Self> {
+        let (left, top, width, height, parent_width, parent_height) = region.native_parts();
+        Self::new(left, top, width, height, parent_width, parent_height)
+    }
+
     /// Validate a native crop that is already expressed in parent-frame pixels.
     /// This is the equivalent of a normalized region once its edges have been
     /// snapped by the native capture surface.

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { callVerb, type MediaEvidenceHit, type Project } from '../../lib/client'
 import { evidenceChatAttachments } from '../../lib/evidenceAttachments'
 import { Icon } from '../../icons'
+import { TemporalRange, formatTemporalTime } from '../../components/TemporalNavigation'
 import { assetLabel, formatEvidenceTime, KIND_PRESENTATION, nearestActiveOccurrence, selectedEvidencePrompt } from './model'
 
 interface SearchResultsProps {
@@ -79,7 +80,18 @@ export default function SearchResults({ project, playheadMs, hits, searchedQuery
               </label>
               <span className="mi-hit__icon"><Icon name={presentation.icon} size={14} /></span>
               <div className="mi-hit__body">
-                <div className="mi-hit__identity"><strong title={title}>{title}</strong><time>{formatEvidenceTime(hit.source_start_ms)}–{formatEvidenceTime(hit.source_end_ms)}</time></div>
+                <div className="mi-hit__identity">
+                  <strong title={title}>{title}</strong>
+                  <TemporalRange
+                    rangeMs={[hit.source_start_ms, hit.source_end_ms]}
+                    className="mi-hit__time"
+                    data={{ 'data-cut-intelligence-source-range': hit.evidence_id }}
+                    title={hit.available ? `Preview ${title} at this exact source range` : 'Relink this source before previewing'}
+                    ariaLabel={`Preview ${title} from ${formatTemporalTime(hit.source_start_ms)} to ${formatTemporalTime(hit.source_end_ms)}`}
+                    onActivate={() => preview(hit)}
+                    disabled={!hit.available}
+                  />
+                </div>
                 <p>{hit.speaker ? <b>{hit.speaker}: </b> : null}{hit.excerpt}</p>
                 <div className="mi-hit__meta"><span>{presentation.label}</span><span>{matchLabel(hit)}</span><span>{timelineNote}{hit.occurrence_count > 1 ? ` · ${hit.occurrence_count} uses` : ''}</span>{!hit.available && <span className="mi-hit__offline">Source offline</span>}</div>
               </div>

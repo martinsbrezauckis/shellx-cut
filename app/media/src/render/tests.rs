@@ -488,6 +488,37 @@ fn volume_kf_filter_clamps_easing_overshoot() {
     assert!(filter.ends_with("))':eval=frame"));
 }
 
+#[test]
+fn volume_keyframe_keeps_independent_track_gain_after_clip_curve() {
+    use cut_core::{Keyframe, KfInterp, KfParam, KfPoint};
+    let mut segment = xfade_window_segment(0, 0);
+    segment.track_gain_db = -3.0;
+    segment.keyframes = vec![Keyframe {
+        param: KfParam::Volume,
+        points: vec![KfPoint {
+            t_ms: 0,
+            value: 0.5,
+        }],
+        interp: KfInterp::Linear,
+    }];
+
+    let filter = audio_gain_filters(&segment);
+    let clip_curve = filter.find("max(0,min(16,").expect("clip volume curve");
+    let track_gain = filter.find(",volume=-3.00dB").expect("track gain filter");
+    assert!(
+        clip_curve < track_gain,
+        "track gain follows the clip curve: {filter}"
+    );
+
+    segment.keyframes.clear();
+    segment.gain_db = -5.0;
+    assert_eq!(
+        audio_gain_filters(&segment),
+        ",volume=-5.00dB",
+        "legacy static-gain EDL stays byte-compatible"
+    );
+}
+
 /// Render ONE full-range gray frame, 256 columns wide, where the LUMA of column
 /// `X` is `255 * kf_value(X/255)` — i.e. the ffmpeg evaluation of the REAL
 /// `kf_expr` lowering (var = `X`, a 0→1 ramp over the 256 columns). Reading row 0
@@ -614,6 +645,7 @@ fn xfade_window_segment(timeline_in_ms: u64, xfade_in_ms: u64) -> EdlSegment {
         src_in_ms: Some(0),
         src_out_ms: Some(2000),
         gain_db: 0.0,
+        track_gain_db: 0.0,
         fade: None,
         crop: None,
         xfade_in_ms,

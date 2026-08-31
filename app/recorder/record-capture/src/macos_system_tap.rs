@@ -66,10 +66,15 @@ impl SystemAudioTap {
             }),
         }
     }
-}
 
-impl Drop for SystemAudioTap {
-    fn drop(&mut self) {
+    /// Explicit terminal teardown for a tap whose samples must not be
+    /// published. The FFI stop call is synchronous; `Drop` retains the same
+    /// fallback only for callers that cannot reach their owned shutdown path.
+    pub(crate) fn abort(mut self) {
+        self.stop_unpublished();
+    }
+
+    fn stop_unpublished(&mut self) {
         let Some(ctx) = self.ctx.take() else { return };
         unsafe {
             sxc_sysaudio_stop(
@@ -81,6 +86,12 @@ impl Drop for SystemAudioTap {
                 std::ptr::null_mut(),
             );
         }
+    }
+}
+
+impl Drop for SystemAudioTap {
+    fn drop(&mut self) {
+        self.stop_unpublished();
     }
 }
 

@@ -1,31 +1,18 @@
 //! Private camera-session lifecycle built around the screen-owned capture clock.
 //!
-//! This is deliberately a test-injected spine, not a native adapter or a server
-//! start surface. A later capture owner may append the resulting typed evidence
-//! to its durable session journal, but this module never owns the screen take.
+//! This is not a server start surface. A private native adapter may feed its
+//! typed evidence through the spine, while a later capture owner may append it
+//! to a durable session journal; this module never owns the screen take.
 
-use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use record_core::{
-    error_codes, CameraArtifact, CameraClockRange, CameraMediaFacts, CameraTerminalState,
-    FrameRate, RecordError, Result,
+    error_codes, CameraArtifact, CameraClockRange, CameraTerminalState, RecordError, Result,
 };
-use record_recovery::{RecordingStream, StreamFragment, StreamFragmentFacts};
 
-use crate::{camera::validate_request_part, CameraReadiness, CameraRequest, CaptureClock};
-
-/// Test-injected proof returned after a backend has stopped its camera source.
-///
-/// A native implementation must derive all fields from its sealed local media;
-/// no caller supplies the first or final frame offsets.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CameraMediaSeal {
-    pub(crate) artifact_id: String,
-    pub(crate) video: String,
-    pub(crate) media: CameraMediaFacts,
-    pub(crate) bytes: u64,
-}
+pub(crate) use crate::camera_finalization::CameraMediaSeal;
+pub(crate) use crate::camera_session_evidence::CameraSessionEvidence;
+use crate::{CameraFrameObservation, CameraReadiness, CameraRequest, CameraUseIntent};
 
 /// Truthful terminal result from a camera backend. `NoMedia` means that no
 /// camera prefix exists; it is not a malformed empty `CameraMediaSeal`.
@@ -37,16 +24,53 @@ pub(crate) enum CameraStopOutcome {
 
 /// Minimal backend seam for the camera-session spine.
 ///
-/// `readiness` is the pre-start probe. `start` receives only the screen-owned
-/// origin. `stop` returns `NoMedia` for a truthful zero-frame terminal or a
-/// `Sealed` local prefix with independently measured media facts. If `start`
-/// returns an error after it may have acquired resources, the caller invokes one
-/// `stop(Cancelled)` cleanup and returns the original start error. This trait
-/// intentionally has no native implementation in this slice.
+/// `readiness` is a passive pre-start probe and must not enumerate through a
+/// permission-opening API. `start` receives the private explicit-use intent as
+/// well as the screen-owned origin; it is the only operation allowed to ask the
+/// OS for camera permission. `stop` returns `NoMedia` for a truthful zero-frame
+/// terminal or a `Sealed` local prefix with independently measured media facts.
+/// If `start` returns an error after it may have acquired resources, the caller
+/// invokes one `stop(Cancelled)` cleanup and returns the original start error.
 pub(crate) trait CameraSessionBackend {
     fn readiness(&self, request: &CameraRequest) -> CameraReadiness;
-    fn start(&mut self, request: &CameraRequest, screen_origin: Instant) -> Result<()>;
+    fn start(&mut self, intent: &CameraUseIntent, screen_origin: Instant) -> Result<()>;
     fn stop(&mut self, terminal_state: CameraTerminalState) -> Result<CameraStopOutcome>;
+
+    /// Drain only native samples that were delivered after the backend admitted
+    /// its record path. The session applies them after native Stop has completed
+    /// so a callback cannot race a fabricated final-frame boundary.
+    fn take_frame_observations(&mut self) -> Result<Vec<CameraFrameObservation>> {
+        Ok(Vec::new())
+    }
+
+    /// A native backend may strengthen the requested terminal state. In
+    /// particular, Media Foundation device-loss events must never become a
+    /// misleading `Complete` camera artifact while the screen take continues.
+    fn terminal_state(&self, requested: CameraTerminalState) -> CameraTerminalState {
+        requested
+    }
+}
+
+impl<T: CameraSessionBackend + ?Sized> CameraSessionBackend for Box<T> {
+    fn readiness(&self, request: &CameraRequest) -> CameraReadiness {
+        (**self).readiness(request)
+    }
+
+    fn start(&mut self, intent: &CameraUseIntent, screen_origin: Instant) -> Result<()> {
+        (**self).start(intent, screen_origin)
+    }
+
+    fn stop(&mut self, terminal_state: CameraTerminalState) -> Result<CameraStopOutcome> {
+        (**self).stop(terminal_state)
+    }
+
+    fn take_frame_observations(&mut self) -> Result<Vec<CameraFrameObservation>> {
+        (**self).take_frame_observations()
+    }
+
+    fn terminal_state(&self, requested: CameraTerminalState) -> CameraTerminalState {
+        (**self).terminal_state(requested)
+    }
 }
 
 /// An enabled camera sidecar that has passed its probe and joined the shared
@@ -54,16 +78,16 @@ pub(crate) trait CameraSessionBackend {
 /// can never become camera timing evidence.
 #[derive(Debug)]
 pub(crate) struct CameraSession<B: CameraSessionBackend> {
-    backend: B,
-    request: CameraRequest,
-    screen_origin: Instant,
-    first_frame_offset_ms: Option<u64>,
-    last_frame_offset_ms: Option<u64>,
-    stop_state: CameraStopState,
+    pub(super) backend: Option<B>,
+    pub(super) request: CameraRequest,
+    pub(super) screen_origin: Instant,
+    pub(super) first_frame_offset_ms: Option<u64>,
+    pub(super) last_frame_end_offset_ms: Option<u64>,
+    pub(super) stop_state: CameraStopState,
 }
 
 #[derive(Debug)]
-enum CameraStopState {
+pub(super) enum CameraStopState {
     Live,
     Stopped {
         terminal_state: CameraTerminalState,
@@ -73,74 +97,40 @@ enum CameraStopState {
 }
 
 impl<B: CameraSessionBackend> CameraSession<B> {
-    /// Return the backend's current pre-start probe without beginning a session.
-    pub(crate) fn probe(backend: &B, request: &CameraRequest) -> CameraReadiness {
-        backend.readiness(request)
-    }
-
-    /// Start only after a ready probe and the screen backend's real clock origin.
-    /// A pre-start refusal and cancellation both leave the backend unstarted.
-    pub(crate) fn start(
-        mut backend: B,
-        request: CameraRequest,
-        screen_clock: &CaptureClock,
-        stop: &AtomicBool,
-    ) -> Result<Self> {
-        validate_request(&request)?;
-        match Self::probe(&backend, &request) {
-            CameraReadiness::Ready { device, .. } if device.id == request.device_id => {}
-            CameraReadiness::Ready { .. } => {
-                return Err(capture_error(
-                    "selected camera probe returned a different device",
-                    "camera capture requires Ready for the exact requested device_id",
-                ));
-            }
-            _ => {
-                return Err(capture_error(
-                    "selected camera did not pass the pre-start probe",
-                    "camera capture requires a Ready probe before session start",
-                ));
-            }
-        }
-        let Some(screen_origin) = screen_clock.wait_started(stop) else {
-            return Err(capture_error(
-                "camera session was cancelled before screen capture started",
-                "the screen-owned CaptureClock never opened",
-            ));
-        };
-        if let Err(start_error) = backend.start(&request, screen_origin) {
-            let _ = backend.stop(CameraTerminalState::Cancelled);
-            return Err(start_error);
-        }
-        Ok(Self {
-            backend,
-            request,
-            screen_origin,
-            first_frame_offset_ms: None,
-            last_frame_offset_ms: None,
-            stop_state: CameraStopState::Live,
-        })
-    }
-
-    /// Record one delivered frame against the screen origin, never against wall
-    /// clock, setup, or browser event time.
-    pub(crate) fn observe_frame_at(&mut self, frame_at: Instant) -> Result<()> {
+    /// Record one real delivered frame interval against the screen origin, never
+    /// against wall clock, setup, or browser event time. A sample start alone
+    /// is intentionally insufficient: it cannot establish a final media end.
+    pub(crate) fn observe_frame(&mut self, observation: CameraFrameObservation) -> Result<()> {
         if !matches!(&self.stop_state, CameraStopState::Live) {
             return Err(invalid("camera session cannot accept frames after stop"));
         }
-        let offset = frame_at
+        let start_offset = observation
+            .started_at
             .checked_duration_since(self.screen_origin)
             .ok_or_else(|| invalid("camera frame precedes the screen CaptureClock origin"))?;
-        let offset_ms = u64::try_from(offset.as_millis())
+        let end_offset = observation
+            .ended_at
+            .checked_duration_since(self.screen_origin)
+            .ok_or_else(|| invalid("camera frame precedes the screen CaptureClock origin"))?;
+        let start_offset_ms = u64::try_from(start_offset.as_millis())
             .map_err(|_| invalid("camera frame offset exceeds the supported range"))?;
-        if self
-            .last_frame_offset_ms
-            .is_some_and(|last| offset_ms < last)
-        {
-            return Err(invalid("camera frame offsets must be monotonic"));
+        let end_offset_ms = u64::try_from(end_offset.as_millis())
+            .map_err(|_| invalid("camera frame offset exceeds the supported range"))?;
+        if end_offset_ms <= start_offset_ms {
+            return Err(invalid(
+                "camera frame observation must have a non-empty interval",
+            ));
         }
-        self.first_frame_offset_ms.get_or_insert(offset_ms);
-        self.last_frame_offset_ms = Some(offset_ms);
+        if self
+            .last_frame_end_offset_ms
+            .is_some_and(|last_end| start_offset_ms < last_end || end_offset_ms <= last_end)
+        {
+            return Err(invalid(
+                "camera frame observation intervals must be monotonic and non-overlapping",
+            ));
+        }
+        self.first_frame_offset_ms.get_or_insert(start_offset_ms);
+        self.last_frame_end_offset_ms = Some(end_offset_ms);
         Ok(())
     }
 
@@ -151,27 +141,54 @@ impl<B: CameraSessionBackend> CameraSession<B> {
         if !matches!(&self.stop_state, CameraStopState::Live) {
             return Err(invalid("camera session is already stopped"));
         }
-        match self.backend.stop(terminal_state) {
-            Ok(CameraStopOutcome::NoMedia) => {
+        let (outcome, terminal_state, observations) = {
+            let backend = self.backend.as_mut().ok_or_else(|| {
+                invalid("camera session backend is unavailable after terminal cleanup")
+            })?;
+            let outcome = match backend.stop(terminal_state) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.stop_state = CameraStopState::Failed(error.clone());
+                    return Err(error);
+                }
+            };
+            let terminal_state = backend.terminal_state(terminal_state);
+            let observations = match backend.take_frame_observations() {
+                Ok(observations) => observations,
+                Err(error) => {
+                    self.stop_state = CameraStopState::Failed(error.clone());
+                    return Err(error);
+                }
+            };
+            (outcome, terminal_state, observations)
+        };
+        for observation in observations {
+            if let Err(error) = self.observe_frame(observation) {
+                self.stop_state = CameraStopState::Failed(error.clone());
+                return Err(error);
+            }
+        }
+        match outcome {
+            CameraStopOutcome::NoMedia => {
                 self.stop_state = CameraStopState::Stopped {
                     terminal_state,
                     outcome: CameraStopOutcome::NoMedia,
                 };
                 Ok(())
             }
-            Ok(CameraStopOutcome::Sealed(seal)) if seal.bytes != 0 => {
+            CameraStopOutcome::Sealed(seal) if seal.bytes() != 0 => {
+                if let Err(error) = self.ensure_duration_projection_matches_observed_clock(&seal) {
+                    self.stop_state = CameraStopState::Failed(error.clone());
+                    return Err(error);
+                }
                 self.stop_state = CameraStopState::Stopped {
                     terminal_state,
                     outcome: CameraStopOutcome::Sealed(seal),
                 };
                 Ok(())
             }
-            Ok(CameraStopOutcome::Sealed(_)) => {
+            CameraStopOutcome::Sealed(_) => {
                 let error = invalid("sealed camera evidence must have non-zero bytes");
-                self.stop_state = CameraStopState::Failed(error.clone());
-                Err(error)
-            }
-            Err(error) => {
                 self.stop_state = CameraStopState::Failed(error.clone());
                 Err(error)
             }
@@ -181,6 +198,38 @@ impl<B: CameraSessionBackend> CameraSession<B> {
     /// Validate and expose the independent camera prefix for later durable
     /// journal ownership. A session with no observed frames cannot invent one.
     pub(crate) fn seal(self) -> Result<CameraSessionEvidence> {
+        let (_backend, evidence) = self.finish();
+        evidence?.ok_or_else(|| invalid("camera session terminal has no media to seal"))
+    }
+
+    /// Return the retained adapter with one terminal result. `finish` is the
+    /// registry hand-off used by the shared screen Stop owner: it never creates
+    /// a camera artifact for `NoMedia`, and it returns the backend even after a
+    /// failed seal so a future explicit retry can recover deliberately.
+    pub(crate) fn finish(mut self) -> (B, Result<Option<CameraSessionEvidence>>) {
+        if matches!(&self.stop_state, CameraStopState::Live) {
+            let _ = self.stop(CameraTerminalState::Cancelled);
+        }
+        let evidence = self.evidence();
+        let backend = self
+            .backend
+            .take()
+            .expect("camera session retains its backend until terminal hand-off");
+        (backend, evidence)
+    }
+
+    /// Return a backend after a terminal stop failure. A live session is first
+    /// cancelled exactly once, so moving it out cannot leak a native stream.
+    pub(crate) fn into_backend(mut self) -> B {
+        if matches!(&self.stop_state, CameraStopState::Live) {
+            let _ = self.stop(CameraTerminalState::Cancelled);
+        }
+        self.backend
+            .take()
+            .expect("camera session retains its backend until terminal hand-off")
+    }
+
+    fn evidence(&self) -> Result<Option<CameraSessionEvidence>> {
         let (terminal_state, seal) = match &self.stop_state {
             CameraStopState::Live => {
                 return Err(invalid("camera session must stop before sealing"));
@@ -188,7 +237,7 @@ impl<B: CameraSessionBackend> CameraSession<B> {
             CameraStopState::Stopped {
                 terminal_state: _,
                 outcome: CameraStopOutcome::NoMedia,
-            } => return Err(invalid("camera session terminal has no media to seal")),
+            } => return Ok(None),
             CameraStopState::Stopped {
                 terminal_state,
                 outcome: CameraStopOutcome::Sealed(seal),
@@ -198,16 +247,16 @@ impl<B: CameraSessionBackend> CameraSession<B> {
         let frame_range = self.frame_range()?;
         let artifact = CameraArtifact::new(
             self.request.capture_id.clone(),
-            seal.artifact_id.clone(),
-            seal.video.clone(),
+            seal.artifact_id().to_owned(),
+            seal.video().to_owned(),
             frame_range,
-            seal.media.clone(),
+            seal.media().clone(),
             terminal_state,
         )?;
-        Ok(CameraSessionEvidence {
+        Ok(Some(CameraSessionEvidence {
             artifact,
-            bytes: seal.bytes,
-        })
+            bytes: seal.bytes(),
+        }))
     }
 
     fn frame_range(&self) -> Result<CameraClockRange> {
@@ -215,7 +264,7 @@ impl<B: CameraSessionBackend> CameraSession<B> {
             .first_frame_offset_ms
             .ok_or_else(|| invalid("camera session has no observed first frame"))?;
         let end_frame_offset_ms = self
-            .last_frame_offset_ms
+            .last_frame_end_offset_ms
             .ok_or_else(|| invalid("camera session has no observed final frame"))?;
         if end_frame_offset_ms <= first_frame_offset_ms {
             return Err(invalid(
@@ -227,115 +276,40 @@ impl<B: CameraSessionBackend> CameraSession<B> {
             end_frame_offset_ms,
         })
     }
+
+    /// The finalizer's native adapter proves its own exact sample-time contract.
+    /// This shared session boundary compares only the deterministic millisecond
+    /// floor projection carried by `CameraMediaFacts` and `CaptureClock`.
+    fn ensure_duration_projection_matches_observed_clock(
+        &self,
+        seal: &CameraMediaSeal,
+    ) -> Result<()> {
+        let range = self.frame_range()?;
+        let observed_duration_ms = range
+            .end_frame_offset_ms
+            .checked_sub(range.first_frame_offset_ms)
+            .ok_or_else(|| invalid("camera session observed frame range underflowed"))?;
+        if seal.media().duration_ms != observed_duration_ms {
+            return Err(invalid(
+                "finalized camera duration projection does not match the observed CaptureClock interval",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl<B: CameraSessionBackend> Drop for CameraSession<B> {
     fn drop(&mut self) {
-        if !matches!(&self.stop_state, CameraStopState::Live) {
-            return;
+        if matches!(&self.stop_state, CameraStopState::Live) {
+            // Reuse the normal terminal path so callback evidence is drained
+            // only after native Stop and final media can never bypass the
+            // native-clock evidence rule during cleanup.
+            let _ = self.stop(CameraTerminalState::Cancelled);
         }
-        self.stop_state = match self.backend.stop(CameraTerminalState::Cancelled) {
-            Ok(CameraStopOutcome::NoMedia) => CameraStopState::Stopped {
-                terminal_state: CameraTerminalState::Cancelled,
-                outcome: CameraStopOutcome::NoMedia,
-            },
-            Ok(CameraStopOutcome::Sealed(seal)) if seal.bytes != 0 => CameraStopState::Stopped {
-                terminal_state: CameraTerminalState::Cancelled,
-                outcome: CameraStopOutcome::Sealed(seal),
-            },
-            Ok(CameraStopOutcome::Sealed(_)) => {
-                CameraStopState::Failed(invalid("sealed camera evidence must have non-zero bytes"))
-            }
-            Err(error) => CameraStopState::Failed(error),
-        };
     }
 }
 
-/// Validated private evidence ready for a future durable recording-session
-/// owner. It does not write a journal itself, so only that owner decides which
-/// screen run contains the camera prefix and when the append is durable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CameraSessionEvidence {
-    artifact: CameraArtifact,
-    bytes: u64,
-}
-
-impl CameraSessionEvidence {
-    pub(crate) fn artifact(&self) -> &CameraArtifact {
-        &self.artifact
-    }
-
-    /// Bind this prefix to one physical screen run measured on the same
-    /// `CaptureClock`. This does not compact paused time; a durable owner must
-    /// separately project physical runs into its logical session timeline.
-    pub(crate) fn stream_fragment(
-        &self,
-        run_capture_clock_start_ms: u64,
-        run_capture_clock_end_ms: u64,
-        stream_sequence: u64,
-    ) -> Result<StreamFragment> {
-        self.artifact.validate()?;
-        if run_capture_clock_end_ms <= run_capture_clock_start_ms {
-            return Err(invalid("containing physical screen run is empty"));
-        }
-        if self.artifact.clock.first_frame_offset_ms < run_capture_clock_start_ms
-            || self.artifact.clock.end_frame_offset_ms > run_capture_clock_end_ms
-        {
-            return Err(invalid(
-                "camera prefix is not fully contained by the physical screen run",
-            ));
-        }
-        let start_offset_ms = self
-            .artifact
-            .clock
-            .first_frame_offset_ms
-            .checked_sub(run_capture_clock_start_ms)
-            .ok_or_else(|| invalid("camera prefix begins before the containing screen run"))?;
-        let end_offset_ms = self
-            .artifact
-            .clock
-            .end_frame_offset_ms
-            .checked_sub(run_capture_clock_start_ms)
-            .ok_or_else(|| invalid("camera prefix ends before the containing screen run"))?;
-        if end_offset_ms <= start_offset_ms {
-            return Err(invalid(
-                "camera prefix is empty within the containing screen run",
-            ));
-        }
-        let frame_rate = FrameRate::new(
-            u64::from(self.artifact.media.fps_num),
-            u64::from(self.artifact.media.fps_den),
-        )
-        .map_err(|_| invalid("camera media FPS cannot form journal frame-rate evidence"))?;
-        Ok(StreamFragment {
-            stream: RecordingStream::CameraVideo,
-            checkpoint_sequence: None,
-            stream_sequence,
-            artifact: self.artifact.video.clone(),
-            bytes: self.bytes,
-            sha256: self.artifact.media.sha256.clone(),
-            facts: StreamFragmentFacts {
-                start_offset_ms,
-                end_offset_ms,
-                media_duration_ms: self.artifact.media.duration_ms,
-                decoded_video_frames: Some(self.artifact.media.frame_count),
-                avg_frame_rate: Some(frame_rate),
-                r_frame_rate: Some(frame_rate),
-            },
-        })
-    }
-}
-
-fn validate_request(request: &CameraRequest) -> Result<()> {
-    validate_request_part("capture_id", &request.capture_id)?;
-    validate_request_part("device_id", &request.device_id)
-}
-
-fn capture_error(message: &str, cause: &str) -> RecordError {
-    RecordError::new(error_codes::CAPTURE, message, cause)
-}
-
-fn invalid(message: &str) -> RecordError {
+pub(super) fn invalid(message: &str) -> RecordError {
     RecordError::new(
         error_codes::INVALID_ARGS,
         message,

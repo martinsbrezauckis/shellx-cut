@@ -45,7 +45,7 @@
 //
 // Callers: App.tsx. Dependencies: lib/client (verbs), layout.ts, timeline.css.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { matchesAction } from '../../lib/keymap'
 import { shouldIgnoreGlobalShortcut } from '../../lib/dom'
 import { callVerb, type Marker, type Project } from '../../lib/client'
@@ -1503,7 +1503,13 @@ export default function Timeline(props: TimelineProps) {
     : undefined
 
   return (
-    <section className="panel tl-root" data-panel="timeline" data-cut-panel="timeline" tabIndex={-1}>
+    <section
+      className="panel tl-root"
+      data-panel="timeline"
+      data-cut-panel="timeline"
+      style={{ '--tl-track-rail-width': `${RAIL_W}px` } as CSSProperties}
+      tabIndex={-1}
+    >
       <TimelineToolbar
         playheadMs={playheadMs}
         project={project}
@@ -1595,6 +1601,9 @@ export default function Timeline(props: TimelineProps) {
                 activeSeam={activeSeam}
                 ghost={ghost}
                 auditionRevisionKey={`${project?.name ?? ''}:${headOpId}`}
+                playheadMs={playheadMs}
+                projectRevision={project?.project_revision ?? headOpId}
+                exportRange={exportRange}
                 onLaneDown={onLaneDown}
                 onClipDown={onClipDown}
                 onSeamDown={onSeamDown}

@@ -114,12 +114,14 @@ pub(super) fn scan(
                 )
             })?;
             let owned = ledger.entries.get(&entry_key).is_some_and(|record| {
-                record.kind == kind.directory() && record.name == name.to_string_lossy()
+                record.kind == kind.directory()
+                    && record.name == name.to_string_lossy()
+                    && record.is_ready()
             });
             if !owned {
                 return Err(cache_error(
                     "cache ownership cannot be verified",
-                    "a cache root contains an unowned, legacy, or unexpected entry",
+                    "a cache root contains an unowned, pending, legacy, or unexpected entry",
                 ));
             }
             counts[index].files = counts[index].files.saturating_add(1);
@@ -148,6 +150,12 @@ pub(super) fn scan(
         return Err(cache_error(
             "cache ownership cannot be verified",
             "the cache ownership ledger has entries without matching cache files",
+        ));
+    }
+    if ledger.entries.values().any(|entry| !entry.is_ready()) {
+        return Err(cache_error(
+            "cache ownership cannot be verified",
+            "a deterministic cache rebuild is pending recovery",
         ));
     }
     Ok((snapshot, roots, targets, counts))

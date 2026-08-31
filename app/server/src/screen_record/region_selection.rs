@@ -3,7 +3,8 @@
 //! The registry deliberately has no serde, logging, persistence, or public
 //! verb dependency. A later native picker may hand it a validated exact target
 //! and crop; a later capture coordinator may consume that value once after
-//! revalidating the same opaque native monitor identity.
+//! revalidating the same opaque native monitor identity and physical crop
+//! parent against the current display topology.
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -17,6 +18,12 @@ const ISSUE_ATTEMPTS: usize = 4;
 const DEFAULT_CAPACITY: usize = 32;
 const DEFAULT_TTL: Duration = Duration::from_secs(90);
 const RETIRED_TTL: Duration = Duration::from_secs(90);
+
+#[cfg(any(windows, test))]
+pub(crate) use super::region_selection_value::NativeTopologyFingerprint;
+#[cfg(windows)]
+pub(crate) use super::region_selection_value::NativeWindowsTopologySnapshot;
+pub(crate) use super::region_selection_value::{ConsumedRegionSelection, RegionSelectionValue};
 
 /// Opaque stable native monitor identity. Display titles and ordinals must not
 /// be substituted for this identity when a selection is consumed.
@@ -89,28 +96,6 @@ impl NativeRegionCrop {
     }
 }
 
-/// Validated native-picker value. Construction has no clamping or default
-/// monitor path, so a caller must provide one exact target and crop.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct RegionSelectionValue {
-    monitor: NativeMonitorIdentity,
-    crop: NativeRegionCrop,
-}
-
-impl RegionSelectionValue {
-    pub(crate) fn new(monitor: NativeMonitorIdentity, crop: NativeRegionCrop) -> Self {
-        Self { monitor, crop }
-    }
-
-    pub(crate) fn monitor_identity(&self) -> &NativeMonitorIdentity {
-        &self.monitor
-    }
-
-    pub(crate) fn crop(&self) -> NativeRegionCrop {
-        self.crop
-    }
-}
-
 /// Short-lived opaque handle that may be returned by the later human-only
 /// picker boundary. It deliberately cannot serialize a region value.
 #[derive(Clone, PartialEq, Eq)]
@@ -119,20 +104,6 @@ pub(crate) struct RegionSelectionTicket(String);
 impl RegionSelectionTicket {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-/// Exact internal value returned only after one-use consumption and exact
-/// monitor revalidation.
-pub(crate) struct ConsumedRegionSelection(RegionSelectionValue);
-
-impl ConsumedRegionSelection {
-    pub(crate) fn monitor_identity(&self) -> &NativeMonitorIdentity {
-        self.0.monitor_identity()
-    }
-
-    pub(crate) fn crop(&self) -> NativeRegionCrop {
-        self.0.crop()
     }
 }
 
@@ -197,9 +168,9 @@ impl RegionSelectionRegistry {
     pub(crate) fn consume(
         &mut self,
         selection_id: &str,
-        monitor_is_live: impl FnOnce(&NativeMonitorIdentity) -> bool,
+        selection_is_current: impl FnOnce(&RegionSelectionValue) -> bool,
     ) -> Result<ConsumedRegionSelection, RegionSelectionConsumeError> {
-        self.consume_at(selection_id, Instant::now(), monitor_is_live)
+        self.consume_at(selection_id, Instant::now(), selection_is_current)
     }
 
     pub(super) fn issue_at_with_random(
@@ -236,7 +207,7 @@ impl RegionSelectionRegistry {
         &mut self,
         selection_id: &str,
         now: Instant,
-        monitor_is_live: impl FnOnce(&NativeMonitorIdentity) -> bool,
+        selection_is_current: impl FnOnce(&RegionSelectionValue) -> bool,
     ) -> Result<ConsumedRegionSelection, RegionSelectionConsumeError> {
         if !is_well_formed_token(selection_id) {
             return Err(RegionSelectionConsumeError::MalformedSelectionId);
@@ -244,7 +215,7 @@ impl RegionSelectionRegistry {
         self.purge_expired(now);
         if let Some(pending) = self.entries.remove(selection_id) {
             self.remember_retired(selection_id.to_owned(), RetiredState::Consumed, now);
-            if !monitor_is_live(pending.value.monitor_identity()) {
+            if !selection_is_current(&pending.value) {
                 return Err(RegionSelectionConsumeError::MonitorNotFound);
             }
             return Ok(ConsumedRegionSelection(pending.value));
@@ -319,12 +290,12 @@ pub(super) fn issue(
 
 pub(super) fn consume(
     selection_id: &str,
-    monitor_is_live: impl FnOnce(&NativeMonitorIdentity) -> bool,
+    selection_is_current: impl FnOnce(&RegionSelectionValue) -> bool,
 ) -> Result<ConsumedRegionSelection, RegionSelectionConsumeError> {
     registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .consume(selection_id, monitor_is_live)
+        .consume(selection_id, selection_is_current)
 }
 
 fn secure_random(bytes: &mut [u8; TOKEN_BYTES]) -> Result<(), RegionSelectionIssueError> {

@@ -15,7 +15,8 @@ use record_recovery::{
 use crate::camera_session::{
     CameraMediaSeal, CameraSession, CameraSessionBackend, CameraStopOutcome,
 };
-use crate::{CameraDevice, CameraReadiness, CameraRequest, CaptureClock};
+use crate::camera_session_test_support::observe;
+use crate::{CameraDevice, CameraReadiness, CameraRequest, CameraUseIntent, CaptureClock};
 
 #[derive(Debug, Clone)]
 struct FixtureCamera {
@@ -29,7 +30,7 @@ impl CameraSessionBackend for FixtureCamera {
         self.readiness.clone()
     }
 
-    fn start(&mut self, _request: &CameraRequest, _screen_origin: Instant) -> Result<()> {
+    fn start(&mut self, _intent: &CameraUseIntent, _screen_origin: Instant) -> Result<()> {
         self.calls.lock().unwrap().push("start");
         Ok(())
     }
@@ -47,6 +48,10 @@ fn request() -> CameraRequest {
     }
 }
 
+fn intent() -> CameraUseIntent {
+    CameraUseIntent::from_explicit_user_action(request()).unwrap()
+}
+
 fn ready() -> CameraReadiness {
     CameraReadiness::Ready {
         device: CameraDevice {
@@ -58,10 +63,10 @@ fn ready() -> CameraReadiness {
 }
 
 fn seal(duration_ms: u64, sha256: String) -> CameraMediaSeal {
-    CameraMediaSeal {
-        artifact_id: "camera_01".into(),
-        video: "camera/camera.mp4".into(),
-        media: CameraMediaFacts {
+    CameraMediaSeal::fixture(
+        "camera_01".into(),
+        "camera/camera.mp4".into(),
+        CameraMediaFacts {
             width: 640,
             height: 480,
             fps_num: 30,
@@ -70,8 +75,9 @@ fn seal(duration_ms: u64, sha256: String) -> CameraMediaSeal {
             duration_ms,
             sha256,
         },
-        bytes: 64,
-    }
+        64,
+    )
+    .unwrap()
 }
 
 fn backend(readiness: CameraReadiness, seal: CameraMediaSeal) -> FixtureCamera {
@@ -90,18 +96,18 @@ fn no_media_backend(readiness: CameraReadiness) -> FixtureCamera {
     }
 }
 
-fn started_session(
-    backend: FixtureCamera,
-) -> (
+type StartedSession = (
     CameraSession<FixtureCamera>,
     Instant,
     CaptureClock,
     AtomicBool,
-) {
+);
+
+fn started_session(backend: FixtureCamera) -> StartedSession {
     let clock = CaptureClock::new();
     let origin = clock.start();
     let stop = AtomicBool::new(false);
-    let session = CameraSession::start(backend, request(), &clock, &stop).unwrap();
+    let session = CameraSession::start(backend, intent(), &clock, &stop).unwrap();
     (session, origin, clock, stop)
 }
 
@@ -111,12 +117,8 @@ fn delayed_first_frame_uses_only_actual_capture_clock_offsets() {
     let calls = fixture.calls.clone();
     let (mut session, origin, _, _) = started_session(fixture);
 
-    session
-        .observe_frame_at(origin + Duration::from_millis(250))
-        .unwrap();
-    session
-        .observe_frame_at(origin + Duration::from_millis(1_250))
-        .unwrap();
+    observe(&mut session, origin, 250, 300);
+    observe(&mut session, origin, 1_200, 1_250);
     session.stop(CameraTerminalState::Complete).unwrap();
     let evidence = session.seal().unwrap();
 
@@ -137,7 +139,7 @@ fn pre_start_probe_failure_refuses_session_start() {
     let clock = CaptureClock::new();
     let stop = AtomicBool::new(false);
 
-    let error = CameraSession::start(fixture, request(), &clock, &stop).unwrap_err();
+    let error = CameraSession::start(fixture, intent(), &clock, &stop).unwrap_err();
 
     assert_eq!(error.code, "capture");
     assert!(calls.lock().unwrap().is_empty());
@@ -150,7 +152,7 @@ fn cancellation_before_clock_open_leaves_camera_unstarted() {
     let clock = CaptureClock::new();
     let stop = AtomicBool::new(true);
 
-    let error = CameraSession::start(fixture, request(), &clock, &stop).unwrap_err();
+    let error = CameraSession::start(fixture, intent(), &clock, &stop).unwrap_err();
 
     assert_eq!(error.code, "capture");
     assert!(calls.lock().unwrap().is_empty());
@@ -168,7 +170,7 @@ fn camera_waits_for_the_screen_owned_clock_before_backend_start() {
     let waiter = std::thread::spawn(move || {
         sent.send(CameraSession::start(
             fixture,
-            request(),
+            intent(),
             &waiter_clock,
             &waiter_stop,
         ))
@@ -193,12 +195,8 @@ fn camera_waits_for_the_screen_owned_clock_before_backend_start() {
 fn device_loss_seals_only_the_independent_valid_camera_prefix() {
     let fixture = backend(ready(), seal(1_000, "a".repeat(64)));
     let (mut session, origin, clock, stop) = started_session(fixture);
-    session
-        .observe_frame_at(origin + Duration::from_millis(250))
-        .unwrap();
-    session
-        .observe_frame_at(origin + Duration::from_millis(1_250))
-        .unwrap();
+    observe(&mut session, origin, 250, 300);
+    observe(&mut session, origin, 1_200, 1_250);
     session.stop(CameraTerminalState::DeviceLost).unwrap();
     let evidence = session.seal().unwrap();
 
@@ -212,21 +210,6 @@ fn device_loss_seals_only_the_independent_valid_camera_prefix() {
     assert_eq!(fragment.stream, RecordingStream::CameraVideo);
     assert_eq!(fragment.facts.start_offset_ms, 250);
     assert_eq!(fragment.facts.end_offset_ms, 1_250);
-}
-
-#[test]
-fn seal_refuses_tampered_hash_or_timing_facts() {
-    for fixture_seal in [seal(1_000, "A".repeat(64)), seal(999, "a".repeat(64))] {
-        let (mut session, origin, _, _) = started_session(backend(ready(), fixture_seal));
-        session
-            .observe_frame_at(origin + Duration::from_millis(250))
-            .unwrap();
-        session
-            .observe_frame_at(origin + Duration::from_millis(1_250))
-            .unwrap();
-        session.stop(CameraTerminalState::Complete).unwrap();
-        assert!(session.seal().is_err());
-    }
 }
 
 #[test]
@@ -244,12 +227,8 @@ fn zero_frame_cancellation_stops_but_never_invents_evidence() {
 fn typed_camera_evidence_replays_durably_and_torn_tail_fails_closed() {
     let (mut session, origin, _, _) =
         started_session(backend(ready(), seal(1_000, "a".repeat(64))));
-    session
-        .observe_frame_at(origin + Duration::from_millis(250))
-        .unwrap();
-    session
-        .observe_frame_at(origin + Duration::from_millis(1_250))
-        .unwrap();
+    observe(&mut session, origin, 250, 300);
+    observe(&mut session, origin, 1_200, 1_250);
     session.stop(CameraTerminalState::DeviceLost).unwrap();
     let camera = session
         .seal()

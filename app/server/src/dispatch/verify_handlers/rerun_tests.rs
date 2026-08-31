@@ -16,6 +16,29 @@ fn receipt(checks: Vec<cut_core::CheckResult>) -> cut_core::RenderReceipt {
     }
 }
 
+fn retry_prepared(dir: &std::path::Path) -> PreparedVerifyRerun {
+    let receipts = dir.join("receipts");
+    let exports = dir.join("exports");
+    std::fs::create_dir_all(&receipts).unwrap();
+    std::fs::create_dir_all(&exports).unwrap();
+    let output = exports.join("render_001.mp4");
+    std::fs::write(&output, b"immutable render bytes").unwrap();
+    let mut source_receipt = receipt(Vec::new());
+    source_receipt.output_path = output.to_string_lossy().into_owned();
+    source_receipt.output_hash = full_sha256(&output).unwrap();
+    let receipt_path = receipts.join("render_001.json");
+    std::fs::write(&receipt_path, serde_json::to_vec(&source_receipt).unwrap()).unwrap();
+    PreparedVerifyRerun {
+        project_dir: dir.to_path_buf(),
+        receipts,
+        receipt_path,
+        receipt: source_receipt,
+        output,
+        profile: "talking_head".parse().unwrap(),
+        project_revision: "op_000001".into(),
+    }
+}
+
 #[test]
 fn full_hash_is_complete_and_receipt_scoped() {
     let dir = tempfile::tempdir().unwrap();
@@ -28,6 +51,30 @@ fn full_hash_is_complete_and_receipt_scoped() {
         assert_receipt_hash(&path, &expected).unwrap_err().code,
         error_codes::CONFLICT
     );
+}
+
+#[test]
+fn retry_descriptor_refuses_changed_or_missing_receipt_bound_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let prepared = retry_prepared(dir.path());
+    let expected = retry_descriptor(&prepared).unwrap();
+
+    std::fs::write(&prepared.output, b"changed render bytes").unwrap();
+    let error = retry_descriptor(&prepared).unwrap_err();
+    assert_eq!(error.code, error_codes::CONFLICT);
+    assert!(error.message.contains("no longer matches"));
+
+    let mut changed_revision = expected.clone();
+    changed_revision.project_revision = "op_000002".into();
+    let error = verify_retry_descriptor_matches(&expected, &changed_revision).unwrap_err();
+    assert_eq!(error.code, error_codes::CONFLICT);
+    assert!(error.message.contains("not safe to admit"));
+
+    std::fs::remove_file(&prepared.receipt_path).unwrap();
+    let missing = retry_descriptor(&prepared).unwrap_err();
+    let error = retry_revalidation_error(missing);
+    assert_eq!(error.code, error_codes::CONFLICT);
+    assert!(error.cause.contains("missing or no longer safe"));
 }
 
 #[test]

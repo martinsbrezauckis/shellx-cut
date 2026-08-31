@@ -45,7 +45,16 @@ pub(crate) fn prepare(
         });
     };
     let caller = serde_json::to_string(&(actor.kind, actor.name.as_str(), actor.via.as_str()))?;
-    let fingerprint = fingerprint(name, &args, expected_revision.as_deref())?;
+    // A Timeline voiceover reattach may add its non-secret owner session id
+    // after the first response was lost. It identifies the bounded live
+    // session, but is not part of the user-selected recording target. Keep
+    // the original request fingerprint stable so the active/terminal receipt
+    // can replay without reserving a second microphone.
+    let fingerprint = fingerprint(
+        name,
+        &fingerprint_args(name, &args),
+        expected_revision.as_deref(),
+    )?;
     Ok(PreparedRequest {
         args,
         actor: actor.with_request(MutationRequest {
@@ -56,6 +65,17 @@ pub(crate) fn prepare(
         }),
         controlled: true,
     })
+}
+
+fn fingerprint_args(name: &str, args: &Value) -> Value {
+    if name != "voiceover.start" {
+        return args.clone();
+    }
+    let mut normalized = args.clone();
+    if let Some(object) = normalized.as_object_mut() {
+        object.remove("owner_session_id");
+    }
+    normalized
 }
 
 fn take_string(object: &mut Map<String, Value>, key: &str) -> Result<Option<String>, CutError> {
@@ -106,16 +126,67 @@ pub(crate) async fn preflight(
         return Ok(None);
     };
     let Some(op_ids) = store.log.request_ops(actor)? else {
-        if let Some(expected) = actor
-            .request
-            .as_ref()
-            .and_then(|request| request.expected_revision.as_deref())
-        {
-            ensure_revision(store, expected)?;
+        if let Some(response) = receipt::replay_without_ops(store, verb, actor)? {
+            return Ok(Some(response));
+        }
+        // An accepted voiceover take is still a live, memory-owned session.
+        // Its exact retry must reach the coordinator before a later ordinary
+        // project edit can make the original revision look stale. Durable
+        // receipts above still replay first; a new voiceover start remains
+        // revision-guarded in the coordinator after its live-owner probe.
+        if !defers_revision_guard_to_coordinator(verb) {
+            if let Some(expected) = actor
+                .request
+                .as_ref()
+                .and_then(|request| request.expected_revision.as_deref())
+            {
+                ensure_revision(store, expected)?;
+            }
         }
         return Ok(None);
     };
     receipt::replay(store, verb, actor, &op_ids).map(Some)
+}
+
+fn defers_revision_guard_to_coordinator(verb: &str) -> bool {
+    verb == "voiceover.start"
+}
+
+/// Complete the original controlled request when a voiceover take ends
+/// honestly without producing a project operation (for example Cancelled or
+/// ZeroSamples). The response receipt contains no capability and lets a lost
+/// terminal response replay without attempting another native admission.
+pub(crate) async fn finalize_terminal_without_ops(
+    state: &AppState,
+    verb: &str,
+    actor: &Actor,
+    result: &mut VerbResult,
+) {
+    if !result.ok || result.op_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        return;
+    }
+    let guard = state.project.read().await;
+    let Some(store) = guard.as_ref() else {
+        return;
+    };
+    let revision = match store.log.current_revision() {
+        Ok(Some(revision)) => revision,
+        Ok(None) => return,
+        Err(error) => {
+            result
+                .warnings
+                .get_or_insert_with(Vec::new)
+                .push(receipt_warning(error));
+            return;
+        }
+    };
+    result.project_revision = Some(revision.clone());
+    if let Err(error) = receipt::write_without_ops(store, verb, actor, &revision, result) {
+        result
+            .warnings
+            .get_or_insert_with(Vec::new)
+            .push(receipt_warning(error));
+    }
 }
 
 fn ensure_revision(store: &ProjectStore, expected: &str) -> Result<(), CutError> {
@@ -212,5 +283,43 @@ mod tests {
         .unwrap();
         assert_eq!(left.actor.request, right.actor.request);
         assert_eq!(left.args, right.args);
+    }
+
+    #[test]
+    fn voiceover_reattach_session_keeps_the_original_start_fingerprint() {
+        let first = prepare(
+            "voiceover.start",
+            json!({
+                "request_id": "voiceover-request-1",
+                "expected_revision": "op_000004",
+                "audio_track": "a1t",
+                "start_ms": 120,
+            }),
+            actor(),
+        )
+        .unwrap();
+        let reattach = prepare(
+            "voiceover.start",
+            json!({
+                "request_id": "voiceover-request-1",
+                "expected_revision": "op_000004",
+                "audio_track": "a1t",
+                "start_ms": 120,
+                "owner_session_id": "fixture-owner-00000001",
+            }),
+            actor(),
+        )
+        .unwrap();
+        assert_eq!(first.actor.request, reattach.actor.request);
+        assert_ne!(
+            first.args, reattach.args,
+            "the handler still receives the reattach id"
+        );
+    }
+
+    #[test]
+    fn voiceover_start_defers_preflight_revision_for_active_owner_reattach() {
+        assert!(defers_revision_guard_to_coordinator("voiceover.start"));
+        assert!(!defers_revision_guard_to_coordinator("edit.add_marker"));
     }
 }

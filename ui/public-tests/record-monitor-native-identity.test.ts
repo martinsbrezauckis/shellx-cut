@@ -8,6 +8,7 @@ const windows = read('../../app/recorder/record-capture/src/windows_monitor_targ
 const macos = read('../../app/recorder/record-capture/src/macos_monitor_target.rs')
 const projection = read('../../app/server/src/screen_record/doctor_projection.rs')
 const record = read('../src/panels/Record/index.tsx')
+const sourceControl = read('../src/panels/Record/RecordingSourceControl.tsx')
 const schema = JSON.parse(read('../../schema/verbs.json'))
 const reference = read('../../skill/shellx-cut/reference.md')
 const debugApi = read('../../docs/public/DEBUG_API.md')
@@ -31,7 +32,7 @@ assert.match(macosCapture, /if let Some\(id\) = cfg\.monitor_id\.as_deref\(\)/, 
 assert.match(macosCapture, /macos_monitor_target::monitor_id\(display\).*Some\(id\)/s, 'ScreenCaptureKit matches only the current opaque identity')
 
 assert.doesNotMatch(read('../../app/recorder/record-capture/src/windows_picker.rs'), /monitor_id\(monitor\)\?/, 'a missing future id does not hide the current display row')
-assert.match(record, /interface MonitorInfo \{ id\?: string; index: number;/, 'Record types the optional additive id')
+assert.match(sourceControl, /export interface MonitorInfo \{\s+id\?: string/s, 'the source control types the optional additive id')
 assert.match(record, /const selectedMonitor = monitorIdx === null/, 'Record resolves its selected Doctor row before start')
 assert.match(record, /startArgs\.monitor_id = selectedMonitor\.id/, 'Record returns the opaque monitor identity unchanged')
 assert.doesNotMatch(record, /monitor_id = selectedMonitor\.(name|width|height|primary)/, 'Record never derives monitor identity from display copy')

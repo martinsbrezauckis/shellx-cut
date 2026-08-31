@@ -25,6 +25,11 @@ const MOCK_DIRECTOR_ERROR = MOCK_PARAMS.has('mockDirectorError')
 const MOCK_ENVIRONMENT = MOCK_PARAMS.has('mockEnvironment')
 const MOCK_KINETIC = MOCK_PARAMS.has('mockKinetic')
 const MOCK_LIBRARY_TOTAL = Math.max(0, Number.parseInt(MOCK_PARAMS.get('mockLibraryTotal') ?? '0', 10) || 0)
+// Chapter-navigation fixtures exercise current occurrence resolution without
+// changing production behavior. `edited-out` shortens the active video edit;
+// `offline` keeps its EDL but reports the source absent from media.check.
+const MOCK_CHAPTER_SCENARIO = MOCK_PARAMS.get('mockChapterScenario') ?? 'single'
+const MOCK_CACHE_REBUILD_LARGE = MOCK_PARAMS.has('mockCacheRebuildLarge')
 // NOTE: install() is invoked at the BOTTOM of this module — class declarations
 // (FakeWS) are not hoisted, so installation must follow them.
 const isObject = (v: unknown): v is object => v !== null && typeof v === 'object'
@@ -200,6 +205,25 @@ const PROJECT: Project = {
     { id: 'cp1', name: 'imported', at_op: 'op_000001', ts: iso(-3600) },
     { id: 'cp2', name: 'before-silence-pass', at_op: 'op_000003', ts: iso(-1500) },
   ],
+}
+
+function mockChapters() {
+  switch (MOCK_CHAPTER_SCENARIO) {
+    // A bounded local navigation fixture. All starts remain inside the primary
+    // clip so this tests page selection without inventing an occurrence route.
+    case 'paged': return Array.from({ length: 25 }, (_, index) => ({
+      title: `Page ${index + 1}`,
+      start_ms: index * 1_000,
+      end_ms: index * 1_000 + 500,
+    }))
+    case 'reused': return [{ title: 'Reused source', start_ms: 32_000, end_ms: 34_000 }]
+    case 'edited-out': return [{ title: 'Edited-out source', start_ms: 12_000, end_ms: 14_000 }]
+    case 'offline': return [{ title: 'Offline source', start_ms: 12_000, end_ms: 14_000 }]
+    default: return [
+      { title: 'Opening', start_ms: 0, end_ms: 12_000 },
+      { title: 'Review loop', start_ms: 12_000, end_ms: 24_000 },
+    ]
+  }
 }
 
 function iso(secAgo: number): string {
@@ -413,7 +437,17 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
   switch (name) {
     case 'project.state':
       {
-        const tracks = PROJECT.tracks.map((track) => track.id === 'a1t'
+        const scenarioTracks = MOCK_CHAPTER_SCENARIO === 'edited-out'
+          ? PROJECT.tracks.map((track) => track.id === 'v1'
+            ? {
+                ...track,
+                clips: track.clips.map((clip) => (
+                  'id' in clip && clip.id === 'c1' ? { ...clip, src_out_ms: 6_000 } : clip
+                )),
+              }
+            : track)
+          : PROJECT.tracks
+        const tracks = scenarioTracks.map((track) => track.id === 'a1t'
           ? {
               ...track,
               clips: (track.clips || []).map((clip) => (
@@ -455,6 +489,19 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
     case 'project.ops':
       return { ok: true, result: { ops: OPS } }
     case 'project.health':
+      {
+      const cacheAssets = MOCK_CACHE_REBUILD_LARGE
+        ? Array.from({ length: 65 }, (_, index) => ({
+            asset: `cache-${String(index + 1).padStart(3, '0')}`,
+            source: 'available' as const,
+            proxy: 'missing' as const,
+            filmstrip: 'not_recorded' as const,
+          }))
+        : [
+            { asset: 'a1', source: 'available' as const, proxy: 'available' as const, filmstrip: 'available' as const },
+            { asset: 'a2', source: 'available' as const, proxy: 'not_applicable' as const, filmstrip: 'not_recorded' as const },
+            { asset: 'm1', source: 'available' as const, proxy: 'not_applicable' as const, filmstrip: 'not_applicable' as const },
+          ]
       return {
         ok: true,
         result: {
@@ -469,28 +516,25 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
           },
           media: {
             status: 'ready',
-            asset_count: 3,
-            checked_count: 3,
+            asset_count: cacheAssets.length,
+            checked_count: cacheAssets.length,
             page: {
               offline: 0,
-              proxy_available: 1,
-              proxy_missing: 0,
+              proxy_available: MOCK_CACHE_REBUILD_LARGE ? 0 : 1,
+              proxy_missing: MOCK_CACHE_REBUILD_LARGE ? cacheAssets.length : 0,
               proxy_not_recorded: 0,
-              proxy_not_applicable: 2,
-              filmstrip_available: 1,
+              proxy_not_applicable: MOCK_CACHE_REBUILD_LARGE ? 0 : 2,
+              filmstrip_available: MOCK_CACHE_REBUILD_LARGE ? 0 : 1,
               filmstrip_missing: 0,
-              filmstrip_not_recorded: 1,
-              filmstrip_not_applicable: 1,
+              filmstrip_not_recorded: MOCK_CACHE_REBUILD_LARGE ? cacheAssets.length : 1,
+              filmstrip_not_applicable: MOCK_CACHE_REBUILD_LARGE ? 0 : 1,
             },
-            assets: [
-              { asset: 'a1', source: 'available', proxy: 'available', filmstrip: 'available' },
-              { asset: 'a2', source: 'available', proxy: 'not_applicable', filmstrip: 'not_recorded' },
-              { asset: 'm1', source: 'available', proxy: 'not_applicable', filmstrip: 'not_applicable' },
-            ],
+            assets: cacheAssets,
             limit: 128,
             has_more: false,
           },
         },
+      }
       }
     // Current App bootstrap reads these surfaces before Review mounts. Keep the
     // offline demo structurally complete so newer shell consumers remain usable
@@ -599,6 +643,11 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
         result: {
           ready: true,
           cards: [{ name: 'screen', status: 'ok', detail: 'Mock screen capture is ready.' }],
+          quality: {
+            supported: true,
+            output_sizes: ['source', '1080p', '720p'],
+            profiles: ['standard', 'high'],
+          },
         },
       }
     case 'screen_record.system_audio_probe':
@@ -623,7 +672,7 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
         result: {
           assets: Object.keys(PROJECT.assets).map((asset) => ({
             asset,
-            exists: true,
+            exists: !(MOCK_CHAPTER_SCENARIO === 'offline' && asset === 'a1'),
             modified_ms: Date.now(),
           })),
         },
@@ -795,10 +844,7 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
       return {
         ok: true,
         result: {
-          chapters: [
-            { title: 'Opening', start_ms: 0 },
-            { title: 'Review loop', start_ms: 12_000 },
-          ],
+          chapters: mockChapters(),
         },
       }
     case 'captions.generate': {

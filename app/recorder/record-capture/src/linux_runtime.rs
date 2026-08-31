@@ -2,7 +2,7 @@
 
 use record_core::{error_codes, RecordError, Result};
 
-pub(super) fn cap_err(ctx: &str, error: impl std::fmt::Display) -> RecordError {
+pub(crate) fn cap_err(ctx: &str, error: impl std::fmt::Display) -> RecordError {
     RecordError::new(error_codes::CAPTURE, ctx, error.to_string()).with_action(
         "ensure a desktop session is logged in with xdg-desktop-portal + PipeWire, \
          the user session bus is reachable (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS), \
@@ -18,7 +18,7 @@ pub(super) fn ffprobe_bin() -> String {
     std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".to_string())
 }
 
-pub(super) fn gst_bin() -> String {
+pub(crate) fn gst_bin() -> String {
     std::env::var("SHELLX_RECORD_GST").unwrap_or_else(|_| "gst-launch-1.0".to_string())
 }
 

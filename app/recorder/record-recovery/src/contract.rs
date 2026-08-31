@@ -99,6 +99,16 @@ pub struct MediaFacts {
     pub duration_ms: u64,
     pub decoded_video_frames: u64,
     pub has_audio: bool,
+    /// Final video dimensions measured by the same FFprobe read. Older
+    /// manifests remain absent rather than borrowing requested source geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// FFprobe's final container codec name. This is not an encoder
+    /// implementation or a selectable quality profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec_name: Option<String>,
     /// Exact FFprobe facts from the same bounded verification pass. Older
     /// manifests have no rate evidence, which remains unknown rather than
     /// reconstructed from the legacy capture settings.

@@ -22,10 +22,9 @@
 //! installed (gstreamer1.0-pipewire).
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType};
 use ashpd::desktop::PersistMode;
@@ -34,9 +33,8 @@ use enumflags2::BitFlags;
 use record_core::{EventTrack, Monitor as RMonitor, Result, Settings};
 
 use crate::linux_capture_state::{CapPhase, CapturedInput, RecordedInput};
-use crate::linux_media::probe_dims;
 use crate::linux_portal;
-use crate::linux_runtime::{cap_err, ffmpeg_bin, ffprobe_bin, gst_bin, shared_runtime};
+use crate::linux_runtime::{cap_err, ffmpeg_bin, ffprobe_bin, shared_runtime};
 use crate::linux_token::{read_token, write_token};
 use crate::{checkpoint::Checkpoints, cursor_correlation, Capture, CaptureConfig, CaptureOutput};
 
@@ -163,8 +161,9 @@ impl Capture for LinuxCapture {
                 stop_async.as_ref(),
                 portal_deadline,
                 async {
+                    let parent_window = linux_portal::portal_parent_window();
                     proxy
-                        .start(&session, None, Default::default())
+                        .start(&session, parent_window.as_ref(), Default::default())
                         .await
                         .map_err(|e| cap_err("start portal cast (consent)", e))
                 },
@@ -203,31 +202,29 @@ impl Capture for LinuxCapture {
                 write_token(tok);
             }
 
-            // Wayland: open the PipeWire remote fd so pipewire-rs can read frames +
-            // SPA_META_Cursor from the node (gst connects on its own, so the gst path
-            // doesn't need this).
-            let mut pw_fd = if wayland_pw {
-                match linux_portal::await_pre_first_frame(
-                    "open PipeWire stream",
-                    stop_async.as_ref(),
-                    portal_deadline,
-                    async {
-                        proxy
-                            .open_pipe_wire_remote(&session, Default::default())
-                            .await
-                            .map_err(|e| cap_err("open pipewire remote", e))
-                    },
-                )
-                .await
-                {
-                    Ok(fd) => Some(fd),
-                    Err(error) => {
-                        linux_portal::close_session(&session).await;
-                        return Err(error);
-                    }
+            // The portal node ID is scoped to this session's PipeWire remote.
+            // Both consumers need it: pipewire-rs consumes it directly, while
+            // GStreamer receives an explicitly inherited duplicate for
+            // `pipewiresrc fd=…`. A default PipeWire connection cannot access a
+            // portal-granted node on GNOME.
+            let mut pw_fd = match linux_portal::await_pre_first_frame(
+                "open PipeWire stream",
+                stop_async.as_ref(),
+                portal_deadline,
+                async {
+                    proxy
+                        .open_pipe_wire_remote(&session, Default::default())
+                        .await
+                        .map_err(|e| cap_err("open pipewire remote", e))
+                },
+            )
+            .await
+            {
+                Ok(fd) => Some(fd),
+                Err(error) => {
+                    linux_portal::close_session(&session).await;
+                    return Err(error);
                 }
-            } else {
-                None
             };
 
             // ----- capture window begins (input + mic aligned to source frame 0) -----
@@ -282,20 +279,25 @@ impl Capture for LinuxCapture {
                     .map(|owner| segment_start_ms.saturating_add(owner.interval_ms()))
                     .unwrap_or(dur)
                     .min(dur);
-                let (capture_start_ms, ended_ms) = if let Some(fd) = pw_fd.take() {
+                let (capture_start_ms, ended_ms) = if wayland_pw {
+                    let fd = pw_fd
+                        .take()
+                        .expect("every capture segment owns one portal PipeWire remote");
                     let ff = ff_for_async.clone();
                     let start_c = start;
                     let stop_c = stop.clone();
+                    let readiness = cfg.readiness.clone();
                     let cur = tokio::task::spawn_blocking(move || {
-                        crate::wayland_pw::capture(
-                            Some(fd),
+                        crate::wayland_pw::capture(crate::wayland_pw::PipewireCaptureRequest {
+                            pw_fd: Some(fd),
                             node,
-                            interval_end,
-                            start_c,
-                            stop_c,
-                            &segment_path,
-                            &ff,
-                        )
+                            dur_ms: interval_end,
+                            start: start_c,
+                            stop: stop_c,
+                            raw_path: segment_path,
+                            ff_bin: ff,
+                            readiness,
+                        })
                     })
                     .await
                     .map_err(|e| cap_err("wayland_pw join", e))?
@@ -323,49 +325,19 @@ impl Capture for LinuxCapture {
                     }
                     (cur_start_ms, cur_end_ms)
                 } else {
-                    let mut child = tokio::process::Command::new(gst_bin())
-                        .arg("-e")
-                        .args([
-                            "pipewiresrc",
-                            &format!("path={node}"),
-                            "!",
-                            "videoconvert",
-                            "!",
-                            "x264enc",
-                            "speed-preset=ultrafast",
-                            "tune=zerolatency",
-                            "!",
-                            "mp4mux",
-                            "!",
-                            "filesink",
-                            &format!("location={segment_path}"),
-                        ])
-                        .spawn()
-                        .map_err(|e| cap_err("spawn gst-launch-1.0", e))?;
-                    // GStreamer has no first-frame callback here; successful spawn is
-                    // its encoder-start boundary on the shared capture clock.
-                    let capture_start_ms =
-                        u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    while !stop.load(Ordering::Relaxed)
-                        && start.elapsed() < Duration::from_millis(interval_end)
-                    {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    let capture_end_ms =
-                        u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    if let Some(pid) = child.id() {
-                        let _ = Command::new("kill")
-                            .args(["-INT", &pid.to_string()])
-                            .status();
-                    }
-                    let st = child.wait().await.map_err(|e| cap_err("wait gst", e))?;
-                    if !st.success() {
-                        return Err(cap_err(
-                            "gst screen capture failed",
-                            format!("gst exit {st}"),
-                        ));
-                    }
-                    (capture_start_ms, capture_end_ms)
+                    let fd = pw_fd
+                        .take()
+                        .expect("every capture segment owns one portal PipeWire remote");
+                    crate::linux_gst_capture::capture_segment(
+                        fd,
+                        node,
+                        &segment_path,
+                        interval_end,
+                        start,
+                        stop.clone(),
+                        cfg.readiness.clone(),
+                    )
+                    .await?
                 };
                 if let (Some(owner), Some((sequence, staging))) = (checkpoints.as_mut(), segment) {
                     owner.publish(
@@ -385,14 +357,16 @@ impl Capture for LinuxCapture {
                 if stop.load(Ordering::Relaxed) || ended_ms >= dur {
                     break ended_ms;
                 }
-                if wayland_pw {
-                    pw_fd = Some(
-                        proxy
-                            .open_pipe_wire_remote(&session, Default::default())
-                            .await
-                            .map_err(|e| cap_err("reopen pipewire remote", e))?,
-                    );
-                }
+                // A PipeWire remote belongs to one encoder/consumer connection.
+                // Reopen it for every checkpoint regardless of consumer, so a
+                // terminated GStreamer segment cannot leave a stale fd in the
+                // next one. Stop takes precedence over an unnecessary reopen.
+                pw_fd = Some(
+                    proxy
+                        .open_pipe_wire_remote(&session, Default::default())
+                        .await
+                        .map_err(|e| cap_err("reopen pipewire remote", e))?,
+                );
                 // The next encoder does not exist until any portal-remote reopen and
                 // prior segment verification finish. Measure its new wall-clock start
                 // so stitching materializes all of that restart gap.
@@ -484,21 +458,23 @@ impl Capture for LinuxCapture {
         // normal source after CFR normalization. Decode it again before the
         // RecordingProject can name it; a successful encoder exit alone is not
         // proof that its final container has the gap-padded clock we promised.
-        let verified_media = crate::linux_source_publication::normalize_and_publish(
+        let normalized = crate::linux_source_publication::normalize_and_publish(
             Path::new(&raw),
             Path::new(&path),
             phase.duration_ms,
             fps,
             &ffmpeg_bin(),
             &ffprobe_bin(),
+            cfg.quality.as_ref(),
         )
         .map_err(|error| cap_err("normalize and publish source", error))?;
+        let verified_media = normalized.media;
+        let capture_quality = normalized.quality;
         let _ = std::fs::remove_file(&raw); // drop the throwaway sparse capture
 
-        // The UI must still receive a usable track dimension if ffprobe is absent,
-        // but rdevin coordinates may not be promoted to exact on that fallback:
-        // there is no evidence that the logical portal size equals the encoded video.
-        let finalized_dimensions = probe_dims(&ffprobe_bin(), &path);
+        // Reuse final verifier dimensions; a fallback has no proof that portal
+        // logical size equals encoded video.
+        let finalized_dimensions = verified_media.width.zip(verified_media.height);
         let (w, h) = finalized_dimensions.unwrap_or((phase.w, phase.h));
         let (cursor, clicks, scrolls, cursor_correlation) = match phase.input {
             CapturedInput::Correlated(input) => (
@@ -562,6 +538,7 @@ impl Capture for LinuxCapture {
                 fps: fps as f32,
                 audio_rate: 48_000,
             },
+            capture_quality,
             verified_media: Some(verified_media),
         })
     }

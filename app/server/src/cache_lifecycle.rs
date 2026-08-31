@@ -7,11 +7,13 @@
 mod inventory;
 mod ownership;
 mod purge;
+mod rebuild;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use ownership::{record_generated, remove_owned_output, OwnedRemoval};
 pub(crate) use purge::{preview, start_purge};
+pub(crate) use rebuild::start_rebuild;
 
 use cut_core::{error_codes, CutError};
 use serde::{Deserialize, Serialize};
@@ -27,6 +29,20 @@ const LEDGER_SCHEMA: &str = "shellx-cut/cache-ownership/1";
 pub(crate) enum CacheKind {
     Proxies,
     Thumbnails,
+}
+
+/// In-memory admission record for the one deterministic cache rebuild owned by
+/// this server run. The durable ledger is the restart boundary; this only keeps
+/// duplicate requests and conflicting asset mutations from racing a live worker.
+#[derive(Debug, Clone)]
+pub(crate) struct CacheRebuildActive {
+    pub(crate) job_id: String,
+    pub(crate) assets: Vec<String>,
+    pub(crate) scheduled_outputs: usize,
+    /// The same path-free admission summary returned to the first scheduler.
+    /// Keeping it only while the job is active lets a repeated human request
+    /// explain the already-queued work without scanning or inventing counts.
+    pub(crate) counts: serde_json::Value,
 }
 
 impl CacheKind {
@@ -84,7 +100,7 @@ fn cache_error(message: impl Into<String>, cause: impl Into<String>) -> CutError
     CutError::new(error_codes::CONFLICT, message, cause)
 }
 
-fn cache_busy_error() -> CutError {
+pub(crate) fn cache_busy_error() -> CutError {
     cache_error(
         "editing cache is busy",
         "a proxy or filmstrip producer is publishing cache output; wait for it to finish, then preview again",

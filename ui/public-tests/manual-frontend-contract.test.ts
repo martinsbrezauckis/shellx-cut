@@ -25,9 +25,9 @@ async function source(path: string): Promise<string> {
 
 async function verifyGeneratedManual(): Promise<void> {
   await run(process.execPath, [resolve(root, 'scripts/generate-manual-content.mjs'), '--check'], { cwd: root })
-  assert.equal(MANUAL_CONTENT.featureCount, 194, 'the generated manual retains its 194 indexed entries')
-  assert.equal(MANUAL_FEATURES.length, 194, 'the generated feature array retains every indexed entry')
-  assert.equal(new Set(MANUAL_FEATURES.map((feature) => feature.id)).size, 194, 'every indexed manual feature id is unique')
+  assert.equal(MANUAL_CONTENT.featureCount, 198, 'the generated manual retains its 198 indexed entries')
+  assert.equal(MANUAL_FEATURES.length, 198, 'the generated feature array retains every indexed entry')
+  assert.equal(new Set(MANUAL_FEATURES.map((feature) => feature.id)).size, 198, 'every indexed manual feature id is unique')
   assert.equal(MANUAL_CONTENT.unindexed.length, 0, 'every declared web-manual feature is indexed into the frontend content')
 }
 
@@ -40,10 +40,10 @@ async function verifySchemaReferenceParity(): Promise<void> {
   const schemaNames = schema.verbs.map((verb) => verb.name)
   const referenceNames = [...reference.matchAll(/^\| `([^`]+)`/gm)].map((match) => match[1])
 
-  assert.equal(schemaNames.length, 278, 'the public verb schema remains the deliberate 278-verb contract')
-  assert.equal(new Set(schemaNames).size, 278, 'schema verb names remain unique')
-  assert.equal(referenceNames.length, 278, 'the full agent reference remains a 278-verb table')
-  assert.equal(new Set(referenceNames).size, 278, 'agent-reference verb names remain unique')
+  assert.equal(schemaNames.length, 294, 'the public verb schema remains the deliberate 294-verb contract')
+  assert.equal(new Set(schemaNames).size, 294, 'schema verb names remain unique')
+  assert.equal(referenceNames.length, 294, 'the full agent reference remains a 294-verb table')
+  assert.equal(new Set(referenceNames).size, 294, 'agent-reference verb names remain unique')
   assert.deepEqual([...referenceNames].sort(), [...schemaNames].sort(), 'schema and full agent reference retain exact verb parity')
 }
 
@@ -81,7 +81,7 @@ function verifyFeatureTargets(): { exactTargetCount: number; surfaceTargetCount:
   }
 
   assert.ok(exactTargetCount > 0, 'manual target coverage includes real exact-control targets')
-  assert.ok(exactTargetCount < MANUAL_FEATURES.length, 'manual target coverage does not pretend all 194 entries are exact controls')
+  assert.ok(exactTargetCount < MANUAL_FEATURES.length, 'manual target coverage does not pretend every indexed entry is an exact control')
   assert.equal(exactTargetCount + surfaceTargetCount + unavailableCount, MANUAL_FEATURES.length, 'every indexed feature has either a target or an explicit unavailable state')
   return { exactTargetCount, surfaceTargetCount, unavailableCount }
 }
@@ -182,7 +182,7 @@ await verifyEmbeddedMockIsReadOnly()
 console.log(JSON.stringify({
   result: 'PASS',
   indexedFeatureCount: MANUAL_FEATURES.length,
-  schemaReferenceVerbCount: 278,
+  schemaReferenceVerbCount: 294,
   ...targetCoverage,
   exactTargetCoverage: `${targetCoverage.exactTargetCount}/${MANUAL_FEATURES.length}`,
 }, null, 2))

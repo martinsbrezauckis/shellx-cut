@@ -33,7 +33,9 @@ use windows_capture::{
 
 use crate::{
     checkpoint::Checkpoints,
-    input, surface_coordinates,
+    input,
+    region_geometry::NativePixelCrop,
+    surface_coordinates,
     windows_wgc_run::{
         WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher, WgcNativeControl, WgcRunOwner,
         WgcStartObservation, WgcStartedControl,
@@ -162,11 +164,16 @@ pub(crate) struct EncFlags {
     pub(crate) h: u32,
     pub(crate) fps: u32,
     pub(crate) path: String,
+    pub(crate) crop: Option<NativePixelCrop>,
+    pub(crate) readiness: Option<crate::CaptureReadiness>,
 }
 
 /// windows-capture handler: each arrived frame is fed to the MP4 encoder.
 pub(crate) struct Handler {
     encoder: Option<VideoEncoder>,
+    crop: Option<NativePixelCrop>,
+    crop_surface: Option<crate::windows_gpu_crop::GpuCropSurface>,
+    readiness: Option<crate::CaptureReadiness>,
 }
 
 impl GraphicsCaptureApiHandler for Handler {
@@ -183,6 +190,9 @@ impl GraphicsCaptureApiHandler for Handler {
         )?;
         Ok(Self {
             encoder: Some(encoder),
+            crop: f.crop,
+            crop_surface: None,
+            readiness: f.readiness,
         })
     }
 
@@ -191,8 +201,16 @@ impl GraphicsCaptureApiHandler for Handler {
         frame: &mut Frame,
         _ctl: InternalCaptureControl,
     ) -> std::result::Result<(), Self::Error> {
+        if let Some(crop) = self.crop {
+            crate::windows_gpu_crop::crop_frame_to_origin(frame, crop, &mut self.crop_surface)?;
+        }
         if let Some(e) = self.encoder.as_mut() {
             e.send_frame(frame)?;
+            // WGC delivered a native frame and the MP4 encoder accepted it. A
+            // callback/start success alone is not enough for readiness.
+            if let Some(readiness) = self.readiness.as_ref() {
+                readiness.mark_first_screen_frame_delivered();
+            }
         }
         Ok(())
     }
@@ -216,6 +234,11 @@ impl WindowsCapture {
 
 impl Capture for WindowsCapture {
     fn capture(&self, cfg: &CaptureConfig, stop: Arc<AtomicBool>) -> Result<CaptureOutput> {
+        // WGC frames and the low-level mouse hook use physical per-monitor
+        // coordinates. Hold this guard for every monitor lookup, Region crop,
+        // and input-map calculation in this capture worker.
+        let _dpi_context = crate::windows_runtime::enter_per_monitor_dpi_v2()
+            .map_err(|error| cap_err("enter per-monitor DPI coordinate space", error))?;
         crate::windows_runtime::pin_process_mta()
             .map_err(|error| cap_err("initialize Windows capture runtime", error))?;
         // Open-ended capture: `None` = run until the external `stop` is set
@@ -235,7 +258,7 @@ impl Capture for WindowsCapture {
             Monitor(WcMonitor),
             Window(WcWindow),
         }
-        let (src, w, h, surface) = if let Some(ref window_id) = cfg.window {
+        let (src, parent_w, parent_h, parent_surface) = if let Some(ref window_id) = cfg.window {
             let target = crate::windows_picker::resolve_window(window_id)
                 .map_err(|error| cap_err("resolve the selected window identity", error))?;
             let win = WcWindow::from_raw_hwnd(target.0);
@@ -305,6 +328,44 @@ impl Capture for WindowsCapture {
             (Src::Monitor(monitor), mw, mh, surface)
         };
 
+        let (w, h, surface, crop) = match cfg.region {
+            Some(region) => {
+                if matches!(src, Src::Window(_)) {
+                    return Err(cap_err(
+                        "capture the selected Region",
+                        "a Region must be bound to one exact monitor, not a window",
+                    ));
+                }
+                let crop = NativePixelCrop::from_capture_region(region).ok_or_else(|| {
+                    cap_err("capture the selected Region", "the native crop is invalid")
+                })?;
+                if crop.parent_size() != (parent_w, parent_h) {
+                    return Err(cap_err(
+                        "capture the selected Region",
+                        "the selected display changed size before WGC started",
+                    ));
+                }
+                let subsurface = parent_surface
+                    .and_then(|surface| {
+                        surface.subsurface_from_native_crop(crop, parent_w, parent_h)
+                    })
+                    .ok_or_else(|| {
+                        cap_err(
+                            "capture the selected Region",
+                            "the selected display geometry no longer maps to the native crop",
+                        )
+                    })?;
+                let (width, height) = crop.output_size();
+                (
+                    width,
+                    height,
+                    Some(subsurface.capture_surface()),
+                    Some(crop),
+                )
+            }
+            None => (parent_w, parent_h, parent_surface, None),
+        };
+
         let out_dir = cfg.out_dir.trim_end_matches(['/', '\\']).to_string();
         std::fs::create_dir_all(&out_dir).map_err(|e| cap_err("create output dir", e))?;
         let path = format!("{out_dir}/source.mp4");
@@ -361,6 +422,8 @@ impl Capture for WindowsCapture {
                     h,
                     fps,
                     path: destination.display().to_string(),
+                    crop,
+                    readiness: cfg.readiness.clone(),
                 };
                 let control = match *target {
                     Src::Monitor(m) => Handler::start_free_threaded(WcSettings::new(
@@ -487,6 +550,7 @@ impl Capture for WindowsCapture {
                 fps: fps as f32,
                 audio_rate: 48_000,
             },
+            capture_quality: None,
             verified_media,
         })
     }

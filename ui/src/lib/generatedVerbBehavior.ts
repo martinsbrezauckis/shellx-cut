@@ -253,6 +253,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "none",
     "facets": []
   },
+  "project.cache_rebuild": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "project_cache_rebuild",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_replayable",
+    "async_job": "media",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
   "project.cache_purge": {
     "mutation_class": "external_side_effect",
     "side_effects": {
@@ -539,6 +557,42 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "reversible",
+    "facets": []
+  },
+  "project.group_preview": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "project_group_preview",
+    "project_state": "required",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "agent_only",
+    "agent_chat": "inspect",
+    "risk": "none",
+    "facets": []
+  },
+  "project.group_reject": {
+    "mutation_class": "navigation",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "project_group_reject",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "agent_only",
+    "agent_chat": "deny",
+    "risk": "destructive",
     "facets": []
   },
   "library.list": {
@@ -3339,6 +3393,42 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "reversible",
     "facets": []
   },
+  "captions.bulk_preview": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "captions_bulk_preview",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "inspect",
+    "risk": "none",
+    "facets": []
+  },
+  "captions.bulk_apply": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "captions_bulk_apply",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
+  },
   "render.preview": {
     "mutation_class": "external_side_effect",
     "side_effects": {
@@ -3371,6 +3461,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "replayability": "not_applicable",
     "async_job": "none",
     "ui_exposure": "internal",
+    "agent_chat": "deny",
+    "risk": "external",
+    "facets": []
+  },
+  "render.compare": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "render_compare",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -4383,6 +4491,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "external",
     "facets": []
   },
+  "screen_record.status": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_status",
+    "project_state": "none",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "internal",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
   "ui.state": {
     "mutation_class": "read",
     "side_effects": {
@@ -5011,6 +5137,168 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "reversible",
+    "facets": []
+  },
+  "voiceover.start": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "voiceover_start",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "voiceover.tick": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "voiceover_tick",
+    "project_state": "required",
+    "idempotency": "natural",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "voiceover.stop": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "voiceover_stop",
+    "project_state": "required",
+    "idempotency": "natural",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "voiceover.cancel": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "voiceover_cancel",
+    "project_state": "required",
+    "idempotency": "natural",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "voiceover.observe_playhead": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "voiceover_observe_playhead",
+    "project_state": "required",
+    "idempotency": "natural",
+    "replayability": "not_replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.scene_activate": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_scene_activate",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
+    "facets": []
+  },
+  "screen_record.scene_timer": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_scene_timer",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
+    "facets": []
+  },
+  "screen_record.pause": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_pause",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
+    "facets": []
+  },
+  "screen_record.resume": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_resume",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
     "facets": []
   }
 }

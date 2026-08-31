@@ -7,6 +7,8 @@ use record_core::{error_codes, RecordError, Result, Settings};
 use record_recovery::{Checkpoint, CheckpointFacts};
 
 use super::*;
+use crate::windows_pause_pilot::audio_run::DisabledWindowsPauseAudioFactory;
+use crate::windows_pause_pilot::input_run::DisabledWindowsPauseInputFactory;
 use crate::windows_pause_pilot::{WindowsPausePilotRequest, WindowsPausePilotStarted};
 use crate::windows_wgc_run::{
     WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher, WgcControlFactory,
@@ -27,7 +29,7 @@ impl WgcNativeControl for Control {
     }
 }
 
-pub(super) struct Factory(Log);
+pub(super) struct Factory(pub(super) Log);
 
 impl WgcControlFactory<String> for Factory {
     type Control = Control;
@@ -183,6 +185,8 @@ pub(super) fn start_worker_with_started(
                 },
             ))
         },
+        Box::new(DisabledWindowsPauseInputFactory),
+        Box::new(DisabledWindowsPauseAudioFactory),
         || 0,
         || observation(10),
     )
@@ -222,6 +226,8 @@ pub(super) fn start_drift_worker(accepted: Vec<WgcAcceptedCapture>) -> (DriftWor
                 },
             ))
         },
+        Box::new(DisabledWindowsPauseInputFactory),
+        Box::new(DisabledWindowsPauseAudioFactory),
         || 0,
         || observation(10),
     )
@@ -266,6 +272,8 @@ fn native_start_failure_is_not_misclassified_as_an_exact_target_refusal() {
                 },
             ))
         },
+        Box::new(DisabledWindowsPauseInputFactory),
+        Box::new(DisabledWindowsPauseAudioFactory),
         || 0,
         || observation(10),
     );

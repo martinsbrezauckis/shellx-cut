@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 use super::test_support::*;
 use super::*;
 use crate::windows_pause_pilot::{
-    channel, WindowsPausePilotCheckpointRange, WindowsPausePilotOperation, WindowsPausePilotRequest,
+    channel, WindowsPausePilotCheckpointRange, WindowsPausePilotOperation,
+    WindowsPausePilotRefusal, WindowsPausePilotRequest, WindowsSealedScreenRun,
 };
 
 #[test]

@@ -1,9 +1,11 @@
 # ShellX Cut local-machine trust threat model
 
+<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
+
 ## Executive summary
 
-This is the v0.6.112 deployment contract for the local Debug API, WebSocket
-endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
+This v0.6.113 deployment contract is for candidate source and covers the local
+Debug API, WebSocket endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
 one trusted interactive environment**. Its unauthenticated loopback listener is
 a whole-machine trust boundary, not same-user or per-process isolation. Under
 that explicit deployment assumption, no per-caller capability token is present
@@ -44,7 +46,7 @@ browser from another origin ─────> Origin/Host/Fetch-Metadata guard (r
 | Asset | Why it matters |
 | --- | --- |
 | Open project, timeline, edit history, and exports | Integrity and availability of the user's work. |
-| Registered media, captions, transcripts, and receipts | Private content and project-derived metadata. |
+| Registered media, camera takes, captions, transcripts, and receipts | Private content and project-derived metadata. |
 | Local API/MCP control of the open editor | A caller can read state and invoke the existing verb surface. |
 | Agent Chat turn, attachments, diff, checkpoint, and revert data | Bounded editing review data; hostile content can influence an agent prompt. |
 
@@ -58,6 +60,7 @@ browser from another origin ─────> Origin/Host/Fetch-Metadata guard (r
 | Claude `agent.chat` | Hostile prompt/attachment attempts native or unrelated Cut actions. | Contained capability contract, native-tool denial, and Cut capability filtering limit that provider route. | Not an OS sandbox and does not protect the unauthenticated REST/MCP surface. |
 | Codex `agent.chat` | A selected local Codex turn uses its configured native tools and integrations. | Cut adds only its filtered MCP surface and records every resulting Cut verb for review/revert. | Codex retains the user's native sandbox, permissions, rules, and configured tools; select it only when that local CLI is trusted. |
 | `SHELLX_CUT_ALLOW_NON_LOCAL=1` | LAN/public client connects or forges headers. | Default refuses this bind; the opt-in is unsupported as a Cut remote mode. | Cut adds no remote auth; direct exposure grants the full surface. |
+| Recording camera selection | A caller tries to enumerate native identities, trigger permission unexpectedly, or substitute another device. | Idle Doctor returns opaque expiring choices and opens no stream. Only explicit Start uses a selected choice, revalidates it, and requires a real first frame before retaining a separate local take. | Camera media is sensitive local project content; a trusted local caller that can invoke Start can request it and OS permission remains the final platform boundary. |
 
 ## Abuse paths and mitigations
 

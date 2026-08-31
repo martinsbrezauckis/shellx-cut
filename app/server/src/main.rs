@@ -52,6 +52,7 @@ mod review_http;
 mod schema_validation;
 mod screen_record;
 mod screen_record_studio;
+mod screen_record_studio_journal;
 mod startup_tasks;
 mod state;
 mod stt_settings;
@@ -60,6 +61,8 @@ mod translate;
 mod ui_bridge;
 mod userdata;
 mod vissearch;
+mod voiceover_timeline_coordinator;
+mod voiceover_timeline_owner;
 use clap::{Parser, Subcommand};
 use cut_core::{Actor, ActorKind, ProjectStore};
 use state::AppState;
@@ -118,21 +121,32 @@ enum Command {
         standalone: bool,
     },
 }
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Packaged Python entrypoints live inside the signed macOS app bundle. Importing a
-    // sibling module must never create __pycache__ there and invalidate the code seal.
-    // Set this before any worker or child process starts so every Python sidecar and
-    // adapter inherits the same read-only-package contract on all platforms.
+fn main() -> anyhow::Result<()> {
+    // Prevent Python sidecars from writing `__pycache__` into signed bundles.
+    // Keep this synchronous guard ahead of command parsing, child-environment
+    // admission, and construction of the Tokio worker runtime.
     std::env::set_var("PYTHONDONTWRITEBYTECODE", "1");
+    let cli = Cli::parse();
+    screen_record::initialize_private_foreground_region_bridge(matches!(
+        &cli.command,
+        Command::Serve {
+            headless: false,
+            ..
+        }
+    ));
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
     // Log to stderr so MCP stdout stays protocol-clean.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
-    // On macOS the Tauri shell PIPES cutd's stderr, so a panicking verb handler just resets
-    // the HTTP connection with no visible trace (a verb returns "http 000"). Tee panics to a
-    // file (in addition to the default stderr hook) so engine panics are diagnosable on every
-    // platform — `$HOME/.cutd-panic.log` (falls back to the temp dir).
+    // Tee panic diagnostics to `$HOME/.cutd-panic.log` (or temp) because a
+    // Tauri-piped stderr otherwise hides a handler panic from the caller.
     {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
@@ -150,7 +164,6 @@ async fn main() -> anyhow::Result<()> {
             prev(info);
         }));
     }
-    let cli = Cli::parse();
     match cli.command {
         Command::Serve {
             project,

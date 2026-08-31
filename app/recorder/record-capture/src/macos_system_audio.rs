@@ -15,10 +15,76 @@ pub(crate) fn publish_padded_system_wav(
     sample_rate: u32,
     first_packet_offset_ms: Option<u64>,
 ) -> Result<(), String> {
+    publish_padded_system_wav_named(
+        out_dir,
+        "system.wav",
+        samples,
+        channels,
+        sample_rate,
+        first_packet_offset_ms,
+    )
+}
+
+/// Publish one private Core Audio run under a caller-provided fixed leaf.
+///
+/// Pause-aware capture cannot reuse the ordinary `system.wav`: each sealed
+/// native generation must keep its own immutable input to the shared recovery
+/// and projection owner. The leaf name is deliberately a simple filename so
+/// callers cannot escape the prepared capture directory.
+#[allow(dead_code)] // Used by the private macOS pause owner on native builds.
+pub(crate) fn publish_padded_system_wav_named(
+    out_dir: &Path,
+    file_name: &str,
+    samples: &[f32],
+    channels: u16,
+    sample_rate: u32,
+    first_packet_offset_ms: Option<u64>,
+) -> Result<(), String> {
+    publish_system_wav_named_with_offset(
+        out_dir,
+        file_name,
+        samples,
+        channels,
+        sample_rate,
+        first_packet_offset_ms,
+    )
+}
+
+/// Publish an unpadded private pause sidecar. Its first-packet offset remains
+/// an explicit sealed timing fact, so the shared pause projection can position
+/// each logical run exactly once. Writing physical padding here would make the
+/// projection count that offset both in placement and in PCM samples.
+#[allow(dead_code)] // Used by the private macOS pause owner on native builds.
+pub(crate) fn publish_system_wav_named(
+    out_dir: &Path,
+    file_name: &str,
+    samples: &[f32],
+    channels: u16,
+    sample_rate: u32,
+) -> Result<(), String> {
+    publish_system_wav_named_with_offset(out_dir, file_name, samples, channels, sample_rate, None)
+}
+
+fn publish_system_wav_named_with_offset(
+    out_dir: &Path,
+    file_name: &str,
+    samples: &[f32],
+    channels: u16,
+    sample_rate: u32,
+    first_packet_offset_ms: Option<u64>,
+) -> Result<(), String> {
     if !record_recovery::is_plain_dir(out_dir).map_err(|error| error.to_string())? {
         return Err("system.wav capture directory is not a local directory".into());
     }
-    let final_path = out_dir.join("system.wav");
+    if file_name.is_empty()
+        || std::path::Path::new(file_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(file_name)
+    {
+        return Err("system.wav pause leaf is not a simple filename".into());
+    }
+    let final_path = out_dir.join(file_name);
     let (part, file) = record_recovery::create_staging_file(out_dir, "system-wav")
         .map_err(|error| format!("reserve system.wav staging: {error}"))?;
     let spec = hound::WavSpec {
@@ -91,5 +157,50 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[test]
+    fn named_pause_leaf_is_no_replace_and_cannot_escape_its_capture_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let leaf = "recording-system-generation-00000000000000000001.wav";
+        super::publish_padded_system_wav_named(temp.path(), leaf, &[0.5, 0.5], 2, 48_000, Some(1))
+            .unwrap();
+        assert!(temp.path().join(leaf).is_file());
+        assert!(super::publish_padded_system_wav_named(
+            temp.path(),
+            leaf,
+            &[0.5, 0.5],
+            2,
+            48_000,
+            None,
+        )
+        .is_err());
+        assert!(super::publish_padded_system_wav_named(
+            temp.path(),
+            "../escaped.wav",
+            &[0.5],
+            1,
+            48_000,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unpadded_pause_sidecar_keeps_first_packet_placement_external() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp
+            .path()
+            .join("recording-system-generation-00000000000000000001.wav");
+        super::publish_system_wav_named(
+            temp.path(),
+            path.file_name().unwrap().to_str().unwrap(),
+            &[0.5, 0.5],
+            2,
+            48_000,
+        )
+        .unwrap();
+        let mut reader = hound::WavReader::open(path).unwrap();
+        assert_eq!(reader.samples::<i16>().next().unwrap().unwrap(), 16_383);
     }
 }

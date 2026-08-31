@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 use record_core::{error_codes, EventTrack, Monitor as RMonitor, RecordError, Result, Settings};
 
 use crate::macos_finalization::stop_audio_at_video_boundary;
+use crate::macos_region_capture::{
+    prepare_region_capture_from_config, verified_region_output_size,
+};
 use crate::macos_system_tap::{SystemAudioResult, SystemAudioTap};
 use crate::{
     checkpoint::Checkpoints, input, macos_checkpoint::SegmentOutput, surface_coordinates, Capture,
@@ -249,106 +252,140 @@ impl Capture for MacCapture {
         // per-window capture) else the chosen display, and records straight
         // to source.mp4 via SCRecordingOutput (macOS 15+). The external
         // stop / deadline ends it → stream.stop_capture() finalizes the mp4.
-        use screencapturekit::shareable_content::SCShareableContentInfo;
-
         sck_init_cg();
-        let content = SCShareableContent::get()
-            .map_err(|e| cap_err("SCShareableContent::get", format!("{e:?}")))?;
+        // Region configuration owns its fresh exact display revalidation in a
+        // bounded native module; ordinary display capture stays below.
+        let region_backend = cfg
+            .region
+            .is_some()
+            .then(|| prepare_region_capture_from_config(cfg, fps))
+            .transpose()?;
+        let region_output = region_backend.is_some();
 
-        // Build the filter via the PER-ELEMENT accessors (NOT the batched snapshot(), which
-        // panics on real content in v8.0.0): a specific native window identity or
-        // the chosen display, plus a fallback point size. Title is display-only.
-        let windows = content.windows();
-        let displays = content.displays();
-        let (filter, fb_w, fb_h, surface) = if let Some(ref want) = cfg.window {
-            let want_id = crate::window_target::parse_macos_window_id(want).ok_or_else(|| {
-                cap_err(
-                    "find the window to capture",
-                    "the selected window id is malformed; reopen the source picker",
-                )
-            })?;
-            let win = windows
-                .iter()
-                .find(|w| w.window_id() == want_id)
-                .ok_or_else(|| {
-                    cap_err(
-                        "find the window to capture",
-                        "the selected window is no longer available; reopen the source picker",
-                    )
-                })?;
-            let fr = win.frame();
-            (
-                SCContentFilter::create().with_window(win).build(),
-                fr.size.width as u32,
-                fr.size.height as u32,
-                // RecordingOutput gives no capture-clock window geometry samples;
-                // a launch-time frame would become false-exact after move/resize.
-                None,
-            )
-        } else {
-            let disp = if let Some(id) = cfg.monitor_id.as_deref() {
-                // The exact identity is authoritative. Re-enumeration already happened
-                // above, so only a current display whose opaque id matches may be
-                // selected; display order, title, primary state, and geometry are never
-                // replacement candidates.
-                displays
-                    .iter()
-                    .find(|display| {
-                        crate::macos_monitor_target::monitor_id(display).as_deref() == Some(id)
-                    })
-                    .ok_or_else(|| {
-                        cap_err(
-                            "resolve the selected monitor identity",
-                            "the selected display is no longer available; reopen the source picker",
-                        )
-                    })?
-            } else {
-                // cfg.monitor is the 1-based index from list_monitors(); map to the same ordering.
-                let idx = cfg
-                    .monitor
-                    .and_then(|m| usize::try_from(m).ok())
-                    .map(|m| m.saturating_sub(1))
-                    .unwrap_or(0);
-                displays
-                    .get(idx)
-                    .or_else(|| displays.first())
-                    .ok_or_else(|| cap_err("select a display", "no displays available"))?
-            };
-            let fr = disp.frame();
-            (
-                SCContentFilter::create()
-                    .with_display(disp)
-                    .with_excluding_windows(&[])
-                    .build(),
-                disp.width(),
-                disp.height(),
-                surface_coordinates::CaptureSurface::new(
-                    fr.origin.x,
-                    fr.origin.y,
-                    fr.size.width,
-                    fr.size.height,
-                ),
-            )
-        };
-
-        // Native pixel size handles Retina capture buffers; fall back to
-        // the snapshot point size. Even dims for the H.264 encoder.
-        let (cap_w, cap_h) = SCShareableContentInfo::for_filter(&filter)
-            .map(|i| i.pixel_size())
-            .filter(|(w, h)| *w > 0 && *h > 0)
-            .unwrap_or((fb_w.max(2), fb_h.max(2)));
         // The main stream stays video-only. `capturesAudio` on this
         // SCRecordingOutput stream can stall video delivery and produce no audio
         // buffers. SCRecordingOutput + capturesAudio is therefore not used. DESKTOP/
         // SYSTEM audio is instead captured by a SEPARATE audio-only SCStream started below (the
         // canonical SCK pattern from the crate README: capturesAudio + an Audio output handler,
         // NO SCRecordingOutput), so the video path remains independent.
-        let requested_w = cap_w & !1;
-        let requested_h = cap_h & !1;
-        let stream_config =
-            recording_stream_config(requested_w, requested_h, fps, cfg.capture_cursor);
+        let (filter, requested_w, requested_h, surface, stream_config) = if let Some(region) =
+            region_backend
+        {
+            let (width, height) = region.output_size;
+            (
+                region.filter,
+                width,
+                height,
+                Some(region.input_surface),
+                region.stream_config,
+            )
+        } else {
+            use screencapturekit::shareable_content::SCShareableContentInfo;
 
-        let stream = SCStream::new(&filter, &stream_config);
+            let content = SCShareableContent::get()
+                .map_err(|e| cap_err("SCShareableContent::get", format!("{e:?}")))?;
+
+            // Build the filter via the PER-ELEMENT accessors (NOT the batched snapshot(), which
+            // panics on real content in v8.0.0): a specific native window identity or
+            // the chosen display, plus a fallback point size. Title is display-only.
+            let windows = content.windows();
+            let displays = content.displays();
+            let (filter, fb_w, fb_h, surface) = if let Some(ref want) = cfg.window {
+                let want_id =
+                    crate::window_target::parse_macos_window_id(want).ok_or_else(|| {
+                        cap_err(
+                            "find the window to capture",
+                            "the selected window id is malformed; reopen the source picker",
+                        )
+                    })?;
+                let win = windows
+                    .iter()
+                    .find(|w| w.window_id() == want_id)
+                    .ok_or_else(|| {
+                        cap_err(
+                            "find the window to capture",
+                            "the selected window is no longer available; reopen the source picker",
+                        )
+                    })?;
+                let fr = win.frame();
+                (
+                    SCContentFilter::create().with_window(win).build(),
+                    fr.size.width as u32,
+                    fr.size.height as u32,
+                    // RecordingOutput gives no capture-clock window geometry samples;
+                    // a launch-time frame would become false-exact after move/resize.
+                    None,
+                )
+            } else {
+                let disp = if let Some(id) = cfg.monitor_id.as_deref() {
+                    // The exact identity is authoritative. Re-enumeration already happened
+                    // above, so only a current display whose opaque id matches may be
+                    // selected; display order, title, primary state, and geometry are never
+                    // replacement candidates.
+                    displays
+                            .iter()
+                            .find(|display| {
+                                crate::macos_monitor_target::monitor_id(display).as_deref()
+                                    == Some(id)
+                            })
+                            .ok_or_else(|| {
+                                cap_err(
+                                    "resolve the selected monitor identity",
+                                    "the selected display is no longer available; reopen the source picker",
+                                )
+                            })?
+                } else {
+                    // cfg.monitor is the 1-based index from list_monitors(); map to the same ordering.
+                    let idx = cfg
+                        .monitor
+                        .and_then(|m| usize::try_from(m).ok())
+                        .map(|m| m.saturating_sub(1))
+                        .unwrap_or(0);
+                    displays
+                        .get(idx)
+                        .or_else(|| displays.first())
+                        .ok_or_else(|| cap_err("select a display", "no displays available"))?
+                };
+                let fr = disp.frame();
+                (
+                    SCContentFilter::create()
+                        .with_display(disp)
+                        .with_excluding_windows(&[])
+                        .build(),
+                    disp.width(),
+                    disp.height(),
+                    surface_coordinates::CaptureSurface::new(
+                        fr.origin.x,
+                        fr.origin.y,
+                        fr.size.width,
+                        fr.size.height,
+                    ),
+                )
+            };
+
+            // Native pixel size handles Retina capture buffers; fall back to
+            // the snapshot point size. Even dims for the H.264 encoder.
+            let (cap_w, cap_h) = SCShareableContentInfo::for_filter(&filter)
+                .map(|i| i.pixel_size())
+                .filter(|(w, h)| *w > 0 && *h > 0)
+                .unwrap_or((fb_w.max(2), fb_h.max(2)));
+            let width = cap_w & !1;
+            let height = cap_h & !1;
+            (
+                filter,
+                width,
+                height,
+                surface,
+                recording_stream_config(width, height, fps, cfg.capture_cursor),
+            )
+        };
+
+        let mut stream = SCStream::new(&filter, &stream_config);
+        crate::macos_readiness::attach_first_screen_frame_observer(
+            &mut stream,
+            cfg.readiness.clone(),
+        )
+        .map_err(|error| cap_err("attach ScreenCaptureKit frame observer", error))?;
         let mut checkpoints = Checkpoints::open(cfg.checkpoint.as_ref())?;
         let mut segment = checkpoints
             .as_mut()
@@ -578,7 +615,12 @@ impl Capture for MacCapture {
         // `SCStreamConfiguration` pins the requested physical frame dimensions. If
         // ffprobe is unavailable, use that known negotiated target rather than a
         // made-up 1920×1080 transform.
-        let (w, h) = probe_dims(&source_path).unwrap_or((requested_w, requested_h));
+        let observed_dimensions = probe_dims(&source_path);
+        let (w, h) = if region_output {
+            verified_region_output_size((requested_w, requested_h), observed_dimensions)?
+        } else {
+            observed_dimensions.unwrap_or((requested_w, requested_h))
+        };
         let (cursor, mut clicks, scrolls, keys) = sealed_input;
         let coordinates = if cfg.window.is_some() {
             surface_coordinates::unavailable_window_rdevin_input(cursor, &mut clicks, scrolls)
@@ -616,6 +658,7 @@ impl Capture for MacCapture {
                 fps: fps as f32,
                 audio_rate: 48_000,
             },
+            capture_quality: None,
             verified_media,
         })
     }

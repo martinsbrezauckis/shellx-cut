@@ -39,6 +39,9 @@ fn media(duration_ms: u64) -> MediaFacts {
         duration_ms,
         decoded_video_frames: 1,
         has_audio: false,
+        width: None,
+        height: None,
+        codec_name: None,
         avg_frame_rate: None,
         r_frame_rate: None,
     }

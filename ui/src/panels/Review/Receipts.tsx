@@ -16,6 +16,7 @@ import { useState } from 'react'
 import { exportUrl as sharedExportUrl } from '../../lib/client'
 import type { CheckResult, JudgeEnvelope, JudgeIssue, RenderReceipt } from '../../lib/client'
 import { Icon } from '../../icons'
+import { TemporalPoint } from '../../components/TemporalNavigation'
 import { fmtDur, fmtTc } from './shared'
 import ReceiptRerunControl from './ReceiptRerunControl'
 
@@ -218,15 +219,16 @@ function ReceiptCard({ receipt, onSeek }: CardProps) {
                   {seeks.length > 0 && (
                     <div className="rr-check__seeks">
                       {seeks.map((s, i) => (
-                        <button
+                        <TemporalPoint
                           key={`${s.label}-${i}`}
+                          atMs={s.ms}
                           className="rr-seek"
-                          data-cut-seek={s.ms}
-                          onClick={() => onSeek(s.ms)}
+                          data={{ 'data-cut-seek': String(s.ms) }}
+                          onActivate={onSeek}
                           title={`seek ${s.label}`}
                         >
                           {s.label} @ {fmtTc(s.ms)}
-                        </button>
+                        </TemporalPoint>
                       ))}
                     </div>
                   )}
@@ -342,9 +344,9 @@ function JudgeSection({ judge, onSeek }: { judge: JudgeEnvelope | null | undefin
                 <span className={`rr-judge__sev rr-judge__sev--${iss.severity ?? 'minor'}`}>{iss.severity ?? 'minor'}</span>
                 {iss.kind && <span className="rr-judge__kind">{iss.kind}</span>}
                 {typeof iss.at_ms === 'number' && (
-                  <button className="rr-seek" data-cut-seek={iss.at_ms} onClick={() => onSeek(iss.at_ms!)}>
+                  <TemporalPoint atMs={iss.at_ms} className="rr-seek" data={{ 'data-cut-seek': String(iss.at_ms) }} onActivate={onSeek}>
                     @ {fmtTc(iss.at_ms)}
-                  </button>
+                  </TemporalPoint>
                 )}
               </div>
               {iss.evidence && <div className="rr-judge__evidence">{iss.evidence}</div>}

@@ -113,7 +113,7 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
       if (!r.ok) {
         setJobRetryErrors((previous) => ({
           ...previous,
-          [jobId]: r.error?.message ?? 'Could not retry this export.',
+          [jobId]: r.error?.message ?? 'Could not retry this task.',
         }))
         return
       }
@@ -121,7 +121,7 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
     } catch {
       setJobRetryErrors((previous) => ({
         ...previous,
-        [jobId]: 'Server unreachable. Click to retry this export.',
+        [jobId]: 'Server unreachable. Reconnect, then retry this task.',
       }))
     } finally {
       setJobRetryPending((previous) => {
@@ -217,10 +217,15 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
       {retryJobList.map((j) => {
         const pending = Boolean(jobRetryPending[j.job_id])
         const error = jobRetryErrors[j.job_id]
+        const retryTask = j.kind === 'screen_record_export'
+          ? 'recording export'
+          : j.kind === 'verify-rerun'
+            ? 'output check'
+            : 'task'
         return (
-          <span key={j.job_id} className="sb-job sb-job--retry" data-cut-job-retry-row={j.job_id} title={`Failed export · attempt ${j.attempt} · ${j.job_id}`}>
+          <span key={j.job_id} className="sb-job sb-job--retry" data-cut-job-retry-row={j.job_id} title={`Failed ${retryTask} · attempt ${j.attempt} · ${j.job_id}`}>
             <span className="sb-job-dot" />
-            Failed export
+            Failed {retryTask}
             <button
               type="button"
               className={`sb-job-retry${error ? ' sb-job-retry--error' : ''}`}
@@ -228,8 +233,8 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
               data-cut-job-retry-error={error || undefined}
               data-cut-job-retry-pending={pending ? 'true' : undefined}
               disabled={pending}
-              title={pending ? 'Validating retry safely…' : error || 'Retry failed export'}
-              aria-label={pending ? 'Validating export retry safely' : error ? 'Retry failed export' : 'Retry failed export'}
+              title={pending ? `Checking whether this ${retryTask} can be retried…` : error || `Retry failed ${retryTask}`}
+              aria-label={pending ? `Checking whether this ${retryTask} can be retried` : `Retry failed ${retryTask}`}
               onClick={() => void retryJob(j.job_id)}
             >
               {pending ? 'Retrying…' : 'Retry'}

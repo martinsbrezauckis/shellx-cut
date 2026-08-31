@@ -133,8 +133,8 @@ esac
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
     }
-    // 2. tar.xz it (asset name MUST match the registry's linux64 asset).
-    let asset = "ffmpeg-master-latest-linux64-gpl.tar.xz";
+    // 2. tar.xz it (asset name MUST match the immutable registry asset).
+    let asset = "ffmpeg-N-126229-gf101fce22d-linux64-gpl.tar.xz";
     let archive = tmp.path().join(asset);
     let status = std::process::Command::new("tar")
         .arg("-cJf")

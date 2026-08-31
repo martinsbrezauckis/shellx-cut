@@ -127,6 +127,20 @@ impl MacosRegionPlan {
     }
 }
 
+/// Preserve the configured output fact only when probing is unavailable. Once
+/// a completed file reports dimensions, its native frame must equal the exact
+/// selected crop; callers refuse `None` rather than remapping input against an
+/// unexpected output frame.
+pub(crate) fn completed_region_output_size(
+    expected: (u32, u32),
+    observed: Option<(u32, u32)>,
+) -> Option<(u32, u32)> {
+    match observed {
+        Some(actual) => (actual == expected).then_some(actual),
+        None => Some(expected),
+    }
+}
+
 fn checked_scale(pixel_size: u32, logical_size: f64) -> Option<f64> {
     let scale = f64::from(pixel_size) / logical_size;
     (pixel_size > 0
@@ -179,6 +193,48 @@ mod tests {
             plan.input_surface().global_geometry(),
             (-1_184.0, 380.0, 1_280.0, 720.0),
             "the same native crop supplies input mapping"
+        );
+    }
+
+    #[test]
+    fn checked_physical_to_logical_conversion_keeps_independent_axis_scales() {
+        let parent = CaptureSurface::new(-3_000.0, -600.0, 3_000.0, 1_350.0).unwrap();
+        let crop = NativePixelCrop::new(384, 480, 960, 640, 3_840, 2_160).unwrap();
+        let plan = MacosRegionPlan::from_refreshed_parent(crop, parent, (3_840, 2_160)).unwrap();
+
+        assert_eq!(
+            plan.source_rect(),
+            MacosLogicalSourceRect {
+                x: 300.0,
+                y: 300.0,
+                width: 750.0,
+                height: 400.0,
+            },
+            "physical crop pixels are divided by each refreshed display axis scale"
+        );
+        assert_eq!(plan.output_size(), (960, 640));
+        assert_eq!(
+            plan.input_surface().global_geometry(),
+            (-2_700.0, -300.0, 750.0, 400.0),
+            "negative desktop origin affects only input mapping, never sourceRect"
+        );
+    }
+
+    #[test]
+    fn completed_output_fact_refuses_any_probed_size_other_than_the_native_crop() {
+        assert_eq!(
+            completed_region_output_size((1_280, 720), Some((1_280, 720))),
+            Some((1_280, 720))
+        );
+        assert_eq!(
+            completed_region_output_size((1_280, 720), None),
+            Some((1_280, 720)),
+            "an unavailable optional probe preserves the configured ScreenCaptureKit fact"
+        );
+        assert_eq!(
+            completed_region_output_size((1_280, 720), Some((1_278, 720))),
+            None,
+            "a completed file with unexpected dimensions is not a successful region"
         );
     }
 

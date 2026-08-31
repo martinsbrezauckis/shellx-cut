@@ -9,6 +9,7 @@
 import { useState } from 'react'
 import { Icon } from '../../icons'
 import ContextMenuFrame from '../../components/ContextMenuFrame'
+import { TemporalPoint, formatTemporalTime } from '../../components/TemporalNavigation'
 import { MARKER_COLOR_SWATCH, type MarkerColor } from '../../lib/clientModel'
 
 export interface MarkerMenuState {
@@ -138,17 +139,18 @@ export default function MarkerContextMenu({
             }}
           />
         </div>
-        <button
+        <TemporalPoint
+          atMs={menu.atMs}
           className="tl-ctx__item"
-          data-cut-marker-ctx="seek"
+          data={{ 'data-cut-marker-ctx': 'seek' }}
           role="menuitem"
-          onClick={() => {
+          onActivate={() => {
             onSeek(menu.atMs)
             onClose()
           }}
         >
-          <Icon name="marker" size={14} /> Seek to marker
-        </button>
+          <Icon name="marker" size={14} /> Seek to marker · {formatTemporalTime(menu.atMs)}
+        </TemporalPoint>
         <button
           className="tl-ctx__item tl-ctx__item--danger"
           data-cut-marker-ctx="delete"

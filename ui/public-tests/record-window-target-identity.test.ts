@@ -8,6 +8,7 @@ const windowsCapture = read('../../app/recorder/record-capture/src/windows.rs')
 const macosCapture = read('../../app/recorder/record-capture/src/macos.rs')
 const identity = read('../../app/recorder/record-capture/src/window_target.rs')
 const record = read('../src/panels/Record/index.tsx')
+const sourceControl = read('../src/panels/Record/RecordingSourceControl.tsx')
 const schema = JSON.parse(read('../../schema/verbs.json'))
 
 assert.match(identity, /windows-hwnd-v1/, 'Windows ids are explicitly versioned')
@@ -25,7 +26,7 @@ assert.doesNotMatch(windowsCapture, /from_contains_name/, 'WGC never searches by
 assert.match(macosCapture, /parse_macos_window_id/, 'ScreenCaptureKit validates its opaque identity')
 assert.match(macosCapture, /w\.window_id\(\) == want_id/, 'ScreenCaptureKit selects by exact native id')
 
-assert.match(record, /value=\{`win:\$\{w\.id\}`\}/, 'the visible option carries the opaque identity')
+assert.match(sourceControl, /value=\{`win:\$\{window\.id\}`\}/, 'the visible option carries the opaque identity')
 assert.match(record, /startArgs\.window = windowTargetId/, 'the UI returns the identity unchanged')
 assert.match(record, /selectedWindowMissing/, 'the UI keeps a vanished selection visible')
 assert.match(record, /selected window is no longer available/, 'the UI explains the refusal')

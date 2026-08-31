@@ -72,10 +72,10 @@ pub struct OcrBox {
 /// (the boxes are already normalized to fractions, so they're informational).
 #[derive(Debug, Clone, Deserialize)]
 pub struct OcrResult {
-    #[allow(dead_code)]
-    pub width: u32,
-    #[allow(dead_code)]
-    pub height: u32,
+    #[serde(rename = "width")]
+    _width: u32,
+    #[serde(rename = "height")]
+    _height: u32,
     pub boxes: Vec<OcrBox>,
 }
 

@@ -1,11 +1,12 @@
 import { memo, type KeyboardEvent, type MouseEvent } from 'react'
-import type { Track, WindowThumbs } from '../../lib/client'
+import type { Clip, Track, WindowThumbs } from '../../lib/client'
 import { Icon } from '../../icons'
 import { useOfflineMedia } from '../../app/OfflineMediaContext'
 import { msToPx, TRACK_HEIGHT, type LaidItem, type Seam } from './layout'
 import ClipView from './ClipView'
 import DuckStrip from './DuckStrip'
 import TimelineSeamHandles from './TimelineSeamHandles'
+import TimelineVolumeAutomationLane from './TimelineVolumeAutomationLane'
 import {
   GainControl,
   KindIcon,
@@ -17,8 +18,10 @@ import {
   TrackOrderControls,
   TrackVisibilityButton,
 } from './TrackControls'
+import { VoiceoverTrackControl } from './VoiceoverTrackControl'
 
 type ClipGestureMode = 'move' | 'trim-l' | 'trim-r'
+type MediaClip = Extract<Clip, { asset: string }>
 
 interface TimelineTrackGhost {
   trackId: string
@@ -46,6 +49,9 @@ interface TimelineTrackRowProps {
   activeSeam: Seam | null
   ghost: TimelineTrackGhost | null
   auditionRevisionKey: string
+  playheadMs: number
+  projectRevision: string
+  exportRange: [number, number] | null
   onLaneDown: (e: MouseEvent<HTMLDivElement>) => void
   onClipDown: (e: MouseEvent, item: LaidItem, mode: ClipGestureMode) => void
   onSeamDown: (e: MouseEvent<HTMLDivElement>, seam: Seam) => void
@@ -71,6 +77,9 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
   activeSeam,
   ghost,
   auditionRevisionKey,
+  playheadMs,
+  projectRevision,
+  exportRange,
   onLaneDown,
   onClipDown,
   onSeamDown,
@@ -80,6 +89,12 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
   const dropCls = isDrop ? (dropInvalid ? ' tl-track--drop-bad' : ' tl-track--drop-ok') : ''
   const visible = track.visible !== false
   const locked = !!track.locked
+  const selectedAudioItem = track.kind === 'audio'
+    ? items.find((item) => item.kind === 'audio' && selectedClipIds.includes(item.id))
+    : undefined
+  const selectedAudioClip = selectedAudioItem
+    ? track.clips.find((clip): clip is MediaClip => 'id' in clip && 'asset' in clip && clip.id === selectedAudioItem.id)
+    : undefined
   const openKeyboardMenu = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
     event.preventDefault()
@@ -130,6 +145,13 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
             <>
             <MuteButton trackId={track.id} muted={!!track.muted} />
             <SoloButton trackId={track.id} solo={!!track.solo} />
+            <VoiceoverTrackControl
+              trackId={track.id}
+              locked={locked}
+              projectRevision={projectRevision}
+              playheadMs={playheadMs}
+              exportRange={exportRange}
+            />
             </>
           )}
           {track.kind === 'audio' && (
@@ -179,6 +201,16 @@ const TimelineTrackRow = memo(function TimelineTrackRow({
           (track.gain_windows ?? []).map((w, i) => (
             <DuckStrip key={`${w.range_ms[0]}:${i}`} w={w} zoom={zoom} />
           ))}
+        {selectedAudioItem && selectedAudioClip && (
+          <TimelineVolumeAutomationLane
+            item={selectedAudioItem}
+            clip={selectedAudioClip}
+            playheadMs={playheadMs}
+            projectRevision={projectRevision}
+            locked={locked}
+            zoom={zoom}
+          />
+        )}
         <TimelineSeamHandles
           seams={seams}
           activeSeam={activeSeam}

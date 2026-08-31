@@ -45,6 +45,24 @@ pub(super) fn replay(
     Ok(receipt.response)
 }
 
+/// A bounded external-side-effect can complete with no project operation
+/// (notably a cancelled voiceover). It still needs an exact durable response
+/// for request-id retry; the zero-op receipt is deliberately segregated from
+/// the ordinary operation-backed path above.
+pub(super) fn replay_without_ops(
+    store: &ProjectStore,
+    verb: &str,
+    actor: &Actor,
+) -> Result<Option<VerbResult>, CutError> {
+    let path = path(store, actor)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let receipt = read(&path)?;
+    validate_without_ops(&receipt, verb, actor)?;
+    Ok(Some(receipt.response))
+}
+
 pub(super) fn write(
     store: &ProjectStore,
     verb: &str,
@@ -75,6 +93,65 @@ pub(super) fn write(
     if path.is_file() {
         let existing = read(&path)?;
         validate(&existing, verb, actor, &op_ids)?;
+        return Ok(());
+    }
+    let dir = path.parent().expect("receipt path has a parent");
+    std::fs::create_dir_all(dir)?;
+    let receipt = DurableRequestReceipt {
+        schema: SCHEMA.into(),
+        verb: verb.into(),
+        request_id: request.request_id.clone(),
+        fingerprint: request.fingerprint.clone(),
+        project_revision: revision.into(),
+        response: result.clone(),
+    };
+    let mut bytes = serde_json::to_vec_pretty(&receipt)?;
+    bytes.push(b'\n');
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = dir.join(format!(".request-{}-{nonce}.tmp", std::process::id()));
+    let write_result = (|| -> Result<(), CutError> {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        sync_dir(dir);
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    write_result
+}
+
+pub(super) fn write_without_ops(
+    store: &ProjectStore,
+    verb: &str,
+    actor: &Actor,
+    revision: &str,
+    result: &VerbResult,
+) -> Result<(), CutError> {
+    if store.log.request_ops(actor)?.is_some() {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "zero-operation response conflicts with durable request history",
+            "use the operation-backed request receipt for this completed mutation",
+        ));
+    }
+    if result.op_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "zero-operation response unexpectedly contains operation ids",
+            "record an operation-backed response receipt instead",
+        ));
+    }
+    let request = actor.request.as_ref().expect("controlled request actor");
+    let path = path(store, actor)?;
+    if path.is_file() {
+        let existing = read(&path)?;
+        validate_without_ops(&existing, verb, actor)?;
         return Ok(());
     }
     let dir = path.parent().expect("receipt path has a parent");
@@ -157,6 +234,36 @@ fn validate(
             "the receipt does not match the caller, payload fingerprint, operation ids, or project revision",
         )
         .with_suggested_action("inspect the receipt and project journal before retrying"));
+    }
+    Ok(())
+}
+
+fn validate_without_ops(
+    receipt: &DurableRequestReceipt,
+    verb: &str,
+    actor: &Actor,
+) -> Result<(), CutError> {
+    let request = actor.request.as_ref().expect("request actor");
+    if receipt.schema != SCHEMA
+        || receipt.verb != verb
+        || receipt.request_id != request.request_id
+        || receipt.fingerprint != request.fingerprint
+        || receipt
+            .response
+            .op_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.is_empty())
+        || receipt.response.project_revision.as_deref() != Some(&receipt.project_revision)
+    {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            format!(
+                "mutation request '{}' has an invalid zero-operation receipt",
+                request.request_id
+            ),
+            "the receipt does not match the caller, payload fingerprint, terminal response, or project revision",
+        )
+        .with_suggested_action("inspect the receipt before retrying this voiceover request"));
     }
     Ok(())
 }

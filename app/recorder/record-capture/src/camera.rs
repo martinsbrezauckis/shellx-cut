@@ -1,9 +1,9 @@
 //! Camera backend contract and deterministic replay implementation.
 //!
-//! Native camera capture intentionally does not exist in this foundation slice.
-//! The trait establishes the device/readiness/final-artifact boundary that every
-//! future platform backend must meet, while `ReplayCamera` keeps timing and
-//! artifact tests deterministic on all hosts.
+//! This public contract does not expose native camera capture. The trait
+//! establishes the device/readiness/final-artifact boundary that every platform
+//! backend must meet, while `ReplayCamera` keeps timing and artifact tests
+//! deterministic on all hosts.
 
 use record_core::{error_codes, CameraArtifact, RecordError, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,34 @@ pub struct CameraRequest {
     pub device_id: String,
 }
 
+/// A private capability minted only by the screen-recording owner after
+/// its explicit **Use camera** action. It is intentionally not serializable:
+/// device discovery and passive readiness checks must never be enough to cause
+/// a native permission prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CameraUseIntent {
+    request: CameraRequest,
+}
+
+impl CameraUseIntent {
+    /// Bind one user-approved camera selection to its screen capture. Server
+    /// wiring must call this only from the explicit Use camera action, never
+    /// during enumeration, Doctor, or Recorder setup restoration.
+    #[allow(
+        dead_code,
+        reason = "the private camera runtime has no server Use camera action until installed proof admits an owner"
+    )]
+    pub(crate) fn from_explicit_user_action(request: CameraRequest) -> Result<Self> {
+        validate_request_part("capture_id", &request.capture_id)?;
+        validate_request_part("device_id", &request.device_id)?;
+        Ok(Self { request })
+    }
+
+    pub(crate) fn request(&self) -> &CameraRequest {
+        &self.request
+    }
+}
+
 /// Truthful readiness state for a selected camera. Enumeration is never `Ready`;
 /// a real backend may return Ready only after a bounded first-frame probe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +70,17 @@ pub enum CameraReadiness {
         detail: String,
     },
     PermissionDenied {
+        device: CameraDevice,
+        detail: String,
+    },
+    /// Another capture currently owns the selected native device. This is not
+    /// a permission state and must not cause a prompt or implicit takeover.
+    Busy {
+        detail: String,
+    },
+    /// A native start/prompt completed without a bounded first-frame delivery.
+    /// The backend must retain no synthetic artifact for this state.
+    NoFrame {
         device: CameraDevice,
         detail: String,
     },

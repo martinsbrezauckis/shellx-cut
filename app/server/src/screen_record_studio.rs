@@ -12,7 +12,9 @@ use cut_core::{error_codes, CutError, VerbResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub(crate) const STUDIO_EVENTS_FILENAME: &str = "studio-events.json";
+pub(crate) const STUDIO_EVENTS_FILENAME: &str =
+    crate::screen_record_studio_journal::STUDIO_EVENTS_FILENAME;
+pub(crate) const LEGACY_STUDIO_EVENTS_FILENAME: &str = "studio-events.json";
 const STUDIO_EVENTS_VERSION: u32 = 1;
 const MAX_STUDIO_EVENTS_JSON_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_STUDIO_EVENTS: usize = 50_000;
@@ -20,6 +22,10 @@ const MAX_STUDIO_EVENT_T_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StudioEvent {
+    /// A server-assigned monotonically increasing acceptance sequence. Legacy
+    /// JSON logs omit it; new append-only journal records always carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_ts: Option<u64>,
     pub t_ms: u64,
     pub source: String,
     pub kind: String,
@@ -85,9 +91,17 @@ pub(crate) async fn screen_record_studio_event(
         .with_suggested_action("pass a capture_id returned by screen_record.start"));
     }
 
-    let events_path = studio_events_path(&capture_dir);
-    let log = append_studio_event(&events_path, a.event)?;
+    let events_path = studio_events_journal_path(&capture_dir);
+    // Marker hotkeys and the Studio background picker are separate async UI
+    // paths. They meet at the recorder-owned server writer, which assigns the
+    // durable order before append+sync rather than racing a whole-log rewrite.
+    let log = state
+        .studio_journal
+        .lock()
+        .await
+        .append(&events_path, a.event)?;
     let last_event = log.events.last().cloned().unwrap_or_else(|| StudioEvent {
+        logical_ts: None,
         t_ms: 0,
         source: "recording".into(),
         kind: "marker".into(),
@@ -108,10 +122,22 @@ pub(crate) async fn screen_record_studio_event(
 }
 
 pub(crate) fn studio_events_path(capture_dir: &Path) -> PathBuf {
+    let journal = studio_events_journal_path(capture_dir);
+    if journal.exists() || !capture_dir.join(LEGACY_STUDIO_EVENTS_FILENAME).exists() {
+        journal
+    } else {
+        capture_dir.join(LEGACY_STUDIO_EVENTS_FILENAME)
+    }
+}
+
+fn studio_events_journal_path(capture_dir: &Path) -> PathBuf {
     capture_dir.join(STUDIO_EVENTS_FILENAME)
 }
 
 pub(crate) fn read_studio_events(path: &Path) -> Result<StudioEventLog, CutError> {
+    if path.file_name().and_then(|name| name.to_str()) == Some(STUDIO_EVENTS_FILENAME) {
+        return crate::screen_record_studio_journal::read_studio_journal(path);
+    }
     if !path.exists() {
         return Ok(StudioEventLog::default());
     }
@@ -180,20 +206,48 @@ pub(crate) fn apply_studio_events_to_plan(
     camera_clock: Option<record_core::CameraClockRange>,
     log: &StudioEventLog,
 ) -> Result<usize, CutError> {
-    let timeline: Vec<record_core::WebcamKeyframe> = log
+    let mut timeline: Vec<(u64, u64, record_core::WebcamKeyframe)> = log
         .events
         .iter()
-        .filter_map(studio_event_to_webcam_keyframe)
+        .enumerate()
+        .filter_map(|(index, event)| {
+            studio_event_to_webcam_keyframe(event).map(|result| {
+                result.map(|keyframe| {
+                    (
+                        keyframe.t_ms,
+                        event.logical_ts.unwrap_or(index as u64),
+                        keyframe,
+                    )
+                })
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
+    // Playback still follows recording time, while equal timestamps retain the
+    // exact order in which the recorder accepted the overlapping requests.
+    timeline.sort_by_key(|(t_ms, logical_ts, _)| (*t_ms, *logical_ts));
+    let timeline = timeline
+        .into_iter()
+        .map(|(_, _, keyframe)| keyframe)
+        .collect::<Vec<_>>();
 
     if let Some(background) = log
         .events
         .iter()
-        .rev()
-        .find(|event| event.source == "background" && event.kind == "style")
+        .enumerate()
+        .filter(|(_, event)| event.source == "background" && event.kind == "style")
+        .max_by_key(|(index, event)| (event.logical_ts.unwrap_or(*index as u64), *index))
+        .map(|(_, event)| event)
         .and_then(|event| event.background.as_deref())
     {
         plan.background = studio_background_to_record_background(background)?;
+        if background == "none" {
+            // "None" is full-bleed source footage, not a transparent card
+            // floating over transparent/black output margins.
+            plan.frame.enabled = false;
+            plan.frame.padding = 0.0;
+            plan.frame.corner_radius = 0.0;
+            plan.frame.shadow = None;
+        }
     }
 
     let existing_source = plan.webcam.as_ref().map(|wc| wc.source.clone());
@@ -295,9 +349,10 @@ fn studio_background_to_record_background(
 ) -> Result<record_core::Background, CutError> {
     match background {
         "gradient" => Ok(record_core::Background::default()),
-        "solid" | "none" => Ok(record_core::Background::Solid {
+        "solid" => Ok(record_core::Background::Solid {
             color: record_core::Rgba::rgb(18, 20, 28),
         }),
+        "none" => Ok(record_core::Background::Transparent),
         "blur_screen" => Ok(record_core::Background::BlurScreen { sigma: 8.0 }),
         _ => Err(CutError::new(
             error_codes::INVALID_ARGS,
@@ -307,43 +362,7 @@ fn studio_background_to_record_background(
     }
 }
 
-fn append_studio_event(path: &Path, event: StudioEvent) -> Result<StudioEventLog, CutError> {
-    let mut log = read_studio_events(path)?;
-    if log.events.len() >= MAX_STUDIO_EVENTS {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            format!("Studio event limit reached ({MAX_STUDIO_EVENTS})"),
-            "Recording Studio event metadata must be bounded",
-        ));
-    }
-    if let Some(last) = log.events.last() {
-        if event.t_ms < last.t_ms {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                "Studio event t_ms is earlier than the previous event",
-                "Studio events must be appended in recording-time order",
-            ));
-        }
-    }
-    log.events.push(event);
-    let bytes = serde_json::to_vec_pretty(&log).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("could not serialize Studio events: {e}"),
-            "Studio event metadata serialization failed",
-        )
-    })?;
-    std::fs::write(path, bytes).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("could not write {}: {e}", path.display()),
-            "writing Studio event metadata failed",
-        )
-    })?;
-    Ok(log)
-}
-
-fn validate_studio_event(event: &StudioEvent) -> Result<(), CutError> {
+pub(crate) fn validate_studio_event(event: &StudioEvent) -> Result<(), CutError> {
     let invalid = |field: &str, cause: &str| {
         CutError::new(
             error_codes::INVALID_ARGS,
@@ -463,4 +482,44 @@ fn validate_camera_transform(event: &StudioEvent) -> Result<(), CutError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn studio_none_removes_the_backdrop_and_decorative_frame() {
+        let mut plan = record_core::EditPlan::empty(320, 180, 1_000, 30.0);
+        let log = StudioEventLog {
+            version: STUDIO_EVENTS_VERSION,
+            events: vec![StudioEvent {
+                logical_ts: Some(1),
+                t_ms: 0,
+                source: "background".into(),
+                kind: "style".into(),
+                visible: None,
+                x: None,
+                y: None,
+                size: None,
+                shape: None,
+                radius: None,
+                label: None,
+                background: Some("none".into()),
+            }],
+        };
+        apply_studio_events_to_plan(&mut plan, None, None, &log).unwrap();
+        assert!(matches!(
+            plan.background,
+            record_core::Background::Transparent
+        ));
+        assert!(!plan.frame.enabled);
+        assert_eq!(plan.frame.padding, 0.0);
+        assert_eq!(plan.frame.corner_radius, 0.0);
+        assert!(plan.frame.shadow.is_none());
+        assert!(matches!(
+            studio_background_to_record_background("solid").unwrap(),
+            record_core::Background::Solid { .. }
+        ));
+    }
 }

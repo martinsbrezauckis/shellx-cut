@@ -7,7 +7,10 @@ use record_core::{CameraMediaFacts, CameraTerminalState, RecordError, Result};
 use crate::camera_session::{
     CameraMediaSeal, CameraSession, CameraSessionBackend, CameraStopOutcome,
 };
-use crate::{CameraDevice, CameraReadiness, CameraRequest, CaptureClock};
+use crate::{
+    CameraDevice, CameraFrameObservation, CameraReadiness, CameraRequest, CameraUseIntent,
+    CaptureClock,
+};
 
 #[derive(Debug, Clone)]
 struct LifecycleFixture {
@@ -22,7 +25,7 @@ impl CameraSessionBackend for LifecycleFixture {
         self.readiness.clone()
     }
 
-    fn start(&mut self, _request: &CameraRequest, _screen_origin: Instant) -> Result<()> {
+    fn start(&mut self, _intent: &CameraUseIntent, _screen_origin: Instant) -> Result<()> {
         self.calls.lock().unwrap().push("start");
         self.start_result.clone()
     }
@@ -61,10 +64,10 @@ fn ready() -> CameraReadiness {
 }
 
 fn valid_seal() -> CameraMediaSeal {
-    CameraMediaSeal {
-        artifact_id: "camera_01".into(),
-        video: "camera/camera.mp4".into(),
-        media: CameraMediaFacts {
+    CameraMediaSeal::fixture(
+        "camera_01".into(),
+        "camera/camera.mp4".into(),
+        CameraMediaFacts {
             width: 640,
             height: 480,
             fps_num: 30,
@@ -73,8 +76,9 @@ fn valid_seal() -> CameraMediaSeal {
             duration_ms: 1_000,
             sha256: "a".repeat(64),
         },
-        bytes: 64,
-    }
+        64,
+    )
+    .unwrap()
 }
 
 fn sealed() -> CameraStopOutcome {
@@ -88,12 +92,16 @@ fn request() -> CameraRequest {
     }
 }
 
+fn intent() -> CameraUseIntent {
+    CameraUseIntent::from_explicit_user_action(request()).unwrap()
+}
+
 fn session(fixture: LifecycleFixture) -> (CameraSession<LifecycleFixture>, Instant) {
     let clock = CaptureClock::new();
     let origin = clock.start();
     let stop = AtomicBool::new(false);
     (
-        CameraSession::start(fixture, request(), &clock, &stop).unwrap(),
+        CameraSession::start(fixture, intent(), &clock, &stop).unwrap(),
         origin,
     )
 }
@@ -147,10 +155,16 @@ fn stop_failure_is_terminal_and_never_retries_backend_stop() {
 fn rejects_camera_prefix_that_exceeds_its_containing_physical_run() {
     let (mut session, origin) = session(fixture(Ok(sealed())));
     session
-        .observe_frame_at(origin + Duration::from_millis(250))
+        .observe_frame(CameraFrameObservation::new(
+            origin + Duration::from_millis(250),
+            origin + Duration::from_millis(300),
+        ))
         .unwrap();
     session
-        .observe_frame_at(origin + Duration::from_millis(1_250))
+        .observe_frame(CameraFrameObservation::new(
+            origin + Duration::from_millis(1_200),
+            origin + Duration::from_millis(1_250),
+        ))
         .unwrap();
     session.stop(CameraTerminalState::DeviceLost).unwrap();
     let evidence = session.seal().unwrap();
@@ -175,7 +189,7 @@ fn ready_probe_for_a_different_device_is_refused_before_start_or_wait() {
     let clock = CaptureClock::new();
     let stop = AtomicBool::new(true);
 
-    let error = CameraSession::start(fixture, request(), &clock, &stop).unwrap_err();
+    let error = CameraSession::start(fixture, intent(), &clock, &stop).unwrap_err();
 
     assert_eq!(
         error.message,
@@ -186,8 +200,12 @@ fn ready_probe_for_a_different_device_is_refused_before_start_or_wait() {
 
 #[test]
 fn sealed_outcome_with_zero_bytes_is_terminal_but_refuses_evidence() {
-    let mut invalid_seal = valid_seal();
-    invalid_seal.bytes = 0;
+    let invalid_seal = CameraMediaSeal::fixture_unchecked(
+        "camera_01".into(),
+        "camera/camera.mp4".into(),
+        valid_seal().media().clone(),
+        0,
+    );
     let fixture = fixture(Ok(CameraStopOutcome::Sealed(invalid_seal)));
     let calls = fixture.calls.clone();
     let (mut session, _) = session(fixture);
@@ -217,7 +235,7 @@ fn start_error_is_preserved_after_one_cancelled_cleanup_stop() {
     clock.start();
     let stop = AtomicBool::new(false);
 
-    let error = CameraSession::start(fixture, request(), &clock, &stop).unwrap_err();
+    let error = CameraSession::start(fixture, intent(), &clock, &stop).unwrap_err();
 
     assert_eq!(error.message, "fixture start failed");
     assert_eq!(calls.lock().unwrap().as_slice(), ["start", "stop"]);

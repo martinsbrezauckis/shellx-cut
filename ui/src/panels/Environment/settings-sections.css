@@ -255,6 +255,15 @@
 .settings-cache-lifecycle strong { color: var(--ink); font-size: var(--fs-ui-sm); }
 .settings-cache-lifecycle p { margin: 4px 0 0; color: var(--ink-3); font-size: var(--fs-ui-xs); line-height: 1.45; }
 .settings-cache-lifecycle-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--ink-3); font-size: var(--fs-ui-xs); }
+.settings-cache-lifecycle-rebuild,
+.settings-cache-lifecycle-cleanup { display: grid; gap: var(--space-3); }
+.settings-cache-lifecycle-cleanup { padding-top: var(--space-3); border-top: 1px solid var(--hairline); }
+.settings-cache-lifecycle .env-btn:disabled { cursor: not-allowed; opacity: 0.52; }
+.settings-cache-lifecycle-attention { color: var(--amber); font-size: var(--fs-ui-xs); }
+.settings-cache-lifecycle-attention summary { cursor: pointer; width: fit-content; }
+.settings-cache-lifecycle-attention ul { margin: var(--space-2) 0 0; padding-left: 18px; color: var(--ink-3); }
+.settings-cache-lifecycle-attention li + li { margin-top: 3px; }
+.settings-cache-lifecycle-success { color: var(--green) !important; }
 .settings-cache-lifecycle-confirm { padding-top: var(--space-3); border-top: 1px solid var(--hairline); }
 .settings-cache-lifecycle-error { color: var(--err) !important; }
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ShellX Cut",
-  "version": "0.6.112",
+  "version": "0.6.113",
   "identifier": "lv.shellx.cut",
   "build": {
     "frontendDist": "../fallback"
@@ -45,6 +45,9 @@
       "../../perception/py/instruments.py": "perception/instruments.py",
       "../../perception/py/requirements.txt": "perception/requirements.txt",
       "../../perception/py/requirements-full.txt": "perception/requirements-full.txt",
+      "../../perception/py/requirements-full.linux-x86_64.lock": "perception/requirements-full.linux-x86_64.lock",
+      "../../perception/py/requirements-full.windows-x86_64.lock": "perception/requirements-full.windows-x86_64.lock",
+      "../../perception/py/requirements-full.macos-aarch64.lock": "perception/requirements-full.macos-aarch64.lock",
       "../../perception/py/safe_numbers.py": "perception/safe_numbers.py",
       "../../perception/py/blaze_face_short_range.tflite": "perception/blaze_face_short_range.tflite",
       "../../perception/py/matte_runner.py": "perception/matte_runner.py",

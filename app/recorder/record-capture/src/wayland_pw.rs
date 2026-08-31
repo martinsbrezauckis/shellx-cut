@@ -202,6 +202,9 @@ struct State {
     pixel_frames: u64,
     /// Shared-capture-clock instant of the first frame accepted by the encoder.
     capture_start_ms: Option<u64>,
+    /// Server-owned readiness proof. It is set only after a real pixel frame
+    /// has been written into ffmpeg's active encoder input.
+    readiness: Option<crate::CaptureReadiness>,
     spawn_failed: bool,
 }
 
@@ -250,20 +253,34 @@ fn spawn_ffmpeg(st: &mut State, pix_fmt: &str) {
     }
 }
 
+/// Capture request for the granted PipeWire node and its output staging path.
+pub struct PipewireCaptureRequest {
+    pub pw_fd: Option<OwnedFd>,
+    pub node: u32,
+    pub dur_ms: u64,
+    pub start: Instant,
+    pub stop: Arc<AtomicBool>,
+    pub raw_path: String,
+    pub ff_bin: String,
+    pub readiness: Option<crate::CaptureReadiness>,
+}
+
 /// Capture `dur_ms` of the granted PipeWire `node` over the portal remote `pw_fd`:
 /// encode frames to `raw_path` (.mp4, variable PTS) and return absolute compositor-space
 /// cursor metadata plus the negotiated physical frame size. Both metadata callbacks and
 /// evdev clicks stamp the shared `start` clock. Stops early if `stop` is set.
 ///
-pub fn capture(
-    pw_fd: Option<OwnedFd>,
-    node: u32,
-    dur_ms: u64,
-    start: Instant,
-    stop: Arc<AtomicBool>,
-    raw_path: &str,
-    ff_bin: &str,
-) -> Result<PipewireCursorCapture, String> {
+pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture, String> {
+    let PipewireCaptureRequest {
+        pw_fd,
+        node,
+        dur_ms,
+        start,
+        stop,
+        raw_path,
+        ff_bin,
+        readiness,
+    } = request;
     // NOTE: PipeWire callbacks are extern "C", so a panic inside one aborts the process
     // (non-unwinding) rather than propagating — the default panic hook still prints the
     // message+location to stderr before the abort, which is enough to diagnose. (An
@@ -286,8 +303,8 @@ pub fn capture(
 
     let state = Rc::new(RefCell::new(State {
         start,
-        raw_path: raw_path.to_string(),
-        ff_bin: ff_bin.to_string(),
+        raw_path,
+        ff_bin,
         width: 0,
         height: 0,
         bpp: 4,
@@ -297,6 +314,7 @@ pub fn capture(
         frames: 0,
         pixel_frames: 0,
         capture_start_ms: None,
+        readiness,
         spawn_failed: false,
     }));
 
@@ -386,6 +404,9 @@ pub fn capture(
                                 .unwrap_or(false);
                             if wrote {
                                 st.pixel_frames = st.pixel_frames.saturating_add(1);
+                                if let Some(readiness) = st.readiness.as_ref() {
+                                    readiness.mark_first_screen_frame_delivered();
+                                }
                                 if st.capture_start_ms.is_none() {
                                     st.capture_start_ms = Some(
                                         u64::try_from(st.start.elapsed().as_millis())

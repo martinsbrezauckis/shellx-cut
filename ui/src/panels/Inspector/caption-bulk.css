@@ -1,0 +1,15 @@
+/* Caption Find & Replace stays inline with the Inspector rather than a modal. */
+.insp__caption-bulk { border-top: 1px solid var(--hairline-1, rgba(255,255,255,.08)); padding-top: 10px; }
+.insp__caption-bulk-check { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-3, #aab1bd); font: var(--fs-ui-sm)/1.2 var(--sans); }
+.insp__caption-bulk-preview { display: flex; flex-direction: column; gap: 7px; }
+.insp__caption-bulk-nav { align-items: center; justify-content: space-between; }
+.insp__caption-bulk-hit { min-width: 0; padding: 7px 8px; border: 1px solid var(--hairline-2, rgba(255,255,255,.12)); border-radius: 7px; background: var(--panel-2, rgba(255,255,255,.03)); }
+.insp__caption-bulk-hit-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ink-4, #6b7280); font: var(--fs-ui-xs)/1.3 var(--sans); }
+.insp__caption-bulk-before, .insp__caption-bulk-after { margin: 5px 0 0; overflow-wrap: anywhere; font: var(--fs-ui-sm)/1.4 var(--sans); }
+.insp__caption-bulk-before { color: var(--ink, #f2f3f5); }
+.insp__caption-bulk-before mark { padding: 0 1px; border-radius: 2px; background: color-mix(in srgb, var(--cut, #2563eb) 35%, transparent); color: inherit; }
+.insp__caption-bulk-after { color: var(--ink-3, #aab1bd); }
+@media (max-width: 640px) {
+  .insp__caption-bulk-nav { justify-content: flex-start; }
+  .insp__caption-bulk-hit-meta { align-items: flex-start; flex-direction: column; gap: 3px; }
+}

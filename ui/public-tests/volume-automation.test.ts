@@ -17,7 +17,16 @@ import {
   volumeAutomationTrack,
   volumeAutomationUnavailableReason,
 } from '../src/panels/Inspector/volumeAutomationModel'
-
+import {
+  addVolumeAutomationPoint,
+  clampAutomationPointBetweenNeighbours,
+  dbToLinearVolume,
+  linearVolumeToDb,
+  moveVolumeAutomationPoint,
+  playheadIsOverSelectedClip,
+  seedVolumeAutomationPoints,
+  volumeAutomationDragStillCurrent,
+} from '../src/panels/Timeline/volumeAutomationLaneModel'
 // `edit.keyframe` replaces a complete parameter track. These pure contracts
 // protect the Inspector's optimistic projection before its browser proof runs.
 const track = volumeAutomationTrack([
@@ -50,6 +59,26 @@ assert.equal(volumeAutomationInterpolation('hold', 'linear'), 'hold', 'automatio
 assert.equal(volumeAutomationInterpolation('unknown', 'linear'), 'linear', 'automation keeps a safe interpolation fallback')
 assert.equal(formatAutomationTime(500), '0.50s', 'automation labels clip-local times in seconds')
 assert.equal(formatAutomationPercent(1.25), '125%', 'automation labels gain multipliers as a human percentage')
+assert.equal(linearVolumeToDb(1), 0, 'timeline lane maps unity to 0 dB')
+assert.equal(linearVolumeToDb(0), -60, 'timeline lane floors silence at -60 dB')
+assert.equal(Math.round(dbToLinearVolume(12) * 1000) / 1000, 3.981, 'timeline lane caps boost at +12 dB')
+assert.deepEqual(seedVolumeAutomationPoints([], 1_000, 6), [
+  { t_ms: 0, value: dbToLinearVolume(6) }, { t_ms: 1_000, value: dbToLinearVolume(6) },
+], 'first automation track seeds static Gain at both clip boundaries with no playback jump')
+assert.deepEqual(addVolumeAutomationPoint([], 1_000, 500, 6), [
+  { t_ms: 0, value: dbToLinearVolume(6) }, { t_ms: 500, value: dbToLinearVolume(6) }, { t_ms: 1_000, value: dbToLinearVolume(6) },
+], 'visible add point at playhead preserves the static-gain baseline')
+assert.equal(clampAutomationPointBetweenNeighbours([{ t_ms: 0, value: 1 }, { t_ms: 500, value: 1 }, { t_ms: 1_000, value: 1 }], 500, 0, 1_000), 1, 'point drag never crosses its previous neighbour')
+assert.equal(clampAutomationPointBetweenNeighbours([{ t_ms: 0, value: 1 }, { t_ms: 500, value: 1 }, { t_ms: 1_000, value: 1 }], 500, 1_000, 1_000), 999, 'point drag never crosses its next neighbour')
+assert.deepEqual(moveVolumeAutomationPoint([{ t_ms: 0, value: 1 }, { t_ms: 500, value: 1 }, { t_ms: 1_000, value: 1 }], 500, 999, -6, 1_000), [
+  { t_ms: 0, value: 1 }, { t_ms: 999, value: dbToLinearVolume(-6) }, { t_ms: 1_000, value: 1 },
+], 'pointer preview remains a complete sorted SET track')
+assert.equal(playheadIsOverSelectedClip(1_500, 1_000, 1_000), true, 'Add point accepts a playhead over the selected clip')
+assert.equal(playheadIsOverSelectedClip(999, 1_000, 1_000), false, 'Add point refuses a playhead before the selected clip instead of clamping to its head')
+assert.equal(playheadIsOverSelectedClip(2_001, 1_000, 1_000), false, 'Add point refuses a playhead after the selected clip instead of clamping to its tail')
+assert.equal(volumeAutomationDragStillCurrent('op_2', 'track-a', 'op_2', 'track-a'), true, 'an unchanged revision and track may commit one pointer-up SET')
+assert.equal(volumeAutomationDragStillCurrent('op_2', 'track-a', 'op_3', 'track-a'), false, 'a project refresh cancels a stale pointer SET')
+assert.equal(volumeAutomationDragStillCurrent('op_2', 'track-a', 'op_2', 'track-b'), false, 'an external volume edit cancels a stale pointer SET even before another revision is visible')
 assert.equal(volumeAutomationUnavailableReason(1_000, false), null, 'automation remains available for a timed constant-speed clip')
 assert.equal(
   volumeAutomationUnavailableReason(1_000, true),
@@ -61,7 +90,6 @@ assert.equal(
   'This audio clip has no usable duration yet, so automation is unavailable.',
   'automation names a missing timeline duration',
 )
-
 // `edit.keyframe` uses SET semantics, so the controller must serialize saves
 // locally *and* pass the durable project revision to the server. This models a
 // controlled deferred response: R1 saves one point, R2 starts from that full
@@ -74,7 +102,6 @@ assert.equal(sequence.begin('volume-duplicate-0001'), null, 'the real in-flight 
 assert.equal(sequence.complete('volume-r1-0001', { ok: true, projectRevision: 'op_000002' }).status, 'saved', 'R1 accepts its returned durable revision')
 assert.equal(sequence.observeAuthoritative('op_000001').applied, false, 'a pre-R1 project refresh cannot replace a newer accepted revision')
 assert.equal(sequence.state().projectRevision, 'op_000002', 'R1 projection remains based on its returned revision')
-
 const r2Track = replaceVolumeAutomationPoint(r1Track, 500, 100)
 const r2 = sequence.begin('volume-r2-0001')
 assert.deepEqual(r2, { request_id: 'volume-r2-0001', expected_revision: 'op_000002' }, 'R2 starts from R1’s returned revision')
@@ -95,7 +122,6 @@ const refreshedConflict = externalConflict.complete('volume-external-0001', { ok
 assert.equal(refreshedConflict.status, 'conflict', 'external revision conflict is surfaced locally')
 assert.equal(refreshedConflict.state.projectRevision, 'op_000011', 'a received newer authoritative snapshot is the only retry base after conflict')
 assert.deepEqual(externalConflict.begin('volume-after-external-0001'), { request_id: 'volume-after-external-0001', expected_revision: 'op_000011' }, 'retry never reuses the rejected external-conflict base')
-
 const unsyncedConflict = createVolumeAutomationMutationController('op_000020')
 const unsyncedRequest = unsyncedConflict.begin('volume-unsynced-0001')
 assert.ok(unsyncedRequest)
@@ -133,7 +159,6 @@ assert.equal(
   false,
   'an explicit non-conflict server rejection safely leaves the current authoritative state usable',
 )
-
 // VolumeSection receives this transient report from the editor before React can
 // repaint the sibling Gain control. This deferred sequence proves the actual
 // shared guard cannot dispatch static Gain from the first save through its
@@ -168,7 +193,6 @@ assert.equal(gainGuard.runIfAllowed('audio-clip-B', (controls) => { gainDispatch
 assert.equal(gainDispatches, 1, 'only the new clip may dispatch its unaffected static Gain')
 assert.equal(gainControls?.expected_revision, 'op_000022', 'permanent static Gain reads the current guard revision, not a stale render closure')
 assert.match(gainControls?.request_id ?? '', /^ui-volume-/, 'permanent static Gain allocates a durable request identity')
-
 const refreshRequiredGuard = createVolumeAutomationStaticGainGuard()
 let refreshRequiredDispatches = 0
 refreshRequiredGuard.observeAuthoritative('audio-clip-C', 0, 'op_000030')
@@ -207,7 +231,6 @@ const missingRevisionGuard = createVolumeAutomationStaticGainGuard()
 missingRevisionGuard.observeAuthoritative('audio-clip-E', 0, null)
 assert.equal(missingRevisionGuard.state().blocked, true, 'static Gain fails closed while project revision is unavailable')
 assert.equal(missingRevisionGuard.runIfAllowed('audio-clip-E', () => { gainDispatches += 1 }), false, 'missing project revision cannot emit edit.gain')
-
 // An editor-local refresh fence disappears on A→B→A or a right-rail remount.
 // The static action still carries the current guard revision, so server OCC
 // rejects P20 against external P21 before an old Gain request can mutate state.
@@ -228,13 +251,11 @@ assert.match(remountControls?.request_id ?? '', /^ui-volume-/, 'A→B→A static
 assert.notEqual(remountControls?.request_id, clearControls?.request_id, 'separate static Gain requests never reuse a durable request identity')
 assert.equal(serverStyleConflict, true, 'the server-style P21 revision check rejects stale P20')
 assert.equal(serverStyleGainMutations, 0, 'the rejected stale Gain request produces no mutation')
-
 assert.notEqual(
   volumeAutomationKeyframesFingerprint([{ param: 'volume', points: r1Track }] as Keyframe[]),
   volumeAutomationKeyframesFingerprint([{ param: 'volume', points: r2Track }] as Keyframe[]),
   'semantically changed server keyframes distinguish the complete projected tracks',
 )
-
 // Source contracts keep the compact Inspector point editor honest: no faux lane,
 // no raw-millisecond input, and no control advertised where the engine refuses it.
 const uiRoot = resolve(import.meta.dirname, '..')
@@ -247,6 +268,9 @@ const client = source('src/lib/client.ts')
 const volumeSection = source('src/panels/Inspector/VolumeSection.tsx')
 const editor = source('src/panels/Inspector/VolumeAutomationEditor.tsx')
 const model = source('src/panels/Inspector/volumeAutomationModel.ts')
+const coordinator = source('src/app/VolumeAutomationContext.tsx')
+const timelineRow = source('src/panels/Timeline/TimelineTrackRow.tsx')
+const timelineLane = source('src/panels/Timeline/TimelineVolumeAutomationLane.tsx')
 const propertyRow = source('src/components/inspector/PropertyRow.tsx')
 const publicFeatures = readFileSync(resolve(repoRoot, 'docs/public/FEATURES.md'), 'utf8')
 const coreEdit = readFileSync(resolve(repoRoot, 'app/core/src/edit.rs'), 'utf8')
@@ -254,6 +278,7 @@ const coreEdit = readFileSync(resolve(repoRoot, 'app/core/src/edit.rs'), 'utf8')
 assert.ok(inspector.includes("from './VolumeSection'"), 'Inspector imports the dedicated Volume section')
 assert.ok(app.includes('projectRevision={project?.project_revision ?? null}'), 'App keeps the project.state revision ephemeral while passing it to the rail')
 assert.ok(appRightRail.includes('projectRevision={projectRevision}'), 'right rail carries the ephemeral revision to Inspector')
+assert.ok(app.includes('<VolumeAutomationProvider key={projectSession}>'), 'project switches remount the coordinator before op ids can restart in a new project')
 assert.ok(inspector.includes('projectRevision={projectRevision}'), 'Inspector carries the ephemeral revision to Volume')
 assert.ok(volumeSection.includes('sectionKey="volume"'), 'Volume section owns the Inspector section')
 assert.ok(volumeSection.includes('mediaClipTimelineDurationMs(clip)'), 'Volume uses the canonical retimed clip duration helper')
@@ -261,9 +286,8 @@ assert.ok(volumeSection.includes("from './VolumeAutomationEditor'"), 'Volume com
 assert.ok(volumeSection.includes('durationMs={durationMs}'), 'Volume passes realized clip duration to automation')
 assert.ok(volumeSection.includes('projectRevision={projectRevision}'), 'Volume passes the current durable revision only to automation')
 assert.ok(volumeSection.includes('key={clipId}'), 'Changing audio clips remounts the editor with clean draft, status, and busy state')
-assert.ok(volumeSection.includes('createVolumeAutomationStaticGainGuard'), 'Volume owns a synchronous sibling-control guard')
-assert.ok(volumeSection.includes('observeAuthoritative(clipId, automationPoints, projectRevision)'), 'Volume stores current server revision and point count inside the synchronous guard')
-assert.ok(volumeSection.includes('runIfAllowed(clipId, (controls) =>'), 'Gain and reset dispatch through the synchronous current-identity guard')
+assert.ok(volumeSection.includes('useVolumeAutomation'), 'Volume shares one app-scoped automation coordinator with the timeline')
+assert.ok(volumeSection.includes('automation.runStaticGain'), 'Gain and reset dispatch through the coordinator’s synchronous current-identity guard')
 assert.ok(volumeSection.includes("rationale: 'inspector: reset gain', ...controls"), 'Volume reset carries a fresh controlled mutation request')
 assert.ok(volumeSection.includes('rationale: `inspector: gain ${v} dB`, ...controls'), 'Volume static Gain carries a fresh controlled mutation request')
 assert.ok(volumeSection.includes('disabled={gainState.blocked}'), 'Volume disables static Gain for both in-flight and projected automation')
@@ -276,17 +300,12 @@ assert.ok(propertyRow.includes('disabled={disabled}'), 'PropertyRow disables its
 
 assert.ok(existsSync(resolve(uiRoot, 'src/panels/Inspector/VolumeAutomationEditor.tsx')), 'Volume automation editor has an owned source module')
 assert.ok(existsSync(resolve(uiRoot, 'src/panels/Inspector/volumeAutomationModel.ts')), 'Volume automation model has an owned pure source module')
-assert.ok(editor.includes("runUserVerb(\n        'edit.keyframe'"), 'Volume automation dispatches edit.keyframe with local feedback')
-assert.ok(editor.includes("param: 'volume'"), 'Volume automation binds the engine volume parameter')
-assert.ok(editor.includes('...controls'), 'Volume automation passes request identity and expected revision only for its controlled mutation')
-assert.ok(editor.includes('createVolumeAutomationMutationController'), 'Volume automation owns a revision-aware in-flight controller')
-assert.ok(editor.includes('nextVolumeAutomationRequestId'), 'Volume automation allocates a new durable request identity per save')
-assert.ok(editor.includes('if (!controls)'), 'Automation guards commit itself before any duplicate dispatch can escape')
-assert.ok(editor.includes('current project revision'), 'Automation visibly explains a missing safe mutation base')
-assert.ok(editor.includes('onAutomationStateChange'), 'Automation publishes transient point state to its sibling Volume controls')
-assert.ok(editor.includes('reportAutomationState(true, points.length, true, false)'), 'Automation reports its first-save lock before awaiting the server')
-assert.ok(editor.includes('refreshRequiredRef.current = true'), 'Unknown save outcomes keep sibling static Gain blocked until refresh')
-assert.ok(editor.includes('volumeAutomationNeedsAuthoritativeRefresh'), 'Automation distinguishes unknown results from explicit safe server rejections')
+assert.ok(editor.includes('useVolumeAutomation'), 'Inspector uses the same revision-aware coordinator as the timeline lane')
+assert.ok(coordinator.includes("'edit.keyframe'"), 'shared coordinator dispatches the existing edit.keyframe verb')
+assert.ok(coordinator.includes("param: 'volume'"), 'shared coordinator binds the existing volume parameter')
+assert.ok(coordinator.includes('nextVolumeAutomationRequestId'), 'shared coordinator allocates a durable request identity per save')
+assert.ok(coordinator.includes('if (!controls)'), 'shared coordinator rejects duplicate or stale commits before dispatch')
+assert.ok(coordinator.includes('volumeAutomationNeedsAuthoritativeRefresh'), 'shared coordinator preserves the authoritative-refresh fence')
 assert.ok(client.includes('export interface MutationControls'), 'client exports the shared mutation-control contract instead of a keyframe-only cast')
 assert.ok(client.includes('ControlledVerbArgs<N extends VerbName>'), 'client provides a controlled args intersection for any live verb')
 assert.ok(client.includes('project_revision?: string'), 'client exposes the server envelope project revision')
@@ -300,17 +319,17 @@ for (const action of [
   'volume-automation-clear',
 ]) assert.ok(editor.includes(`data-cut-action="${action}"`), `Volume automation exposes stable ${action} ownership`)
 assert.ok(!editor.includes('full timeline automation lane remains future work'), 'Volume automation keeps roadmap debt out of product copy')
-assert.ok(publicFeatures.includes('a full lane remains future work'), 'Public feature docs retain the future full-lane limitation')
-assert.ok(publicFeatures.includes('Automation\n  saves are revision-protected'), 'Public feature docs explain conflict-safe automation saves')
+assert.ok(publicFeatures.includes('Clip volume lane'), 'Public feature docs describe the selected-audio clip lane')
+assert.ok(publicFeatures.includes('Automation saves are revision-protected'), 'Public feature docs explain conflict-safe automation saves')
 assert.ok(editor.includes('Time in clip (seconds)'), 'Volume automation labels the human time field in seconds')
 assert.ok(editor.includes('Interpolation</span>'), 'Volume automation gives interpolation a visible label')
 assert.ok(editor.includes('Math.round(Number(event.target.value) * 1000)'), 'Volume automation dispatches typed seconds as exact milliseconds')
 assert.ok(editor.includes('aria-label="Volume automation interpolation"'), 'Interpolation has a keyboard-accessible name')
 assert.ok(editor.includes('aria-label={`Edit volume point at ${formatAutomationTime(point.t_ms)}`}'), 'Point selection has a keyboard-accessible name')
 assert.ok(editor.includes('aria-label={`Remove volume point at ${formatAutomationTime(point.t_ms)}`}'), 'Point removal has a keyboard-accessible name')
-assert.ok(editor.includes('try {') && editor.includes('finally {'), 'Automation clears busy state after every commit outcome')
-assert.ok(editor.includes('mutationState.inFlight'), 'Automation derives disabled state from the real in-flight lock')
-assert.ok(editor.includes('keyframesFingerprint'), 'Automation reconciles optimistic projection against authoritative keyframes')
+assert.ok(coordinator.includes('try {') && coordinator.includes('finally {'), 'Automation clears busy state after every commit outcome')
+assert.ok(editor.includes('automation.mutationState.inFlight'), 'Inspector derives disabled state from the real shared in-flight lock')
+assert.ok(coordinator.includes('volumeAutomationKeyframesFingerprint'), 'Coordinator reconciles optimistic projection against authoritative keyframes')
 assert.ok(editor.includes('data-cut-volume-automation-unavailable'), 'Automation names unavailable states instead of leaving controls unexplained')
 assert.ok(model.includes('VOLUME_AUTOMATION_INTERPOLATIONS'), 'Automation model owns the interpolation catalog')
 assert.ok(model.includes('createVolumeAutomationStaticGainGuard'), 'Automation model owns the tested static-Gain coordination guard')
@@ -319,4 +338,13 @@ assert.ok(model.includes('compareProjectRevisions(received, refreshAfterRevision
 assert.ok(model.includes('expected_revision: current.projectRevision'), 'static Gain guard derives mutation controls from its latest revision ref')
 assert.ok(model.includes('Clear the Speed ramp before editing volume automation.'), 'Automation model exposes a visible speed-ramp reason')
 assert.ok(coreEdit.includes('if c.speed_ramp.is_some()'), 'Core edit.keyframe fails closed for a speed-ramped clip')
+assert.ok(existsSync(resolve(uiRoot, 'src/panels/Timeline/TimelineVolumeAutomationLane.tsx')), 'timeline volume lane has an owned bounded module')
+assert.ok(timelineRow.includes('TimelineVolumeAutomationLane'), 'audio track row owns the lane composition instead of Timeline/index')
+assert.ok(timelineLane.includes('data-cut-action="timeline-volume-add"'), 'timeline lane exposes stable Add point ownership')
+assert.ok(timelineLane.includes('data-cut-action="timeline-volume-point"'), 'timeline lane exposes stable volume-point ownership')
+assert.ok(timelineLane.includes('!event.ctrlKey && !event.metaKey'), 'timeline lane supports Ctrl/Cmd-click acceleration')
+assert.ok(timelineLane.includes('Move playhead over the selected clip to add a volume point.'), 'Add point names an out-of-clip playhead instead of silently clamping to an endpoint')
+assert.ok(timelineLane.includes('disabled={!addAtPlayheadEnabled}'), 'only Add point is disabled for an out-of-clip playhead; Ctrl/Cmd curve-click remains available')
+assert.ok(timelineLane.includes("up.type !== 'pointerup'"), 'pointercancel is local-only and never emits a mutation')
+assert.ok(timelineLane.includes("event.key === 'Escape'"), 'Escape cancels an in-progress local drag without mutation')
 console.log('PASS volume automation model and source contracts')

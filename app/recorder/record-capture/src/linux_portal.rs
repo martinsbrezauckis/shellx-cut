@@ -9,7 +9,10 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ashpd::desktop::{screencast::Screencast, Session};
+use ashpd::{
+    desktop::{screencast::Screencast, Session},
+    WindowIdentifier,
+};
 use record_core::{error_codes, RecordError, Result};
 use tokio::time::Instant;
 
@@ -18,6 +21,38 @@ use tokio::time::Instant;
 pub(crate) const PRE_FIRST_FRAME_PORTAL_TIMEOUT: Duration = Duration::from_secs(120);
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
+const PORTAL_PARENT_WINDOW_ENV: &str = "SHELLX_CUT_PORTAL_PARENT_WINDOW";
+
+pub(crate) fn portal_parent_window() -> Option<WindowIdentifier> {
+    let value = match std::env::var(PORTAL_PARENT_WINDOW_ENV) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!("warning: ignoring non-Unicode ScreenCast parent-window identity");
+            return None;
+        }
+    };
+    let parsed = parse_portal_parent_window(&value);
+    if parsed.is_none() {
+        eprintln!("warning: ignoring invalid ScreenCast parent-window identity");
+    }
+    parsed
+}
+
+fn parse_portal_parent_window(value: &str) -> Option<WindowIdentifier> {
+    let xid = value.strip_prefix("x11:")?;
+    if xid.is_empty()
+        || xid.len() > 16
+        || !xid
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return None;
+    }
+    let xid = u64::from_str_radix(xid, 16).ok()?;
+    let xid = std::os::raw::c_ulong::try_from(xid).ok()?;
+    (xid != 0).then(|| WindowIdentifier::from_xid(xid))
+}
 
 pub(crate) fn pre_first_frame_deadline() -> Instant {
     Instant::now() + PRE_FIRST_FRAME_PORTAL_TIMEOUT
@@ -149,5 +184,25 @@ mod tests {
         .await;
 
         assert_eq!(result, Err(()));
+    }
+
+    #[test]
+    fn x11_parent_window_identity_is_exact_and_bounded() {
+        assert_eq!(
+            parse_portal_parent_window("x11:800003")
+                .expect("valid X11 portal parent")
+                .to_string(),
+            "x11:800003"
+        );
+        for invalid in [
+            "",
+            "x11:",
+            "x11:0",
+            "x11:0x800003",
+            "x11:800003ZZ",
+            "wayland:opaque",
+        ] {
+            assert!(parse_portal_parent_window(invalid).is_none(), "{invalid}");
+        }
     }
 }

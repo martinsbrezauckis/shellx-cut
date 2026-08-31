@@ -113,6 +113,9 @@ fn ledger_write_failure_after_unlink_leaves_the_pending_entry_visible() {
         OwnedRemoval::UnlinkedLedgerPending(error) => {
             assert_eq!(error.code, cut_core::error_codes::CONFLICT);
         }
+        OwnedRemoval::LedgerRetiredMissing => {
+            panic!("the existing cache file must not be classified as already missing")
+        }
         OwnedRemoval::Retired => panic!("the protected project root must reject the ledger write"),
     }
     assert!(
@@ -125,114 +128,8 @@ fn ledger_write_failure_after_unlink_leaves_the_pending_entry_visible() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
-async fn media_remove_reports_ledger_publish_failure_after_its_project_op_commits() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let (_root, state) = state_with_project().await;
-    let (project_dir, proxy) = {
-        let project = state.project.read().await;
-        let store = project.as_ref().unwrap();
-        let proxy = store.proxies_dir().join("a1.mp4");
-        std::fs::write(&proxy, b"proxy").unwrap();
-        (store.dir.clone(), proxy)
-    };
-    record_generated(&project_dir, CacheKind::Proxies, "a1", OsStr::new("a1.mp4")).unwrap();
-    {
-        let mut project = state.project.write().await;
-        project
-            .as_mut()
-            .unwrap()
-            .record_import(
-                Some("a1".into()),
-                cut_core::Asset {
-                    path: "/outside/source.mov".into(),
-                    hash: "sha256:old".into(),
-                    probe: None,
-                    transcript: None,
-                    perception: None,
-                    proxy: Some("proxies/a1.mp4".into()),
-                    filmstrip: None,
-                },
-                cut_core::Actor::system(),
-                None,
-            )
-            .unwrap();
-    }
-
-    // The exclusive lease holds only cache cleanup. The remove task can commit
-    // its project op, then blocks before it starts exclusive cleanup.
-    let cleanup_blocker = state.cache_lifecycle_lease.write().await;
-    let worker_state = state.clone();
-    let task = tokio::spawn(async move {
-        crate::dispatch::dispatch(
-            &worker_state,
-            "media.remove",
-            json!({"asset": "a1"}),
-            cut_core::Actor::system(),
-        )
-        .await
-    });
-    let mut committed = false;
-    for _ in 0..100 {
-        {
-            let project = state.project.read().await;
-            committed = project
-                .as_ref()
-                .is_some_and(|store| !store.project.assets.contains_key("a1"));
-        }
-        if committed {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        committed,
-        "media.remove must commit before cache cleanup waits"
-    );
-
-    let original = std::fs::metadata(&project_dir).unwrap().permissions();
-    std::fs::set_permissions(&project_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-    drop(cleanup_blocker);
-    let removed = task.await.unwrap();
-    std::fs::set_permissions(&project_dir, original).unwrap();
-
-    assert!(
-        removed.ok,
-        "the committed removal is not rolled back by ledger publication: {:?}",
-        removed.error
-    );
-    assert!(!proxy.exists(), "the exact cache output was removed");
-    let warning = removed
-        .warnings
-        .as_ref()
-        .and_then(|warnings| {
-            warnings
-                .iter()
-                .find(|warning| warning.code == "cache_ownership_cleanup_pending")
-        })
-        .expect("ledger publication failure must be an in-band warning");
-    assert!(warning.message.contains("proxy cache for asset 'a1'"));
-    assert!(
-        !warning.message.contains("proxies/a1.mp4"),
-        "warnings must never disclose the internal cache path"
-    );
-    let preview = crate::dispatch::dispatch(
-        &state,
-        "project.cache_preview",
-        json!({}),
-        cut_core::Actor::system(),
-    )
-    .await;
-    assert!(
-        !preview.ok,
-        "the stale ledger remains visible to cache inventory rather than being hidden"
-    );
-}
-
-#[tokio::test]
-async fn media_remove_waits_for_an_active_cache_producer_before_retiring_ledger_state() {
+async fn media_remove_waits_for_an_active_cache_producer_before_committing_its_project_op() {
     let (_root, state) = state_with_project().await;
     let (project_dir, proxy) = {
         let project = state.project.read().await;
@@ -275,28 +172,39 @@ async fn media_remove_waits_for_an_active_cache_producer_before_retiring_ledger_
         )
         .await
     });
-    let mut committed = false;
     for _ in 0..100 {
-        {
-            let project = state.project.read().await;
-            committed = project
-                .as_ref()
-                .is_some_and(|store| !store.project.assets.contains_key("a1"));
-        }
-        if committed {
-            break;
-        }
         tokio::task::yield_now().await;
     }
-    assert!(committed, "the project op must not wait for cache cleanup");
+    assert!(
+        state
+            .project
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|store| store.project.assets.contains_key("a1")),
+        "source/cache mutations must wait before committing while a deterministic producer owns the cache lease"
+    );
     assert!(
         !task.is_finished(),
-        "exclusive cache cleanup must wait for the active shared producer lease"
+        "the remove task must remain blocked until the cache producer settles"
     );
     drop(producer);
     let removed = task.await.unwrap();
+
     assert!(removed.ok, "remove: {:?}", removed.error);
-    assert!(!proxy.exists());
+    assert!(!proxy.exists(), "the exact cache output was removed");
+    let preview = crate::dispatch::dispatch(
+        &state,
+        "project.cache_preview",
+        json!({}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(
+        preview.ok,
+        "serialized remove must retire the ownership entry before releasing the lease: {:?}",
+        preview.error
+    );
 }
 
 #[tokio::test]

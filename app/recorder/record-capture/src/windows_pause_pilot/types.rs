@@ -4,111 +4,12 @@
 //! artifact-root type. A later server adapter translates the independently
 //! observed native facts into its private durable evidence.
 
-use record_core::Settings;
-use record_recovery::Checkpoint;
+use record_core::{ClickSample, CursorSample, KeySample, ScrollSample, Settings};
+use record_recovery::{Checkpoint, RecordingStream};
 use std::time::Instant;
 
-const WINDOWS_MONITOR_ID_PREFIX: &str = "shellx-monitor-v1:windows:";
-const MONITOR_ID_DIGEST_LEN: usize = 64;
-
-/// The one accepted native profile. Every other live-recording surface is a
-/// refusal, not a setting that the pilot silently drops.
-#[derive(Debug, Clone, PartialEq)]
-pub struct WindowsPausePilotProfile {
-    exact_monitor_id: String,
-    fps: u32,
-}
-
-impl WindowsPausePilotProfile {
-    /// Admit only one exact native monitor and an integer encoder cadence.
-    pub fn admit(request: WindowsPausePilotRequest) -> Result<Self, WindowsPausePilotRefusal> {
-        request.validate()
-    }
-
-    pub fn exact_monitor_id(&self) -> &str {
-        &self.exact_monitor_id
-    }
-
-    pub fn fps(&self) -> u32 {
-        self.fps
-    }
-}
-
-/// Internal admission input for a future pause-ready start path.
-///
-/// This deliberately mirrors every currently unsupported recording surface so
-/// the caller cannot accidentally turn one off and claim the requested mode
-/// was captured. It is not a public request schema.
-#[derive(Debug, Clone, PartialEq)]
-pub struct WindowsPausePilotRequest {
-    pub exact_monitor_id: Option<String>,
-    pub fps: f64,
-    pub audio: bool,
-    pub microphone: bool,
-    pub system_audio: bool,
-    pub input: bool,
-    pub window: bool,
-    pub camera: bool,
-    pub studio: bool,
-    pub autoedit: bool,
-    pub polish: bool,
-}
-
-impl WindowsPausePilotRequest {
-    pub fn screen_video_only(exact_monitor_id: String, fps: f64) -> Self {
-        Self {
-            exact_monitor_id: Some(exact_monitor_id),
-            fps,
-            audio: false,
-            microphone: false,
-            system_audio: false,
-            input: false,
-            window: false,
-            camera: false,
-            studio: false,
-            autoedit: false,
-            polish: false,
-        }
-    }
-
-    fn validate(self) -> Result<WindowsPausePilotProfile, WindowsPausePilotRefusal> {
-        let exact_monitor_id = self
-            .exact_monitor_id
-            .filter(|id| valid_exact_monitor_id(id))
-            .ok_or(WindowsPausePilotRefusal::ExactMonitorRequired)?;
-        let unsupported = [
-            (self.audio, WindowsPausePilotRefusal::Audio),
-            (self.microphone, WindowsPausePilotRefusal::Microphone),
-            (self.system_audio, WindowsPausePilotRefusal::SystemAudio),
-            (self.input, WindowsPausePilotRefusal::Input),
-            (self.window, WindowsPausePilotRefusal::Window),
-            (self.camera, WindowsPausePilotRefusal::Camera),
-            (self.studio, WindowsPausePilotRefusal::Studio),
-            (self.autoedit, WindowsPausePilotRefusal::Autoedit),
-            (self.polish, WindowsPausePilotRefusal::Polish),
-        ];
-        if let Some((_, refusal)) = unsupported.into_iter().find(|(requested, _)| *requested) {
-            return Err(refusal);
-        }
-        if !self.fps.is_finite() || !(1.0..=240.0).contains(&self.fps) || self.fps.fract() != 0.0 {
-            return Err(WindowsPausePilotRefusal::IntegerFpsRequired);
-        }
-        Ok(WindowsPausePilotProfile {
-            exact_monitor_id,
-            fps: self.fps as u32,
-        })
-    }
-}
-
-fn valid_exact_monitor_id(id: &str) -> bool {
-    id.strip_prefix(WINDOWS_MONITOR_ID_PREFIX)
-        .is_some_and(|digest| {
-            digest.len() == MONITOR_ID_DIGEST_LEN
-                && digest
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
-}
+mod admission;
+pub use admission::{WindowsPausePilotProfile, WindowsPausePilotRequest};
 
 /// A bounded refusal category. It intentionally excludes source paths, device
 /// labels, native handles, or provider details.
@@ -206,6 +107,37 @@ pub struct WindowsSealedWgcCheckpoint {
     pub checkpoint: Checkpoint,
 }
 
+/// One passive input snapshot produced by the same logical WGC run. Samples
+/// are half-open against the WGC run span and are converted into an immutable
+/// per-run sidecar by a future server evidence owner. The current translator
+/// rejects this payload, so it cannot widen the admitted private profile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowsSealedInputRun {
+    pub cursor: Vec<CursorSample>,
+    pub clicks: Vec<ClickSample>,
+    pub scrolls: Vec<ScrollSample>,
+    pub keys: Vec<KeySample>,
+}
+
+/// One required microphone or system-audio owner after it has stopped, flushed
+/// its WAV, and re-read the exact published leaf. `source_generation` is the
+/// WGC physical generation that admitted this owner, not a server-requested
+/// pause generation. The relative artifact is verified again by the private
+/// server evidence owner before it reaches a journal or sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsSealedAudioRun {
+    pub stream: RecordingStream,
+    pub source_generation: u64,
+    pub artifact: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub media_duration_ms: u64,
+    pub native_ready_unix_ms: u64,
+    pub native_ready_raw_ms: u64,
+    pub raw_start_ms: u64,
+    pub raw_end_ms: u64,
+}
+
 /// The non-empty contiguous physical checkpoint range owned by one logical
 /// screen-only run. Generation and checkpoint sequences are independent but
 /// each must advance by exactly one within this bounded result.
@@ -243,6 +175,13 @@ pub enum WindowsPausePilotEvent {
         generation: u64,
         epoch: u64,
         run: WindowsSealedScreenRun,
+        /// Present exactly when the immutable profile selected passive input.
+        /// The snapshot is accepted only after the matching WGC run has
+        /// closed, verified, and published.
+        input: Option<WindowsSealedInputRun>,
+        /// Every selected audio owner is present exactly once only after it
+        /// stopped and flushed after the paired WGC publication.
+        audio: Vec<WindowsSealedAudioRun>,
         /// Paired with `run.observed_end_ms` by the same post-close native
         /// boundary observation; it is never reconstructed from that tick.
         observed_at: Instant,
@@ -261,6 +200,9 @@ pub enum WindowsPausePilotEvent {
     StopSealed {
         epoch: u64,
         run: Option<WindowsSealedScreenRun>,
+        /// Paired with `run` when an active selected-input run was sealed.
+        input: Option<WindowsSealedInputRun>,
+        audio: Vec<WindowsSealedAudioRun>,
         /// When `run` is present, this is paired with its `observed_end_ms` by
         /// the same post-close native boundary observation.
         observed_at: Instant,

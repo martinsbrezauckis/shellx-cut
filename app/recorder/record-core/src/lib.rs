@@ -19,6 +19,8 @@
 
 pub mod cadence;
 pub mod camera;
+pub mod capture_quality;
+pub mod capture_source;
 pub mod color;
 pub mod ease;
 pub mod error;
@@ -27,9 +29,23 @@ pub mod event_run_merge;
 pub mod fixtures;
 pub mod plan;
 pub mod project;
+pub mod scene;
+mod scene_editable_timeline;
+mod scene_editable_timeline_plan;
+mod scene_editable_timeline_timer;
+mod scene_model;
+pub mod scene_projection;
+pub mod scene_reducer;
+mod scene_types;
 
 #[cfg(test)]
 mod event_run_merge_tests;
+#[cfg(test)]
+mod scene_projection_tests;
+#[cfg(test)]
+mod scene_switch_tests;
+#[cfg(test)]
+mod scene_tests;
 
 /// Project file schema tag (written into `RecordingProject.schema`).
 pub const SCHEMA: &str = "shellx-record/1";
@@ -41,6 +57,11 @@ pub use cadence::{
 pub use camera::{
     CameraArtifact, CameraClockRange, CameraMediaFacts, CameraTerminalState, CAMERA_ARTIFACT_SCHEMA,
 };
+pub use capture_quality::{
+    CaptureOutputSize, CaptureQualityProfile, CaptureQualityRequest, CaptureQualityResolution,
+    CAPTURE_QUALITY_SCHEMA,
+};
+pub use capture_source::{CaptureSourceFacts, CAPTURE_SOURCE_FACTS_SCHEMA};
 pub use color::Rgba;
 pub use ease::Ease;
 pub use error::{error_codes, RecordError, Result};
@@ -55,3 +76,11 @@ pub use plan::{
     ZoomTrack,
 };
 pub use project::{RecordingProject, Settings};
+pub use scene::{
+    AcceptedStartSnapshot, CatalogRevision, PipCorner, PipShape, PipSizePercent, PresenterPip,
+    PresetRevision, SceneCatalog, SceneComposition, SceneError, SceneEvent, SceneEventKind,
+    SceneId, SceneResult, SceneSnapshotRevision, TimerConfig, MAX_SCENES,
+};
+pub use scene_reducer::{
+    reduce_scene_event, replay_scene_events, SceneState, TimerPhase, TimerReading,
+};

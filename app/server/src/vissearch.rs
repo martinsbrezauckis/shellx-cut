@@ -259,9 +259,8 @@ pub fn load_index(proj_dir: &Path, asset_id: &str) -> Option<EmbeddingIndex> {
 }
 
 /// Persist an asset's embedding index (creates the embeddings/ dir). Used by the
-/// tests + available for a future in-Rust indexer (the python indexer writes the
-/// same JSON directly).
-#[allow(dead_code)]
+/// tests; the production indexer writes the same JSON directly.
+#[cfg(test)]
 pub fn save_index(proj_dir: &Path, index: &EmbeddingIndex) -> std::io::Result<PathBuf> {
     let p = index_path(proj_dir, &index.asset);
     if let Some(dir) = p.parent() {

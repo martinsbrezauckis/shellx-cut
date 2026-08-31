@@ -8,13 +8,15 @@ import {
   captionPositionFromInput,
   type CaptionPosition,
 } from './model'
+import CaptionBulkSection from './CaptionBulkSection'
 
 interface ProjectCaptionsSectionProps {
   project: Project | null
   playheadMs: number
+  onSeek: (atMs: number) => void
 }
 
-export default function ProjectCaptionsSection({ project, playheadMs }: ProjectCaptionsSectionProps) {
+export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: ProjectCaptionsSectionProps) {
   const [capText, setCapText] = useState('')
   const [capPos, setCapPos] = useState<CaptionPosition>('bottom')
   const [capColor, setCapColor] = useState('#FFFFFF')
@@ -219,6 +221,7 @@ export default function ProjectCaptionsSection({ project, playheadMs }: ProjectC
           onClick={() => void importCaptions()}
         >Import captions (SRT/VTT)…</button>
       </div>
+      <CaptionBulkSection project={project} onSeek={onSeek} />
       <div className="insp__group-title insp__group-title--sub">Style</div>
       <div className="insp__row">
         <label className="insp__inline" title="Caption text color">

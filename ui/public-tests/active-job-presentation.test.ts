@@ -40,6 +40,9 @@ const record = (job_id: string, created_ts: string, state: JobRecord['state']): 
 const retryable = record('job_050', '2026-08-09T05:00:00Z', 'failed')
 retryable.kind = 'screen_record_export'
 retryable.retry = { eligible: true, root_job_id: 'job_050', attempt: 1 }
+const retryableVerification = record('job_049', '2026-08-09T04:30:00Z', 'failed')
+retryableVerification.kind = 'verify-rerun'
+retryableVerification.retry = { eligible: true, root_job_id: 'job_049', attempt: 1 }
 const explicitlyIneligible = record('job_051', '2026-08-09T06:00:00Z', 'failed')
 explicitlyIneligible.retry = {
   eligible: false,
@@ -49,8 +52,8 @@ explicitlyIneligible.retry = {
 }
 const unrelatedFailure = record('job_052', '2026-08-09T07:00:00Z', 'failed')
 assert.deepEqual(
-  retryableJobViews([unrelatedFailure, explicitlyIneligible, retryable]).map((entry) => entry.job_id),
-  ['job_050'],
+  retryableJobViews([unrelatedFailure, explicitlyIneligible, retryable, retryableVerification]).map((entry) => entry.job_id),
+  ['job_049', 'job_050'],
   'only the engine retry.eligible projection exposes a retry control',
 )
 const projected = activeJobViews([
@@ -81,7 +84,8 @@ const cancelRule = statusbarCss.match(/[.]sb-job-cancel\s*\{([^}]*)\}/)?.[1] || 
 assert.match(cancelRule, /width:\s*24px/)
 assert.match(cancelRule, /height:\s*24px/)
 assert.match(cancelRule, /flex:\s*none/)
-assert.match(statusbarSource, /data-cut-job-retry=/, 'retryable failed exports expose a stable retry selector')
+assert.match(statusbarSource, /data-cut-job-retry=/, 'retryable failed tasks expose a stable retry selector')
 assert.match(statusbarSource, /callVerb\('jobs[.]retry'/, 'the retry control invokes the typed durable retry verb')
+assert.match(statusbarSource, /'output check'/, 'receipt-bound verification retry has novice-facing task copy')
 
 console.log('PASS active jobs use human labels and truthful queued/running progress')

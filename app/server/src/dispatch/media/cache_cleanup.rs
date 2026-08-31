@@ -32,8 +32,7 @@ fn cache_cleanup_warning(
 /// must have dropped `AppState::project`'s write guard: this exclusive cache
 /// lease serializes its read-modify-write ledger update against all cache
 /// producers and other retirement requests.
-pub(super) async fn remove_owned_cache_outputs(
-    state: &AppState,
+pub(super) fn remove_owned_cache_outputs_locked(
     project_dir: &Path,
     asset: &str,
     outputs: [(crate::cache_lifecycle::CacheKind, Option<&str>); 2],
@@ -43,13 +42,24 @@ pub(super) async fn remove_owned_cache_outputs(
     if outputs.iter().all(|(_, relative)| relative.is_none()) {
         return;
     }
-    let _cache_lease = state.cache_lifecycle_lease.write().await;
     for (kind, relative) in outputs {
         let Some(relative) = relative else {
             continue;
         };
         match crate::cache_lifecycle::remove_owned_output(project_dir, kind, asset, relative) {
             Ok(crate::cache_lifecycle::OwnedRemoval::Retired) => freed.push(relative.into()),
+            Ok(crate::cache_lifecycle::OwnedRemoval::LedgerRetiredMissing) => {
+                warnings.push(cache_cleanup_warning(
+                    kind,
+                    asset,
+                    "retired the missing ownership record for",
+                    CutError::new(
+                        cut_core::error_codes::CONFLICT,
+                        "cache file was already absent",
+                        "the pending rebuild reservation was removed without deleting a file",
+                    ),
+                ))
+            }
             Ok(crate::cache_lifecycle::OwnedRemoval::UnlinkedLedgerPending(error)) => {
                 freed.push(relative.into());
                 warnings.push(cache_cleanup_warning(

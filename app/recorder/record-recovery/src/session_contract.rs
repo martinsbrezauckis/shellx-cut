@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const RECORDING_SESSION_JOURNAL_SCHEMA: &str = "shellx-cut/recording-session-journal/1";
+pub const RECORDING_PROJECT_ID_SCHEMA: &str = "shellx-cut/project-identity/1";
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SessionJournalError {
@@ -44,6 +45,15 @@ pub struct RecordingSessionIntent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_duration_limit_ms: Option<u64>,
     pub record_keys: bool,
+    /// New private pause owners opt in only after they can publish one exact
+    /// no-replace recording-input sidecar before every sealed run is journaled.
+    /// Old journals remain readable without inventing that evidence.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub input_sidecars_required: bool,
+    /// Private admission-time Cut project identity and the durable op-log
+    /// revision accepted for this recording. This is absent for older journals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_binding: Option<RecordingProjectBinding>,
     /// Bounded, path-free identity for the selected target/source. It is an
     /// opaque descriptor, never a native window title or filesystem path.
     pub target_descriptor: String,
@@ -73,6 +83,8 @@ impl RecordingSessionIntent {
             capture_cadence: None,
             active_duration_limit_ms,
             record_keys,
+            input_sidecars_required: false,
+            project_binding: None,
             target_descriptor: target_descriptor.into(),
             requested_streams,
         }
@@ -82,6 +94,36 @@ impl RecordingSessionIntent {
         self.capture_cadence = Some(capture_cadence);
         self
     }
+
+    pub fn requiring_input_sidecars(mut self) -> Self {
+        self.input_sidecars_required = true;
+        self
+    }
+
+    pub fn with_project_binding(mut self, project_binding: RecordingProjectBinding) -> Self {
+        self.project_binding = Some(project_binding);
+        self
+    }
+}
+
+/// Opaque Cut project identity reused by private persistence. The hash is over
+/// the canonical origin path; the raw path never leaves the owner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordingProjectIdentity {
+    pub schema: String,
+    pub origin_path_sha256: String,
+    pub project_name: String,
+}
+
+/// The exact durable project revision accepted at recording admission.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordingProjectBinding {
+    pub identity: RecordingProjectIdentity,
+    pub accepted_revision: String,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[cfg(test)]
@@ -103,6 +145,29 @@ mod tests {
         }))
         .unwrap();
         assert!(intent.capture_cadence.is_none());
+    }
+
+    #[test]
+    fn boxed_intent_entry_keeps_the_canonical_flat_jsonl_shape() {
+        let entry = RecordingSessionJournalEntry::Intent(Box::new(RecordingSessionIntent::new(
+            "boxed-intent",
+            1,
+            100,
+            30.0,
+            None,
+            false,
+            "opaque-target",
+            vec![RecordingStream::ScreenVideo],
+        )));
+        let json = serde_json::to_string(&entry).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"intent","schema":"shellx-cut/recording-session-journal/1","session_id":"boxed-intent","created_unix_ms":1,"checkpoint_interval_ms":100,"fps":30.0,"record_keys":false,"target_descriptor":"opaque-target","requested_streams":["screen_video"]}"#,
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordingSessionJournalEntry>(&json).unwrap(),
+            entry
+        );
     }
 
     #[test]
@@ -195,6 +260,22 @@ pub struct SealedRun {
     pub fragments: Vec<StreamFragment>,
 }
 
+/// A journal pin for one immutable private recording-input sidecar. The fixed
+/// file name is derived solely from the sealed run sequence; recovery never
+/// discovers a sidecar by scanning the capture directory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecordingInputSidecarPin {
+    pub run_sequence: u64,
+    pub file_name: String,
+    pub sha256: String,
+    pub ready_transition_sequence: u64,
+    pub ready_unix_ms: u64,
+    pub native_ready_unix_ms: u64,
+    pub native_ready_raw_ms: u64,
+    pub raw_start_ms: u64,
+    pub raw_end_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalDisposition {
@@ -215,8 +296,11 @@ pub struct SessionTerminal {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecordingSessionJournalEntry {
-    Intent(RecordingSessionIntent),
+    // Keep the externally tagged JSONL payload flat while avoiding every
+    // journal entry carrying the immutable admission payload inline.
+    Intent(Box<RecordingSessionIntent>),
     Transition(DurableStateTransition),
+    InputSidecar(RecordingInputSidecarPin),
     Run(SealedRun),
     Terminal(SessionTerminal),
 }

@@ -72,9 +72,9 @@ const WEBDRIVER_TEST_BUILD_MARKER: &str = "shellx-cut/webdriver-test-enabled@1";
 // (the only emit site is the desktop-gated hotkey block); silenced on the off
 // chance a future non-desktop target compiles this file without that block.
 #[cfg(desktop)]
-#[allow(unused_imports)]
 use tauri::Emitter;
 
+mod macos_region_bridge;
 mod source_reveal;
 mod tools;
 mod update_handoff;
@@ -84,12 +84,17 @@ mod update_state;
 #[cfg(desktop)]
 mod updater_key_transition;
 pub mod updater_signature;
+mod windows_region_bridge;
+#[cfg(windows)]
+mod windows_region_picker;
 use tools::ToolResolution;
 
 /// The engine's documented default address (mirrors cutd httpc::SERVER_ADDR).
 /// Spawning here keeps `cutd mcp` proxy + every documented agent flow working
 /// with zero configuration.
 const ENGINE_DEFAULT_ADDR: &str = "127.0.0.1:6161";
+#[cfg(target_os = "linux")]
+const ENV_PORTAL_PARENT_WINDOW: &str = "SHELLX_CUT_PORTAL_PARENT_WINDOW";
 
 /// How long the setup hook waits for the spawned engine to answer on its
 /// port. cutd is a native binary that binds immediately — 15 s is generous
@@ -160,6 +165,11 @@ fn webview2_data_token(value: Option<&str>) -> Result<Option<String>, String> {
 /// kill it on app exit. `None` when reusing an external server (mode
 /// "external") or when startup failed — nothing to kill in either case.
 struct EngineProcess(Mutex<Option<Child>>);
+
+/// Private state for a platform foreground Region bridge. It is populated only
+/// for a cutd child spawned by this desktop process; adopted engines have no
+/// foreground bridge authority.
+struct ForegroundRegionBridgeState(Mutex<Option<macos_region_bridge::ForegroundRegionBridge>>);
 
 fn stop_owned_engine(app: &tauri::AppHandle) {
     update_handoff::stop_owned_engine_best_effort(app);
@@ -471,7 +481,17 @@ fn pick_engine_addr() -> Result<(String, bool), String> {
 fn spawn_engine(
     resource_dir: &std::path::Path,
     tools: &ToolResolution,
-) -> Result<(Option<Child>, String, bool, String), String> {
+    portal_parent_window: Option<&str>,
+) -> Result<
+    (
+        Option<Child>,
+        String,
+        bool,
+        String,
+        Option<macos_region_bridge::ForegroundRegionBridge>,
+    ),
+    String,
+> {
     let (addr, reuse) = pick_engine_addr()?;
     let url = format!("http://{addr}/");
     if reuse {
@@ -480,7 +500,7 @@ fn spawn_engine(
         eprintln!(
             "[shellx-cut] reusing external cutd v{engine_version} at {url} (ui: {ui_present})"
         );
-        return Ok((None, url, ui_present, engine_version));
+        return Ok((None, url, ui_present, engine_version, None));
     }
 
     let program = cutd_program();
@@ -490,6 +510,19 @@ fn spawn_engine(
     let ui_dist = resource_dir.join("ui-dist");
     let ui_present = ui_dist.join("index.html").exists();
 
+    // Region selection is a foreground-only native operation. Do not inject
+    // bridge material into an API-only `cutd serve --headless` child: it has
+    // no foreground UI owner. The desktop retains this state only for a UI
+    // child it spawned itself; an adopted engine deliberately cannot join.
+    #[cfg(any(target_os = "macos", windows))]
+    let mut foreground_region_bridge = if ui_present {
+        Some(macos_region_bridge::ForegroundRegionBridge::for_spawned_child(addr.clone())?)
+    } else {
+        None
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let mut foreground_region_bridge: Option<macos_region_bridge::ForegroundRegionBridge> = None;
+
     // cutd logs (tracing) go to stderr; capture them to a temp file so a
     // startup failure on the INSTALLED app (no console) stays inspectable:
     // %TEMP%/shellx-cut-engine.log. Best-effort — Stdio::null() if create fails.
@@ -498,6 +531,9 @@ fn spawn_engine(
 
     let mut cmd = Command::new(&program);
     cmd.arg("serve").arg("--addr").arg(&addr);
+    if let Some(bridge) = &foreground_region_bridge {
+        bridge.apply_to_child(&mut cmd);
+    }
 
     // hand the engine the resolved tool locations. The engine's toolpath
     // resolver reads these env vars at the top of its resolution order, so a
@@ -511,6 +547,12 @@ fn spawn_engine(
     }
     if let Some(sc) = &tools.sidecar_dir {
         cmd.env(tools::ENV_SIDECAR_DIR, sc);
+    }
+    #[cfg(target_os = "linux")]
+    if ui_present {
+        if let Some(parent_window) = portal_parent_window {
+            cmd.env(ENV_PORTAL_PARENT_WINDOW, parent_window);
+        }
     }
     let agent_docs_dir = resource_dir.join("agent-docs");
     if agent_docs_dir.join("skill/shellx-cut/SKILL.md").is_file() {
@@ -549,6 +591,13 @@ fn spawn_engine(
             program.display()
         )
     })?;
+    if let Some(bridge) = foreground_region_bridge.as_mut() {
+        if let Err(reason) = bridge.bind_spawned_child(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("engine unavailable: {reason}"));
+        }
+    }
 
     // Ready-poll: cutd binds its listener before serving, so the first
     // successful /api/verbs answer means the full verb surface is up. Bounded
@@ -561,7 +610,13 @@ fn spawn_engine(
                     eprintln!(
                         "[shellx-cut] engine v{engine_version} ready at {url} (ui: {ui_present})"
                     );
-                    return Ok((Some(child), url, ui_present, engine_version));
+                    return Ok((
+                        Some(child),
+                        url,
+                        ui_present,
+                        engine_version,
+                        foreground_region_bridge,
+                    ));
                 }
                 Err(reason) => {
                     let _ = child.kill();
@@ -617,10 +672,54 @@ fn validated_engine_origin(url: &str) -> Result<String, String> {
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
+#[cfg(target_os = "linux")]
+fn linux_portal_parent_window(window: &tauri::WebviewWindow) -> Option<String> {
+    use raw_window_handle::HasWindowHandle;
+
+    portal_parent_window_from_raw(
+        window.window_handle().ok()?.as_raw(),
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn portal_parent_window_from_raw(
+    handle: raw_window_handle::RawWindowHandle,
+    session_type: Option<&str>,
+    wayland_display: bool,
+) -> Option<String> {
+    use raw_window_handle::RawWindowHandle;
+
+    // A portal dialog is a native Wayland child under GNOME Wayland. An Xwayland
+    // shell window has an X11 XID, but cross-protocol Wayland-child/X11-parent
+    // parenting is unsupported. Passing that identifier can leave a ScreenCast
+    // Start request unanswered after the user clicks Share. Omit the optional
+    // parent in that mixed-session case; a real X11 session keeps its exact XID.
+    let wayland_session = match session_type {
+        Some(value) if value.eq_ignore_ascii_case("x11") => false,
+        Some(value) if value.eq_ignore_ascii_case("wayland") => true,
+        _ => wayland_display,
+    };
+    if wayland_session {
+        return None;
+    }
+    let xid = match handle {
+        RawWindowHandle::Xlib(handle) => handle.window,
+        RawWindowHandle::Xcb(handle) => u64::from(handle.window.get()),
+        _ => return None,
+    };
+    (xid != 0).then(|| format!("x11:{xid:x}"))
+}
+
 /// Install the minimum native capability for the selected engine origin before
 /// navigating the main webview. No filesystem, shell, process, updater or
 /// global-shortcut commands are exposed to remote content.
-fn grant_engine_origin_capability(app: &tauri::App, url: &str) -> Result<(), String> {
+fn grant_engine_origin_capability(
+    app: &tauri::App,
+    url: &str,
+    allow_foreground_region: bool,
+) -> Result<(), String> {
     let origin = validated_engine_origin(url)?;
     let capability = tauri::ipc::CapabilityBuilder::new("engine-remote-selected")
         .local(false)
@@ -651,6 +750,25 @@ fn grant_engine_origin_capability(app: &tauri::App, url: &str) -> Result<(), Str
         // confirm). No download/restart/filesystem power is granted directly —
         // the webview can only ask; update_state.rs decides.
         .permission("allow-update-state");
+    let capability = if allow_foreground_region {
+        // This is granted only to the exact selected engine origin while this
+        // shell retains a successfully bound child. An adopted/external cutd
+        // never receives even the Tauri command permission.
+        #[cfg(target_os = "macos")]
+        {
+            capability.permission("allow-macos-region-foreground")
+        }
+        #[cfg(windows)]
+        {
+            capability.permission("allow-windows-region-foreground")
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            capability
+        }
+    } else {
+        capability
+    };
     // The focused native drop test must cross Tauri's real event path, but
     // engine-served production content must never be able to synthesize native
     // events. Every shipping build script rejects `webdriver-test`; only that
@@ -812,6 +930,7 @@ pub fn run() {
         .manage(EngineStatus(Mutex::new(EngineState::Unwired {
             reason: "engine unavailable: starting up".to_string(),
         })))
+        .manage(ForegroundRegionBridgeState(Mutex::new(None)))
         .manage(ToolResolutionState(Mutex::new(ToolResolution::default())))
         // Update-state service: the snapshot the topbar button + Settings>About
         // read over the bridge. Seeded with the installed version; the setup
@@ -823,6 +942,8 @@ pub fn run() {
             engine_status,
             tools_doctor,
             reveal_registered_source,
+            macos_region_bridge::start_macos_region_capture,
+            windows_region_bridge::start_windows_region_capture,
             update_settings::get_update_preferences,
             update_settings::set_update_preferences,
             update_state::get_update_state,
@@ -881,17 +1002,30 @@ pub fn run() {
             }
             *app.state::<ToolResolutionState>().0.lock().unwrap() = tool_res.clone();
 
-            match spawn_engine(&resource_dir, &tool_res) {
-                Ok((mut child, url, ui, engine_version)) => {
+            #[cfg(target_os = "linux")]
+            let portal_parent_window = app
+                .get_webview_window("main")
+                .and_then(|window| linux_portal_parent_window(&window));
+            #[cfg(not(target_os = "linux"))]
+            let portal_parent_window: Option<String> = None;
+
+            match spawn_engine(&resource_dir, &tool_res, portal_parent_window.as_deref()) {
+                Ok((mut child, url, ui, engine_version, foreground_region_bridge)) => {
                     let mode = if child.is_some() { "spawned" } else { "external" };
+                    let allow_foreground_region = foreground_region_bridge.is_some();
                     let capability = if ui {
-                        grant_engine_origin_capability(app, &url)
+                        grant_engine_origin_capability(app, &url, allow_foreground_region)
                     } else {
                         Ok(())
                     };
                     match capability {
                         Ok(()) => {
                             *app.state::<EngineProcess>().0.lock().unwrap() = child;
+                            *app
+                                .state::<ForegroundRegionBridgeState>()
+                                .0
+                                .lock()
+                                .unwrap() = foreground_region_bridge;
                             *app.state::<EngineStatus>().0.lock().unwrap() = EngineState::Wired {
                                 url: url.clone(),
                                 mode,
@@ -1188,6 +1322,52 @@ mod tests {
         ] {
             assert!(validated_engine_origin(url).is_err(), "must reject {url}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn x11_shell_window_becomes_the_exact_portal_parent_only_in_an_x11_session() {
+        use raw_window_handle::{RawWindowHandle, XlibWindowHandle};
+
+        assert_eq!(
+            portal_parent_window_from_raw(
+                RawWindowHandle::Xlib(XlibWindowHandle::new(0x800003)),
+                Some("x11"),
+                false,
+            ),
+            Some("x11:800003".to_string())
+        );
+        assert_eq!(
+            portal_parent_window_from_raw(
+                RawWindowHandle::Xlib(XlibWindowHandle::new(0)),
+                Some("x11"),
+                false,
+            ),
+            None
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn xwayland_shell_does_not_parent_a_wayland_portal_dialog() {
+        use raw_window_handle::{RawWindowHandle, XlibWindowHandle};
+
+        assert_eq!(
+            portal_parent_window_from_raw(
+                RawWindowHandle::Xlib(XlibWindowHandle::new(0x800003)),
+                None,
+                true,
+            ),
+            None,
+        );
+        assert_eq!(
+            portal_parent_window_from_raw(
+                RawWindowHandle::Xlib(XlibWindowHandle::new(0x800003)),
+                Some("wayland"),
+                true,
+            ),
+            None,
+        );
     }
 
     #[test]

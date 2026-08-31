@@ -2,6 +2,7 @@
 export const MANUAL_READ_ONLY_VERBS = new Set<string>([
   "assets.providers",
   "assets.search",
+  "captions.bulk_preview",
   "captions.list_styles",
   "clip.candidates",
   "comment.list",
@@ -32,6 +33,7 @@ export const MANUAL_READ_ONLY_VERBS = new Set<string>([
   "motion.map_import",
   "project.cache_preview",
   "project.diff",
+  "project.group_preview",
   "project.health",
   "project.list",
   "project.ops",
@@ -44,6 +46,7 @@ export const MANUAL_READ_ONLY_VERBS = new Set<string>([
   "score.clip",
   "screen_record.doctor",
   "screen_record.recovery_status",
+  "screen_record.status",
   "screen_record.system_audio_probe",
   "system.doctor",
   "system.mcp_test",

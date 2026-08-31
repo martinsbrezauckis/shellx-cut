@@ -1,7 +1,8 @@
 //! Owned-manifest checkpoint identity checks for private pause evidence.
 
 use super::windows_pause_adapter::WindowsPauseAdapterError;
-use record_recovery::{is_plain_dir, is_plain_regular_file, Checkpoint};
+use record_capture::windows_pause_pilot::WindowsSealedAudioRun;
+use record_recovery::{is_plain_dir, is_plain_regular_file, Checkpoint, RecordingStream};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
@@ -12,6 +13,10 @@ use std::path::{Component, Path, PathBuf};
 /// handle; deterministic tests may inject a bounded verifier.
 pub(crate) trait WindowsPauseArtifactVerifier {
     fn verify(&self, checkpoint: &Checkpoint) -> Result<(), WindowsPauseAdapterError>;
+
+    fn verify_audio(&self, _audio: &WindowsSealedAudioRun) -> Result<(), WindowsPauseAdapterError> {
+        Err(WindowsPauseAdapterError::EvidenceRejected)
+    }
 }
 
 pub(crate) struct LocalWindowsPauseArtifactVerifier {
@@ -72,6 +77,62 @@ impl LocalWindowsPauseArtifactVerifier {
 impl WindowsPauseArtifactVerifier for LocalWindowsPauseArtifactVerifier {
     fn verify(&self, checkpoint: &Checkpoint) -> Result<(), WindowsPauseAdapterError> {
         self.verify_after_hash(checkpoint, |_| {})
+    }
+
+    fn verify_audio(&self, audio: &WindowsSealedAudioRun) -> Result<(), WindowsPauseAdapterError> {
+        let expected = match audio.stream {
+            RecordingStream::MicrophoneAudio => {
+                format!(
+                    "recording-microphone-generation-{:020}.wav",
+                    audio.source_generation
+                )
+            }
+            RecordingStream::SystemAudio => {
+                format!(
+                    "recording-system-generation-{:020}.wav",
+                    audio.source_generation
+                )
+            }
+            _ => return Err(WindowsPauseAdapterError::EvidenceRejected),
+        };
+        if audio.source_generation == 0
+            || audio.artifact != expected
+            || audio.bytes == 0
+            || audio.sha256.len() != 64
+            || !audio.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || audio.media_duration_ms == 0
+            || audio.native_ready_unix_ms == 0
+            || audio.raw_end_ms <= audio.raw_start_ms
+            || audio.native_ready_raw_ms < audio.raw_start_ms
+            || audio.native_ready_raw_ms > audio.raw_end_ms
+        {
+            return Err(WindowsPauseAdapterError::EvidenceRejected);
+        }
+        let path = contained_file(&self.capture_dir, &audio.artifact)?;
+        let mut first = open_nofollow(&path)?;
+        let metadata = first
+            .metadata()
+            .map_err(|_| WindowsPauseAdapterError::EvidenceRejected)?;
+        if !metadata.file_type().is_file()
+            || is_reparse(&metadata)
+            || metadata.len() != audio.bytes
+            || hash_open(&mut first)? != audio.sha256
+        {
+            return Err(WindowsPauseAdapterError::EvidenceRejected);
+        }
+        let after_hash = first
+            .metadata()
+            .map_err(|_| WindowsPauseAdapterError::EvidenceRejected)?;
+        if !same_metadata(&metadata, &after_hash) {
+            return Err(WindowsPauseAdapterError::EvidenceRejected);
+        }
+        let current = open_nofollow(&path)?;
+        let current_metadata = current
+            .metadata()
+            .map_err(|_| WindowsPauseAdapterError::EvidenceRejected)?;
+        (same_open_file(&first, &current)? && same_metadata(&metadata, &current_metadata))
+            .then_some(())
+            .ok_or(WindowsPauseAdapterError::EvidenceRejected)
     }
 }
 
@@ -212,100 +273,5 @@ fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use record_recovery::{CaptureStart, CheckpointFacts, ManifestOwner, MediaFacts};
-    use std::fs::{remove_file, rename, write};
-
-    fn checkpoint(root: &Path) -> Checkpoint {
-        let mut owner = ManifestOwner::begin(root, CaptureStart::new("pause", 100)).unwrap();
-        let staging = owner.begin_segment(0, 0).unwrap();
-        write(&staging, b"closed screen video").unwrap();
-        owner
-            .publish(
-                0,
-                &staging,
-                CheckpointFacts {
-                    start_ms: 0,
-                    end_ms: 100,
-                    event_offset_ms: 0,
-                    audio_offset_ms: None,
-                },
-                MediaFacts {
-                    duration_ms: 100,
-                    decoded_video_frames: 1,
-                    has_audio: false,
-                    avg_frame_rate: None,
-                    r_frame_rate: None,
-                },
-            )
-            .unwrap()
-    }
-
-    #[test]
-    fn owned_manifest_matching_leaf_and_hash_are_accepted() {
-        let root = tempfile::tempdir().unwrap();
-        let checkpoint = checkpoint(root.path());
-        assert!(
-            LocalWindowsPauseArtifactVerifier::new(root.path().to_path_buf())
-                .verify(&checkpoint)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn wrong_manifest_hash_or_length_is_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        let checkpoint = checkpoint(root.path());
-        let verifier = LocalWindowsPauseArtifactVerifier::new(root.path().to_path_buf());
-        let mut wrong_hash = checkpoint.clone();
-        wrong_hash.sha256 = "b".repeat(64);
-        assert!(verifier.verify(&wrong_hash).is_err());
-        let mut wrong_length = checkpoint;
-        wrong_length.bytes += 1;
-        assert!(verifier.verify(&wrong_length).is_err());
-    }
-
-    #[test]
-    fn replacement_after_open_has_a_different_file_identity() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("segment.mp4");
-        let replacement = directory.path().join("replacement.mp4");
-        write(&path, b"first").unwrap();
-        let first = open_nofollow(&path).unwrap();
-        write(&replacement, b"second").unwrap();
-        rename(replacement, &path).unwrap();
-        let current = open_nofollow(&path).unwrap();
-        assert!(!same_open_file(&first, &current).unwrap());
-    }
-
-    #[test]
-    fn replacement_between_hash_and_reopen_is_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        let checkpoint = checkpoint(root.path());
-        let verifier = LocalWindowsPauseArtifactVerifier::new(root.path().to_path_buf());
-        assert!(verifier
-            .verify_after_hash(&checkpoint, |path| {
-                let replacement = path.with_extension("replacement");
-                write(&replacement, b"closed screen video").unwrap();
-                rename(replacement, path).unwrap();
-            })
-            .is_err());
-    }
-
-    #[test]
-    fn symlink_leaf_is_rejected_before_open() {
-        let root = tempfile::tempdir().unwrap();
-        let checkpoint = checkpoint(root.path());
-        let path = root.path().join(&checkpoint.file);
-        let outside = root.path().join("outside.mp4");
-        write(&outside, b"closed screen video").unwrap();
-        remove_file(&path).unwrap();
-        std::os::unix::fs::symlink(&outside, &path).unwrap();
-        assert!(
-            LocalWindowsPauseArtifactVerifier::new(root.path().to_path_buf())
-                .verify(&checkpoint)
-                .is_err()
-        );
-    }
-}
+#[path = "windows_pause_evidence_artifacts_tests.rs"]
+mod tests;

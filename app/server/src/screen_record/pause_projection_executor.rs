@@ -4,6 +4,7 @@
 //! owner supplies the source stager only after it has sealed every selected run.
 
 mod artifacts;
+mod audio;
 mod output;
 mod stager;
 mod types;
@@ -15,6 +16,7 @@ use record_recovery::{
 
 use super::pause_projection::{plan_legacy_root_projection, SealedLegacyProjectionRun};
 use super::pause_projection_frame_grid::plan_frame_grid_legacy_root_projection;
+use audio::PreparedPauseProjectionAudio;
 // This is the private integration seam for the eventual native owner. The
 // current server has no caller, so the re-exports intentionally remain unused.
 #[allow(unused_imports)]
@@ -46,14 +48,25 @@ where
             "the supplied session journal differs from durable replay evidence",
         ));
     }
+    let input_pins =
+        super::windows_pause_input_sidecar::verify_pinned_inputs(root, capture_id, journal)
+            .map_err(invalid)?;
     let plan = plan_legacy_root_projection(journal, event_runs)?;
     let paths = output::OutputPaths::new(root, capture_id)?;
-    let payloads = output::ProjectionPayloads::from_plan(&plan)?;
+    let audio =
+        PreparedPauseProjectionAudio::prepare(paths.capture_dir(), root, capture_id, journal)?;
+    let payloads = output::ProjectionPayloads::from_plan(&plan, &audio)?;
     let sources =
         artifacts::verify_sources(paths.capture_dir(), journal, plan.source_stitch(), verifier)?;
-    if let Some(result) =
-        output::completed(&paths, journal, &payloads, plan.source_stitch().duration_ms)?
-    {
+    if let Some(result) = output::completed(
+        &paths,
+        journal,
+        &payloads,
+        plan.source_stitch().duration_ms,
+        &input_pins,
+        audio.contract(),
+    )? {
+        audio.verify_published(paths.capture_dir())?;
         return Ok(result);
     }
     let staging = PrivateStaging::create(paths.capture_dir(), "pause-projection", "source.mp4")
@@ -66,13 +79,27 @@ where
         staged_media,
         plan.source_stitch().duration_ms,
     )?;
+    audio.publish(paths.capture_dir())?;
     output::publish(
         &paths,
         journal,
         &payloads,
         staging.path(),
         plan.source_stitch().duration_ms,
+        &input_pins,
+        audio.contract(),
     )
+}
+
+pub(crate) fn verify_completed_audio_projection(
+    root: &CaptureRoot,
+    capture_id: &str,
+) -> Result<(), CutError> {
+    let journal = RecordingSessionJournalFile::replay(root, capture_id).map_err(journal_error)?;
+    let paths = output::OutputPaths::new(root, capture_id)?;
+    let audio =
+        PreparedPauseProjectionAudio::prepare(paths.capture_dir(), root, capture_id, &journal)?;
+    output::verify_completed_audio(&paths, audio.contract())
 }
 
 /// Execute the strictly qualified private source path for a completed pause
@@ -98,9 +125,14 @@ where
             "the supplied session journal differs from durable replay evidence",
         ));
     }
+    let input_pins =
+        super::windows_pause_input_sidecar::verify_pinned_inputs(root, capture_id, journal)
+            .map_err(invalid)?;
     let qualified = plan_frame_grid_legacy_root_projection(journal, event_runs)?;
     let paths = output::OutputPaths::new(root, capture_id)?;
-    let payloads = output::ProjectionPayloads::from_plan(qualified.legacy())?;
+    let audio =
+        PreparedPauseProjectionAudio::prepare(paths.capture_dir(), root, capture_id, journal)?;
+    let payloads = output::ProjectionPayloads::from_plan(qualified.legacy(), &audio)?;
     let sources = artifacts::verify_sources(
         paths.capture_dir(),
         journal,
@@ -108,7 +140,15 @@ where
         verifier,
     )?;
     let logical_duration_ms = qualified.legacy().source_stitch().duration_ms;
-    if let Some(result) = output::completed(&paths, journal, &payloads, logical_duration_ms)? {
+    if let Some(result) = output::completed(
+        &paths,
+        journal,
+        &payloads,
+        logical_duration_ms,
+        &input_pins,
+        audio.contract(),
+    )? {
+        audio.verify_published(paths.capture_dir())?;
         let media = verifier.verify(paths.source())?;
         artifacts::validate_frame_grid_staged_source(
             paths.source(),
@@ -131,12 +171,15 @@ where
         staged_media,
         qualified.source_grid(),
     )?;
+    audio.publish(paths.capture_dir())?;
     output::publish(
         &paths,
         journal,
         &payloads,
         staging.path(),
         logical_duration_ms,
+        &input_pins,
+        audio.contract(),
     )
 }
 

@@ -1,6 +1,7 @@
 # Security policy
 
-This policy is the v0.6.112 deployment contract for candidate source. Published
+<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
+This policy is the v0.6.113 deployment contract for candidate source. Published
 installer support begins only after that candidate is signed and released.
 
 ## Supported versions

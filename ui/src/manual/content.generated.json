@@ -1,7 +1,7 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.112",
-  "featureCount": 194,
+  "appVersion": "0.6.113",
+  "featureCount": 198,
   "features": [
     {
       "id": "cut.setup.ffmpeg",
@@ -97,11 +97,11 @@
       "id": "cut.top.settings",
       "label": "Settings and cache cleanup",
       "group": "top",
-      "title": "Settings and cache cleanup",
+      "title": "Settings and editing cache",
       "where": "Top bar",
-      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Settings > Health & Recovery previews only Cut-owned, aged, unreferenced proxy and filmstrip cache files before an explicit cancellable cleanup; source media, exports, captures, and receipts are never candidates.",
-      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Cache cleanup requires an open project and a complete ownership-ledger preview; partial, changed, foreign, or symlinked inventories are refused.",
-      "api": "system.doctor, system.mcp_test, project.cache_preview, project.cache_purge, jobs.cancel"
+      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Settings > Health & Recovery can non-destructively rebuild missing Cut-owned proxies and filmstrips, then separately preview aged unreferenced cache before an explicit cancellable cleanup; original media, exports, captures, and receipts are never candidates.",
+      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Rebuild and cleanup require an open project; cleanup also requires a complete ownership-ledger preview. Partial, changed, foreign, or symlinked inventories are refused.",
+      "api": "system.doctor, system.mcp_test, project.cache_rebuild, project.cache_preview, project.cache_purge, jobs.cancel"
     },
     {
       "id": "cut.top.manual",
@@ -1124,6 +1124,16 @@
       "api": "render.preview"
     },
     {
+      "id": "cut.preview.compare",
+      "label": "Compare edits",
+      "group": "preview",
+      "title": "Compare edits",
+      "where": "Preview monitor",
+      "description": "Pause and place the exact composed frame before the latest timeline edit beside the current durable frame. Before is on the left and Current is on the right; closing it never changes the timeline.",
+      "requirement": "Requires a saved timeline edit with an earlier compatible state and visible media at the current playhead. Later project metadata stays part of Current but does not become a deceptive identical Before. If Cut cannot prove that pair, Compare explains why instead of guessing.",
+      "api": "render.compare {at_ms, revision} — read-only historical replay"
+    },
+    {
       "id": "cut.preview.guides",
       "label": "Guides",
       "group": "preview",
@@ -1518,10 +1528,10 @@
       "label": "Audio tab",
       "group": "inspector",
       "title": "Audio tab",
-      "where": "Inspector",
-      "description": "Adjust audio controls, gain, and related clip audio settings.",
-      "requirement": "Requires an audio clip or linked audio.",
-      "api": "edit.gain, media.waveform"
+      "where": "Inspector and timeline",
+      "description": "Select an audio clip to shape Clip volume over its waveform: Add point at playhead, Ctrl/Cmd-click the curve, or drag a named point. Use Inspector for exact time, level, interpolation, or Clear automation; static Gain resumes unchanged after Clear.",
+      "requirement": "Requires a selected audio clip on an unlocked track with a current project revision; speed-ramped clips explain why automation is unavailable.",
+      "api": "edit.keyframe {param:\"volume\"}; edit.gain"
     },
     {
       "id": "cut.inspector.chat",
@@ -1629,19 +1639,49 @@
       "group": "record",
       "title": "Studio preview",
       "where": "Record workspace",
-      "description": "The large Studio preview shows the screen composition and elapsed recording state. Recording keeps a 30 FPS default, offers 24/25/30/50/60 presets plus custom 1–240 FPS validation, and can test System Default or one selected microphone before Start. Windows/macOS choices are private native endpoints behind expiring opaque UI tokens and safe labels; Linux remains System Default only.",
-      "requirement": "Requires the Record workspace. An unavailable saved microphone choice visibly blocks mic-enabled Start until another choice or System Default is selected. Invalid custom FPS and an in-progress microphone test also keep Start unavailable. Real capture still depends on OS permissions.",
-      "api": "screen_record.doctor, screen_record.microphone_selection, screen_record.start"
+      "description": "The large Studio preview shows the screen composition and elapsed recording state. Before Start, choose an Off, 3-second, or 5-second setup countdown; Escape or Cancel stops that setup before any capture starts. Recording keeps a 30 FPS default, offers 24/25/30/50/60 presets plus custom 1–240 FPS validation, and can test System Default or one selected microphone before Start. Where Doctor advertises verified output quality, Source, 1080p, or 720p and Standard or High remain simple choices; final dimensions, cadence, and encoder are shown only after recording. Windows/macOS choices are private native endpoints behind expiring opaque UI tokens and safe labels; Linux remains System Default only.",
+      "requirement": "Requires the Record workspace. The output-quality control appears only on a backend that explicitly supports and verifies it; other backends omit it and refuse direct quality requests. An unavailable saved microphone choice visibly blocks mic-enabled Start until another choice or System Default is selected. Invalid custom FPS and an in-progress microphone test also keep Start unavailable. Real capture still depends on OS permissions.",
+      "api": "screen_record.doctor, screen_record.microphone_selection, screen_record.start, screen_record.stop"
+    },
+    {
+      "id": "cut.record.scenes",
+      "label": "Recording scenes",
+      "group": "record",
+      "title": "Recording scenes",
+      "where": "Record workspace",
+      "description": "Choose a named Screen or Presenter PiP scene before recording, then switch the live composition from the compact scene strip. Cut saves the exact scene revision and shared-clock time before showing the switch as saved.",
+      "requirement": "Presenter PiP requires an admitted camera. A Screen-first scene catalog can start without opening a camera.",
+      "api": "screen_record.start {scenes}, screen_record.scene_activate"
+    },
+    {
+      "id": "cut.record.scene_timer",
+      "label": "Recording timer",
+      "group": "record",
+      "title": "Recording timer",
+      "where": "Record workspace",
+      "description": "Choose one timer for the whole recording: Off, Elapsed, or Countdown. During capture you can pause, resume, reset, restart, or end it; each acknowledged change is durable recording metadata rather than baked pixels.",
+      "requirement": "Requires a recording started with a saved Scenes catalog.",
+      "api": "screen_record.start {scenes.timer}, screen_record.scene_timer"
+    },
+    {
+      "id": "cut.record.pause_resume",
+      "label": "Pause and resume",
+      "group": "record",
+      "title": "Pause and resume",
+      "where": "Record workspace",
+      "description": "On a supported macOS build, explicitly enable Pause & resume before Start. During the live recording the same button becomes Pause or Resume, and Cut changes its state only after the native owner durably acknowledges the transition.",
+      "requirement": "Requires one exact Display at a whole-number frame rate. Scenes, Camera, keystrokes, Window capture, and Quality remain unavailable for that take; other platforms explain that Pause is unavailable.",
+      "api": "screen_record.doctor pause, screen_record.start {pause}, screen_record.pause, screen_record.resume"
     },
     {
       "id": "cut.record.camera_enable",
-      "label": "Camera overlay (parked)",
+      "label": "Camera take",
       "group": "record",
-      "title": "Camera overlay",
+      "title": "Camera take",
       "where": "Record workspace",
-      "description": "Live camera capture is not available in this release. The Record workspace says so where the controls used to be, and no enable, position, size or shape control is shown. Screen, microphone and supported system-audio recording are unaffected.",
-      "requirement": "Nothing to enable — plan a webcam pass as a separate recording for now.",
-      "api": "screen_record.start (no webcam stream in this release)"
+      "description": "Turn Camera on in Auto-edit mode and choose one current device. Cut records it as a separate editable take instead of baking it into the screen source.",
+      "requirement": "Available on a supported Windows or macOS build after the OS admits the selected camera and a real first frame arrives. Raw mode keeps Camera off.",
+      "api": "screen_record.doctor camera, screen_record.start {camera_id}"
     },
     {
       "id": "cut.record.camera_visible",
@@ -1649,9 +1689,9 @@
       "group": "record",
       "title": "Show or hide camera",
       "where": "Record workspace",
-      "description": "Not available in this release: with no live camera stream there is nothing to show or hide. The F10 binding stays in the keymap but has no effect.",
-      "requirement": "Returns when live camera capture returns.",
-      "api": "screen_record.studio_event {source:\"camera\", kind:\"visibility\"} — accepted by the API, no live stream to drive it"
+      "description": "The Studio preview shows whether the separate camera take will appear in the polished composition. Visibility changes remain editable, timed Studio metadata.",
+      "requirement": "Requires Camera to be enabled for this Auto-edit recording.",
+      "api": "screen_record.studio_event {source:\"camera\", kind:\"visibility\"}"
     },
     {
       "id": "cut.record.camera_position",
@@ -1659,9 +1699,9 @@
       "group": "record",
       "title": "Camera position",
       "where": "Record workspace",
-      "description": "Not available in this release. The F11 and Shift+F11 bindings stay in the keymap but have no effect while there is no camera stream.",
-      "requirement": "Returns when live camera capture returns.",
-      "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", x, y} — accepted by the API, no live stream to drive it"
+      "description": "Choose the corner for the camera overlay before recording; live scene and Studio changes remain replayable rather than baked into the screen pixels.",
+      "requirement": "Requires Camera to be enabled.",
+      "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", x, y}"
     },
     {
       "id": "cut.record.camera_size",
@@ -1669,8 +1709,8 @@
       "group": "record",
       "title": "Camera size",
       "where": "Record workspace",
-      "description": "Not available in this release. Camera size is still a timed Studio event in the API, but live capture produces no camera stream to size.",
-      "requirement": "Returns when live camera capture returns.",
+      "description": "Adjust the camera overlay size while keeping the captured camera video as its own editable source.",
+      "requirement": "Requires Camera to be enabled.",
       "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", size}"
     },
     {
@@ -1679,8 +1719,8 @@
       "group": "record",
       "title": "Camera shape",
       "where": "Record workspace",
-      "description": "Not available in this release. Circle and rounded-rectangle shaping remains in the compositor for a camera file supplied by an agent, but the recorder captures no camera of its own.",
-      "requirement": "Returns when live camera capture returns.",
+      "description": "Choose Circle or Rounded rectangle for the camera overlay. Shape is composition metadata and does not crop the original camera take destructively.",
+      "requirement": "Requires Camera to be enabled.",
       "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", shape}"
     },
     {
@@ -1699,9 +1739,9 @@
       "group": "record",
       "title": "Raw streams",
       "where": "Record workspace",
-      "description": "After a capture, Cut reports the raw screen, microphone, system audio, and Studio event artifacts so you can diagnose or reuse what was recorded. The camera chip stays dark: live camera capture is not available in this release. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen and microphone capture continue and the missing stream is reported.",
+      "description": "After a capture, Cut reports the raw screen, optional camera, microphone, system audio, and Studio metadata so you can diagnose or reuse exactly what was finalized. The camera remains a separate editable take. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen, camera, and microphone capture can still report their own terminal outcomes.",
       "requirement": "Requires a completed capture. A new Windows build may need one audio-capture approval from security software.",
-      "api": "screen_record.stop raw_streams"
+      "api": "screen_record.stop raw_streams, camera_artifact"
     },
     {
       "id": "cut.record.hotkeys",
@@ -1709,7 +1749,7 @@
       "group": "record",
       "title": "Recording hotkeys",
       "where": "Record workspace",
-      "description": "F9 starts or stops recording and F12 drops a marker — the two the Studio shows. The camera bindings (F10, F11, Shift+F11) remain in the keymap but do nothing while live camera capture is unavailable.",
+      "description": "F9 starts or stops recording and F12 drops a marker. Camera visibility and placement shortcuts operate only when this Auto-edit take has an admitted camera.",
       "requirement": "Global F9 is available in the desktop app; focused-window fallback works while Cut has focus.",
       "api": "screen_record.start, screen_record.stop, screen_record.studio_event"
     },
@@ -1729,8 +1769,8 @@
       "group": "record",
       "title": "Auto-edit recording",
       "where": "Record workspace",
-      "description": "Auto-edit stops the capture, builds a recorder plan, replays Studio camera/background metadata, polishes the clip, and places it on the timeline.",
-      "requirement": "Requires FFmpeg and a finalized capture. Background and marker metadata is replayed from the capture's Studio events; there is no camera layer in this release.",
+      "description": "Auto-edit stops the capture, builds a recorder plan, replays Studio camera/background metadata, polishes the clip, and places it on the timeline. A finalized native camera remains a separate editable take in that plan.",
+      "requirement": "Requires FFmpeg and a finalized capture. Camera composition requires an integrity-checked camera artifact or an explicit project-local camera file.",
       "api": "screen_record.stop {autoedit:true}, screen_record.autoedit, screen_record.polish"
     },
     {
@@ -1739,7 +1779,7 @@
       "group": "record",
       "title": "Studio event API",
       "where": "Debug API",
-      "description": "Agents and the UI append timed Studio events for background style and recording markers. The camera event sources are still accepted by the API for a camera file supplied by an agent, but live capture emits no camera stream in this release.",
+      "description": "Agents and the UI append timed Studio events for background style, recording markers, and camera visibility or placement. Camera events replay against the finalized separate camera take when one exists.",
       "requirement": "Requires an open project and a valid capture_id returned by screen_record.start.",
       "api": "screen_record.studio_event"
     },
@@ -1779,9 +1819,9 @@
       "group": "workflow",
       "title": "Captions and transcript",
       "where": "Transcript tab and Inspector",
-      "description": "Generate or import captions, style them, and translate caption or transcript text.",
-      "requirement": "Requires speech-to-text setup for generated transcript content.",
-      "api": "media.transcribe, captions.import, transcript.timeline"
+      "description": "Generate or import captions, style them, translate caption or transcript text, then use Inspector Find & Replace to preview exact track/range changes before one Undoable Replace.",
+      "requirement": "Requires speech-to-text setup for generated transcript content; timing refresh is offered only with exact transcript-word evidence.",
+      "api": "media.transcribe, captions.import, captions.bulk_preview, captions.bulk_apply, transcript.timeline"
     },
     {
       "id": "cut.workflow.edit_for_clarity",
@@ -1849,8 +1889,8 @@
       "group": "workflow",
       "title": "Record, polish, export, and retry",
       "where": "Record workspace and status bar",
-      "description": "Open Record, confirm FFmpeg/readiness, choose source, frame rate, microphone choice, audio and background, test the resolved microphone when needed, then start capture. A lost microphone is reported honestly after the take; a valid prefix is retained when one was finalized. Windows system audio uses endpoint-independent process loopback on supported builds; live camera capture is unavailable in this release. A qualifying failed default-output Recording Studio export shows one Retry action after Cut rechecks the project revision, capture and edit-plan hashes, and output lease.",
-      "requirement": "Requires desktop capture permission and FFmpeg; system audio is optional. Custom FPS must be within 1–240. A missing selected microphone must be replaced or switched to System Default before mic-enabled Start. Retry is available only for an eligible failed Recording Studio export: cancelled, successful, changed-input, Save As, legacy, and already-retried jobs remain ineligible.",
+      "description": "Open Record, confirm FFmpeg/readiness, choose source, frame rate, microphone, optional camera, audio and background, test the resolved microphone when needed, then start capture. Lost microphone or camera media is reported honestly; only finalized takes are retained. A qualifying failed default-output Recording Studio export shows one Retry action after Cut rechecks the project revision, capture and edit-plan hashes, and output lease.",
+      "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Camera capture is Windows/macOS Auto-edit-only and requires explicit OS permission plus a real first frame. Retry is available only for an eligible failed Recording Studio export.",
       "api": "screen_record.doctor, screen_record.microphone_selection, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export, jobs.retry, jobs.status"
     },
     {

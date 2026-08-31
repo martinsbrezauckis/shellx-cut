@@ -764,15 +764,6 @@ fn extract_json_array(s: &str) -> Option<Vec<serde_json::Value>> {
 // Local path: Opus-MT model id + runner JSON.
 // ---------------------------------------------------------------------------
 
-/// The default local model id for a language pair. Opus-MT is per-pair; the
-/// runner falls back to the `tc-big` variant when the small model 404s, and
-/// `model` (e.g. a MADLAD-400 id) overrides this entirely. (Canonical Rust-side
-/// reference for the id scheme the python runner mirrors; tested.)
-#[allow(dead_code)]
-pub fn opus_mt_model_id(src: &str, tgt: &str) -> String {
-    format!("Helsinki-NLP/opus-mt-{src}-{tgt}")
-}
-
 /// The local sidecar's JSON output: the per-segment translations + provenance.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RunnerResult {
@@ -1046,12 +1037,6 @@ mod tests {
         assert_eq!(mapped[1].0, [1000, 2000]);
         // count mismatch errors
         assert!(map_translations_to_cues(&ranges, &tr[..1]).is_err());
-    }
-
-    #[test]
-    fn opus_mt_id_shape() {
-        assert_eq!(opus_mt_model_id("en", "es"), "Helsinki-NLP/opus-mt-en-es");
-        assert_eq!(opus_mt_model_id("en", "lv"), "Helsinki-NLP/opus-mt-en-lv");
     }
 
     #[test]

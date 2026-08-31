@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cadence::CaptureCadence;
 use crate::camera::CameraArtifact;
+use crate::capture_quality::CaptureQualityResolution;
+use crate::capture_source::CaptureSourceFacts;
 use crate::event::EventTrack;
 use crate::plan::EditPlan;
 
@@ -51,6 +53,14 @@ pub struct RecordingProject {
     /// probe facts without changing the legacy `Settings.fps` render contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_cadence: Option<CaptureCadence>,
+    /// A simple output-quality request and facts from the same final-source
+    /// verifier. Absent unless a backend both admitted and fulfilled it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_quality: Option<CaptureQualityResolution>,
+    /// Verified final-source dimensions and codec, held private until a future
+    /// quality choice can truthfully resolve or refuse on every advertised host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_source_facts: Option<CaptureSourceFacts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<String>,
     pub events: EventTrack,
@@ -68,6 +78,8 @@ impl RecordingProject {
             webcam_video: None,
             camera_artifact: None,
             capture_cadence: None,
+            capture_quality: None,
+            capture_source_facts: None,
             audio: None,
             events,
             plan: None,

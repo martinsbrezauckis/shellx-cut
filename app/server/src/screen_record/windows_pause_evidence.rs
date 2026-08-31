@@ -2,17 +2,23 @@
 use super::pause_projection::SealedLegacyProjectionRun;
 use super::run_seal_coordinator::{SealedRunEvidence, SessionTimeOrigin};
 use super::windows_pause_adapter::{WindowsPauseAdapterError, WindowsPauseEvidenceFactory};
-#[cfg(windows)]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_imports))]
 pub(crate) use super::windows_pause_evidence_artifacts::LocalWindowsPauseArtifactVerifier;
 use super::windows_pause_evidence_artifacts::WindowsPauseArtifactVerifier;
 use record_capture::windows_pause_pilot::{
-    WindowsPausePilotAcceptedCapture, WindowsPausePilotStarted, WindowsSealedScreenRun,
+    WindowsPausePilotAcceptedCapture, WindowsPausePilotStarted, WindowsSealedAudioRun,
+    WindowsSealedScreenRun,
 };
-use record_core::{CursorCorrelation, EventTrack, Settings};
-use record_recovery::{
-    CheckpointSequenceRange, RecordingStream, SealedRun, StreamFragment, StreamFragmentFacts,
-};
+use record_core::{CursorCorrelation, EventTrack};
+use record_recovery::{CheckpointSequenceRange, RecordingStream, SealedRun};
 use std::time::Instant;
+
+mod fragments;
+mod input;
+mod validation;
+use fragments::fragments;
+pub(crate) use input::{RecordingAudioDraft, RecordingInputDraft};
+use validation::{raw_span, validate_accepted, validate_audio, validate_run};
 #[derive(Clone)]
 struct RawStartCalibration {
     server_generation: Option<u64>,
@@ -28,6 +34,7 @@ pub(crate) struct CalibratedWindowsPauseEvidenceFactory<V> {
     staged: Option<RawStartCalibration>,
     next_sequence: u64,
     next_logical_start_ms: u64,
+    exact_monitor_id: Option<String>,
 }
 
 impl<V> CalibratedWindowsPauseEvidenceFactory<V> {
@@ -39,7 +46,16 @@ impl<V> CalibratedWindowsPauseEvidenceFactory<V> {
             staged: None,
             next_sequence: 0,
             next_logical_start_ms: 0,
+            exact_monitor_id: None,
         }
+    }
+
+    /// Production supplies the pre-admitted opaque monitor identity. Tests
+    /// without that owner intentionally cannot fabricate sidecar evidence.
+    pub(crate) fn for_exact_monitor(artifacts: V, exact_monitor_id: String) -> Self {
+        let mut factory = Self::new(artifacts);
+        factory.exact_monitor_id = Some(exact_monitor_id);
+        factory
     }
 }
 
@@ -87,7 +103,7 @@ impl<V: WindowsPauseArtifactVerifier> WindowsPauseEvidenceFactory
             .as_ref()
             .and_then(|staged| staged.server_generation)
             .unwrap_or(0);
-        self.build(generation, native, post_close_observed_at, true)
+        self.build(generation, native, &[], post_close_observed_at, true)
             .map(|_| ())
     }
 
@@ -111,7 +127,17 @@ impl<V: WindowsPauseArtifactVerifier> WindowsPauseEvidenceFactory
         native: &WindowsSealedScreenRun,
         post_close_observed_at: Instant,
     ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
-        self.build(generation, native, post_close_observed_at, false)
+        self.build(generation, native, &[], post_close_observed_at, false)
+    }
+
+    fn verify_and_build_with_audio(
+        &mut self,
+        generation: u64,
+        native: &WindowsSealedScreenRun,
+        audio: &[WindowsSealedAudioRun],
+        post_close_observed_at: Instant,
+    ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
+        self.build(generation, native, audio, post_close_observed_at, false)
     }
 }
 
@@ -120,6 +146,7 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
         &mut self,
         generation: u64,
         native: &WindowsSealedScreenRun,
+        native_audio: &[WindowsSealedAudioRun],
         post_close_observed_at: Instant,
         discarded: bool,
     ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
@@ -137,6 +164,7 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
         {
             return Err(WindowsPauseAdapterError::CalibrationRejected);
         }
+        let audio = validate_audio(native, native_audio, &self.artifacts)?;
         validate_run(native, &self.artifacts)?;
         let observed_start_ms = if self.next_sequence == 0 {
             if !origin.matches(staged.monotonic_at, staged.unix_ms) {
@@ -163,7 +191,7 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
             .checked_add(logical_span)
             .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
         let sequence = self.next_sequence;
-        let fragments = fragments(native, logical_span)?;
+        let fragments = fragments(native, logical_span, &audio)?;
         let events = EventTrack {
             duration_ms: logical_span,
             screen_w: native.accepted.settings.width,
@@ -175,7 +203,10 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
             keys: Vec::new(),
             cursor_correlation: CursorCorrelation::default(),
         };
-        let evidence = SealedRunEvidence::new(
+        let mut sealed_streams = vec![RecordingStream::ScreenVideo];
+        sealed_streams.extend(audio.iter().map(RecordingAudioDraft::stream));
+        sealed_streams.sort_unstable();
+        let mut evidence = SealedRunEvidence::new(
             generation,
             SealedRun {
                 sequence,
@@ -196,8 +227,25 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
                 native.accepted.settings,
                 events,
             ),
-            vec![RecordingStream::ScreenVideo],
+            sealed_streams,
         );
+        if let Some(display_id) = self.exact_monitor_id.as_ref() {
+            evidence = evidence.with_recording_input(RecordingInputDraft::from_native(
+                display_id.clone(),
+                native.accepted.range.origin_x,
+                native.accepted.range.origin_y,
+                native.accepted.range.width,
+                native.accepted.range.height,
+                native.accepted.settings.width,
+                native.accepted.settings.height,
+                native.accepted.settings.fps as u32,
+                staged.unix_ms,
+                staged.raw_start_ms,
+                native.observed_start_ms,
+                native.observed_end_ms,
+                audio,
+            ));
+        }
         self.staged = None;
         self.next_sequence = self
             .next_sequence
@@ -206,142 +254,6 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
         self.next_logical_start_ms = logical_end_ms;
         Ok(evidence)
     }
-}
-
-fn validate_accepted(
-    accepted: &WindowsPausePilotAcceptedCapture,
-) -> Result<(), WindowsPauseAdapterError> {
-    let Settings {
-        width,
-        height,
-        fps,
-        audio_rate,
-    } = accepted.settings;
-    if width == 0
-        || height == 0
-        || audio_rate == 0
-        || accepted.range.width != width
-        || accepted.range.height != height
-        || !fps.is_finite()
-        || !(1.0..=240.0).contains(&fps)
-        || fps.fract() != 0.0
-    {
-        return Err(WindowsPauseAdapterError::EvidenceRejected);
-    }
-    Ok(())
-}
-
-fn validate_run<V: WindowsPauseArtifactVerifier>(
-    native: &WindowsSealedScreenRun,
-    artifacts: &V,
-) -> Result<(), WindowsPauseAdapterError> {
-    validate_accepted(&native.accepted)?;
-    let first = native
-        .checkpoints
-        .first()
-        .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-    let last = native
-        .checkpoints
-        .last()
-        .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-    if raw_span(native)? == 0
-        || first.start_ms != native.observed_start_ms
-        || last.end_ms != native.observed_end_ms
-        || first.physical_generation != native.range.first_physical_generation
-        || last.physical_generation != native.range.last_physical_generation
-        || first.checkpoint.sequence != native.range.first_checkpoint_sequence
-        || last.checkpoint.sequence != native.range.last_checkpoint_sequence
-    {
-        return Err(WindowsPauseAdapterError::EvidenceRejected);
-    }
-    for (index, checkpoint) in native.checkpoints.iter().enumerate() {
-        let expected_physical = native
-            .range
-            .first_physical_generation
-            .checked_add(index as u64)
-            .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-        let expected_sequence = native
-            .range
-            .first_checkpoint_sequence
-            .checked_add(index as u64)
-            .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-        let media = checkpoint
-            .checkpoint
-            .media
-            .as_ref()
-            .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-        if checkpoint.physical_generation != expected_physical
-            || checkpoint.checkpoint.sequence != expected_sequence
-            || checkpoint.start_ms >= checkpoint.end_ms
-            || checkpoint.checkpoint.facts.start_ms != checkpoint.start_ms
-            || checkpoint.checkpoint.facts.end_ms != checkpoint.end_ms
-            || checkpoint.checkpoint.facts.event_offset_ms != checkpoint.start_ms
-            || checkpoint.checkpoint.facts.audio_offset_ms.is_some()
-            || media.has_audio
-            || media.duration_ms == 0
-            || media.duration_ms > checkpoint.end_ms - checkpoint.start_ms
-            || media.decoded_video_frames == 0
-        {
-            return Err(WindowsPauseAdapterError::EvidenceRejected);
-        }
-        if index > 0 && checkpoint.start_ms < native.checkpoints[index - 1].end_ms {
-            return Err(WindowsPauseAdapterError::EvidenceRejected);
-        }
-        artifacts.verify(&checkpoint.checkpoint)?;
-    }
-    Ok(())
-}
-
-fn raw_span(native: &WindowsSealedScreenRun) -> Result<u64, WindowsPauseAdapterError> {
-    native
-        .observed_end_ms
-        .checked_sub(native.observed_start_ms)
-        .ok_or(WindowsPauseAdapterError::EvidenceRejected)
-}
-
-fn fragments(
-    native: &WindowsSealedScreenRun,
-    logical_span: u64,
-) -> Result<Vec<StreamFragment>, WindowsPauseAdapterError> {
-    native
-        .checkpoints
-        .iter()
-        .enumerate()
-        .map(|(index, checkpoint)| {
-            let start_offset_ms = checkpoint
-                .start_ms
-                .checked_sub(native.observed_start_ms)
-                .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-            let end_offset_ms = checkpoint
-                .end_ms
-                .checked_sub(native.observed_start_ms)
-                .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-            let media = checkpoint
-                .checkpoint
-                .media
-                .as_ref()
-                .ok_or(WindowsPauseAdapterError::EvidenceRejected)?;
-            if end_offset_ms > logical_span {
-                return Err(WindowsPauseAdapterError::EvidenceRejected);
-            }
-            Ok(StreamFragment {
-                stream: RecordingStream::ScreenVideo,
-                checkpoint_sequence: Some(checkpoint.checkpoint.sequence),
-                stream_sequence: index as u64,
-                artifact: checkpoint.checkpoint.file.clone(),
-                bytes: checkpoint.checkpoint.bytes,
-                sha256: checkpoint.checkpoint.sha256.clone(),
-                facts: StreamFragmentFacts {
-                    start_offset_ms,
-                    end_offset_ms,
-                    media_duration_ms: media.duration_ms,
-                    decoded_video_frames: Some(media.decoded_video_frames),
-                    avg_frame_rate: media.avg_frame_rate,
-                    r_frame_rate: media.r_frame_rate,
-                },
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

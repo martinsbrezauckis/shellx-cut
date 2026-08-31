@@ -134,12 +134,21 @@ pub(crate) fn session_input_mode() -> SessionInputMode {
 pub(crate) fn session_input_mode_from(
     session_type: Option<&str>,
     wayland_display: bool,
-    display: bool,
+    _display: bool,
     input_override: Option<&str>,
     capture_override: Option<&str>,
 ) -> SessionInputMode {
-    let wayland = session_type.is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
-        || (wayland_display && !display);
+    // A real GNOME Wayland desktop exports both WAYLAND_DISPLAY and DISPLAY for
+    // Xwayland clients.  Controller-launched applications do not necessarily
+    // inherit XDG_SESSION_TYPE, so treating `DISPLAY` as proof of an X11
+    // *session* incorrectly selects the GStreamer fallback and loses the
+    // PipeWire metadata path.  Prefer an explicit session type when present;
+    // otherwise the reachable Wayland socket is the reliable fallback.
+    let wayland = match session_type {
+        Some(value) if value.eq_ignore_ascii_case("wayland") => true,
+        Some(value) if value.eq_ignore_ascii_case("x11") => false,
+        _ => wayland_display,
+    };
     let use_evdev = match input_override {
         Some("evdev") => true,
         Some("rdevin") => false,

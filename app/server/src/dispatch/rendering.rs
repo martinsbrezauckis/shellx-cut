@@ -3,9 +3,11 @@
 use super::*;
 
 mod bundle_package;
+mod comparison;
 mod owned;
 mod process;
 use bundle_package::{assess_publish_package, optional_artifact_hash, publish_package_manifest};
+pub(crate) use comparison::render_compare;
 
 /// Snapshot project + EDL + log head for render calls (no lock held while
 /// ffmpeg runs).

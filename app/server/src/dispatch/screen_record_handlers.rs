@@ -46,7 +46,7 @@ use stop_files::{
 ///      captured). Independent of (and composable with, though the UI doesn't) the
 ///      `autoedit` chain.
 ///
-/// Returns: `{capture_id, project, source, audio, events, plan?, clicks,
+/// Returns: `{capture_id, project, source, audio, events, scene_receipt?, plan?, clicks,
 /// cursor_samples, cursor_correlation, raw_path?, raw_has_mic, raw_has_system}` — `clicks`/`cursor_samples`
 /// are the lengths of the events arrays; the `raw_*` fields are populated only when
 /// `mux_raw:true`. Requires an open project. Errors: NO_PROJECT; NOT_FOUND if the
@@ -232,6 +232,25 @@ pub(super) async fn screen_record_stop(
         .cloned()
         .and_then(|value| serde_json::from_value::<record_core::CaptureCadence>(value).ok())
         .filter(|cadence| cadence.schema == record_core::CAPTURE_CADENCE_SCHEMA);
+    // Output quality is absent for unsupported/legacy backends. Recheck its
+    // dimensions and H.264 container facts against the persisted final-source
+    // verifier record before returning them to a client.
+    let source_facts = proj
+        .get("capture_source_facts")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<record_core::CaptureSourceFacts>(value).ok())
+        .filter(|facts| facts.schema == record_core::CAPTURE_SOURCE_FACTS_SCHEMA);
+    let quality = proj
+        .get("capture_quality")
+        .cloned()
+        .and_then(|value| {
+            serde_json::from_value::<record_core::CaptureQualityResolution>(value).ok()
+        })
+        .filter(|quality| {
+            source_facts
+                .as_ref()
+                .is_some_and(|facts| quality.matches_verified_source(facts))
+        });
     let source_video_raw = proj
         .get("source_video")
         .and_then(|v| v.as_str())
@@ -331,6 +350,12 @@ pub(super) async fn screen_record_stop(
         .map(|path| path.display().to_string());
     let system_timing = artifacts.system_timing.clone();
     let studio_events = artifacts.studio_events.clone();
+    // Public scenes are optional for legacy captures. When present, do not
+    // surface or forward the receipt until its projection and both committed
+    // source/project byte hashes have been revalidated after reopen.
+    let scene_receipt =
+        crate::screen_record::completed_receipt_for_stop(&dir, &a.capture_id, &out_dir)?
+            .map(|receipt| receipt.path.display().to_string());
     let microphone = crate::screen_record::microphone::capture_outcome_projection(&out_dir);
     let raw_streams = json!({
         "screen": source_video.clone(),
@@ -379,6 +404,7 @@ pub(super) async fn screen_record_stop(
             &proj,
             webcam.as_deref(),
             studio_events.as_deref(),
+            scene_receipt.as_deref(),
         )?;
         let ae = Box::pin(dispatch(
             state,
@@ -400,10 +426,12 @@ pub(super) async fn screen_record_stop(
         "webcam": webcam,
         "camera_artifact": camera_artifact,
         "cadence": cadence,
+        "quality": quality,
         "audio": audio,
         "microphone": microphone,
         "events": events_path,
         "studio_events": studio_events,
+        "scene_receipt": scene_receipt,
         "raw_streams": raw_streams,
         "plan": plan,
         "clicks": clicks,

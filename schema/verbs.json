@@ -1,6 +1,12 @@
 {
   "$comment": "ShellX Cut verb registry — the public contract. Single source of truth: the server loads this file, MCP tools are generated from it (dots→underscores), the typed UI client mirrors it, and the coverage gate asserts REST and MCP both expose 100% of these verbs. Envelope: {ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}. Optional mutation_controls are merged into every live verb input schema: op-emitting calls persist request identity, enforce expected_revision atomically, and replay completed lost-response retries. Warnings carry non-fatal guardrail findings in-band rather than only in logs. File-writing verbs such as render.final{path} and export.*{path} fence output paths through canonicalization, traversal and symlink rejection, allowed roots, and suffix allowlists. REST path = POST /api/verb/{name}.",
   "schema": "shellx-cut/verbs/1",
+  "release_truth": {
+    "schema": "shellx-cut/release-truth@1",
+    "version": "0.6.113",
+    "status": "candidate",
+    "published_version": "0.6.112"
+  },
   "mutation_controls": {
     "request_id": {
       "type": "string",
@@ -703,6 +709,46 @@
         "ui_exposure": "human",
         "agent_chat": "inspect",
         "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.cache_rebuild",
+      "domain": "project",
+      "description": "Queue one bounded, cancellable deterministic rebuild/backfill of the open project's missing or stale editing proxies and base filmstrips. Before a worker may publish an output, Cut verifies the source still matches the imported content hash and writes a durable ownership-ledger reservation. Cancellation or a server restart leaves only that pending reservation, so a later identical request resumes it without adopting an unowned file. Existing legacy/unowned outputs, source changes, unsupported media, and more than 64 selected assets are reported or refused rather than guessed. This verb never walks arbitrary cache paths, relinks a source, or removes source, export, capture, receipt, or foreign files.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^a[0-9]+$"
+            },
+            "description": "Optional bounded registered asset ids. Omit only when the open project has at most 64 assets."
+          }
+        }
+      },
+      "result": "{schema:'shellx-cut/cache-rebuild/1',status:'queued'|'already_queued'|'not_needed',job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets}}. Poll jobs.status; jobs.cancel preserves any unfinished ledger reservation for a later rebuild request. No source or cache filesystem paths are returned.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_rebuild",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
         "facets": []
       }
     },
@@ -1427,6 +1473,94 @@
         "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.group_preview",
+      "domain": "project",
+      "description": "Inspect one existing adjacent compound action before rejecting it. The supplied op must carry a durable group_id and belong to an adjacent multi-operation timeline action in the active sequence. The read returns the exact ordered operation boundary, current project revision, and an opaque preview_hash. A group remains inspectable after newer edits, but reject is ready only when it is the live undo-history tip; this verb never changes the project or replays transactions.",
+      "args": {
+        "type": "object",
+        "required": [
+          "op_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op_id": {
+            "type": "string",
+            "description": "Any operation id within the adjacent durable compound action to inspect."
+          }
+        }
+      },
+      "result": "{schema:'shellx-cut/compound-action-preview/1',project_revision,preview_hash,group:{group_id,first_op_id,last_op_id,op_ids,operation_count,sequence_id},reject:{status:'ready'|'not_current_tip',mode?:'tip_only',current_tip_op_id?,message}}. The preview is read-only; only ready may be passed unchanged to project.group_reject.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_group_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.group_reject",
+      "domain": "project",
+      "description": "Reject exactly one currently live adjacent compound action after project.group_preview. Requires request_id, expected_revision, the exact first/last operation ids, and unchanged preview_hash. It is tip-only: Cut appends one normal replayable edit.restore record with the materialized prefix before the group. It never skips, reorders, or generically replays selected historical operations; newer timeline history, a changed boundary, a stale revision, or a changed preview refuses without appending.",
+      "args": {
+        "type": "object",
+        "required": [
+          "first_op_id",
+          "last_op_id",
+          "preview_hash"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "first_op_id": {
+            "type": "string",
+            "description": "Exact first_op_id returned by project.group_preview."
+          },
+          "last_op_id": {
+            "type": "string",
+            "description": "Exact last_op_id returned by project.group_preview."
+          },
+          "preview_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Exact opaque preview_hash returned by project.group_preview."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{schema:'shellx-cut/compound-action-reject/1',pre_revision,post_revision,group:{group_id,first_op_id,last_op_id,op_ids,operation_count,sequence_id},restored_op_id,restore_op_id,scope:{mode:'tip_only',append_only:true,replay:'materialized_prefix_before_group',generic_transaction_replay:false,undo}} plus one restore op id. An identical lost-response retry returns this original durable response; one project.undo restores the complete group.",
+      "behavior": {
+        "mutation_class": "navigation",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_group_reject",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "destructive",
         "facets": []
       }
     },
@@ -11451,6 +11585,125 @@
       }
     },
     {
+      "name": "captions.bulk_preview",
+      "domain": "captions",
+      "description": "Read-only Caption Find & Replace preview for one caption track. Finds Contains or Whole word matches with an explicit case option, optionally narrowed to caption cues overlapping range_ms. Returns at most 100 exact cue rows with UTF-16 highlight ranges, total match count, the current cue id/range/text identity, an opaque preview_hash, and a truthful timing-refresh availability. The server privately pins every reviewed target up to its 5,000-cue fail-closed cap, so captions.bulk_apply can safely replace the full batch even when only the first 100 rows are displayed. The preview never changes caption text. A later captions.bulk_apply accepts only the server-issued hash, never caller-supplied cue targets.",
+      "args": {
+        "type": "object",
+        "required": [
+          "track",
+          "find",
+          "replace_with",
+          "match_mode"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Caption-kind track id from project.state (for example cap1)."
+          },
+          "find": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Caption text to find. Literal text only; it is never interpreted as a regular expression."
+          },
+          "replace_with": {
+            "type": "string",
+            "description": "Literal replacement text. An empty string removes matched text."
+          },
+          "match_mode": {
+            "type": "string",
+            "enum": [
+              "contains",
+              "whole_word"
+            ],
+            "description": "contains matches inside a word; whole_word matches complete Unicode word boundaries."
+          },
+          "case_sensitive": {
+            "type": "boolean",
+            "default": false,
+            "description": "False (default) matches case-insensitively."
+          },
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Optional absolute [start_ms, end_ms) timeline scope. A cue is included when it overlaps the range."
+          }
+        }
+      },
+      "result": "{project_revision, preview_hash, scope, match_count, affected_cue_count, rows[<=100]{cue_id,range_ms,text,replacement_text,match_ranges_utf16}, rows_limit, omitted_rows, can_apply, timing_refresh:{available,reason?}} — read-only",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_bulk_preview",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.bulk_apply",
+      "domain": "captions",
+      "description": "Materialize the current Caption Find & Replace preview as ONE atomic caption-track update. Requires the opaque preview_hash plus request_id and expected_revision. The server refuses a missing, consumed, superseded, restarted, stale, or changed preview, then revalidates the exact track, cue ids, ranges, and source text before it writes. One project.undo restores every replacement. Timing is preserved by default; refresh_timing is accepted only when captions.bulk_preview proved exact transcript word ranges for every changed cue.",
+      "args": {
+        "type": "object",
+        "required": [
+          "preview_hash"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque hash returned by the current captions.bulk_preview."
+          },
+          "refresh_timing": {
+            "type": "boolean",
+            "default": false,
+            "description": "Optional word-edge timing refresh. Refused unless the preview reports exact transcript evidence for every changed cue."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{pre_revision, post_revision, preview_hash, track, match_count, cues_replaced, timing_preserved, timing_refreshed, undo}; one lowered edit._set_timeline op",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_bulk_apply",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
       "name": "render.preview",
       "domain": "render",
       "description": "Fast low-res render of a window starting at at_ms (default 5000ms) for quick agent/human review, OR (draft:true) the incremental whole-timeline draft preview: re-renders only the base-track segments whose inputs changed since the last preview, reuses cached segment files for the rest, and concat-stitches them into one preview mp4 — edit one clip in a 10-clip timeline and only the touched segment re-renders (seconds vs a full ~40s draft render). DERIVED state (cache under proxies/preview-cache/), never an op, never a receipt input — receipts stay render.final.",
@@ -11545,6 +11798,57 @@
         "replayability": "not_applicable",
         "async_job": "none",
         "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "render.compare",
+      "domain": "render",
+      "description": "Read-only Preview comparison: render the exact composed durable-head frame and the exact timeline state immediately before the latest timeline-mutating operation at one playhead position. Trailing metadata remains part of the current head but never becomes a deceptive identical Before frame. The caller supplies the observed current revision; stale heads, changed sequence/geometry/cadence, and missing prior visible composition refuse instead of guessing or moving the project's undo state. The two JPEGs are base64 in one bounded response; no project operation, undo, export, or persisted comparison file is created.",
+      "args": {
+        "type": "object",
+        "required": [
+          "at_ms",
+          "revision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Exact timeline frame to compare in both revisions."
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^op_[0-9]{6,}$",
+            "description": "The durable project revision observed by the Preview before it opens comparison. A changed head refuses so before/current frames cannot be mixed."
+          },
+          "h": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 1080,
+            "default": 540,
+            "description": "Height of each exact comparison frame in px. Capped at 1080 because one request renders a bounded pair."
+          }
+        }
+      },
+      "result": "{schema:'shellx-cut/preview-comparison/1', at_ms, current_revision, prior_revision, compared_operation:{id,verb}, before:{revision,mime,width,height,base64}, current:{revision,mime,width,height,base64}}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "render_compare",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -14415,7 +14719,7 @@
           }
         }
       },
-      "result": "{cards, ready, start_allowed, monitors:[{id?,index,name,width,height,primary}], windows:[{id,title,app?}], microphones:[{token,label}], microphone_selection:{mode:\"system_default\"|\"selected\",label?,status}, mic_warm?} — Windows/macOS window rows carry an opaque live native `windows[].id`; the UI passes the selected id unchanged and capture revalidates it, while title and app remain display-only. Windows/macOS monitor rows include an opaque versioned native `id` only when an exact native identity is available; no surrogate is generated. Pass that `id` unchanged as `screen_record.start.monitor_id` to require a fresh exact revalidation; display name, ordinal, primary status, and dimensions never replace it. The legacy display picker continues to use only `index` when `id` is absent; Linux returns no in-app monitor rows. microphones are generic category-and-ordinal labels and expiring opaque tokens only. microphone_selection status is ready, unavailable, system_default_only, or recovered_corruption. A saved selected source that is absent remains unavailable and blocks mic-enabled start; it never falls back. mic_warm is present only when requested and tests the resolved source. No native endpoint ID/UID, vendor/friendly name, serial, backend name, auth, monitor device path, or filesystem path is returned.",
+      "result": "{cards, ready, start_allowed, monitors:[{id?,index,name,width,height,primary}], windows:[{id,title,app?}], camera:{supported,devices:[{id,label,state,detail}],detail}, scenes:{supported,catalog_revision,layouts,timers,timer_actions,camera_required_layouts,recovery,detail}, pause:{supported,layouts?,streams?,requires?,incompatible,recovery?,detail}, quality:{supported,output_sizes,profiles,detail}, microphones:[{token,label}], microphone_selection:{mode:\"system_default\"|\"selected\",label?,status}, mic_warm?} — scenes is passive/path-free and opens no device; Presenter PiP readiness is conditional on an explicitly selected camera. pause is a passive capability: macOS may advertise the bounded exact-display/integer-FPS screen plus optional mic/system-audio owner and its current incompatibility reasons; it never opens a device and Linux/Windows advertise supported:false. camera enumeration is passive and never opens a device or permission prompt; ids are opaque and labels are display-only. A selected camera is used only by the explicit screen_record.start{camera_id} action. `quality.supported` is true only when this compiled backend owns and final-verifies simple Source/1080p/720p plus Standard/High output requests; its lists are empty otherwise and callers must omit `screen_record.start.quality`. Windows/macOS window rows carry an opaque live native `windows[].id`; the UI passes the selected id unchanged and capture revalidates it, while title and app remain display-only. Windows/macOS monitor rows include an opaque versioned native `id` only when an exact native identity is available; no surrogate is generated. Pass that `id` unchanged as `screen_record.start.monitor_id` to require a fresh exact revalidation; display name, ordinal, primary status, and dimensions never replace it. The legacy display picker continues to use only `index` when `id` is absent; Linux returns no in-app monitor rows. microphones are generic category-and-ordinal labels and expiring opaque tokens only. microphone_selection status is ready, unavailable, system_default_only, or recovered_corruption. A saved selected source that is absent remains unavailable and blocks mic-enabled start; it never falls back. mic_warm is present only when requested and tests the resolved source. No native endpoint ID/UID, vendor/friendly name, serial, backend name, auth, monitor device path, or filesystem path is returned.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -14518,7 +14822,7 @@
     {
       "name": "screen_record.start",
       "domain": "screen_record",
-      "description": "Start one LIVE screen capture in the background (in-process recorder). OPEN-ENDED: when `duration_ms` is OMITTED the capture runs UNTIL screen_record.stop is called (no fixed window — 'record until I stop'); when `duration_ms` IS given it is an optional UPPER BOUND (whichever fires first — the deadline or stop — ends the capture). A second active capture returns conflict until the first capture and its audio worker finish. Required screen_record.doctor cards are checked before any worker starts; unavailable platform dependencies return not_found instead of an asynchronous failed recording. On Windows, the action preflights its exact compact WGC checkpoint output before any capture marker or worker: when it would exceed 260 UTF-16 code units including its terminator, it returns invalid_args synchronously with an instruction to use a shorter project path. On Linux, the action-specific preflight allows only the exact prompt-deferred XDG ScreenCast `screen_capture:unknown` card to reach the user-selected source picker; it never changes Doctor `ready`, and every missing, degraded, or other unknown required card still returns not_found. Before it reserves a new capture it scans prior project-local checkpoint manifests: only a dead owner with a contiguous independently playable finalized prefix is recovered, while live/ambiguous owners are deferred and corrupt journals fail closed. The capture runs on a background thread that, when it ends, writes project.json (a RecordingProject {settings, source_video, audio?, events}) + the source mp4 (+ a mic wav when `audio`, + system.wav when `system_audio`) under <project>/cache/screen_record/<capture_id>/. On Windows, system.wav starts at the first real WASAPI packet and a sibling system-audio.json sidecar {schema:'shellx-cut/system-audio-timing/1', first_packet_offset_ms} records its offset from capture start (null means no packet); older/no-sidecar captures retain zero-offset placement. An external stop flag is registered under capture_id so screen_record.stop can end the recording promptly. A local <dir>/.capture.json recovery marker {pid, duration_ms, open_ended, fps, audio, keys} is atomically published so screen_record.stop still recovers a completed capture even across a cutd restart (the in-memory stop flag is lost on restart, but a capture that finalized on its own bound is still read from the file). Marker metadata never selects an output path: stop always derives the exact local <capture_id>/project.json. cutd's OWN environment (WAYLAND_DISPLAY / XDG_RUNTIME_DIR / DBUS) reaches the recorder's ScreenCast portal. `window`, when set on Windows/macOS, must be the opaque identity from the latest doctor enumeration and is revalidated exactly; titles are display-only and a vanished target fails explicitly. `monitor_id`, when set, must be the opaque identity from a current doctor monitor row and is revalidated exactly before capture; it never falls back to `monitor`, name, primary state, or dimensions. `monitor` remains the compatible ordinal path when monitor_id is omitted. Capture state is filesystem-based (no AppState change). Requires an open project.",
+      "description": "Start one LIVE screen capture in the background (in-process recorder). OPEN-ENDED: when `duration_ms` is OMITTED the capture runs UNTIL screen_record.stop is called (no fixed window — 'record until I stop'); when `duration_ms` IS given it is an optional UPPER BOUND (whichever fires first — the deadline or stop — ends the capture). A simple `quality` request is accepted only when the current `screen_record.doctor.quality.supported` capability says so; that backend records final verified dimensions, cadence, and encoder facts in the stop result, while unsupported backends refuse rather than silently ignore it. A second active capture returns conflict until the first capture and its audio worker finish. Required screen_record.doctor cards are checked before any worker starts; unavailable platform dependencies return not_found instead of an asynchronous failed recording. On Windows, the action preflights its exact compact WGC checkpoint output before any capture marker or worker: when it would exceed 260 UTF-16 code units including its terminator, it returns invalid_args synchronously with an instruction to use a shorter project path. On Linux, the action-specific preflight allows only the exact prompt-deferred XDG ScreenCast `screen_capture:unknown` card to reach the user-selected source picker; it never changes Doctor `ready`, and every missing, degraded, or other unknown required card still returns not_found. Before it reserves a new capture it scans prior project-local checkpoint manifests: only a dead owner with a contiguous independently playable finalized prefix is recovered, while live/ambiguous owners are deferred and corrupt journals fail closed. The capture runs on a background thread that, when it ends, writes project.json (a RecordingProject {settings, source_video, audio?, events}) + the source mp4 (+ a mic wav when `audio`, + system.wav when `system_audio`) under <project>/cache/screen_record/<capture_id>/. On Windows, system.wav starts at the first real WASAPI packet and a sibling system-audio.json sidecar {schema:'shellx-cut/system-audio-timing/1', first_packet_offset_ms} records its offset from capture start (null means no packet); older/no-sidecar captures retain zero-offset placement. An external stop flag is registered under capture_id so screen_record.stop can end the recording promptly. A local <dir>/.capture.json recovery marker {pid, duration_ms, open_ended, fps, audio, keys} is atomically published so screen_record.stop still recovers a completed capture even across a cutd restart (the in-memory stop flag is lost on restart, but a capture that finalized on its own bound is still read from the file). Marker metadata never selects an output path: stop always derives the exact local <capture_id>/project.json. cutd's OWN environment (WAYLAND_DISPLAY / XDG_RUNTIME_DIR / DBUS) reaches the recorder's ScreenCast portal. `window`, when set on Windows/macOS, must be the opaque identity from the latest doctor enumeration and is revalidated exactly; titles are display-only and a vanished target fails explicitly. `monitor_id`, when set, must be the opaque identity from a current doctor monitor row and is revalidated exactly before capture; it never falls back to `monitor`, name, primary state, or dimensions. `monitor` remains the compatible ordinal path when monitor_id is omitted. Capture state is filesystem-based (no AppState change). Requires an open project.",
       "args": {
         "type": "object",
         "required": [],
@@ -14534,6 +14838,33 @@
             "minimum": 1,
             "maximum": 240,
             "description": "Capture frame rate (default 30)."
+          },
+          "quality": {
+            "type": "object",
+            "required": [
+              "output_size",
+              "profile"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "output_size": {
+                "type": "string",
+                "enum": [
+                  "source",
+                  "1080p",
+                  "720p"
+                ],
+                "description": "Simple final-output height policy. source preserves captured dimensions; 1080p and 720p downscale only, never upscale. Accepted only when screen_record.doctor.quality.supported is true."
+              },
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "standard",
+                  "high"
+                ],
+                "description": "Simple output-quality preset. Numeric codec controls are not part of this request."
+              }
+            }
           },
           "audio": {
             "type": "boolean",
@@ -14556,8 +14887,174 @@
             "type": "string",
             "description": "Opaque live native identity from the latest screen_record.doctor.windows[].id enumeration (Windows/macOS). It is revalidated exactly at capture start; title text never selects a target, and a malformed, closed, or replaced target fails explicitly. Takes precedence over `monitor`. Omit for the whole monitor/screen."
           },
+          "camera_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Opaque camera id copied unchanged from the current screen_record.doctor.camera.devices list. Supplying it is the explicit Use camera action: the native owner may request OS camera permission, waits for a real first frame, shares the screen CaptureClock and Stop boundary, then publishes a separately editable CameraArtifact. Omit it to record screen only. Windows and macOS only."
+          },
           "rationale": {
             "type": "string"
+          },
+          "scenes": {
+            "type": "object",
+            "required": [
+              "catalog_revision",
+              "initial_scene_id",
+              "presets",
+              "timer"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "catalog_revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "initial_scene_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "presets": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "name",
+                    "preset_revision",
+                    "layout"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "preset_revision": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "layout": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "screen"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "corner",
+                            "size_percent",
+                            "shape"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "const": "presenter_pip"
+                            },
+                            "corner": {
+                              "enum": [
+                                "top_right",
+                                "bottom_right"
+                              ]
+                            },
+                            "size_percent": {
+                              "type": "integer",
+                              "minimum": 15,
+                              "maximum": 35
+                            },
+                            "shape": {
+                              "enum": [
+                                "circle",
+                                "rounded_rect"
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              },
+              "timer": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "off"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "elapsed"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "duration_ms"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "countdown"
+                      },
+                      "duration_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "description": "Bounded RecordingSceneConfig@1: named Screen or Presenter PiP layouts and exactly one capture-wide off, elapsed, or countdown timer. Presenter PiP needs a selected admitted camera only when it is initial or activated live."
+          },
+          "pause": {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "const": "enabled",
+                "description": "Opt in to the bounded macOS pause-safe owner. It requires an exact current display and integer FPS, owns screen plus optional mic/system audio only, and rejects Scenes, camera, keys, window capture, and quality selection before capture reservation. Unavailable on Linux and Windows."
+              }
+            }
           },
           "system_audio": {
             "type": "boolean",
@@ -14565,11 +15062,11 @@
           },
           "studio": {
             "type": "object",
-            "description": "Optional initial Recording Studio metadata such as the chosen background. Live camera capture is not available in this release; camera overlay metadata is reserved for downstream composition with an existing camera file."
+            "description": "Optional initial Recording Studio metadata such as the chosen background. Timed camera visibility/transform changes are written through screen_record.studio_event so the raw camera take stays separately editable while polish can replay the chosen composition."
           }
         }
       },
-      "result": "{capture_id, out_dir, status:\"recording\", duration_ms, open_ended, cadence, studio_events, recovery_scan:{recovered:[capture_id], deferred:[detail], failed_closed:[detail]}, note} — capture_id names a dir under <project>/cache/screen_record/; duration_ms is null + open_ended true for an open-ended capture; cadence is CaptureCadence@1 {schema, requested:{num,den}, backend_requested:{num,den}, probed_media?}, where requested is the exact reduced decimal request and backend_requested is the current v1 nearest-integer 1..240 backend request; start has no measured media facts. studio_events points at the capture's timed composition metadata; recovery_scan reports only this pre-start pass, so query screen_record.recovery_status for durable per-capture receipts; the note flags the one-time XDG ScreenCast consent dialog on the first capture. no_project if no project is open; invalid_args if a Windows project path exceeds the WGC checkpoint limit; not_found if required recorder dependencies are unavailable; conflict if another capture still owns the recording devices.",
+      "result": "{capture_id, out_dir, status:\"recording\", duration_ms, open_ended, cadence, scenes:{enabled,saved:true,scene_id,preset_revision,catalog_revision,logical_media_time_ms:0,timer_started:false,timer,scene}|null, pause:{enabled}, studio_events, recovery_scan:{recovered:[capture_id], deferred:[detail], failed_closed:[detail]}, note} — scenes.saved acknowledges only the durable frozen journal header/config before the native CaptureClock/timer or camera has started; it is not a live timer/camera claim. pause.enabled only acknowledges opt-in admission; use screen_record.pause or screen_record.resume and their saved durable state acknowledgement before changing the UI. capture_id names a dir under <project>/cache/screen_record/; duration_ms is null + open_ended true for an open-ended capture; cadence is CaptureCadence@1 {schema, requested:{num,den}, backend_requested:{num,den}, probed_media?}, where requested is the exact reduced decimal request and backend_requested is the current v1 nearest-integer 1..240 backend request; start has no measured media facts. studio_events points at the capture's timed composition metadata; recovery_scan reports only this pre-start pass, so query screen_record.recovery_status for durable per-capture receipts; the note flags the one-time XDG ScreenCast consent dialog on the first capture. no_project if no project is open; invalid_args if a Windows project path exceeds the WGC checkpoint limit; not_found if required recorder dependencies are unavailable; conflict if another capture still owns the recording devices.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -14592,7 +15089,7 @@
     {
       "name": "screen_record.stop",
       "domain": "screen_record",
-      "description": "Finalize a capture started by screen_record.start and surface its artifacts. This STOPS the capture — it sets the capture's external stop flag (ending an OPEN-ENDED recording promptly), then waits for the recorder to write its project.json and reads it. For a closed native checkpoint with fewer delivered frames than its measured capture span, finalization materializes the missing span as cloned video frames; contradictory timing remains a fail-closed error. Pipeline: (1) resolve <project>/cache/screen_record/<capture_id>/ (missing → not_found); (1b) SIGNAL stop so an open-ended capture ends now (no-op if cutd restarted and lost the in-memory flag — the file poll still recovers a capture that finalized on its own bound); (2) read local marker duration plus the durable journal start only to derive the exact local <capture_id>/project.json and a finite finalization budget; legacy marker project_path values are ignored; (3) POLL for project.json to exist AND be non-empty for twice the declared/observed capture work plus 15s (45s minimum, 15min maximum; 300ms between checks); never appears → a clean timeout; (4) parse the RecordingProject → extract source_video, audio?, and the embedded events EventTrack, writing the events object to <dir>/events.json (pretty) so it feeds the existing screen_record.autoedit {track} verb; (5) if autoedit:true, chain screen_record.autoedit with the finalized capture settings.fps as config.out_fps so the plan preserves recorded elapsed time, and include the produced plan path. Requires an open project.",
+      "description": "Finalize a capture started by screen_record.start and surface its artifacts. This STOPS the capture — it sets the capture's external stop flag (ending an OPEN-ENDED recording promptly), then waits for the recorder to write its project.json and reads it. A public Recording Scenes take publishes its create-only recording-scene.receipt.json before project.json becomes visible; Stop revalidates the receipt's capture identity, terminal replay, and exact source/project SHA-256 commitments before returning or forwarding it. For a closed native checkpoint with fewer delivered frames than its measured capture span, finalization materializes the missing span as cloned video frames; contradictory timing remains a fail-closed error. Pipeline: (1) resolve <project>/cache/screen_record/<capture_id>/ (missing → not_found); (1b) SIGNAL stop so an open-ended capture ends now (no-op if cutd restarted and lost the in-memory flag — the file poll still recovers a capture that finalized on its own bound); (2) read local marker duration plus the durable journal start only to derive the exact local <capture_id>/project.json and a finite finalization budget; legacy marker project_path values are ignored; (3) POLL for project.json to exist AND be non-empty for twice the declared/observed capture work plus 15s (45s minimum, 15min maximum; 300ms between checks); never appears → a clean timeout; (4) parse the RecordingProject → extract source_video, audio?, and the embedded events EventTrack, writing the events object to <dir>/events.json (pretty) so it feeds the existing screen_record.autoedit {track} verb; (5) if autoedit:true, chain screen_record.autoedit with the finalized capture settings.fps as config.out_fps and the explicit validated scene_receipt when present, so the plan preserves recorded elapsed time. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -14621,7 +15118,7 @@
           }
         }
       },
-      "result": "{capture_id, project, source, audio, webcam, camera_artifact, cadence, events, studio_events, raw_streams, plan, clicks, cursor_samples, cursor_correlation} — project = the finalized project.json path; source = the captured source_video; audio = the mic wav path or null; webcam = the legacy-compatible optional camera path; camera_artifact = CameraArtifact@1 when a validated synchronized camera artifact exists ({schema, capture_id, artifact_id, video: relative capture leaf, clock:{first_frame_offset_ms,end_frame_offset_ms}, media:{width,height,fps_num,fps_den,frame_count,duration_ms,sha256}, terminal_state}), else null; cadence is the optional persisted CaptureCadence@1. Its optional probed_media records only successful final FFprobe facts: avg_frame_rate and r_frame_rate are exact reduced rationals, and decoded_video_frames/duration_ms are independently measured. Invalid 0/0 rates, failed probes, and legacy projects return cadence null or omit probed_media; no value is inferred from settings.fps. events = the written events.json path (feeds screen_record.autoedit); studio_events = the timed composition metadata path when present; raw_streams lists discovered screen/camera/mic/system/studio artifacts plus system_timing when the Windows WASAPI packet-offset sidecar exists; plan = the EditPlan path when autoedit:true (else null); clicks/cursor_samples = the lengths of the events arrays. cursor_correlation = {source, state: exact|approximate|unavailable, exact_clicks, approximate_clicks, unavailable_clicks, max_metadata_age_ms?, detail?}; its click counters are button transitions (press and release). Wayland evdev coordinates are approximate unless paired with fresh PipeWire cursor metadata; X11 and Windows/macOS monitor rdevin desktop coordinates are exact only after a validated capture-surface transform. Linux uses actual finalized video dimensions, and marks rdevin input unavailable if they cannot be established. Windows/macOS window capture has no timestamped rectangle stream, so its rdevin positions are unavailable rather than falsely exact after move or resize. No button transitions report unavailable rather than vacuous exactness. no_project if no project is open; not_found if the capture dir is absent; sidecar if the capture never finalized. RAW MODE adds raw_path (the standalone raw.mp4, null unless mux_raw:true) plus raw_has_mic/raw_has_system.",
+      "result": "{capture_id, project, source, audio, webcam, camera_artifact, cadence, quality, events, studio_events, scene_receipt, raw_streams, plan, clicks, cursor_samples, cursor_correlation} — project = the finalized project.json path; source = the captured source_video; audio = the mic wav path or null; webcam = the legacy-compatible optional camera path; camera_artifact = CameraArtifact@1 when a validated synchronized camera artifact exists ({schema, capture_id, artifact_id, video: relative capture leaf, clock:{first_frame_offset_ms,end_frame_offset_ms}, media:{width,height,fps_num,fps_den,frame_count,duration_ms,sha256}, terminal_state}), else null; cadence is the optional persisted CaptureCadence@1. Its optional probed_media records only successful final FFprobe facts: avg_frame_rate and r_frame_rate are exact reduced rationals, and decoded_video_frames/duration_ms are independently measured. `quality` is CaptureQualityResolution@1 {schema,requested:{output_size,profile},width,height,encoder} only when a supporting backend accepted the request and the same final verification measured an H.264 source; it is null for unsupported or legacy capture paths. Invalid 0/0 rates, failed probes, and legacy projects return cadence null or omit probed_media; no value is inferred from settings.fps. events = the written events.json path (feeds screen_record.autoedit); studio_events = the timed composition metadata path when present; scene_receipt is recording-scene.receipt.json when this take has a validated public RecordingSceneProjection@1, otherwise null; raw_streams lists discovered screen/camera/mic/system/studio artifacts plus system_timing when the Windows WASAPI packet-offset sidecar exists; plan = the EditPlan path when autoedit:true (else null); clicks/cursor_samples = the lengths of the events arrays. cursor_correlation = {source, state: exact|approximate|unavailable, exact_clicks, approximate_clicks, unavailable_clicks, max_metadata_age_ms?, detail?}; its click counters are button transitions (press and release). Wayland evdev coordinates are approximate unless paired with fresh PipeWire cursor metadata; X11 and Windows/macOS monitor rdevin desktop coordinates are exact only after a validated capture-surface transform. Linux uses actual finalized video dimensions, and marks rdevin input unavailable if they cannot be established. Windows/macOS window capture has no timestamped rectangle stream, so its rdevin positions are unavailable rather than falsely exact after move or resize. No button transitions report unavailable rather than vacuous exactness. no_project if no project is open; not_found if the capture dir is absent; sidecar if the capture never finalized. RAW MODE adds raw_path (the standalone raw.mp4, null unless mux_raw:true) plus raw_has_mic/raw_has_system.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -14766,7 +15263,7 @@
     {
       "name": "screen_record.autoedit",
       "domain": "screen_record",
-      "description": "Run the recorder's AUTO-EDIT engine: a project-local EventTrack JSON (mouse/keyboard/window events captured during a screen recording) → an EditPlan JSON (the polished cut — click-zooms, speed ramps, cursor smoothing). Uses the linked record-engine in process, writing the plan to <project>/cache/screen_record/<sourcestem>.plan.json. `config` is an optional partial EngineConfig override (max_zoom, zoom timings, cursor/keycast tuning, out_fps, idle tuning); unknown keys are rejected. Requires an open project (the plan is cached under it).",
+      "description": "Run the recorder's AUTO-EDIT engine: a project-local EventTrack JSON (mouse/keyboard/window events captured during a screen recording) → an EditPlan JSON (the polished cut — click-zooms, speed ramps, cursor smoothing). Uses the linked record-engine in process, writing the plan to <project>/cache/screen_record/<sourcestem>.plan.json. `config` is an optional partial EngineConfig override (max_zoom, zoom timings, cursor/keycast tuning, out_fps, idle tuning); unknown keys are rejected. An explicit scene_receipt returned by screen_record.stop is revalidated against its capture source/project bytes, then replays the bounded public scene timeline into the editable plan. Requires an open project (the plan is cached under it).",
       "args": {
         "type": "object",
         "required": [
@@ -14793,10 +15290,14 @@
           "studio_events": {
             "type": "string",
             "description": "Optional project-local path to studio-events.json. Camera events are converted into EditPlan.webcam.timeline for polish replay."
+          },
+          "scene_receipt": {
+            "type": "string",
+            "description": "Optional explicit path to the capture-owned recording-scene.receipt.json returned by screen_record.stop. It must share the EventTrack's capture directory and validates the capture id, sealed public replay, terminal scene, source SHA-256, and project SHA-256 before its editable timeline is applied."
           }
         }
       },
-      "result": "{plan, summary, config, studio_events, webcam, camera_clock} — plan = the written EditPlan path; summary = the auto-edit plan summary; config = the resolved EngineConfig used to generate the plan; studio_events/webcam echo the optional Studio inputs when applied; camera_clock is the optional validated CameraArtifact@1 first/end frame interval retained in the webcam overlay plan.",
+      "result": "{plan, summary, config, studio_events, webcam, camera_clock, scene_receipt} — plan = the written EditPlan path; summary = the auto-edit plan summary; config = the resolved EngineConfig used to generate the plan; studio_events/webcam echo the optional Studio inputs when applied; camera_clock is the optional validated CameraArtifact@1 first/end frame interval retained in the webcam overlay plan; scene_receipt echoes the explicit validated receipt whose bounded scene_timeline was persisted in the plan, else null.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -14933,6 +15434,46 @@
         "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.status",
+      "domain": "screen_record",
+      "description": "Read the short-lived first-screen-frame admission fact for one active capture in this cutd process. This is not crash recovery, output validation, a timer, or a process-start acknowledgement: ready becomes true only after the active native screen path delivered a real screen frame (Windows: accepted by the MP4 encoder; macOS: ScreenCaptureKit screen-sample callback; Linux: PipeWire screen buffer delivered through the GStreamer observer). It never opens a device, starts/stops a capture, reads a media file, exposes a path, or persists a fact. Terminal states are deliberately not ready even if a frame arrived earlier. A completed capture or server restart returns not_found rather than inferring readiness from artifacts.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "The exact active capture id returned by screen_record.start. It is an opaque identifier, never a path."
+          }
+        }
+      },
+      "result": "{capture_id, ready, terminal, state:\"awaiting_first_screen_frame\"|\"ready\"|\"terminal_before_first_screen_frame\"|\"terminal_after_first_screen_frame\"} — proceed only when ready:true and terminal:false. ready is false until the actual native screen-frame delivery boundary, and becomes false permanently when the active capture terminalizes; terminal_after_first_screen_frame retains only the diagnostic ordering, not an admission to stop/continue. not_found means that no matching capture is active in this cutd process.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_status",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "none",
         "facets": []
       }
     },
@@ -16750,6 +17291,438 @@
         "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "voiceover.start",
+      "domain": "voiceover",
+      "description": "Start one authenticated Timeline voiceover take on an unlocked current audio track. `request_id` and `expected_revision` are both required: Cut binds the selected start or In/Out range to that exact revision before it reserves the private microphone source or creates any WAV. A live exact retry checks the original caller/request/track/range owner before the current revision, so it can reattach after ordinary project edits; a new target still needs the current revision and a different B is refused while A is active. The server issues one memory-only opaque owner claim, bound to that request and Timeline caller; every later tick, Stop, Cancel, and Out observation must present it. Only the explicit `voiceover_start_retry_rejected` response code proves no matching owner survived and pre-admission was refused, so only it permits the UI to discard its non-secret retry identity. A changed request id payload, foreign caller, stale revision, locked/non-audio/removed track, unavailable selected microphone, or a host whose Record doctor has not admitted native capture is refused. The server owns readiness, the visual count-in, sealed WAV verification, Preview correlation, atomic asset-plus-clip placement, and the one Undoable project history operation. Direct microphone monitoring is always off.",
+      "args": {
+        "type": "object",
+        "required": [
+          "audio_track",
+          "start_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "audio_track": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Playhead time, or In when out_ms is also supplied."
+          },
+          "out_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Optional Out. It must be strictly after start_ms and stops on Preview's observed program playhead, not a wall clock."
+          },
+          "owner_session_id": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22,
+            "description": "Optional opaque session id from a prior active response-loss retry. It is not a capability and cannot control a take by itself."
+          }
+        }
+      },
+      "result": "{schema, phase, request_id, accepted_revision, audio_track, start_ms, out_ms, countdown_remaining_ms?, direct_monitoring=off, owner_claim?, terminal?, placement?} — phase is waiting_for_microphone, countdown, starting_playback, recording, finishing, finished, or placed. An active status returns one opaque memory-only owner_claim {session_id,capability}; send it only to the next voiceover lifecycle call, never log or persist capability. No microphone endpoint, WAV path, or captured bytes is public. placed returns exactly one {asset_id,clip_id,op_id,already_applied}; that atomic project operation is the one history Undo for the finished take.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "voiceover_start",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "voiceover.tick",
+      "domain": "voiceover",
+      "description": "Advance the server-owned voiceover lifecycle. It observes real microphone readiness, projects the count-in, sends the correlated Preview seek/playback request at the boundary, validates Preview's latest request/fingerprint/epoch acknowledgement before recording, and places only a sealed accepted WAV as one atomic asset-plus-clip operation. The active Timeline caller must present its exact opaque owner claim. The UI normally calls this while a visible take is active. It never starts or simulates capture on an unadmitted host.",
+      "args": {
+        "type": "object",
+        "required": [
+          "owner_session_id",
+          "owner_capability"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "owner_session_id": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22
+          },
+          "owner_capability": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43
+          }
+        }
+      },
+      "result": "Same voiceover lifecycle projection as voiceover.start. `finishing` means the server is waiting for native finalization; only `placed` means the one asset and one clip are durable.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "voiceover_tick",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "voiceover.stop",
+      "domain": "voiceover",
+      "description": "Request the first normal Stop for the active Timeline voiceover take. The active Timeline caller must present its exact opaque owner claim. Stop is idempotent by the server-owned terminal journal; it begins native finalization but does not imply that a WAV is usable or placed. Continue voiceover.tick until a finished or placed projection arrives.",
+      "args": {
+        "type": "object",
+        "required": [
+          "owner_session_id",
+          "owner_capability"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "owner_session_id": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22
+          },
+          "owner_capability": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43
+          }
+        }
+      },
+      "result": "Same voiceover lifecycle projection. A normal Stop that produced samples progresses through finishing and then exactly one atomic placement; a zero-sample or failed take is reported honestly and creates no timeline edit.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "voiceover_stop",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "voiceover.cancel",
+      "domain": "voiceover",
+      "description": "Cancel the active Timeline voiceover take. The active Timeline caller must present its exact opaque owner claim. Cancel wins over a later Stop or Out observation, removes only the server-owned unsealed artifact after native finalization, and never creates an asset, clip, or project history operation.",
+      "args": {
+        "type": "object",
+        "required": [
+          "owner_session_id",
+          "owner_capability"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "owner_session_id": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22
+          },
+          "owner_capability": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43
+          }
+        }
+      },
+      "result": "Same voiceover lifecycle projection. A successful cancelled terminal has no placement and no Undo entry; a cleanup failure remains an explicit terminal error rather than being called cancelled.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "voiceover_cancel",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "voiceover.observe_playhead",
+      "domain": "voiceover",
+      "description": "Report the program Preview's observed playhead for the active Timeline voiceover. The active Timeline caller must present its opaque owner claim and the exact request_id, request_fingerprint, and latest bridge_epoch that started Preview playback. With an accepted Out, Cut makes the first observed playhead at or beyond Out the one normal Stop request. It never estimates Out from the count-in or microphone wall clock.",
+      "args": {
+        "type": "object",
+        "required": [
+          "owner_session_id",
+          "owner_capability",
+          "request_id",
+          "request_fingerprint",
+          "bridge_epoch",
+          "playhead_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "owner_session_id": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22
+          },
+          "owner_capability": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43
+          },
+          "request_fingerprint": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "bridge_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "playhead_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "result": "Same voiceover lifecycle projection. A playhead before Out leaves recording active; at/after Out requests the single normal Stop and then waits for finalization.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "voiceover_observe_playhead",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.scene_activate",
+      "domain": "screen_record",
+      "description": "Durably switch one active Recording Scenes capture to one exact frozen named Screen or Presenter PiP preset. The server issues logical_media_time_ms only from that capture's shared CaptureClock and appends the reducer-validated event before acknowledging it. A Presenter PiP activation requires a selected admitted live camera at this point; a catalog may still contain Presenter while an initial Screen capture starts without one. Requires an open project and a live capture returned by screen_record.start.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id",
+          "scene_id",
+          "preset_revision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Live capture id returned by screen_record.start."
+          },
+          "scene_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Exact frozen RecordingScene preset id."
+          },
+          "preset_revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Exact non-zero revision for scene_id; stale revisions fail closed."
+          }
+        }
+      },
+      "result": "{capture_id, saved:true, scene_id, preset_revision, logical_media_time_ms, scene} — saved:true acknowledges the canonical durable journal event; scene is the exact reducer projection at that CaptureClock time.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_scene_activate",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.scene_timer",
+      "domain": "screen_record",
+      "description": "Durably change the one capture-wide Recording Scenes timer on a live capture. pause, resume, reset, restart, and end map to the existing reducer events at one shared CaptureClock timestamp; reset/restart immediately restart at that same boundary so the acknowledged state remains running, paused, or ended. Requires an open project and a live capture returned by screen_record.start.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id",
+          "action"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Live capture id returned by screen_record.start."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause",
+              "resume",
+              "reset",
+              "restart",
+              "end"
+            ],
+            "description": "One bounded timer transition; unsupported/invalid reducer transitions fail closed."
+          }
+        }
+      },
+      "result": "{capture_id, action, state:\"running\"|\"paused\"|\"ended\", logical_media_time_ms, scene} — action and state are exact durable acknowledgements; scene is the reducer projection at that CaptureClock time.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_scene_timer",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.pause",
+      "domain": "screen_record",
+      "description": "Request an explicit pause of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after the native owner seals the exact screen plus optional microphone/system-audio run and appends the durable Pause transition. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows return unavailable.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "The exact live pause-safe capture id returned by screen_record.start."
+          }
+        }
+      },
+      "result": "{capture_id, action:\"pause\", saved:true, state:\"paused\", logical_media_time_ms} — saved:true means the native run and versioned session-journal Pause transition are durable. A timeout or refusal never changes the caller-visible state.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_pause",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.resume",
+      "domain": "screen_record",
+      "description": "Request an explicit resume of a live macOS pause-safe recording. It does not return success when the command is merely sent: success follows only after native readiness is accepted and the durable Resume transition is appended. There is no toggle verb. Requires the capture_id returned by an opt-in screen_record.start{pause:{mode:'enabled'}} in this cutd process. Linux and Windows return unavailable.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "The exact live pause-safe capture id returned by screen_record.start."
+          }
+        }
+      },
+      "result": "{capture_id, action:\"resume\", saved:true, state:\"recording\", logical_media_time_ms} — saved:true means the versioned session-journal Resume transition is durable. A timeout or refusal never changes the caller-visible state.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_resume",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
         "facets": []
       }
     }

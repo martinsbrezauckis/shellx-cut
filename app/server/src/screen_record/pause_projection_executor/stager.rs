@@ -64,7 +64,7 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
         );
         command
             .args(["-filter_complex", &filter, "-map", "[source]"])
-            .args(["-an", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
             .args(["-r", &rate, "-map_metadata", "-1"])
             .arg(output);
         let control = OwnedProcessControl::bounded(STAGE_TIMEOUT, || false);

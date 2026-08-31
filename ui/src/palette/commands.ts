@@ -1,6 +1,6 @@
 // commands.ts — the command registry behind the Cmd-K palette.
 //
-// ShellX Cut exposes 270 verbs across 33 domains; the palette is the agent-first
+// ShellX Cut exposes 294 verbs across 34 domains; the palette is the agent-first
 // discoverability surface that makes them reachable by keyboard, the thing the
 // native incumbents (Resolve/FCP) lack. v1 covers the high-value SURFACE launchers
 // (every editing drawer + the review surfaces) routed through Cut's existing

@@ -1,4 +1,6 @@
+use super::device::MicRecordingGate;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(super) fn record_peak(peak: &AtomicU32, sample: i16) {
@@ -18,4 +20,15 @@ pub(super) fn mark_first_packet(
         Ordering::Relaxed,
         Ordering::Relaxed,
     );
+}
+
+/// Report the live native callback immediately, but withhold durable samples
+/// until a standalone owner has armed its recording clock.
+pub(super) fn capture_origin(
+    ready: &AtomicBool,
+    recording_gate: Option<&Arc<MicRecordingGate>>,
+    fallback: Instant,
+) -> Option<Instant> {
+    ready.store(true, Ordering::Relaxed);
+    recording_gate.map_or(Some(fallback), |gate| gate.origin())
 }

@@ -34,7 +34,7 @@ export type CutEvent =
   | { type: 'receipt_ready'; receipt: RenderReceipt }
   | { type: 'ui_state'; state: unknown }
   | { type: 'project_changed'; open: boolean; name?: string }
-  | { type: 'ui_command'; verb: 'ui.open' | 'ui.playhead' | 'ui.select' | 'ui.highlight'; args: Record<string, unknown>; request_id?: number }
+  | { type: 'ui_command'; verb: 'ui.open' | 'ui.playhead' | 'ui.select' | 'ui.highlight' | 'preview.voiceover.playback'; args: Record<string, unknown>; request_id?: number }
   // The environment doctor's capabilities changed (startup scan, refresh,
   // or a completed system.fetch_tool) — the wizard + status-bar chip re-render.
   | { type: 'doctor_updated'; report: DoctorReport }
@@ -50,6 +50,8 @@ export interface UiCommandResult {
   state: UiObservableState
   surface?: string
   selector?: string
+  /** Exact durable identity echoed only after Preview seeks and begins playback. */
+  voiceover_playback?: { request_id: string; request_fingerprint: string; bridge_epoch: number }
   error?: { code: 'invalid_args' | 'not_found' | 'conflict' | 'no_ui_client'; message: string }
 }
 
@@ -314,6 +316,7 @@ function cutEventFrom(v: unknown): CutEvent | null {
         case 'ui.playhead':
         case 'ui.select':
         case 'ui.highlight':
+        case 'preview.voiceover.playback':
           return { type: 'ui_command', verb, args, ...(requestId == null ? {} : { request_id: requestId }) }
         default:
           return null

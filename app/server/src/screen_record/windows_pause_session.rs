@@ -2,12 +2,15 @@
 
 use super::monitor_start_admission::Target;
 use super::pause_session_owner::{
-    PauseSessionFactOutcome, PauseSessionOwner, PauseSessionOwnerError, PauseSessionOwnerPhase,
+    PauseSessionFactOutcome, PauseSessionOwner, PauseSessionOwnerPhase,
 };
 use super::run_seal_coordinator::{RecordingSessionJournalSink, SessionTimeOrigin};
 use super::windows_pause_adapter::{
-    WindowsPauseAdapterError, WindowsPauseAdapterEvent, WindowsPauseDispatchAdapter,
-    WindowsPauseEventTranslator, WindowsPauseEvidenceFactory,
+    WindowsPauseAdapterEvent, WindowsPauseDispatchAdapter, WindowsPauseEventTranslator,
+    WindowsPauseEvidenceFactory,
+};
+pub(crate) use super::windows_pause_session_types::{
+    WindowsPauseSessionError, WindowsPauseSessionEvent,
 };
 use record_capture::windows_pause_pilot::{
     WindowsPausePilotChannelError, WindowsPausePilotCommandSender, WindowsPausePilotEventReceiver,
@@ -16,6 +19,9 @@ use record_capture::windows_pause_pilot::{
 use record_capture::SelectedCaptureStreams;
 use record_recovery::{RecordingSessionJournal, TerminalDisposition};
 use std::time::Instant;
+
+mod startup;
+mod transition;
 
 /// Purely admitted private input. It cannot carry a legacy index or an
 /// optional stream: all filesystem and native work happens after this gate.
@@ -34,12 +40,19 @@ impl WindowsPauseSessionAdmission {
         checkpoint_interval_ms: u64,
     ) -> Result<Self, WindowsPauseSessionError> {
         let exact_monitor_id = target.exact_id.ok_or(WindowsPauseSessionError::Admission)?;
-        if streams != SelectedCaptureStreams::screen_only() || checkpoint_interval_ms == 0 {
+        let requested = streams.streams();
+        let microphone = requested.contains(&record_recovery::RecordingStream::MicrophoneAudio);
+        let system_audio = requested.contains(&record_recovery::RecordingStream::SystemAudio);
+        if checkpoint_interval_ms == 0
+            || streams != SelectedCaptureStreams::new(microphone, system_audio, false, false)
+        {
             return Err(WindowsPauseSessionError::Admission);
         }
-        let profile = WindowsPausePilotProfile::admit(WindowsPausePilotRequest::screen_video_only(
+        let profile = WindowsPausePilotProfile::admit(WindowsPausePilotRequest::screen_with_audio(
             exact_monitor_id,
             fps,
+            microphone,
+            system_audio,
         ))
         .map_err(|_| WindowsPauseSessionError::Admission)?;
         Ok(Self {
@@ -82,6 +95,25 @@ impl WindowsPauseLifecycle for record_capture::windows_pause_pilot::WindowsPause
     }
 }
 
+#[cfg(target_os = "macos")]
+impl WindowsPauseLifecycle for record_capture::private_macos_pause_owner::MacosPausePilotThread {
+    fn command_sender(&self) -> WindowsPausePilotCommandSender {
+        self.command_sender()
+    }
+
+    fn take_event_receiver(&mut self) -> Option<WindowsPausePilotEventReceiver> {
+        self.take_event_receiver()
+    }
+
+    fn shutdown_and_join(&mut self) -> Result<(), WindowsPausePilotChannelError> {
+        self.shutdown_and_join()
+    }
+
+    fn join_after_terminal(&mut self) -> Result<(), WindowsPausePilotChannelError> {
+        self.join_after_terminal()
+    }
+}
+
 pub(crate) struct WindowsPauseSession<J, W, L>
 where
     J: RecordingSessionJournalSink,
@@ -93,6 +125,7 @@ where
     lifecycle: L,
     lifecycle_closed: bool,
     retained_stop_evidence: Option<super::run_seal_coordinator::SealedRunEvidence>,
+    input_sidecars: Option<super::windows_pause_input_sidecar::WindowsPauseInputSidecarOwner>,
 }
 
 impl<J, W, L> WindowsPauseSession<J, W, L>
@@ -101,56 +134,6 @@ where
     W: WindowsPauseEvidenceFactory,
     L: WindowsPauseLifecycle,
 {
-    /// Consume the already-queued initial Started event before returning a
-    /// session. The caller must have created/synced Intent before it starts the
-    /// lifecycle supplied here.
-    pub(crate) fn from_started_lifecycle(
-        journal: J,
-        admission: &WindowsPauseSessionAdmission,
-        mut lifecycle: L,
-        evidence_factory: W,
-    ) -> Result<Self, WindowsPauseSessionError> {
-        let adapter = WindowsPauseDispatchAdapter::new(lifecycle.command_sender());
-        let mut owner = match PauseSessionOwner::new(journal, admission.streams.clone(), adapter) {
-            Ok(owner) => owner,
-            Err(error) => {
-                let _ = lifecycle.shutdown_and_join();
-                return Err(WindowsPauseSessionError::Owner(error));
-            }
-        };
-        let Some(events) = lifecycle.take_event_receiver() else {
-            owner.block();
-            let _ = lifecycle.shutdown_and_join();
-            return Err(WindowsPauseSessionError::InitialStarted);
-        };
-        let mut translator = WindowsPauseEventTranslator::new(events, evidence_factory);
-        let started = match translator.try_next() {
-            Ok(Some(WindowsPauseAdapterEvent::Started { started })) => started,
-            Ok(_) | Err(_) => {
-                translator.discard_staged();
-                owner.block();
-                let _ = lifecycle.shutdown_and_join();
-                return Err(WindowsPauseSessionError::InitialStarted);
-            }
-        };
-        let origin = SessionTimeOrigin::observed(started.monotonic_at, started.unix_ms);
-        if translator.set_session_origin(origin).is_err()
-            || owner.start_after_backend_origin(origin).is_err()
-        {
-            translator.discard_staged();
-            owner.block();
-            let _ = lifecycle.shutdown_and_join();
-            return Err(WindowsPauseSessionError::InitialStarted);
-        }
-        Ok(Self {
-            owner,
-            translator,
-            lifecycle,
-            lifecycle_closed: false,
-            retained_stop_evidence: None,
-        })
-    }
-
     pub(crate) fn request_pause_at(&mut self, at: Instant) -> Result<(), WindowsPauseSessionError> {
         self.owner
             .request_pause_at(at)
@@ -191,6 +174,7 @@ where
         match event {
             WindowsPauseAdapterEvent::PauseSealed {
                 fact,
+                additional_facts,
                 evidence,
                 observed_at,
             } => {
@@ -201,25 +185,37 @@ where
                     {
                         return Err(self.fail());
                     }
+                    if self.pin_recording_input_sidecar(&evidence).is_err() {
+                        return Err(self.fail());
+                    }
                     self.retained_stop_evidence = Some(evidence);
                     return Ok(Some(WindowsPauseSessionEvent::StopRunRetained));
                 }
-                if !matches!(
-                    self.owner.accept_worker_fact(fact, observed_at),
-                    Ok(PauseSessionFactOutcome::PauseFactsComplete { generation }) if generation == evidence.generation()
-                ) || self.owner.seal_pause_at(evidence, observed_at).is_err()
+                if !self.accept_pause_facts(
+                    fact,
+                    additional_facts,
+                    observed_at,
+                    evidence.generation(),
+                ) || self.pin_recording_input_sidecar(&evidence).is_err()
+                    || self.owner.seal_pause_at(evidence, observed_at).is_err()
                 {
                     return Err(self.fail());
                 }
                 Ok(Some(WindowsPauseSessionEvent::Paused))
             }
-            WindowsPauseAdapterEvent::ResumeReady { fact, started } => {
+            WindowsPauseAdapterEvent::ResumeReady {
+                fact,
+                additional_facts,
+                started,
+            } => {
                 if self.owner.phase() == PauseSessionOwnerPhase::Stopping {
                     return Ok(Some(WindowsPauseSessionEvent::StaleIgnored));
                 }
-                if !matches!(
-                    self.owner.accept_worker_fact(fact, started.monotonic_at),
-                    Ok(PauseSessionFactOutcome::ResumeFactsComplete { generation }) if generation == fact_generation(fact)
+                if !self.accept_resume_facts(
+                    fact,
+                    additional_facts,
+                    started.monotonic_at,
+                    fact_generation(fact),
                 ) || self.owner.seal_resume_at(started.monotonic_at).is_err()
                 {
                     return Err(self.fail());
@@ -245,11 +241,19 @@ where
                 observed_at,
                 ..
             } => {
-                let evidence = match (self.retained_stop_evidence.take(), evidence) {
-                    (Some(retained), None) => Some(retained),
-                    (None, evidence) => evidence,
-                    (Some(_), Some(_)) => return Err(self.fail()),
-                };
+                let (evidence, needs_input_pin) =
+                    match (self.retained_stop_evidence.take(), evidence) {
+                        (Some(retained), None) => (Some(retained), false),
+                        (None, evidence) => (evidence, true),
+                        (Some(_), Some(_)) => return Err(self.fail()),
+                    };
+                if needs_input_pin
+                    && evidence
+                        .as_ref()
+                        .is_some_and(|evidence| self.pin_recording_input_sidecar(evidence).is_err())
+                {
+                    return Err(self.fail());
+                }
                 if self
                     .owner
                     .seal_stop_at(evidence, TerminalDisposition::Completed, observed_at)
@@ -277,27 +281,19 @@ where
         self.owner.journal()
     }
 
-    fn fail_adapter(&mut self, _error: WindowsPauseAdapterError) -> WindowsPauseSessionError {
-        self.fail()
-    }
-
-    fn owner_error(&mut self, error: PauseSessionOwnerError) -> WindowsPauseSessionError {
-        if matches!(
-            self.owner.phase(),
-            PauseSessionOwnerPhase::Blocked | PauseSessionOwnerPhase::Stopping
-        ) {
-            self.fail()
-        } else {
-            WindowsPauseSessionError::Owner(error)
-        }
-    }
-
-    fn fail(&mut self) -> WindowsPauseSessionError {
-        self.translator.discard_staged();
-        self.owner.block();
-        let _ = self.lifecycle.shutdown_and_join();
-        self.lifecycle_closed = true;
-        WindowsPauseSessionError::Lifecycle
+    /// Publish a completed projection only after the native Stop fact has been
+    /// accepted, journaled, and joined. The caller still owns the ordinary
+    /// capture recovery receipt; projection failure never invents completion.
+    pub(crate) fn execute_completed_projection<P>(
+        &mut self,
+        projection: &mut P,
+    ) -> Result<(), WindowsPauseSessionError>
+    where
+        P: super::pause_session_owner::PauseSessionProjectionExecutor,
+    {
+        self.owner
+            .execute_completed_projection(projection)
+            .map_err(|error| self.owner_error(error))
     }
 }
 
@@ -323,26 +319,6 @@ fn fact_generation(fact: super::pause_worker_protocol::PauseWorkerFact) -> u64 {
         | super::pause_worker_protocol::PauseWorkerFact::Refused { generation, .. }
         | super::pause_worker_protocol::PauseWorkerFact::Failed { generation, .. } => generation,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WindowsPauseSessionEvent {
-    Paused,
-    Resumed,
-    ResumeRefused,
-    StopRunRetained,
-    StaleIgnored,
-    Stopped,
-}
-
-#[derive(Debug)]
-pub(crate) enum WindowsPauseSessionError {
-    Admission,
-    InitialStarted,
-    Owner(PauseSessionOwnerError),
-    Lifecycle,
-    #[cfg(windows)]
-    Setup,
 }
 
 #[cfg(test)]

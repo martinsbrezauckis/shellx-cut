@@ -1,8 +1,9 @@
 //! Classification helpers that keep v1 checkpoint recovery out of pause-owned captures.
 
+use std::io::Read;
 use std::path::Path;
 
-use record_recovery::{is_plain_regular_file, RECORDING_SESSION_JOURNAL_FILE};
+use record_recovery::{is_plain_regular_file, CaptureRoot, RECORDING_SESSION_JOURNAL_FILE};
 
 pub(super) enum PauseSessionOwnership {
     Absent,
@@ -21,12 +22,61 @@ pub(super) fn pause_session_ownership(
         }
         Err(error) => Err(error),
         Ok(_) if is_plain_regular_file(&path).map_err(std::io::Error::other)? => {
+            let capture_id = root
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| std::io::Error::other("pause-session capture id is unavailable"))?;
+            if requires_input_sidecars(&path)? {
+                let project_dir = root
+                    .parent()
+                    .and_then(|path| path.parent())
+                    .and_then(|path| path.parent())
+                    .ok_or_else(|| {
+                        std::io::Error::other("pause-session project root is unavailable")
+                    })?;
+                let capture_root = CaptureRoot::open_existing(project_dir)
+                    .map_err(std::io::Error::other)?
+                    .ok_or_else(|| {
+                        std::io::Error::other("pause-session capture root is unavailable")
+                    })?;
+                super::super::windows_pause_input_sidecar::verify_recovery_capture(
+                    &capture_root,
+                    capture_id,
+                )
+                .map_err(std::io::Error::other)?;
+            }
             Ok(PauseSessionOwnership::Present)
         }
         Ok(_) => Err(std::io::Error::other(
             "pause-session journal is linked or not a local regular file",
         )),
     }
+}
+
+fn requires_input_sidecars(path: &Path) -> Result<bool, std::io::Error> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let mut file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "pause-session journal is not regular",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes
+        .windows(b"\"input_sidecars_required\":true".len())
+        .any(|slice| slice == b"\"input_sidecars_required\":true"))
 }
 
 /// A normal v1 completion publishes `project.json` before its receipt. This

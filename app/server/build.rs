@@ -90,5 +90,9 @@ fn main() {
                 println!("cargo:rustc-link-arg-bins=-L{dir}");
             }
         }
+
+        // The visual Region picker is compiled into the foreground Tauri
+        // shell, not cutd. This sidecar retains only the authenticated
+        // one-use admission and its ScreenCaptureKit revalidation.
     }
 }

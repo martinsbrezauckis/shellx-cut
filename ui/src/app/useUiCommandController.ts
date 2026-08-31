@@ -4,7 +4,15 @@ import { events, type CutEvent, type UiCommandResult, type UiCommandVerb } from 
 import { VERB_BEHAVIOR, VERB_NAMES } from '../lib/generatedVerbBehavior'
 import type { HighlightSpec } from '../HighlightOverlay'
 import type { UiObservableState } from './uiControlState'
+import { waitForCommittedState } from './uiCommandCommit'
 import { uiSurface } from './uiSurfaceRegistry'
+import { handleVoiceoverPlaybackCommand } from './voiceoverPlaybackCommand'
+
+export {
+  UI_COMMIT_WALL_CLOCK_FALLBACK_MS,
+  waitForUiCommitTick,
+} from './uiCommandCommit'
+export type { UiCommitScheduler } from './uiCommandCommit'
 
 interface UiCommandControllerArgs {
   stateRef: MutableRefObject<UiObservableState>
@@ -21,60 +29,6 @@ type UiCommandError = NonNullable<UiCommandResult['error']>
 
 const equalStrings = (left: string[], right: string[]) =>
   left.length === right.length && left.every((value, index) => value === right[index])
-
-export interface UiCommitScheduler {
-  requestAnimationFrame: (callback: FrameRequestCallback) => number
-  cancelAnimationFrame: (handle: number) => void
-  setTimeout: (callback: () => void, delayMs: number) => number
-  clearTimeout: (handle: number) => void
-}
-
-export const UI_COMMIT_WALL_CLOCK_FALLBACK_MS = 50
-
-/** Wait for a paint opportunity without depending on one. WebKit may suspend
- * requestAnimationFrame while a native window is occluded or its desktop is
- * inactive, but agent UI commands still need a bounded acknowledgement. */
-export function waitForUiCommitTick(
-  scheduler?: UiCommitScheduler,
-  fallbackMs = UI_COMMIT_WALL_CLOCK_FALLBACK_MS,
-): Promise<void> {
-  const active = scheduler ?? {
-    requestAnimationFrame: (callback: FrameRequestCallback) => window.requestAnimationFrame(callback),
-    cancelAnimationFrame: (handle: number) => window.cancelAnimationFrame(handle),
-    setTimeout: (callback: () => void, delayMs: number) => window.setTimeout(callback, delayMs),
-    clearTimeout: (handle: number) => window.clearTimeout(handle),
-  }
-
-  return new Promise<void>((resolve) => {
-    let settled = false
-    let frameHandle: number | null = null
-    let timerHandle: number | null = null
-    const finish = () => {
-      if (settled) return
-      settled = true
-      if (frameHandle !== null) active.cancelAnimationFrame(frameHandle)
-      if (timerHandle !== null) active.clearTimeout(timerHandle)
-      resolve()
-    }
-    timerHandle = active.setTimeout(finish, fallbackMs)
-    frameHandle = active.requestAnimationFrame(finish)
-  })
-}
-
-const waitForCommittedState = async (
-  stateRef: MutableRefObject<UiObservableState>,
-  previousRevision: number,
-  predicate: (state: UiObservableState) => boolean,
-  timeoutMs = 1_500,
-): Promise<UiObservableState | null> => {
-  const deadline = performance.now() + timeoutMs
-  while (performance.now() < deadline) {
-    await waitForUiCommitTick()
-    const state = stateRef.current
-    if (state.state_revision > previousRevision && predicate(state)) return state
-  }
-  return null
-}
 
 function highlightSelector(args: Record<string, unknown>): string | null {
   if (typeof args.selector === 'string' && args.selector.trim()) return args.selector
@@ -149,7 +103,7 @@ export function useUiCommandController({
       applied: boolean,
       requested: Record<string, unknown>,
       state: UiObservableState,
-      extra: Pick<UiCommandResult, 'surface' | 'selector' | 'error'> = {},
+      extra: Pick<UiCommandResult, 'surface' | 'selector' | 'error' | 'voiceover_playback'> = {},
     ) => {
       events.answerUiCommand({
         request_id: command.request_id,
@@ -170,6 +124,18 @@ export function useUiCommandController({
     const handle = async (command: UiCommand) => {
       const before = stateRef.current
       switch (command.verb) {
+        case 'preview.voiceover.playback': {
+          await handleVoiceoverPlaybackCommand({
+            command,
+            project,
+            beforeRevision: before.state_revision,
+            stateRef,
+            setPlayheadMs,
+            answer: (requested, state, identity) => answer(command, true, requested, state, { voiceover_playback: identity }),
+            reject: (requested, error) => reject(command, requested, error),
+          })
+          return
+        }
         case 'ui.playhead': {
           const raw = command.args.at_ms
           if (!Number.isSafeInteger(raw) || Number(raw) < 0) {

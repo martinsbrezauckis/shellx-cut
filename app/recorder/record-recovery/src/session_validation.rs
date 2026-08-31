@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use record_core::{backend_requested_v1, CaptureCadence, FrameRate, CAPTURE_CADENCE_SCHEMA};
 
 use crate::session_contract::{
-    RecordingSessionIntent, RecordingSessionState, RecordingStream, SealedRun, SessionJournalError,
-    StreamFragment, RECORDING_SESSION_JOURNAL_SCHEMA,
+    RecordingProjectBinding, RecordingSessionIntent, RecordingSessionState, RecordingStream,
+    SealedRun, SessionJournalError, StreamFragment, RECORDING_PROJECT_ID_SCHEMA,
+    RECORDING_SESSION_JOURNAL_SCHEMA,
 };
 
 pub(crate) fn validate_intent(intent: &RecordingSessionIntent) -> Result<(), SessionJournalError> {
@@ -25,10 +26,67 @@ pub(crate) fn validate_intent(intent: &RecordingSessionIntent) -> Result<(), Ses
     {
         return Err(invalid("malformed immutable intent"));
     }
+    // Input sidecars are owned only by the admitted private Windows screen
+    // path. Its exact selection is screen plus the optional native microphone
+    // and/or process-loopback owner. Do not let the private marker silently
+    // admit camera, passive input, keys, duplicate streams, or an arbitrary
+    // reordered declaration.
+    if intent.input_sidecars_required
+        && (intent.record_keys
+            || !is_private_input_sidecar_stream_set(&intent.requested_streams)
+            || !intent
+                .project_binding
+                .as_ref()
+                .is_some_and(valid_project_binding))
+    {
+        return Err(invalid(
+            "recording-input sidecars require the exact private screen and optional audio intent",
+        ));
+    }
     if let Some(cadence) = &intent.capture_cadence {
         validate_capture_cadence(intent.fps, cadence)?;
     }
     Ok(())
+}
+
+fn is_private_input_sidecar_stream_set(streams: &[RecordingStream]) -> bool {
+    matches!(
+        streams,
+        [RecordingStream::ScreenVideo]
+            | [
+                RecordingStream::ScreenVideo,
+                RecordingStream::MicrophoneAudio
+            ]
+            | [RecordingStream::ScreenVideo, RecordingStream::SystemAudio]
+            | [
+                RecordingStream::ScreenVideo,
+                RecordingStream::MicrophoneAudio,
+                RecordingStream::SystemAudio,
+            ]
+    )
+}
+
+fn valid_project_binding(binding: &RecordingProjectBinding) -> bool {
+    binding.identity.schema == RECORDING_PROJECT_ID_SCHEMA
+        && binding
+            .identity
+            .origin_path_sha256
+            .strip_prefix("sha256:")
+            .is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        && !binding.identity.project_name.is_empty()
+        && binding.identity.project_name.len() <= 128
+        && !binding.identity.project_name.contains(['/', '\\'])
+        && binding
+            .accepted_revision
+            .strip_prefix("op_")
+            .is_some_and(|sequence| {
+                sequence.len() >= 6 && sequence.bytes().all(|byte| byte.is_ascii_digit())
+            })
 }
 
 /// Cadence evidence is optional for old journals, but once present it must be
@@ -96,6 +154,31 @@ pub(crate) fn validate_run(
         return Err(invalid(
             "screen video does not cover the checkpoint sequence range",
         ));
+    }
+    if intent.input_sidecars_required {
+        let requested = intent
+            .requested_streams
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let actual = run
+            .fragments
+            .iter()
+            .map(|fragment| fragment.stream)
+            .collect::<BTreeSet<_>>();
+        let audio = run
+            .fragments
+            .iter()
+            .filter(|fragment| fragment.stream != RecordingStream::ScreenVideo)
+            .collect::<Vec<_>>();
+        if actual != requested
+            || audio.len() != requested.len().saturating_sub(1)
+            || audio.iter().any(|fragment| fragment.stream_sequence != 0)
+        {
+            return Err(invalid(
+                "private input-sidecar run does not contain its exact selected audio streams once",
+            ));
+        }
     }
     Ok(())
 }

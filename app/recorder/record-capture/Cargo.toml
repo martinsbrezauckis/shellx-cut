@@ -25,6 +25,7 @@ mic = ["dep:cpal", "dep:hound", "dep:windows", "dep:windows-core"]
 record-core = { workspace = true }
 cut-media = { path = "../../media" }
 record-recovery = { workspace = true }
+fs2 = "0.4"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -51,6 +52,7 @@ tempfile.workspace = true
 
 # windows-capture (WGC) only exists on the windows target.
 [target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 windows-capture = { version = "2.0.1", optional = true }
 # Raw Win32 for our OWN window enumeration (windows-capture's Window::enumerate uses
 # EnumChildWindows(GetDesktopWindow()) which returns EMPTY from cutd's sidecar thread —
@@ -59,20 +61,27 @@ windows-capture = { version = "2.0.1", optional = true }
 windows = { version = "0.62", optional = true, features = [
     "Win32_Foundation",
     "Win32_Devices_Display",
+    "Win32_Storage_FileSystem",
     "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_Devices_FunctionDiscovery",
     "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Dwm",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_System_Threading",
     "Win32_System_StationsAndDesktops",
     "Win32_System_Variant",
 ] }
 windows-core = { version = "0.62", optional = true }
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 # ScreenCaptureKit (SCK) only exists on the macOS target — the Mac counterpart to
 # windows-capture (WGC): per-window/display enumeration + SCStream + SCRecordingOutput
 # direct-to-file (feature macos_15_0). The supported macOS range provides these APIs.
@@ -82,9 +91,10 @@ screencapturekit = { version = "8", optional = true, features = ["macos_15_0"] }
 # Linux capture deps (ashpd = XDG portals, tokio = async runtime for the handshake).
 # enumflags2 must match ashpd's (0.7) for SourceType BitFlags type identity.
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"], optional = true }
 enumflags2 = { version = "0.7", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util"], optional = true }
 # evdev (/dev/input) for Wayland global input — passive, needs `input` group.
 evdev = { version = "0.13", optional = true }
 # pipewire-rs: Wayland unified capture (frames + SPA_META_Cursor) in ONE stream.

@@ -35,6 +35,8 @@ mod receipt_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
+mod session_input_sidecar_tests;
+#[cfg(test)]
 mod session_journal_io_tests;
 #[cfg(test)]
 mod session_journal_tests;
@@ -60,10 +62,11 @@ pub use media::verify_media;
 pub use recovery::{owner_state, recover_interrupted, OwnerState, RecoveryResult};
 pub use run_stitch::{plan_run_aware_stitch, RunAwareStitchPlan, RunAwareStitchSpan};
 pub use session_contract::{
-    CheckpointSequenceRange, DurableStateTransition, RecordingSessionIntent,
+    CheckpointSequenceRange, DurableStateTransition, RecordingInputSidecarPin,
+    RecordingProjectBinding, RecordingProjectIdentity, RecordingSessionIntent,
     RecordingSessionJournalEntry, RecordingSessionState, RecordingStream, SealedRun,
     SessionJournalError, SessionTerminal, StreamFragment, StreamFragmentFacts, TerminalDisposition,
-    RECORDING_SESSION_JOURNAL_SCHEMA,
+    RECORDING_PROJECT_ID_SCHEMA, RECORDING_SESSION_JOURNAL_SCHEMA,
 };
 pub use session_journal::RecordingSessionJournal;
 pub use session_journal_io::{RecordingSessionJournalFile, RECORDING_SESSION_JOURNAL_FILE};

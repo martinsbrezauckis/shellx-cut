@@ -96,6 +96,9 @@ assert.match(controls, /data-cut-intelligence-kind/)
 assert.match(controls, /data-cut-intelligence-scope/)
 assert.match(coverage, /Prepare search only derives citations from analysis already stored in this project/)
 assert.match(results, /evidenceChatAttachments\(selectedHits, indexId, project\)/)
+assert.match(results, /TemporalRange/, 'cited source ranges use the shared temporal presentation control')
+assert.match(results, /data-cut-intelligence-source-range/, 'cited source ranges expose a stable navigation selector')
+assert.match(results, /rangeMs=\{\[hit\.source_start_ms, hit\.source_end_ms\]\}/, 'source preview retains its authoritative source range')
 for (const selector of [
   'data-cut-intelligence-query', 'data-cut-intelligence-kind', 'data-cut-intelligence-scope',
   'data-cut-intelligence-search', 'data-cut-intelligence-prepare', 'data-cut-intelligence-cancel',

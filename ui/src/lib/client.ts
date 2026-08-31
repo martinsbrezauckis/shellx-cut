@@ -32,6 +32,11 @@ import type {
   MediaIntelligenceSearchArgs,
   MediaIntelligenceStatusArgs,
 } from './mediaIntelligenceModel'
+import type {
+  RecordingSceneActivateArgs,
+  RecordingSceneStartConfig,
+  RecordingSceneTimerArgs,
+} from '../panels/Record/recordingScenes'
 
 export type {
   AnimState,
@@ -104,7 +109,7 @@ export interface VerbResult<T = unknown> {
 export const UI_OPEN_PANELS = UI_OPEN_SURFACE_IDS
 export type UiOpenPanel = (typeof UI_OPEN_PANELS)[number]
 
-// Verb args map — one entry per verb in schema/verbs.json (278 verbs, 33 domains).
+// Verb args map — one entry per verb in schema/verbs.json (294 verbs, 34 domains).
 // Keys ARE the wire names; keep in sync with the registry. Later additions
 // edit.crop, edit.crossfade, edit.move_marker, audio.add_music,
 // captions.set_range + ripple flags on edit.ripple_delete (lift) / edit.move.
@@ -121,6 +126,7 @@ export interface VerbArgs {
   'project.state': { since_revision?: string; limit?: number }
   'project.health': { cursor?: string; revision?: string; limit?: number }
   'project.cache_preview': Record<string, never>
+  'project.cache_rebuild': { asset_ids?: string[] }
   'project.cache_purge': { plan_id: string; confirm: true }
   'project.sequence_list': Record<string, never>
   'project.sequence_index': { query?: string; asset?: string; kind?: 'all' | 'clip' | 'marker'; sequence?: string; track_kind?: 'video' | 'audio' | 'caption'; status?: 'all' | 'issues' | 'offline' | 'gaps' | 'effects' | 'hidden' | 'locked' | 'muted'; limit?: number }
@@ -129,6 +135,10 @@ export interface VerbArgs {
   'project.sequence_rename': { id: string; name: string; rationale?: string }
   'project.sequence_delete': { id: string; rationale?: string }
   'project.ops': { since?: string; cursor?: string; limit?: number }
+  // Agent-only compound-review contract. A human Review rail will consume this
+  // once its grouped-action interaction has its own UX pass.
+  'project.group_preview': { op_id: string }
+  'project.group_reject': { first_op_id: string; last_op_id: string; preview_hash: string; rationale?: string }
   'project.checkpoint': { name: string; rationale?: string }
   'project.rename': { name: string; rationale?: string }
   'project.format': { width?: number; height?: number; fps?: number; rationale?: string }
@@ -592,7 +602,8 @@ export interface VerbArgs {
   // Find a phrase → word ranges (feed straight into cut_words/assemble).
   'transcript.search': { asset: string; query: string; case_sensitive?: boolean }
   // Auto-chapter a transcript into topic chapters (TextTiling, no model).
-  // NON-MUTATING: returns the chapter list to drop markers / export.chapters.
+  // NON-MUTATING: returns source-timed chapter starts. Callers resolve those
+  // starts through the current edit before offering a timeline action.
   'transcript.chapters': { asset: string; max_chapters?: number; min_gap_ms?: number }
   // `clip` scopes the cut to one clip (selected-clip view); omit to cut everywhere.
   'transcript.cut_words': { asset: string; word_range: [number, number]; clip?: string; rationale?: string }
@@ -648,6 +659,10 @@ export interface VerbArgs {
   // the companion to set_range (retime). add_text only ADDS; this EDITS, so a placed
   // caption is fully editable from the Inspector. caption-editing regression fix.
   'captions.set_text': { clip: string; text: string; style_ref?: string; rationale?: string }
+  // Reviewed Caption Find & Replace. Preview returns a volatile opaque hash;
+  // apply accepts that hash only, plus normal retry/revision controls.
+  'captions.bulk_preview': { track: string; find: string; replace_with: string; match_mode: 'contains' | 'whole_word'; case_sensitive?: boolean; range_ms?: [number, number] }
+  'captions.bulk_apply': { preview_hash: string; refresh_timing?: boolean; rationale?: string }
   // The fix that satisfies verify.captions (measure→remedy): split over-length
   // cues + extend too-fast cues into gaps. captions.shift = bulk sync offset.
   'captions.reflow': { max_cps?: number; max_chars?: number; max_duration_ms?: number; min_gap_ms?: number; rationale?: string }
@@ -692,7 +707,14 @@ export interface VerbArgs {
   // finalized project.json then surfaces the events track (+ optional autoedit).
   // `monitor_id`, when supplied from Doctor, is revalidated as the exact native
   // target. `monitor` remains the legacy ordinal compatibility path.
-  'screen_record.start': { duration_ms?: number; fps?: number; audio?: boolean; system_audio?: boolean; studio?: unknown; keys?: boolean; monitor?: number; monitor_id?: string; window?: string; rationale?: string }
+  'screen_record.start': { duration_ms?: number; fps?: number; quality?: { output_size: 'source' | '1080p' | '720p'; profile: 'standard' | 'high' }; audio?: boolean; system_audio?: boolean; studio?: unknown; scenes?: RecordingSceneStartConfig; pause?: { mode: 'enabled' }; keys?: boolean; monitor?: number; monitor_id?: string; window?: string; rationale?: string }
+  'screen_record.status': { capture_id: string }
+  // Proposed v0.6.113 recording-scenes API. Record negotiates Doctor support
+  // before it ever sends this optional request to a current engine.
+  'screen_record.scene_activate': RecordingSceneActivateArgs
+  'screen_record.scene_timer': RecordingSceneTimerArgs
+  'screen_record.pause': { capture_id: string }
+  'screen_record.resume': { capture_id: string }
   'screen_record.stop': { capture_id: string; autoedit?: boolean; mux_raw?: boolean; raw_path?: string; rationale?: string }
   'screen_record.studio_event': {
     capture_id: string
@@ -710,6 +732,14 @@ export interface VerbArgs {
       background?: 'none' | 'blur_screen' | 'solid' | 'gradient'
     }
   }
+  // Compact Timeline voiceover: the server owns native admission, capture,
+  // Preview correlation, sealing, and placement. The human UI supplies only
+  // the current target plus the shared request/revision controls.
+  'voiceover.start': { audio_track: string; start_ms: number; out_ms?: number; owner_session_id?: string }
+  'voiceover.tick': { owner_session_id: string; owner_capability: string }
+  'voiceover.stop': { owner_session_id: string; owner_capability: string }
+  'voiceover.cancel': { owner_session_id: string; owner_capability: string }
+  'voiceover.observe_playhead': { owner_session_id: string; owner_capability: string; request_id: string; request_fingerprint: string; bridge_epoch: number; playhead_ms: number }
   'screen_record.autoedit': { track: string; config?: Record<string, unknown>; webcam?: string; studio_events?: string }
   'screen_record.polish': { source: string; plan: string; track?: string; at_ms?: number; rationale?: string; raw?: boolean }
   'screen_record.export': { source: string; plan: string; path?: string; format?: 'mp4' | 'gif'; gif_fps?: number; gif_width?: number }
@@ -736,6 +766,8 @@ export interface VerbArgs {
   'render.preview': { at_ms?: number; duration_ms?: number; draft?: boolean }
   // h = scale height; compose = exact composed frame (captions/overlays) vs fast proxy seek.
   'render.frame': { at_ms: number; h?: number; compose?: boolean; inline?: boolean }
+  // Read-only, revision-bound exact current/previous frame pair for the Preview monitor.
+  'render.compare': { at_ms: number; revision: string; h?: number }
   // Contact-sheet "see the whole edit at a glance" view: N evenly-spaced frames
   // of the COMPOSED timeline tiled into a grid (the agent/judge overview).
   // count = frames to sample (engine default applies when omitted); h = per-frame
@@ -1025,6 +1057,31 @@ type VerbResultPayload<N extends VerbName> = N extends keyof VerbResults ? VerbR
  * (the envelope is the contract). Throws only on transport failure
  * (network down / non-JSON response), which callers surface as disconnect.
  */
+const UI_ACTOR_SESSION_KEY = 'shellx-cut/ui-actor/1'
+let ephemeralUiActorId = ''
+
+function uiActorId(): string {
+  if (ephemeralUiActorId) return ephemeralUiActorId
+  let stored = ''
+  try { stored = window.sessionStorage.getItem(UI_ACTOR_SESSION_KEY) ?? '' } catch {}
+  if (!/^[a-f0-9]{32}$/i.test(stored)) {
+    const generated = typeof globalThis.crypto?.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID().replaceAll('-', '')
+      : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(0, 32).padEnd(32, '0')
+    stored = generated
+    try { window.sessionStorage.setItem(UI_ACTOR_SESSION_KEY, stored) } catch {}
+  }
+  ephemeralUiActorId = stored
+  return stored
+}
+
+/** One browser tab has a stable, non-secret actor identity. Voiceover adds a
+ * separate server-issued capability; this id only prevents another tab from
+ * reattaching to the same request after a response loss. */
+export function uiActorHeader(): string {
+  return `human:ui-${uiActorId()}:ui`
+}
+
 export async function callVerb<N extends VerbName>(
   name: N,
   args: ControlledVerbArgs<N>,
@@ -1034,7 +1091,7 @@ export async function callVerb<N extends VerbName>(
     // x-cut-actor: this client is the human's working surface — ops from UI
     // gestures must be attributed HUMAN in the op log.
     // Agents calling REST directly omit the header → agent/rest default.
-    headers: { 'content-type': 'application/json', 'x-cut-actor': 'human:ui:ui' },
+    headers: { 'content-type': 'application/json', 'x-cut-actor': uiActorHeader() },
     body: JSON.stringify(args ?? {}),
   })
   return (await res.json()) as VerbResult<VerbResultPayload<N>>

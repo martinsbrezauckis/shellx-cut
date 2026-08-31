@@ -1,41 +1,50 @@
-// panels/Record — the recording workspace.
-//
-// Role: a full-surface capture mode (not a drawer) for "record your screen → a
-// polished clip on the timeline, no editing". Drives the in-process screen
-// recorder verbs (screen_record.*): doctor → capability cards; start → a capture
-// with a live HUD; on finish → stop (autoedit) → polish → the baked clip lands on
-// the timeline.
-//
-// OPEN-ENDED: the default is "Record until I stop" — `screen_record.start`
-// with NO `duration_ms`, ended by a manual Stop button or the keyboard shortcut
-// (F9 toggles Start ⇄ Stop). The duration presets remain as an
-// OPTIONAL upper-bound cap (the first option, "No limit", is the default); when a
-// cap is chosen the surface also counts down and auto-finalizes at the bound.
-//
-// SOURCE: full-screen capture. On a MULTI-MONITOR setup, screen_record.doctor
-// returns an enumerated `monitors` list and we render a real <select> so the user
-// picks which display. The chosen 1-based index retains the legacy capture path,
-// while an available opaque id is returned unchanged as screen_record.start{monitor_id}
-// for exact native revalidation. On a single display (or Linux, where the doctor
-// list is empty because the XDG portal shows its OWN source picker at capture
-// time) we keep the single "Full screen" button — no regression.
-//
-// Zero hidden state: every result is read from the verb envelope. Callers: App
-// (workspaceMode === 'record'). Deps: lib/client (verbs), lib/doctor (cards).
+// panels/Record — full-surface capture: Doctor → start → stop → optional polish.
+// It defaults to an open-ended F9-stoppable recording; duration choices are caps.
+// Selected monitor/window identities pass through the verb unchanged for native revalidation.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type Project } from '../../lib/client'
-import { folderTail, withAuthorizedOutputPath } from '../../lib/exportDestination'
+import { withAuthorizedOutputPath } from '../../lib/exportDestination'
 import { isBlockingOverlayActive, shouldIgnoreGlobalShortcut } from '../../lib/dom'
 import { matchesFixedAction } from '../../lib/keymap'
 import { isTauri, onRecordHotkey, pickExportOutput } from '../../lib/tauri'
 import { runUserVerb } from '../../lib/userActionFeedback'
 import { StudioControls } from './StudioControls'
 import { StudioPreview } from './StudioPreview'
+import { RecordingScenesControl } from './RecordingScenesControl'
+import { RecordingPauseControl } from './RecordingPauseControl'
+import { RegionPickerOverlay } from './RegionPickerOverlay'
+import {
+  RecordingSourceControl,
+  type MonitorInfo,
+  type WindowInfo,
+} from './RecordingSourceControl'
+import {
+  REGION_PICKER_UNAVAILABLE,
+  type RecordingSourceKind,
+} from './regionPickerModel'
 import { MicInputControl } from './MicInputControl'
 import { SystemAudioProbeControl } from './SystemAudioProbeControl'
 import { RecordFrameRateControl } from './RecordFrameRateControl'
 import { recordingFrameRateReason } from './recordingFrameRate'
+import { RecordingCountdownControl } from './RecordingCountdownControl'
+import { RecordingCountdownOverlay } from './RecordingCountdownOverlay'
+import { RecordingQualityControl } from './RecordingQualityControl'
+import {
+  cameraSelectionError,
+  NO_CAMERA_CAPABILITY,
+  type CameraCapability,
+} from './CameraControl'
+import { useRecordingCountdown } from './useRecordingCountdown'
+import { useRecordingQuality } from './useRecordingQuality'
+import {
+  DUR_PRESETS,
+  failureReason,
+  fmtElapsed,
+  outputFileLabel,
+  recordCardLabel,
+  type RecordCard,
+} from './recordingUiModel'
 import {
   probedAverageCadenceLabel,
   requestedCadenceLabel,
@@ -43,13 +52,24 @@ import {
 } from './recordingCadence'
 import { useRecordingExport } from './useRecordingExport'
 import {
+  clampCameraSize,
   defaultStudioState,
-  type StudioBackground,
+  placementForPosition,
   type CursorCorrelation,
+  type StudioBackground,
+  type StudioCameraPosition,
+  type StudioCameraShape,
   type StudioEventPayload,
   type StudioRawStreams,
   type StudioState,
 } from './studioTypes'
+import {
+  recordingSceneById,
+  studioStateForRecordingScene,
+  type RecordingSceneStartConfig,
+} from './recordingScenes'
+import { useRecordingScenes } from './useRecordingScenes'
+import { useRecordingPause } from './useRecordingPause'
 import './record.css'
 
 export interface RecordProps {
@@ -59,60 +79,8 @@ export interface RecordProps {
   /** Open Settings at the shared default export folder row. */
   onOpenOutputSettings?: () => void
 }
-
-/** What to tell the user when a one-off Save As target is what broke the action. */
-const OUTPUT_PATH_HINT =
-  'pick another file with "Choose file", or Clear it to use the default export folder'
-
-/**
- * Human reason for a rejected promise from the verb/authorization chain.
- *
- * `fetch` rejects with a TypeError when the connection itself fails, and its
- * message is engine-flavoured browser text ("Failed to fetch" / "Load failed")
- * that means nothing to a user — so that case keeps the plain transport wording.
- * Everything else is one of OUR thrown Errors (today: withAuthorizedOutputPath
- * refusing the chosen output folder), whose message is already the useful thing
- * to show, so it is passed through verbatim.
- */
-function failureReason(error: unknown): string {
-  if (error instanceof TypeError) return 'server unreachable'
-  return error instanceof Error && error.message ? error.message : 'server unreachable'
-}
-
-interface RecordCard { name: string; status: string; detail: string }
-const RECORD_CARD_LABELS: Record<string, string> = {
-  ffmpeg: 'Media tools',
-  screen_capture: 'Screen capture',
-  system_audio: 'System audio',
-  input_hook: 'Pointer and keys',
-  gstreamer: 'Linux capture',
-  wayland_input: 'Linux input',
-}
-function recordCardLabel(name: string): string {
-  return RECORD_CARD_LABELS[name] ?? name.replaceAll('_', ' ')
-}
-// One display the doctor enumerated for the monitor PICKER. `id` is an opaque
-// exact-native identity; `index` remains the legacy 1-based
-// screen_record.start{monitor} value. When present, `id` is returned unchanged
-// as `monitor_id`, and no display copy or ordinal is used as a substitute.
-// Empty list ⇒ no in-app picker (single display, or Linux where the OS portal
-// owns source choice).
-interface MonitorInfo { id?: string; index: number; name: string; width: number; height: number; primary: boolean }
-// One application window the doctor enumerated for the window picker. `id` is
-// the opaque native identity passed back to screen_record.start{window}; title is
-// display copy only and never selects a target.
-interface WindowInfo { id: string; title: string; app: string }
+const OUTPUT_PATH_HINT = 'pick another file with "Choose file", or Clear it to use the default export folder'
 type Phase = 'idle' | 'recording' | 'finalizing' | 'done' | 'error'
-
-// Length options. `ms: null` = OPEN-ENDED ("record until I stop", the default);
-// the rest are OPTIONAL upper-bound caps. Listed first so it's the default choice.
-const DUR_PRESETS: { label: string; ms: number | null }[] = [
-  { label: 'No limit', ms: null },
-  { label: '10s', ms: 10_000 },
-  { label: '30s', ms: 30_000 },
-  { label: '1 min', ms: 60_000 },
-  { label: '2 min', ms: 120_000 },
-]
 
 // The start/stop toggle binding uses one key rather than a multi-key chord. The
 // desktop shell registers F9 as a GLOBAL OS hotkey (lib.rs) so it toggles even
@@ -121,14 +89,6 @@ const DUR_PRESETS: { label: string; ms: number | null }[] = [
 // an in-page keydown FALLBACK here, covering the focused-window case and the
 // plain web/dev build (where there is no shell to register the OS-level hotkey).
 const SHORTCUT_LABEL = 'F9'
-
-// mm:ss for the open-ended elapsed clock.
-function fmtElapsed(totalSec: number): string {
-  const m = Math.floor(totalSec / 60)
-  const s = totalSec % 60
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
-
 export default function Record({ project, onClipAdded, onOpenOutputSettings }: RecordProps) {
   const [cards, setCards] = useState<RecordCard[]>([])
   const [ready, setReady] = useState<boolean | null>(null)
@@ -139,11 +99,32 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Linux), and the chosen 1-based monitor index (null = primary / engine default).
   const [monitors, setMonitors] = useState<MonitorInfo[]>([])
   const [monitorIdx, setMonitorIdx] = useState<number | null>(null)
+  // Source is intentionally first-level: choose Display or Window before its
+  // exact target. Region joins that choice only after the private native path
+  // receives compiled/native qualification for its one-use exact ticket.
+  const [sourceKind, setSourceKind] = useState<RecordingSourceKind>('display')
+  const [regionPickerOpen, setRegionPickerOpen] = useState(false)
+  const regionPickerCapability = REGION_PICKER_UNAVAILABLE
   // Window picker: the doctor's enumerated app windows and the chosen opaque
-  // native target id (null = capture the whole screen/monitor, not one window).
+  // native target id. A Window source with null has an explicit no-selection
+  // state; it must never silently fall back to Display capture.
   const [windows, setWindows] = useState<WindowInfo[]>([])
   const [windowTargetId, setWindowTargetId] = useState<string | null>(null)
-  const selectedWindowMissing = windowTargetId !== null && !windows.some((window) => window.id === windowTargetId)
+  const [cameraCapability, setCameraCapability] = useState<CameraCapability>(NO_CAMERA_CAPABILITY)
+  const [cameraDeviceId, setCameraDeviceId] = useState<string | null>(null)
+  const selectedWindowMissing = sourceKind === 'window'
+    && windowTargetId !== null
+    && !windows.some((window) => window.id === windowTargetId)
+  const windowNeedsSelection = sourceKind === 'window' && windowTargetId === null
+
+  // A region state can only arrive from a future capability-backed bridge. If
+  // a stale restored state somehow reaches this candidate, repair the visible
+  // source immediately; `start` still refuses it during this render.
+  useEffect(() => {
+    if (sourceKind !== 'region' || regionPickerCapability.availability !== 'unavailable') return
+    setSourceKind('display')
+    setRegionPickerOpen(false)
+  }, [sourceKind, regionPickerCapability.availability])
   // `capMs === null` = open-ended (the default). Otherwise it is the cap in ms.
   const [capMs, setCapMs] = useState<number | null>(null)
   const [fps, setFps] = useState(30)
@@ -175,11 +156,13 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Server evidence stays separate from the local selector: the UI never
   // relabels the backend integer request or legacy f32 as measured media.
   const [captureCadence, setCaptureCadence] = useState<RecordingCadence | null>(null)
-  // The last finalized capture's source+plan, retained so "Export clip" can render it
-  // to a file (screen_record.export) without re-recording. (AUTO-EDIT mode only.)
+  const {
+    capability: qualityCapability, outputSize, profile, resolution: qualityResolution,
+    request: qualityRequest, setOutputSize, setProfile,
+    setCapability: setQualityCapability, setResolution: setQualityResolution,
+    clearResolution: clearQualityResolution,
+  } = useRecordingQuality()
   const [lastCapture, setLastCapture] = useState<{ source: string; plan: string } | null>(null)
-  // RAW mode: the last finalized raw recording — its file path + which sound sources
-  // it folded in. Drives the "Raw recording saved → …" done-state + "Add to timeline".
   const [lastRaw, setLastRaw] = useState<{ path: string; hasMic: boolean; hasSystem: boolean } | null>(null)
   const [exportFmt, setExportFmt] = useState<'mp4' | 'gif'>('mp4')
   const [recordOutputPath, setRecordOutputPath] = useState<string | null>(null)
@@ -194,12 +177,41 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // Seconds elapsed in the finalize/bake phase, so the wait is not opaque.
   const [finalizeSec, setFinalizeSec] = useState(0)
   const [phase, setPhase] = useState<Phase>('idle')
+  const [sceneCaptureId, setSceneCaptureId] = useState<string | null>(null)
   // `remaining` is the cap countdown (only meaningful when capMs != null);
   // `elapsed` is the wall-clock since start (the open-ended clock).
   const [remaining, setRemaining] = useState(0)
   const [elapsed, setElapsed] = useState(0)
   const [note, setNote] = useState('')
   const [err, setErr] = useState<string | null>(null)
+  const previewRecordingScene = useCallback((sceneId: string) => {
+    setStudio((current) => studioStateForRecordingScene(recordingSceneById(sceneId), current))
+  }, [])
+  const {
+    capability: sceneCapability,
+    selectedScene,
+    startConfig: sceneStartConfig,
+    status: sceneStatus,
+    timer: sceneTimer,
+    timerStatus: sceneTimerStatus,
+    recovery: sceneRecovery,
+    setDoctorCapability: setDoctorSceneCapability,
+    refreshRecovery: refreshSceneRecovery,
+    selectScene,
+    selectTimer: selectSceneTimer,
+    controlTimer: controlSceneTimer,
+    markCaptureStarted: markSceneCaptureStarted,
+  } = useRecordingScenes({
+    projectOpen: Boolean(project),
+    recording: phase === 'recording',
+    captureId: sceneCaptureId,
+    onPreviewScene: previewRecordingScene,
+  })
+  const recordingPause = useRecordingPause()
+  // Only this stable action belongs to Doctor's mount-time probe.  The hook
+  // returns live state as well, so depending on its wrapper object here would
+  // recreate `probe` after every Doctor result and continuously re-run it.
+  const { setDoctorCapability: setPauseDoctorCapability } = recordingPause
   const updateCustomFps = useCallback((value: string) => {
     setCustomFps(value)
     if (err?.startsWith('Frame rate needs correction:')) setErr(null)
@@ -236,6 +248,38 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     void emitStudioEvent({ source: 'background', kind: 'style', background })
   }, [emitStudioEvent])
 
+  const setStudioCameraEnabled = useCallback((enabled: boolean) => {
+    setStudio((prev) => ({ ...prev, camera: { ...prev.camera, enabled } }))
+  }, [])
+
+  const setStudioCameraPosition = useCallback((position: StudioCameraPosition) => {
+    setStudio((prev) => {
+      const placement = placementForPosition(position, prev.camera.size)
+      const camera = { ...prev.camera, ...placement, position }
+      void emitStudioEvent({
+        source: 'camera', kind: 'transform', x: camera.x, y: camera.y,
+        size: camera.size, shape: camera.shape,
+      })
+      return { ...prev, camera }
+    })
+  }, [emitStudioEvent])
+
+  const setStudioCameraShape = useCallback((shape: StudioCameraShape) => {
+    setStudio((prev) => {
+      void emitStudioEvent({ source: 'camera', kind: 'transform', shape })
+      return { ...prev, camera: { ...prev.camera, shape } }
+    })
+  }, [emitStudioEvent])
+
+  const setStudioCameraSize = useCallback((value: number) => {
+    setStudio((prev) => {
+      const size = clampCameraSize(value)
+      const placement = placementForPosition(prev.camera.position, size)
+      void emitStudioEvent({ source: 'camera', kind: 'transform', ...placement, size })
+      return { ...prev, camera: { ...prev.camera, ...placement, size } }
+    })
+  }, [emitStudioEvent])
+
   const addRecordingMarker = useCallback(() => {
     if (phase !== 'recording' || !captureRef.current) {
       setNote('Start recording before adding a marker.')
@@ -249,7 +293,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   const probe = useCallback(async () => {
     const r = await callVerb('screen_record.doctor', {})
     if (r.ok && r.result) {
-      const res = r.result as { cards: RecordCard[]; ready: boolean; start_allowed?: boolean; monitors?: MonitorInfo[]; windows?: WindowInfo[] }
+      const res = r.result as { cards: RecordCard[]; ready: boolean; start_allowed?: boolean; monitors?: MonitorInfo[]; windows?: WindowInfo[]; camera?: CameraCapability; quality?: unknown; scenes?: unknown; pause?: unknown }
       setCards(res.cards)
       setReady(res.ready)
       // A pre-start server predates this field, so its strict `ready` result is
@@ -261,6 +305,14 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       // the UI can refuse visibly instead of silently falling back to a monitor.
       const wins = res.windows ?? []
       setWindows(wins)
+      const camera = res.camera ?? NO_CAMERA_CAPABILITY
+      setCameraCapability(camera)
+      setCameraDeviceId((previous) => camera.devices.some((device) => device.id === previous)
+        ? previous
+        : (camera.devices[0]?.id ?? null))
+      setQualityCapability(res.quality)
+      setDoctorSceneCapability(res.scenes)
+      setPauseDoctorCapability(res.pause)
       // Default the picker to the primary display (else the first), so the chosen
       // index is explicit once there's a list. Empty list ⇒ null (engine primary).
       setMonitorIdx((prev) => {
@@ -271,8 +323,12 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     } else {
       setReady(false)
       setStartAllowed(false)
+      setCameraCapability(NO_CAMERA_CAPABILITY)
+      setQualityCapability(undefined)
+      setDoctorSceneCapability(undefined)
+      setPauseDoctorCapability(undefined)
     }
-  }, [])
+  }, [setPauseDoctorCapability, setDoctorSceneCapability, setQualityCapability])
   useEffect(() => { void probe() }, [probe])
 
   useEffect(() => {
@@ -293,6 +349,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     clearTick()
     if (captureRef.current !== captureId) return // already finalized / superseded
     captureRef.current = null
+    setSceneCaptureId(null)
+    recordingPause.clearCapture()
     recordStartedAtRef.current = null
     const rawMode = rawCapture
     const polishing = autoPolish
@@ -316,10 +374,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
         const stop = await withAuthorizedOutputPath(rawOutputPath, () =>
           callVerb('screen_record.stop', { capture_id: captureId, autoedit: false, mux_raw: true, raw_path: rawOutputPath }))
         if (!stop.ok) { setErr(`stop failed: ${stop.error?.message ?? 'error'}`); setPhase('error'); return }
-        const sr = stop.result as { raw_path?: string; raw_has_mic?: boolean; raw_has_system?: boolean; source?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence }
+        const sr = stop.result as { raw_path?: string; raw_has_mic?: boolean; raw_has_system?: boolean; source?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence; quality?: unknown }
         setLastRawStreams(sr.raw_streams ?? null)
         setLastCursorCorrelation(sr.cursor_correlation ?? null)
         setCaptureCadence(sr.cadence ?? null)
+        setQualityResolution(sr.quality)
         const rawPath = sr.raw_path ?? sr.source ?? null
         if (!rawPath) { setErr('capture produced no raw recording'); setPhase('error'); return }
         setLastRaw({ path: rawPath, hasMic: !!sr.raw_has_mic, hasSystem: !!sr.raw_has_system })
@@ -329,10 +388,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       }
       const stop = await callVerb('screen_record.stop', { capture_id: captureId, autoedit: true })
       if (!stop.ok) { setErr(`stop failed: ${stop.error?.message ?? 'error'}`); setPhase('error'); return }
-      const sr = stop.result as { source?: string; plan?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence }
+      const sr = stop.result as { source?: string; plan?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence; quality?: unknown }
       setLastRawStreams(sr.raw_streams ?? null)
       setLastCursorCorrelation(sr.cursor_correlation ?? null)
       setCaptureCadence(sr.cadence ?? null)
+      setQualityResolution(sr.quality)
       const src = sr.source ?? source
       if (!src || !sr.plan) { setErr('capture produced no source/plan'); setPhase('error'); return }
       // Retain source+plan so "Export clip" can render a file later without re-recording.
@@ -353,13 +413,14 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       // (fetch rejects with a TypeError when the connection fails).
       const reason = failureReason(error)
       setErr(rawMode && recordOutputPath
-        ? `finalize failed: ${reason} — ${OUTPUT_PATH_HINT} (${recordOutputPath})`
+        ? `finalize failed: ${reason} — ${OUTPUT_PATH_HINT}`
         : `finalize failed: ${reason}`)
       setPhase('error')
     } finally {
       clearTick() // stop the finalize elapsed clock on every exit path
+      void refreshSceneRecovery()
     }
-  }, [onClipAdded, autoPolish, rawCapture, recordOutputPath])
+  }, [onClipAdded, autoPolish, rawCapture, recordOutputPath, recordingPause, refreshSceneRecovery, setQualityResolution])
 
   // RAW mode: add the saved raw recording to the timeline AS-IS. `media.import`
   // auto-places the first clip into an empty timeline (the common fresh-recording
@@ -388,6 +449,52 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       setPhase('error')
       return
     }
+    if (sourceKind === 'window' && !windowTargetId) {
+      setErr('Choose an application window before recording.')
+      setPhase('error')
+      return
+    }
+    if (sourceKind === 'region') {
+      setErr(regionPickerCapability.availability === 'unavailable'
+        ? regionPickerCapability.reason
+        : 'Region capture is not connected to the native recorder in this build.')
+      setPhase('error')
+      return
+    }
+    if (recordingPause.enabled) {
+      if (!recordingPause.capability.supported) {
+        setErr(recordingPause.capability.detail)
+        setPhase('error')
+        return
+      }
+      if (sourceKind !== 'display') {
+        setErr('Pause & resume records one exact display. Choose Display before recording.')
+        setPhase('error')
+        return
+      }
+      const selected = monitorIdx === null ? undefined : monitors.find((monitor) => monitor.index === monitorIdx)
+      if (!selected?.id) {
+        setErr('Pause & resume needs a current exact display. Refresh Recorder and choose a listed display.')
+        setPhase('error')
+        return
+      }
+      if (!Number.isInteger(fps)) {
+        setErr('Pause & resume needs a whole-number frame rate.')
+        setPhase('error')
+        return
+      }
+    }
+    const cameraError = cameraSelectionError(
+      cameraCapability,
+      !recordingPause.enabled && studio.camera.enabled,
+      cameraDeviceId,
+      rawCapture,
+    )
+    if (cameraError) {
+      setErr(cameraError)
+      setPhase('error')
+      return
+    }
     // Record without a project: if none is open, create one on the fly so
     // you can record straight from the Record surface — the capture lands in a fresh
     // auto-named project. project.create OPENS it server-side; onClipAdded re-syncs App.
@@ -402,10 +509,12 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     setLastRawStreams(null)
     setLastCursorCorrelation(null)
     setCaptureCadence(null)
+    clearQualityResolution()
     setLastCapture(null)
     setLastRaw(null)
     const startArgs: {
       fps: number
+      quality?: { output_size: 'source' | '1080p' | '720p'; profile: 'standard' | 'high' }
       audio: boolean
       system_audio: boolean
       keys: boolean
@@ -413,21 +522,32 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       monitor?: number
       monitor_id?: string
       window?: string
+      camera_id?: string
+      scenes?: RecordingSceneStartConfig
+      pause?: { mode: 'enabled' }
       studio?: unknown
     } = {
       fps,
       audio,
       system_audio: systemAudio,
-      keys: rawCapture ? false : keys,
+      keys: recordingPause.enabled || rawCapture ? false : keys,
       studio: {
         background: studio.background,
       },
     }
     if (capMs !== null) startArgs.duration_ms = capMs // omitted entirely = open-ended
+    if (!recordingPause.enabled && qualityRequest) startArgs.quality = qualityRequest
+    // Scene metadata is sent only after Doctor advertises the proposed,
+    // versioned scene capability. Older engines keep the normal recorder path.
+    if (!recordingPause.enabled && sceneStartConfig) startArgs.scenes = sceneStartConfig
+    if (!recordingPause.enabled && studio.camera.enabled && !rawCapture && cameraDeviceId) {
+      startArgs.camera_id = cameraDeviceId
+    }
+    if (recordingPause.enabled) startArgs.pause = { mode: 'enabled' }
     // Source selection: an opaque live window identity wins; otherwise a chosen
     // monitor on a multi-monitor setup. When Doctor supplied the selected monitor's
     // opaque identity, return it unchanged for the server/native exact-target path.
-    if (windowTargetId) startArgs.window = windowTargetId
+    if (sourceKind === 'window' && windowTargetId) startArgs.window = windowTargetId
     else {
       const selectedMonitor = monitorIdx === null
         ? undefined
@@ -441,10 +561,20 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
       setPhase('error')
       return
     }
-    const res = r.result as { capture_id: string; out_dir?: string; cadence?: RecordingCadence }
+    const res = r.result as { capture_id: string; out_dir?: string; cadence?: RecordingCadence; scenes?: unknown; pause?: unknown }
     setCaptureCadence(res.cadence ?? null)
     captureRef.current = res.capture_id
+    setSceneCaptureId(res.capture_id)
+    markSceneCaptureStarted(res.scenes)
+    recordingPause.acknowledgeStart(res.capture_id, res.pause)
     recordStartedAtRef.current = Date.now()
+    if (!recordingPause.enabled && studio.camera.enabled && !rawCapture) {
+      await emitStudioEvent({ source: 'camera', kind: 'visibility', visible: true })
+      await emitStudioEvent({
+        source: 'camera', kind: 'transform', x: studio.camera.x, y: studio.camera.y,
+        size: studio.camera.size, shape: studio.camera.shape,
+      })
+    }
     setPhase('recording')
     setElapsed(0)
     setRemaining(capMs !== null ? Math.ceil(capMs / 1000) : 0)
@@ -462,9 +592,39 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
         if (left <= 0) void finalize(res.capture_id, null)
       }
     }, 250)
-  }, [capMs, fps, customFpsError, audio, systemAudio, keys, rawCapture, monitorIdx, monitors, windowTargetId, selectedWindowMissing, finalize, project, onClipAdded, studio])
+  }, [capMs, fps, customFpsError, audio, systemAudio, keys, clearQualityResolution, qualityRequest, rawCapture, monitorIdx, monitors, sourceKind, windowTargetId, selectedWindowMissing, cameraCapability, cameraDeviceId, emitStudioEvent, finalize, markSceneCaptureStarted, onClipAdded, project, recordingPause, sceneStartConfig, studio])
 
-  // Manual STOP — ends an open-ended (or capped) capture right now.
+  const preflightStartError = useCallback(() => {
+    if (startAllowed === false) return 'Screen capture is not ready on this machine.'
+    if (customFpsError) return `Frame rate needs correction: ${customFpsError}`
+    if (selectedWindowMissing) return 'The selected window is no longer available. Choose another source before recording.'
+    if (sourceKind === 'window' && !windowTargetId) return 'Choose an application window before recording.'
+    if (sourceKind === 'region') {
+      return regionPickerCapability.availability === 'unavailable'
+        ? regionPickerCapability.reason
+        : 'Region capture is not connected to the native recorder in this build.'
+    }
+    if (recordingPause.enabled) {
+      if (!recordingPause.capability.supported) return recordingPause.capability.detail
+      if (sourceKind !== 'display') return 'Pause & resume records one exact display. Choose Display before recording.'
+      const selected = monitorIdx === null ? undefined : monitors.find((monitor) => monitor.index === monitorIdx)
+      if (!selected?.id) return 'Pause & resume needs a current exact display. Refresh Recorder and choose a listed display.'
+      if (!Number.isInteger(fps)) return 'Pause & resume needs a whole-number frame rate.'
+    }
+    const cameraError = cameraSelectionError(
+      cameraCapability, !recordingPause.enabled && studio.camera.enabled, cameraDeviceId, rawCapture,
+    )
+    if (cameraError) return cameraError
+    return null
+  }, [cameraCapability, cameraDeviceId, customFpsError, fps, monitorIdx, monitors, rawCapture, recordingPause, regionPickerCapability, selectedWindowMissing, sourceKind, startAllowed, studio.camera.enabled, windowTargetId])
+  const countdown = useRecordingCountdown({
+    validate: preflightStartError,
+    onPrepare: () => { setErr(null); setNote(''); setPhase('idle') },
+    onStart: start,
+    onInvalid: (message) => { setErr(message); setPhase('error') },
+    onCancel: () => { setPhase('idle'); setErr(null); setNote('Countdown cancelled — nothing was recorded.') },
+  })
+
   const stop = useCallback(() => {
     const id = captureRef.current
     if (id) void finalize(id, null)
@@ -495,17 +655,18 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // window focused) toggles once, not twice. No-op while finalizing, or when a
   // project isn't open / capture cannot start (matches the button's disabled state).
   const toggle = useCallback(() => {
-    if (audioProbeRunning) return
-    if (micTestRunning) return
+    if (audioProbeRunning || micTestRunning) return
     const now = Date.now()
     if (now - lastToggleRef.current < 400) return // de-dupe the global+in-page double-fire
     lastToggleRef.current = now
-    if (phase === 'recording') {
+    if (countdown.active) {
+      countdown.cancel()
+    } else if (phase === 'recording') {
       stop()
     } else if (phase === 'idle' || phase === 'done' || phase === 'error') {
-      if (startAllowed !== false) void start() // start() auto-creates a project if none is open
+      countdown.requestStart()
     }
-  }, [audioProbeRunning, micTestRunning, phase, project, startAllowed, start, stop])
+  }, [audioProbeRunning, countdown, micTestRunning, phase, stop])
 
   // A SINGLE key (F9) toggles Start ⇄ Stop — no 3-key chord.
   //
@@ -516,7 +677,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   useEffect(() => onRecordHotkey(() => {
     if (!isBlockingOverlayActive()) toggle()
   }), [toggle])
-
   // FOCUSED-WINDOW fallback: the same F9 as a plain in-page keydown. Covers the
   // case where the Cut window itself is focused, and is the SOLE path in the
   // plain web/dev build (no shell ⇒ no global registration). Listener lives HERE
@@ -524,6 +684,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   // the Record surface is mounted.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (countdown.active && e.key === 'Escape') {
+        e.preventDefault()
+        countdown.cancel()
+        return
+      }
       if (shouldIgnoreGlobalShortcut(e)) return
       if (matchesFixedAction(e, 'recording.toggle')) {
         e.preventDefault()
@@ -537,12 +702,18 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [addRecordingMarker, toggle])
+  }, [addRecordingMarker, countdown, toggle])
 
-  // Clean up the tick on unmount.
   useEffect(() => () => { clearTick() }, [])
 
-  const busy = phase === 'recording' || phase === 'finalizing' || audioProbeRunning || micTestRunning
+  const busy = countdown.active || phase === 'recording' || phase === 'finalizing' || audioProbeRunning || micTestRunning
+  const sceneControlsDisabled = countdown.active || phase === 'finalizing' || audioProbeRunning || micTestRunning
+  const sceneCameraReason = rawCapture
+    ? 'Camera scenes need Auto-edit mode.'
+    : cameraSelectionError(cameraCapability, true, cameraDeviceId, false)
+  const pauseCameraCapability = recordingPause.enabled
+    ? { ...NO_CAMERA_CAPABILITY, detail: 'Camera is unavailable while Pause & resume is enabled.' }
+    : cameraCapability
 
   // Staleness guard: the user's open windows change while the Record tab sits open
   // (they alt-tab, open Chrome, close an app), but the picker only probed on mount —
@@ -558,8 +729,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
   const cardStatus = (c: RecordCard) => (
     c.status === 'ok' ? 'ok' : c.status === 'degraded' ? 'degraded' : c.status === 'unknown' ? 'unknown' : 'missing'
   )
+  const displayPhase = countdown.active ? 'countdown' : phase
   const studioElapsed = phase === 'recording'
     ? fmtElapsed(elapsed)
+    : countdown.active
+      ? `${countdown.remaining}`
     : phase === 'finalizing'
       ? `${finalizeSec}s`
       : '0:00'
@@ -606,26 +780,56 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
 
           <div className="rec__studio" data-cut-rec-studio>
             <StudioPreview
-              background={studio.background}
-              phase={phase}
+              studio={studio}
+              phase={displayPhase}
               elapsed={studioElapsed}
+              sceneName={selectedScene.name}
+              sceneState={sceneStatus.state}
             />
             <StudioControls
+              sceneControl={(
+                <RecordingScenesControl
+                  selectedScene={selectedScene}
+                  status={sceneStatus}
+                  recovery={sceneRecovery}
+                  timer={sceneTimer}
+                  timerStatus={sceneTimerStatus}
+                  recording={phase === 'recording'}
+                  disabled={sceneControlsDisabled}
+                  cameraReason={sceneCameraReason}
+                  unavailableReason={recordingPause.enabled ? 'Scenes are unavailable while Pause & resume is enabled.' : null}
+                  liveSupported={sceneCapability.supported}
+                  onSelect={(sceneId) => { void selectScene(sceneId) }}
+                  onTimerChange={selectSceneTimer}
+                  onTimerControl={(action) => { void controlSceneTimer(action) }}
+                  onRefreshRecovery={() => { void refreshSceneRecovery() }}
+                />
+              )}
               studio={studio}
               rawStreams={lastRawStreams}
               cursorCorrelation={lastCursorCorrelation}
               onBackground={setStudioBackground}
+              cameraCapability={pauseCameraCapability}
+              cameraDeviceId={cameraDeviceId}
+              configurationDisabled={busy}
+              liveAdjustDisabled={sceneControlsDisabled}
+              rawCapture={rawCapture}
+              onCameraEnabled={setStudioCameraEnabled}
+              onCameraDevice={setCameraDeviceId}
+              onCameraPosition={setStudioCameraPosition}
+              onCameraShape={setStudioCameraShape}
+              onCameraSize={setStudioCameraSize}
             />
           </div>
 
           {/* Settings */}
-          <div className="rec__settings" data-cut-rec-settings>
+          <div className="rec__settings" data-cut-rec-settings data-cut-rec-quality-supported={Boolean(qualityCapability)}>
             {/* MODE: AUTO-EDIT (record → polished clip on the timeline) vs RAW CAPTURE
                 (save the recording exactly as captured — no autoedit, no polish). The
                 same source/length/fps/mic/system-audio options apply to BOTH modes. */}
             <div className="rec__field rec__field--mode">
               <span className="rec__label">Mode</span>
-              <div className="rec__seg" role="radiogroup" aria-label="Recording mode">
+              <div className="rec__seg" role="group" aria-label="Recording mode">
                 <button
                   type="button"
                   className={`rec__seg-btn${!rawCapture ? ' rec__seg-btn--on' : ''}`}
@@ -655,11 +859,14 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                   : 'Auto-edit records, then polishes (zoom-to-cursor, framing) and drops the finished clip on the timeline.'}
               </p>
             </div>
-            <div className="rec__field rec__field--output" data-cut-rec-output-path={recordOutputPath ?? ''}>
+            <div
+              className="rec__field rec__field--output"
+              data-cut-rec-output-kind={recordOutputPath ? 'custom' : 'default'}
+            >
               <span className="rec__label">Recording file</span>
               <div className="rec__output-row">
-                <code className="rec__output-path" title={recordOutputPath ?? undefined}>
-                  {recordOutputPath ? folderTail(recordOutputPath) : 'Uses default export folder'}
+                <code className="rec__output-path" data-cut-rec-output-name={recordOutputPath ? 'chosen' : 'default'}>
+                  {recordOutputPath ? outputFileLabel(recordOutputPath) : 'Uses default export folder'}
                 </code>
                 <button
                   type="button"
@@ -698,65 +905,44 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
             </div>
             <div className="rec__field rec__field--source">
               <span className="rec__label">Source</span>
-              <div className="rec__seg">
-                {/* SOURCE picker. Windows: the doctor enumerates `monitors` (displays)
-                    AND `windows` (app windows), so a real <select> offers Full-screen /
-                    per-monitor or per-window capture (record one app, not the whole
-                    screen). Linux / single display with no window list (empty arrays —
-                    the XDG portal shows its OWN source picker at capture time): the
-                    single "Full screen" button. The data-cut-rec-source hook stays on
-                    whichever control renders so agent/UI tests still find the source. */}
-                {/* Always render the source <select>, even on a single display with no
-                    other app windows open — so the source choice is explicit + discoverable.
-                    Opening it re-probes (onMouseDown) and reveals app windows as they appear. */ (
-                  <select
-                    className="rec__select"
-                    data-cut-rec-source={windowTargetId ? 'window' : 'screen'}
-                    data-cut-rec-monitor={windowTargetId ? '' : (monitorIdx ?? '')}
-                    data-cut-rec-window={windowTargetId ?? ''}
-                    disabled={busy}
-                    // Re-enumerate the live windows the moment the user opens the picker,
-                    // so a window opened or closed since mount shows up immediately.
-                    onMouseDown={() => { void probe() }}
-                    value={windowTargetId ? `win:${windowTargetId}` : `mon:${monitorIdx ?? (monitors.find((m) => m.primary)?.index ?? monitors[0]?.index ?? 1)}`}
-                    onChange={(e) => {
-                      const v = e.target.value
-                      if (v.startsWith('win:')) setWindowTargetId(v.slice(4))
-                      else { setWindowTargetId(null); setMonitorIdx(Number(v.slice(4))) }
-                    }}
-                    aria-label="What to record — a screen or one application window"
-                  >
-                    <optgroup label={monitors.length >= 2 ? 'Displays' : 'Screen'}>
-                      {(monitors.length >= 1 ? monitors : [{ index: 1, name: '', width: 0, height: 0, primary: true }]).map((m) => (
-                        <option key={`mon-${m.index}`} value={`mon:${m.index}`}>
-                          {`${monitors.length >= 2 ? `Monitor ${m.index}` : 'Full screen'}${m.name ? ` — ${m.name}` : ''}${m.width && m.height ? ` (${m.width}×${m.height})` : ''}${m.primary && monitors.length >= 2 ? ' (primary)' : ''}`}
-                        </option>
-                      ))}
-                    </optgroup>
-                    {windows.length >= 1 && (
-                      <optgroup label="Windows — record one app">
-                        {windows.map((w) => (
-                          <option key={`win-${w.id}`} value={`win:${w.id}`}>
-                            {`${w.title}${w.app ? ` — ${w.app}` : ''}`}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                  </select>
-                )}
-              </div>
-              {selectedWindowMissing && (
-                <p className="rec__source-note" data-cut-rec-window-missing>
-                  The selected window closed or changed identity. Choose another source before recording.
-                </p>
-              )}
-              {monitors.length < 2 && windows.length < 1 && ready !== false && (
-                <p className="rec__source-note" data-cut-rec-source-note>
-                  {/Mac/i.test(navigator.platform) || /Mac OS X/.test(navigator.userAgent)
-                    ? 'On macOS, capture records your main display. The first capture asks for Screen Recording permission (and Microphone, if audio is on).'
-                    : 'On Linux the OS screen-share dialog lets you pick which display/window at the start of capture.'}
-                </p>
-              )}
+              <RecordingSourceControl
+                sourceKind={sourceKind}
+                monitors={monitors}
+                monitorIdx={monitorIdx}
+                windows={windows}
+                windowTargetId={windowTargetId}
+                selectedWindowMissing={selectedWindowMissing}
+                disabled={busy}
+                allowWindow={!recordingPause.enabled}
+                regionCapability={regionPickerCapability}
+                onRefresh={() => { void probe() }}
+                onSourceKindChange={(next) => {
+                  setSourceKind(next)
+                  setRegionPickerOpen(next === 'region' && regionPickerCapability.availability === 'available')
+                }}
+                onMonitorChange={setMonitorIdx}
+                onWindowChange={setWindowTargetId}
+              />
+            </div>
+            <div className="rec__field rec__field--pause">
+              <span className="rec__label">Pause</span>
+              <RecordingPauseControl
+                capability={recordingPause.capability}
+                enabled={recordingPause.enabled}
+                state={recordingPause.state}
+                message={recordingPause.message}
+                disabled={busy}
+                onEnabled={(enabled) => {
+                  recordingPause.setPauseEnabled(enabled)
+                  if (!enabled) return
+                  setSourceKind('display')
+                  setWindowTargetId(null)
+                  setRegionPickerOpen(false)
+                  setKeys(false)
+                  setStudio((current) => ({ ...current, camera: { ...current.camera, enabled: false } }))
+                }}
+                onControl={() => { void recordingPause.control() }}
+              />
             </div>
             <div className="rec__field rec__field--length">
               <span className="rec__label">Length</span>
@@ -798,13 +984,31 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
             <label className="rec__toggle rec__toggle--system" data-cut-rec-system-audio-toggle title="Capture the desktop/app sound (e.g. a game) onto its OWN audio track, separate from the mic">
               <input type="checkbox" data-cut-rec-system-audio-toggle-input checked={systemAudio} disabled={busy} onChange={(e) => setSystemAudio(e.target.checked)} /> Capture system / desktop audio (game sound)
             </label>
+            <RecordingCountdownControl
+              value={countdown.seconds}
+              disabled={busy}
+              onValueChange={countdown.setSeconds}
+            />
+            {qualityCapability && (
+              <RecordingQualityControl
+                capability={qualityCapability}
+                outputSize={outputSize}
+                profile={profile}
+                resolution={qualityResolution}
+                cadence={captureCadence}
+                disabled={busy}
+                unavailableReason={recordingPause.enabled ? 'Quality is unavailable while Pause & resume is enabled.' : null}
+                onOutputSizeChange={setOutputSize}
+                onProfileChange={setProfile}
+              />
+            )}
             <SystemAudioProbeControl disabled={busy} onRunningChange={setAudioProbeRunning} />
             {/* Key-cast + auto-polish are POLISH-pass features (a burned-in overlay / a
                 zoom-cursor-framing re-render). RAW capture skips polish entirely, so
                 these controls are hidden in raw mode rather than left as dead toggles. */}
             {!rawCapture && (
               <label className="rec__toggle rec__toggle--keys" data-cut-rec-keys-toggle title="Keystrokes can reveal passwords — off by default">
-                <input type="checkbox" data-cut-rec-keys-toggle-input checked={keys} disabled={busy} onChange={(e) => setKeys(e.target.checked)} /> Show keystrokes (key-cast)
+                <input type="checkbox" data-cut-rec-keys-toggle-input checked={recordingPause.enabled ? false : keys} disabled={busy || recordingPause.enabled} onChange={(e) => setKeys(e.target.checked)} /> {recordingPause.enabled ? 'Keystrokes unavailable with Pause & resume' : 'Show keystrokes (key-cast)'}
               </label>
             )}
             {!rawCapture && (
@@ -815,8 +1019,12 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
           </div>
 
           {/* Transport / HUD */}
-          <div className="rec__transport" data-cut-studio-result={phase} data-cut-rec-primary-transport>
-            {phase === 'recording' ? (
+          <div className="rec__transport" data-cut-studio-result={displayPhase} data-cut-rec-primary-transport>
+            {countdown.active ? (
+              <div className="rec__hud rec__hud--countdown" data-cut-rec-countdown-transport>
+                Starting in {countdown.remaining}… Press Escape to cancel.
+              </div>
+            ) : phase === 'recording' ? (
               <div className="rec__hud-wrap">
                 <div className="rec__hud" data-cut-rec-hud>
                   <span className="rec__hud-dot" aria-hidden="true" />
@@ -844,8 +1052,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                 type="button"
                 className="rec__start"
                 data-cut-action="record-start"
-                disabled={busy || startAllowed === false || selectedWindowMissing || Boolean(customFpsError)}
-                onClick={() => void start()}
+                disabled={busy || startAllowed === false || selectedWindowMissing || windowNeedsSelection || sourceKind === 'region' || Boolean(customFpsError) || Boolean(cameraSelectionError(cameraCapability, !recordingPause.enabled && studio.camera.enabled, cameraDeviceId, rawCapture))}
+                onClick={countdown.requestStart}
               >
                 ● Start recording ({SHORTCUT_LABEL})
               </button>
@@ -855,8 +1063,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
                 carries the combined mic+system audio) straight onto the timeline. */}
             {phase === 'done' && rawCapture && lastRaw && (
               <div className="rec__export" data-cut-rec-raw-done>
-                <p className="rec__done" data-cut-rec-done data-cut-rec-raw-path={lastRaw.path}>
-                  Raw recording saved → {lastRaw.path}
+                <p className="rec__done" data-cut-rec-done data-cut-rec-raw-output="saved">
+                  Raw recording saved.
                 </p>
                 <p className="rec__source-note" data-cut-rec-raw-audio={lastRaw.hasMic && lastRaw.hasSystem ? 'mic+system' : lastRaw.hasMic ? 'mic' : lastRaw.hasSystem ? 'system' : 'none'}>
                   {lastRaw.hasMic && lastRaw.hasSystem
@@ -914,6 +1122,25 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings }: R
             )}
           </div>
         </div>
+      )}
+      {regionPickerOpen && regionPickerCapability.availability === 'available' && (
+        <RegionPickerOverlay
+          capability={regionPickerCapability}
+          onCancel={() => setRegionPickerOpen(false)}
+          onConfirm={() => {
+            // Fail closed: this source slice has no desktop/server bridge that
+            // can turn a rendered rectangle into the native one-use ticket.
+            setRegionPickerOpen(false)
+            setSourceKind('display')
+            setErr('Region capture is not connected to the native recorder in this build.')
+          }}
+        />
+      )}
+      {countdown.active && (
+        <RecordingCountdownOverlay
+          remaining={countdown.remaining}
+          onCancel={countdown.cancel}
+        />
       )}
     </section>
   )

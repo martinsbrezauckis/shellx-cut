@@ -5,10 +5,12 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-> **Engine v0.6.112.** Synced to the contract (`schema/verbs.json` — the single
+<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
+> **Engine v0.6.113 candidate.** v0.6.112 remains the latest published release.
+> Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **278 verbs across 33 domains** under the public verb contract.
-> **`reference.md` is the full 278-verb table —
+> the file): **294 verbs across 34 domains** under the public verb contract.
+> **`reference.md` is the full 294-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -185,9 +187,13 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 > - **Recording Studio** — the `screen_record.*` domain wires the integrated
 >   Cut recorder crates in process: `doctor` / `system_audio_probe` / `start` / `stop` /
 >   `recovery_status` / `studio_event` / `autoedit` / `polish` / `export` (live screen/audio
->   capture, raw streams, auto-edit plan, content-addressed bake). Live camera
->   capture is unavailable in this release; camera composition accepts an
->   existing project-local camera file only.
+>   capture, raw streams, auto-edit plan, content-addressed bake). On Windows and
+>   macOS, Doctor can advertise opaque camera choices for an explicit Auto-edit
+>   recording. The admitted camera is finalized as a separate editable take with
+>   shared-clock evidence; permission, busy-device, and no-frame failures never
+>   fall back to another device. Recording Scenes freezes named Screen and
+>   Presenter PiP presets at Start; `scene_activate` and `scene_timer` durably
+>   save shared-clock transitions before acknowledging them.
 >   Doctor health stays strict: on Linux `start_allowed:true` means only the
 >   deliberate prompt-deferred XDG ScreenCast portal card may enter the
 >   user-initiated source picker; it does not make `ready` true, and missing,
@@ -203,7 +209,22 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   before capture. It is not a display name, ordinal, primary flag, geometry,
 >   or device path; never invent a replacement. The legacy full-display picker
 >   still accepts its documented `index` when `id` is absent, and Linux
->   intentionally returns no in-app monitor rows.
+>   intentionally returns no in-app monitor rows. The human Record UI separates
+>   Display and Window targets at the first level and does not expose Region
+>   until a real native picker can succeed; agents must not infer a crop or
+>   unavailable Region capability from that UI.
+>   Output quality is capability-gated in the same way. Read
+>   `screen_record.doctor.quality`; only when `supported:true` may an agent pass
+>   one advertised Source/1080p/720p plus Standard/High pair in
+>   `screen_record.start{quality}`. Current Windows/macOS backends return empty
+>   choices and reject direct requests. Stop may return final quality facts only
+>   after the Linux final-source verifier confirms the requested height limit,
+>   H.264 container, and named libx264 encoder.
+>   After Start, `screen_record.status{capture_id}` is the short-lived native
+>   admission check for automation: continue only at `ready:true` with
+>   `terminal:false`. Process start, elapsed time, or an output file is not a
+>   substitute for the first real screen frame, and a terminal capture is never
+>   admitted even when it delivered frames earlier.
 >   The visible **Test microphone** control tests System Default or the current
 >   selected source and reports one real peak. Windows/macOS selection consumes
 >   one current opaque Doctor token into private endpoint storage; public labels
@@ -235,11 +256,39 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   that tap at the video boundary before checkpoint stitching, and its finite
 >   wait scales from capture work rather than assuming every native finalize fits
 >   a fixed short timeout.
->   If a default-output `screen_record.export` ends in an eligible true failure,
->   `jobs.retry {job_id}` can create exactly one linked attempt only while the
->   project revision, capture media and audio, EditPlan, and output lease are
->   unchanged. Never retry a cancellation, explicit Save As, success, legacy
->   record, changed input, or an already retried job.
+>   Studio background and marker changes are ordered by the server and appended
+>   to a bounded, crash-recoverable `studio-events.jsonl` journal. Legacy
+>   `studio-events.json` captures remain readable. In the human UI, **None** is
+>   a truthful full-bleed recording with no backdrop or frame, and ordinary
+>   completion copy remains path-light until the user deliberately chooses
+>   Reveal or Copy path.
+>   `jobs.retry {job_id}` can create exactly one linked attempt for either an
+>   eligible failed default-output `screen_record.export` or an eligible failed
+>   `verify.rerun`. The recorder route revalidates the project revision, capture
+>   media and audio, EditPlan, and output lease; the verification route
+>   revalidates the active project, immutable RenderReceipt, and exact rendered
+>   bytes. Never retry a cancellation, explicit Save As, success, legacy record,
+>   changed input, unowned job kind, or already retried job.
+> - **Timeline voiceover** — `voiceover.start` is human-UI-only and only becomes
+>   available after the current `screen_record.doctor` explicitly admits native
+>   capture. It binds a current unlocked audio track plus playhead or In/Out and
+>   a required `request_id`/`expected_revision` before reserving the private
+>   source. It returns a server-issued memory-only owner claim bound to that
+>   caller and request; every tick, Stop, Cancel, and Preview Out must present
+>   the claim, while a response-loss retry keeps the original request id and
+>   non-secret reattach session id. The server owns real readiness/count-in,
+>   exact correlated Preview seek/playback acknowledgement, sealed WAV
+>   verification, and one atomic asset-plus-clip placement (one Undo). Poll
+>   `voiceover.tick`; call `voiceover.stop`, `voiceover.cancel`, or
+>   `voiceover.observe_playhead` only from the visible Timeline flow. Direct
+>   microphone monitoring is always off.
+>   Reattach A before comparing its later UI revision/range: an exact live A
+>   takes precedence over ordinary project edits, while B remains refused until
+>   A resolves. Only the explicit `voiceover_start_retry_rejected` start code
+>   permits clearing the browser's non-secret retry identity; ownership or
+>   transport errors remain retry-ambiguous.
+>   A disabled control or refusal is not evidence that a host has native
+>   microphone readiness; no installed/native qualification is claimed here.
 > - **Director / reframe / delivery** — `render.reframe` (subject-tracked moving
 >   crop to a platform aspect — the HONEST alternative to a static centre-crop),
 >   `render.direct` (director-model pass: a per-scene contact sheet the foundation
@@ -314,6 +363,15 @@ description: Use when editing video with ShellX Cut or its cutd server — video
   ignore: captions/reels skip it, audio/timing stay intact), `transcript.assemble`
   (non-contiguous highlight reel), `render.storyboard` (contact-sheet
   overview), `media.waveform`.
+- **Reviewed caption replacement.** Use `captions.bulk_preview` with one
+  caption track, literal `find`/`replace_with`, `match_mode:"contains"` or
+  `"whole_word"`, explicit case choice, and optional `range_ms`; inspect its
+  opaque hash and rows before `captions.bulk_apply`. Apply supplies only that
+  hash plus `request_id` and `expected_revision`: the server keeps the complete
+  reviewed target set privately (the UI shows only the first 100 rows),
+  revalidates cue id/range/source text, and commits one Undoable update. Do not
+  supply targets yourself. Timing stays unchanged unless every affected cue has
+  exact transcript-word evidence and `refresh_timing:true` is chosen.
 
 ## Overview
 
@@ -378,7 +436,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 278 tools, and same-engine
+the final proof of protocol negotiation, ping, all 294 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -558,6 +616,17 @@ closed rather than substituting a weaker publish.
 
 ### Project cache lifecycle
 
+Use `project.cache_rebuild {asset_ids?}` only to backfill missing or stale
+Cut-owned base proxies/filmstrips for registered current-source assets. Omit
+`asset_ids` only when the project has at most 64 assets; otherwise select at
+most 64 unique ids. Its uniform path-free result reports queued asset/output,
+up-to-date, and items-needing-attention counts for `queued`, `already_queued`, and `not_needed`.
+Poll a queued `cache_rebuild` through `jobs.status` and use `jobs.cancel` when
+requested. It verifies source identity before publication, reserves ownership
+durably before output, never adopts legacy/unowned files, and leaves unfinished
+pending reservations resumable after cancellation or restart. It never changes
+source media, exports, recordings, captures, receipts, or foreign files.
+
 Use `project.cache_preview {}` before any cleanup claim. It returns a path-free,
 one-use plan only for aged, unreferenced proxy and filmstrip files that still
 match Cut's durable ownership ledger. A legacy, unowned, foreign, symlinked,
@@ -721,6 +790,12 @@ an uncropped screen demo no longer passes silently. Alternative for one render:
 This is the core loop. Read words first: `transcript.get {asset}` → words with
 indices (`idx`) and ms spans.
 
+The human Transcript panel groups those same authoritative words into bounded
+phrase rows with visible start-end ranges. Activating a row seeks its exact
+Clip, reused Program occurrence, or Source position; expanding it reveals the
+existing word actions. This is presentation over the verb timestamps, not a
+second timing model.
+
 - `transcript.cut_words {asset, word_range, rationale}` — ripple-cuts audio+video
   at word boundaries. The engine never cuts inside a word (pads to word edges
   ±40 ms) — so think in **word indices**, not raw milliseconds.
@@ -816,6 +891,23 @@ was said*, use a transcript verb so the word-boundary guarantee holds.
   preview and final output. Locking a track disables its timeline gestures plus
   Layer and Inspector editing until the track is unlocked.
 
+### 3d. Clip volume automation (audio)
+
+- **Shape a selected audio clip, not the track:** its waveform carries a
+  **Clip volume** curve. The visible **Add point** action uses the playhead;
+  Ctrl/Cmd-click is the accelerator. The curve displays −60…+12 dB while the
+  existing `edit.keyframe {clip, param:"volume", points, interp}` contract
+  retains its linear multipliers and complete SET semantics. Do not substitute
+  `edit.gain` (static clip/track gain) or `edit.duck` (track duck windows).
+- **Preserve playback and concurrent edits:** first automation points seed the
+  current static clip gain; Clear leaves that static gain untouched. A drag is
+  local preview only until pointer-up, which emits one full sorted keyframe
+  track/one undoable op. Escape or pointer cancellation emits nothing. Keep
+  points between adjacent timestamps, fail closed without a current revision,
+  and explain locked-track, no-duration, and speed-ramp refusal. Inspector is
+  the accessible exact-value/interpolation alternative. This surface has no
+  Record/Arm/Stop or `screen_record` behaviour.
+
 ### 4. Review discipline
 
 - **Every op gets a rationale.** Pass `rationale` where the verb accepts it
@@ -834,6 +926,12 @@ was said*, use a transcript verb so the word-boundary guarantee holds.
   created (e.g. a `split` whose right-half a later `gain` addresses). Both modes
   APPEND, never rewrite. For a full rollback to a point, use
   `project.revert {to: checkpoint-or-op}`.
+- For one existing linked/compound action, first call
+  `project.group_preview {op_id}`. Only a `reject.status:"ready"` preview may
+  be sent unchanged to `project.group_reject` with a fresh `request_id` and
+  that exact `project_revision`. It is tip-only and appends one normal restore;
+  one `project.undo` restores the entire group. Do not turn this into a generic
+  selected-op replay: newer history is deliberately refused.
 - Checkpoint between passes (`project.checkpoint`), and **always run
   `project.diff {from: last_checkpoint, to: "now"}` before rendering** — read the summary (clips
   added/removed/moved, `duration_delta_ms`, `tracks_touched`) and confirm it
@@ -983,6 +1081,12 @@ exporter (add a layer over a span → render it → save the clip).
   frame for verification (captions burned in, PiP composited, project geometry),
   pass `compose: true`. Raw bytes also at `GET /api/frame?at_ms=[&h=][&compose=1]`
   (the `X-Cut-Frame-Fast` header says which path served it).
+- **Preview → Compare** — a human-only, read-only review control that pauses
+  playback and asks `render.compare {at_ms, revision}` for the exact composed
+  current durable-head frame beside the state before its latest timeline-mutating edit.
+  It never calls Undo or adds an operation. It refuses instead of guessing when
+  no earlier timeline state, compatible sequence format, or frame exists; the pair
+  also closes if the playhead or durable head changes while it is open.
 - `render.preview {draft: true}` — **Incremental draft preview:** a fast
   proxy-grade preview of the WHOLE timeline that re-renders only the segments
   whose inputs changed since the last preview and reuses the rest. The

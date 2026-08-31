@@ -1,6 +1,23 @@
 export type StudioCameraPosition = 'top_left' | 'top_right' | 'bottom_right' | 'bottom_left'
 export type StudioCameraShape = 'circle' | 'rounded_rect'
-export type StudioBackground = 'none' | 'blur_screen' | 'solid' | 'gradient'
+
+/**
+ * Studio's one visible source of truth for backdrop choices. The select,
+ * preview semantics, debug attributes, and default all derive from this
+ * catalog so "None" cannot drift back into a second label for Solid.
+ */
+export const STUDIO_BACKGROUND_PRESETS = [
+  { id: 'gradient', label: 'Gradient', description: 'Soft color backdrop behind a framed recording.' },
+  { id: 'solid', label: 'Solid', description: 'Single opaque slate backdrop behind a framed recording.' },
+  { id: 'blur_screen', label: 'Blur', description: 'A blurred copy of the recording behind the frame.' },
+  { id: 'none', label: 'None', description: 'No backdrop; the recording fills the output without a background.' },
+] as const
+
+export type StudioBackground = (typeof STUDIO_BACKGROUND_PRESETS)[number]['id']
+
+export function studioBackgroundPreset(background: StudioBackground) {
+  return STUDIO_BACKGROUND_PRESETS.find((preset) => preset.id === background)!
+}
 
 export interface StudioCameraState {
   enabled: boolean
@@ -90,12 +107,7 @@ export function cameraPositionLabel(position: StudioCameraPosition): string {
 }
 
 export function backgroundLabel(background: StudioBackground): string {
-  switch (background) {
-    case 'none': return 'None'
-    case 'blur_screen': return 'Blur'
-    case 'solid': return 'Solid'
-    case 'gradient': return 'Gradient'
-  }
+  return studioBackgroundPreset(background).label
 }
 
 export function placementForPosition(position: StudioCameraPosition, size: number): { x: number; y: number } {
@@ -134,7 +146,7 @@ export function defaultStudioState(): StudioState {
       size,
       shape: 'circle',
     },
-    background: 'gradient',
+    background: STUDIO_BACKGROUND_PRESETS[0].id,
     hotkeyStatus: 'desktop-f9',
   }
 }

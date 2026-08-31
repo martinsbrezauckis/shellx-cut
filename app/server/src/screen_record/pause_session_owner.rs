@@ -5,6 +5,7 @@
 //! injected adapter; no verb, UI, process, or platform capture path calls it.
 
 mod coordinator;
+mod input;
 mod types;
 
 #[allow(unused_imports)]

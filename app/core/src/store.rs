@@ -48,7 +48,11 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod atomic_media_insert;
+mod atomic_media_insert_replay;
+mod atomic_media_insert_request;
 mod commit_state;
+mod group;
 mod history;
 mod name_policy;
 mod open_health;
@@ -61,6 +65,9 @@ mod snapshots;
 #[cfg(test)]
 mod speed_ramp_replay_tests;
 
+pub use atomic_media_insert::AtomicMediaInsertResult;
+pub use atomic_media_insert_request::{AtomicMediaInsert, AtomicMediaInsertTrack};
+pub use group::{AtomicGroupPreview, AtomicGroupRejectStatus};
 use name_policy::{validate_logged_project_name, validate_project_name};
 pub use open_health::{ProjectCacheHealth, ProjectOpenHealth, ProjectSnapshotHealth};
 pub use portable::PORTABLE_SNAPSHOT_SCHEMA;
@@ -138,6 +145,7 @@ fn imported_asset_ids(op: &OpRecord) -> Vec<String> {
             .find_map(|e| e.detail.get("asset_id")?.as_str().map(str::to_string))
             .into_iter()
             .collect(),
+        "edit.insert" => atomic_media_insert::asset_id(op).into_iter().collect(),
         "import.otio" | "motion.apply_import" | "motion.link.refresh" => op
             .effects
             .iter()
@@ -161,6 +169,9 @@ fn motion_import_detail(op: &OpRecord) -> Result<&serde_json::Map<String, Value>
 }
 
 fn motion_assets_from_record(op: &OpRecord) -> Result<Option<BTreeMap<String, Asset>>, CutError> {
+    if let Some(assets) = atomic_media_insert::asset_map(op)? {
+        return Ok(Some(assets));
+    }
     if op.verb == "motion.link.refresh" {
         let assets = op
             .effects
@@ -4520,6 +4531,9 @@ pub fn apply_record(
             Ok(())
         }
         "media.relink_apply" => relink::replay_group(project, op),
+        "edit.insert" if atomic_media_insert::has_detail(op) => {
+            atomic_media_insert::replay(project, op)
+        }
         // BACKWARD COMPAT: old builds accepted gain/mute/solo/pan on video or
         // caption targets even though the renderer has always consumed audio
         // from TrackKind::Audio only. Those recorded operations were no-ops in

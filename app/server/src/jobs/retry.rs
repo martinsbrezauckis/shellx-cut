@@ -28,6 +28,7 @@ pub struct JobRetry {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobRetryDescriptor {
     ScreenRecordExport(ScreenRecordExportRetryDescriptor),
+    VerifyRerun(VerifyRerunRetryDescriptor),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,19 @@ pub struct ScreenRecordExportRetryDescriptor {
     pub format: ScreenRecordExportRetryFormat,
     pub inputs: Vec<JobInputFingerprint>,
     pub system_audio_offset_ms: u64,
+}
+
+/// Exact output-only verification inputs. The source render receipt and its
+/// output artifact are fingerprinted before a retry can be admitted; no render
+/// request or project mutation is replayed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyRerunRetryDescriptor {
+    pub project_revision: String,
+    pub render_id: String,
+    pub output_hash: String,
+    pub duration_ms: u64,
+    pub footage_profile: String,
+    pub inputs: Vec<JobInputFingerprint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +79,18 @@ impl JobRetry {
             retry_of: None,
             retried_by: None,
             descriptor: Some(JobRetryDescriptor::ScreenRecordExport(descriptor)),
+        }
+    }
+
+    pub fn verify_rerun(descriptor: VerifyRerunRetryDescriptor) -> Self {
+        Self {
+            eligible: false,
+            reason: Some("job is still active".into()),
+            root_job_id: String::new(),
+            attempt: 1,
+            retry_of: None,
+            retried_by: None,
+            descriptor: Some(JobRetryDescriptor::VerifyRerun(descriptor)),
         }
     }
 
@@ -101,7 +127,7 @@ impl JobRetry {
             }
             JobOutcome::Succeeded | JobOutcome::Superseded => {
                 self.eligible = false;
-                self.reason = Some("only failed exports are eligible for retry".into());
+                self.reason = Some("only failed jobs are eligible for retry".into());
             }
         }
     }
@@ -135,7 +161,7 @@ impl JobManager {
     /// Create a job with a retry projection owned by its job kind. The record
     /// is persisted before it becomes visible in the in-memory table.
     pub fn create_with_retry(&self, kind: &str, retry: Option<JobRetry>) -> JobRecord {
-        let mut inner = self.inner.lock().expect("job lock");
+        let mut inner = self.lock_inner();
         inner.next_seq += 1;
         let now = cut_core::OpRecord::now_ts();
         let mut rec = JobRecord {
@@ -177,7 +203,7 @@ impl JobManager {
     /// record. The child is persisted before it is visible, and the source is
     /// marked as consumed while the same manager lock is held.
     pub fn admit_retry(&self, source_job_id: &str) -> Result<JobRecord, CutError> {
-        let mut inner = self.inner.lock().expect("job lock");
+        let mut inner = self.lock_inner();
         let source = inner.jobs.get(source_job_id).cloned().ok_or_else(|| {
             CutError::new(
                 cut_core::error_codes::NOT_FOUND,
@@ -189,7 +215,7 @@ impl JobManager {
             CutError::new(
                 cut_core::error_codes::CONFLICT,
                 format!("job '{source_job_id}' has no retry descriptor"),
-                "only eligible default-output screen-record exports can be retried",
+                "only jobs with an engine-owned retry descriptor can be retried",
             )
         })?;
         if !matches!(source.state, JobState::Failed) || !retry.eligible {
@@ -197,7 +223,7 @@ impl JobManager {
                 cut_core::error_codes::CONFLICT,
                 format!("job '{source_job_id}' is not eligible for retry"),
                 retry.reason.clone().unwrap_or_else(|| {
-                    "only failed default-output screen-record exports can be retried".into()
+                    "only failed jobs with an engine-owned retry descriptor can be retried".into()
                 }),
             ));
         }
@@ -313,6 +339,62 @@ mod tests {
         assert_eq!(
             mgr.admit_retry(&parent.job_id).unwrap_err().code,
             cut_core::error_codes::CONFLICT
+        );
+    }
+
+    #[test]
+    fn verify_rerun_retry_is_durable_duplicate_safe_and_recovers_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = JobManager::new(EventBus::new());
+        mgr.attach_project(dir.path()).unwrap();
+        let parent = mgr.create_with_retry(
+            "verify-rerun",
+            Some(JobRetry::verify_rerun(VerifyRerunRetryDescriptor {
+                project_revision: "op_000001".into(),
+                render_id: "render_001".into(),
+                output_hash: "sha256:fixture".into(),
+                duration_ms: 1_000,
+                footage_profile: "talking_head".into(),
+                inputs: vec![JobInputFingerprint {
+                    role: "rendered_output".into(),
+                    path: "exports/render_001.mp4".into(),
+                    bytes: 42,
+                    sha256: "fixture".into(),
+                }],
+            })),
+        );
+        mgr.fail(
+            &parent.job_id,
+            CutError::new("job_failed", "fixture verification failure", "fixture"),
+        );
+
+        let child = mgr.admit_retry(&parent.job_id).unwrap();
+        assert_eq!(child.kind, "verify-rerun");
+        assert_eq!(child.retry.as_ref().unwrap().attempt, 2);
+        assert_eq!(
+            mgr.admit_retry(&parent.job_id).unwrap_err().code,
+            cut_core::error_codes::CONFLICT
+        );
+        drop(mgr);
+
+        let reopened = JobManager::new(EventBus::new());
+        reopened.attach_project(dir.path()).unwrap();
+        let recovered_parent = reopened.get(&parent.job_id).unwrap();
+        let recovered_child = reopened.get(&child.job_id).unwrap();
+        assert_eq!(
+            recovered_parent.retry.unwrap().retried_by.as_deref(),
+            Some(child.job_id.as_str())
+        );
+        assert_eq!(recovered_child.state, JobState::Failed);
+        assert!(recovered_child.retry.unwrap().eligible);
+        assert_eq!(
+            reopened
+                .admit_retry(&child.job_id)
+                .unwrap()
+                .retry
+                .unwrap()
+                .attempt,
+            3
         );
     }
 }

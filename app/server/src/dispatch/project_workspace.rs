@@ -13,10 +13,17 @@ use project_health::project_health as project_health_read;
 use project_paths::default_projects_dir;
 
 /// Cache lifecycle is intentionally separate from `project.health`: the health
-/// read remains a read-only report, while this explicit pair owns preview and
-/// confirmation of a bounded background cleanup job.
+/// read remains a read-only report, while explicit verbs own deterministic
+/// reservation/rebuild and confirmation of bounded cleanup jobs.
 pub(super) async fn project_cache_preview(state: &AppState) -> Result<VerbResult, CutError> {
     crate::cache_lifecycle::preview(state).await
+}
+
+pub(super) async fn project_cache_rebuild(
+    state: &AppState,
+    args: Value,
+) -> Result<VerbResult, CutError> {
+    crate::cache_lifecycle::start_rebuild(state, args).await
 }
 
 pub(super) async fn project_cache_purge(

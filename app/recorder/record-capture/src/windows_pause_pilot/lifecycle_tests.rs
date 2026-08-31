@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use record_core::{error_codes, RecordError, Result, Settings};
 use record_recovery::{Checkpoint, CheckpointFacts};
 
+use super::super::audio_run::DisabledWindowsPauseAudioFactory;
+use super::super::input_run::DisabledWindowsPauseInputFactory;
 use super::*;
 use crate::windows_pause_pilot::{WindowsPausePilotEvent, WindowsPausePilotRequest};
 use crate::windows_wgc_run::{
@@ -127,6 +129,8 @@ fn started_lifecycle() -> (WindowsPausePilotThread, Log) {
                 },
             ))
         },
+        Box::new(DisabledWindowsPauseInputFactory),
+        Box::new(DisabledWindowsPauseAudioFactory),
         || 0,
         || observation(10),
         || (60, Instant::now()),
@@ -166,6 +170,8 @@ fn startup_refusal_joins_the_worker_before_no_handle_is_returned() {
                 Publisher { log, next: 0 },
             ))
         },
+        Box::new(DisabledWindowsPauseInputFactory),
+        Box::new(DisabledWindowsPauseAudioFactory),
         || 0,
         || observation(10),
         || (60, Instant::now()),
@@ -196,6 +202,8 @@ fn zero_rollover_cadence_is_refused_before_a_worker_thread_starts() {
                 },
             ))
         },
+        Box::new(DisabledWindowsPauseInputFactory),
+        Box::new(DisabledWindowsPauseAudioFactory),
         || 0,
         || observation(10),
         || (60, Instant::now()),
@@ -234,6 +242,8 @@ fn idle_recovery_rolls_only_at_the_configured_checkpoint_cadence() {
                 },
             ))
         },
+        Box::new(DisabledWindowsPauseInputFactory),
+        Box::new(DisabledWindowsPauseAudioFactory),
         move || reserve_clock.fetch_add(100, Ordering::AcqRel),
         move || observation(start_clock.load(Ordering::Acquire)),
         move || {

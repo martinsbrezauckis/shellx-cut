@@ -23,7 +23,9 @@
 use cut_core::Project;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -37,10 +39,9 @@ pub const RECIPES_JSON: &str = include_str!("../../../schema/recipes.json");
 /// the `has_music` fact looks for a media clip on this audio track.
 const MUSIC_BED_TRACK_ID: &str = "music1";
 
-/// The closed `RecipeFacts` vocabulary — the ONLY facts a `state` gate may name.
+/// Test-only contract tripwire for allowed state-gate facts.
 /// No arbitrary JSON-path access (auditable; can't drift into a query DSL).
-/// Public contract surface, consumed by the load-time validation test.
-#[allow(dead_code)]
+#[cfg(test)]
 pub const FACT_NAMES: &[&str] = &[
     "duration_ms",
     "transcript_words",
@@ -51,18 +52,17 @@ pub const FACT_NAMES: &[&str] = &[
     "has_music",
 ];
 
-/// The allowed `state` predicate operators. `*_start` compare against the
-/// run-start baseline snapshot; the rest compare against the predicate `value`.
-/// Public contract surface, consumed by the load-time validation test.
-#[allow(dead_code)]
+/// Test-only contract tripwire for allowed state-gate operators.
+/// `*_start` compares against the run-start baseline snapshot.
+#[cfg(test)]
 pub const STATE_OPS: &[&str] = &["gt", "gte", "lt", "lte", "eq", "lt_start", "gt_start"];
 
 /// Parsed recipe registry (top-level mirrors verbs.json: `{schema, recipes}`).
 /// `schema` is asserted by the validation test (drift tripwire).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct RecipeRegistry {
-    pub schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     pub recipes: Vec<Recipe>,
 }
 
@@ -150,6 +150,11 @@ fn empty_object() -> Value {
 }
 
 impl RecipeRegistry {
+    #[cfg(test)]
+    fn schema(&self) -> &str {
+        &self._schema
+    }
+
     /// Look up a recipe by exact name.
     pub fn get(&self, name: &str) -> Option<&Recipe> {
         self.recipes.iter().find(|r| r.name == name)
@@ -226,7 +231,7 @@ pub fn interpolate(args: &Value, params: &BTreeMap<String, Value>) -> Value {
 /// Collect every `{{param}}` name referenced anywhere in `args` (validation +
 /// auditing). Same exact-match rule as [`interpolate`]. Consumed by the
 /// load-time validation test (every referenced param must be declared).
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn referenced_params(args: &Value, out: &mut BTreeSet<String>) {
     match args {
         Value::String(s) => {
@@ -369,7 +374,7 @@ mod tests {
     #[test]
     fn recipes_parse_and_reference_real_verbs() {
         let reg = registry();
-        assert_eq!(reg.schema, "shellx-cut/recipes/1");
+        assert_eq!(reg.schema(), "shellx-cut/recipes/1");
         assert_eq!(
             reg.recipes.len(),
             11,

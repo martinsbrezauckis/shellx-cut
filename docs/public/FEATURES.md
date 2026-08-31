@@ -1,11 +1,42 @@
 # ShellX Cut Feature Inventory
 
+<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
+
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
 
 For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
+
+## v0.6.113 release notes (candidate source; qualification pending)
+
+This source line is a candidate and is not a published, signed, or
+installed-qualified release. v0.6.112 remains the latest published release.
+
+- Transcript is now a timeline-linked phrase and chapter list with exact
+  start-end ranges and one shared time control for clips, captions, markers,
+  comments, cited search results, and review evidence. Reused or unavailable
+  source media explains when an exact occurrence must be chosen or cannot be
+  opened.
+- Recording Studio adds separate **Display** and **Window** choices, a
+  cancellable 3- or 5-second countdown, **Screen** and **Presenter** scenes with
+  an elapsed or countdown timer, and camera recording as a separate editable
+  track on supported Windows and macOS builds. Supported macOS builds also
+  offer durable **Pause & resume** for compatible display recordings.
+- Timeline Voiceover records into an unlocked audio track after a visible
+  count-in, follows the playhead or selected In-Out range, supports Stop and
+  Cancel, and places the sealed take as one Undoable edit.
+- Caption Inspector Find & Replace previews **Contains** or **Whole word**
+  matches on one track and an optional timeline range, then applies the reviewed
+  batch as one Undoable change without moving caption timing.
+- Preview **Compare** pauses playback and shows exact composed **Before** and
+  **Current** frames at the same playhead position without invoking Undo.
+- Health & Recovery can rebuild missing or stale Cut-owned editing proxies and
+  filmstrips with progress and cancellation. An unchanged failed output
+  verification can also expose one exact retry while its revision, receipt, and
+  rendered bytes still match.
+- Bugfixes.
 
 ## v0.6.112 release notes
 
@@ -32,7 +63,7 @@ workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 - Long-form timeline scrolling isolates unchanged track rows and coalesces
   scroll updates. Further thumbnail-candidate reduction remains planned.
 
-These are current v0.6.112 release capabilities.
+These are v0.6.112 published-release capabilities.
 
 - Projects → Make a copy opens a preview-first portable-copy flow: choose a
   destination with the native folder picker, inspect used-reference and unique
@@ -57,7 +88,7 @@ These are current v0.6.112 release capabilities.
   `media.relink_preview` / `media.relink_apply` review, while the underlying
   `project.package_plan` / `project.package_create` portable-package API
   preserves the open project. The later Projects UI is documented in the
-  v0.6.112 source-only notes above.
+  v0.6.112 release notes above.
 - Health & Recovery adds a read-only `project.cache_preview` and explicitly
   confirmed, cancellable `project.cache_purge` for aged, unreferenced,
   Cut-owned proxy and filmstrip files; source media, exports, recordings, and
@@ -159,16 +190,16 @@ route to the same surface registry.
   Transcript panel, and per-track mute/solo.
 - Audio pan/balance per track with center-neutral semantics, available in the
   mixer and as a compact timeline-header shortcut.
-- The selected audio clip's Inspector **Volume** section combines static Gain
-  with manual **Volume automation**: add or update explicit clip-local time in
-  seconds (dispatched as exact milliseconds) and level control points, choose
-  linear/hold/smooth or advanced easing, select a listed point to edit it,
-  remove a point, or clear the track. One point holds its level for the whole
-  clip; add another to make a ramp. Automation truthfully overrides static Gain
-  only while points exist. This compact inspector point editor is not presented
-  as a timeline automation lane; a full lane remains future work. Automation
-  saves are revision-protected: if another edit changes the project first, Cut
-  reloads the current points instead of overwriting them.
+- The selected audio clip has a **Clip volume lane** over its waveform. Use
+  **Add point** at the playhead or Ctrl/Cmd-click the curve, then drag named
+  control points between their neighbours over a fixed −60…+12 dB display.
+  Dragging previews locally; pointer-up sends one complete, undoable automation
+  edit. Escape and cancelled pointers leave the clip unchanged. The first point
+  seeds the current static Gain, and Clear returns to that unchanged static
+  Gain. The Inspector remains the alternative for exact time, level, and
+  interpolation editing. Automation saves are revision-protected: if another
+  edit changes the project first, Cut reloads the current points instead of
+  overwriting them.
 - Viewing aids: fullscreen preview (`f`), rule-of-thirds and title/action safe
   guides (`g`).
 - Keyboard remapping: a central keymap with a Settings editor
@@ -481,9 +512,12 @@ route to the same surface registry.
   and that resource's slot count; the durable list is refreshed even when a
   progress event was missed. A running batch also names the exact active render
   job it is currently waiting on; Cut does not imply that every job is retryable.
-  `jobs.retry` is deliberately narrower: it permits one linked retry only for
-  an eligible failed default-output Recording Studio export after revalidating
-  the project revision, capture inputs, edit plan, and output lease.
+  `jobs.retry` is deliberately narrow: it permits one linked retry for an
+  eligible failed default-output Recording Studio export after revalidating the
+  project revision, capture inputs, edit plan, and output lease, or for failed
+  receipt-bound output verification after revalidating the active project,
+  immutable render receipt, and exact rendered bytes. It never generically
+  replays historical job arguments.
 - Settings > Health & Recovery explains whether the disposable project cache
   matched or was rebuilt from durable history, whether a replay snapshot was
   accepted, and how many newer journal records still replay on reopen. It is a
@@ -495,8 +529,12 @@ route to the same surface registry.
   newer files visibly inside that window, and blocks on a partial scan. It does
   not call file-change time "last used" or infer that active work has stopped,
   does not follow symlinks or unexpected directories, excludes foreign files,
-  exports, captures, receipts, and source media. A separate visible cache
-  cleanup control first asks the server for a read-only durable-ownership
+  exports, captures, receipts, and source media. A non-destructive Editing
+  cache control can queue only a bounded deterministic `project.cache_rebuild`:
+  it verifies current source identity, reserves exact output ownership before
+  work, reports queued/up-to-date/items-needing-attention counts, and keeps unfinished
+  reservations resumable after cancellation/restart. A separate cleanup control
+  first asks the server for a read-only durable-ownership
   `project.cache_preview`, then requires in-panel confirmation before starting
   a cancellable `project.cache_purge` job. That job has an exclusive lease and
   revalidates its revision, flat roots,
@@ -551,23 +589,64 @@ route to the same surface registry.
   After finalization, an optional FFprobe record may show independently measured
   average and nominal rates, decoded frames, and duration; a failed, invalid, or
   unavailable probe is shown as not measured rather than guessed.
+- Where Doctor explicitly advertises it (currently the Linux final-source
+  normalizer), Recording Studio also offers Source, 1080p, or 720p with a
+  Standard or High profile. The selected height is a downscale-only limit, and
+  Stop reports the verified final dimensions, cadence, and libx264 encoder under
+  Advanced facts. Other recorder backends omit the control and refuse a direct
+  request rather than silently changing or pretending to honor output quality.
 - **Test microphone** opens the current OS-default input for a bounded sample
   window, reports a real peak without inventing a silence floor, and keeps the
   Start action unavailable until the test finishes. The device name is
   display-only; individual stable device selection is not yet claimed.
-- Live camera capture is parked for this release. The UI says so directly and
-  does not show unusable enable/position/size controls; screen, microphone and
-  supported system-audio recording remain available.
-- Screen recorder doctor, system-audio probe, start, stop, studio-event, autoedit, polish, and
+- **Timeline voiceover** is a compact control on each unlocked audio track. It
+  stays disabled unless the current Record Doctor explicitly admits native
+  capture; selecting a microphone, a playhead or In–Out range, and Record does
+  not create a browser-capture fallback. After real readiness and a visible
+  three-second count-in, the server issues a memory-only owner claim for the
+  active Timeline tab and requires it for tick, Stop, Cancel, and correlated
+  Preview Out. It correlates exact Preview request/fingerprint/epoch playback,
+  stops at observed Out, verifies a sealed private WAV, and places one asset
+  plus clip atomically as the one Undoable history entry. Direct microphone
+  monitoring is off. An exact active retry reattaches before ordinary project
+  revision changes are considered; a different B remains refused while A is
+  active. Only `voiceover_start_retry_rejected` proves no matching active owner
+  remained and lets the UI discard its non-secret retry identity. Cancel, zero
+  samples, and an unusable terminal add no edit. This is candidate-source
+  behavior, not installed/native-release qualification.
+- Recording Studio can explicitly add one current Windows/macOS camera in
+  Auto-edit mode. Doctor exposes only opaque, expiring choices with safe labels;
+  Start revalidates the chosen device, waits for a real first frame, and refuses
+  missing permission, a busy device, or no-frame delivery without substituting
+  another camera. The finalized camera remains a separate editable take bound to
+  the screen capture clock, with position, size, visibility, and shape retained
+  as replayable Studio events. This is candidate source pending native and
+  installed qualification on both hosts.
+- Recording Scenes provides a compact named scene strip for **Screen** and
+  **Presenter PiP** layouts. The initial scene catalog is frozen and saved
+  before Start acknowledges it; live scene switches and the one capture-wide
+  elapsed/countdown timer are journaled on the shared recording clock before
+  the UI reports them as saved. Presenter PiP remains unavailable until the
+  selected camera has been admitted, while a Screen-first catalog can start
+  without opening a camera. This is candidate source pending native and
+  installed qualification.
+- Screen recorder doctor, system-audio probe, start, status, stop, studio-event, autoedit, polish, and
   export verbs. `screen_record.autoedit` is the plan step reached through the
   Stop/auto-edit workflow and agent API; it is not a separate visible button.
+  The short-lived `screen_record.status{capture_id}` readiness seam admits
+  automation only after a real native screen frame reaches Cut and only while
+  that capture remains non-terminal; process start, elapsed time, and output
+  growth do not substitute for pixel delivery.
 - On Windows and macOS, Doctor monitor rows include an opaque native display ID
   only when the exact identity is available. The Record picker passes it
   unchanged to `screen_record.start{monitor_id}`, which revalidates that exact
   display before capture and never substitutes an ordinal, label, primary state,
-  or geometry. The familiar ordinal path remains only when no ID is available;
-  no Region control or coordinate form is exposed yet. Linux keeps source
-  selection in its system portal.
+  or geometry. The visible source control keeps **Display** and **Window** as
+  separate first-level choices and never mixes their targets. The familiar
+  ordinal path remains only when no ID is available. Region remains hidden from
+  the public UI while its private GPU-cropped native path awaits compiled and
+  installed qualification; no coordinate form is exposed. Linux
+  keeps source selection in its system portal.
 - Doctor reports system audio as a separate optional card. A compiled backend
   remains `unknown` until an actual recording proves packets; Doctor never opens
   a loopback/tap stream or triggers macOS Audio Capture consent, and this
@@ -588,13 +667,15 @@ route to the same surface registry.
   non-green; its separate `start_allowed` field permits only that exact state to
   open the user-initiated source picker. Missing, degraded, and other unknown
   required cards still block recording.
-- Live Studio background/marker events are stored as `studio-events.json`
-  beside the capture and replayed into the polished plan.
+- Live Studio background/marker events are appended to the bounded
+  `studio-events.jsonl` journal beside the capture and replayed into the
+  polished plan. Cut still reads legacy `studio-events.json` captures.
 - Recording output is converted into normal Cut media and timeline edits with
   recoverable cached artifacts.
-- Raw stream discovery reports screen, mic, system audio, and Studio metadata.
-  The downstream compositor retains support for a pre-recorded camera file,
-  but live capture backends emit no camera stream in this release.
+- Raw stream discovery reports screen, camera, mic, system audio, and Studio
+  metadata. A finalized camera take carries an integrity-checked `CameraArtifact`
+  and shared-clock range; Auto-edit lowers it to the existing editable camera
+  overlay rather than baking it into the screen source.
 - Crash-resilient recordings write independently finalized, verified checkpoint
   segments. Restart recovery can salvage a playable `recovered.mp4` prefix with a
   receipt and explicit lost-tail bounds; it never promotes an open encoder MP4 or
@@ -641,6 +722,12 @@ route to the same surface registry.
   changed payloads or stale revisions fail without duplicating edits.
 - The status bar shows the current export folder; click the export-folder chip
   to open Settings at the folder setting.
+- Preview → Compare pauses playback and shows a locked side-by-side Before and
+  Current pair at one playhead position. Both are exact composed frames: Current
+  is the live durable revision and Before is the state before its latest
+  timeline-mutating edit (trailing metadata remains part of Current).
+  Comparison is read-only, never invokes Undo, and refuses
+  rather than displaying a mismatched sequence, frame format, revision, or time.
 
 ## Environment And Setup
 

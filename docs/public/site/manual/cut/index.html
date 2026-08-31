@@ -44,7 +44,7 @@
                automated release check.
                Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
                visible text on this span whenever the manual is updated for a release. -->
-          <span class="manual-version" data-app-version="0.6.112">0.6.112</span>
+          <span class="manual-version" data-app-version="0.6.113" data-release-status="candidate" data-published-version="0.6.112">0.6.113</span>
         </div>
         <input
           class="manual-search"
@@ -187,6 +187,7 @@
           <button class="manual-node" data-feature-id="cut.preview.render_selection">Render selection</button>
           <button class="manual-node" data-feature-id="cut.preview.audio">Audio monitor</button>
           <button class="manual-node" data-feature-id="cut.preview.composed">Composed toggle</button>
+          <button class="manual-node" data-feature-id="cut.preview.compare">Compare edits</button>
           <button class="manual-node" data-feature-id="cut.preview.guides">Guides</button>
           <button class="manual-node" data-feature-id="cut.preview.fullscreen">Full-screen preview</button>
 
@@ -248,7 +249,10 @@
         <details class="manual-folder" open>
           <summary>Recording Studio</summary>
           <button class="manual-node" data-feature-id="cut.record.studio">Studio preview</button>
-          <button class="manual-node" data-feature-id="cut.record.camera_enable">Camera overlay (parked)</button>
+          <button class="manual-node" data-feature-id="cut.record.scenes">Recording scenes</button>
+          <button class="manual-node" data-feature-id="cut.record.scene_timer">Recording timer</button>
+          <button class="manual-node" data-feature-id="cut.record.pause_resume">Pause and resume</button>
+          <button class="manual-node" data-feature-id="cut.record.camera_enable">Camera take</button>
           <button class="manual-node" data-feature-id="cut.record.camera_visible">Show or hide camera</button>
           <button class="manual-node" data-feature-id="cut.record.camera_position">Camera position</button>
           <button class="manual-node" data-feature-id="cut.record.camera_size">Camera size</button>
@@ -356,8 +360,16 @@
           </div>
           <div class="manual-grid">
             <article class="manual-card">
-              <h3>Camera capture is parked</h3>
-              <p>Live camera capture is not available in this release. The Record workspace says so directly instead of showing enable, position, size and shape controls that could not work. Screen, microphone and supported system-audio recording are unaffected.</p>
+              <h3>Camera stays editable</h3>
+              <p>In Auto-edit mode, turn Camera on, choose one current Windows/macOS device, and set its position, size, and shape. Cut keeps the finalized camera as a separate editable take instead of baking it into the screen source.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Switch named scenes while recording</h3>
+              <p>Choose Screen or Presenter PiP from the compact scene strip. Cut saves each live switch on the recording clock before the interface marks it saved; Presenter PiP waits for an admitted camera.</p>
+            </article>
+            <article class="manual-card">
+              <h3>One timer for the whole take</h3>
+              <p>Use Off, Elapsed, or Countdown for the capture. Pause, resume, reset, restart, and end remain timed scene events rather than baked pixels.</p>
             </article>
             <article class="manual-card">
               <h3>Metadata, not baked pixels</h3>
@@ -365,7 +377,7 @@
             </article>
             <article class="manual-card">
               <h3>Raw stream checks</h3>
-              <p>After capture, Cut reports screen, mic, system audio, and Studio event artifacts so the recording can be diagnosed or reused. The camera chip stays dark while camera capture is parked.</p>
+              <p>After capture, Cut reports screen, optional camera, mic, system audio, and Studio metadata so the recording can be diagnosed or reused. Only a validated finalized camera take is reported.</p>
             </article>
             <article class="manual-card">
               <h3>Long recording safety</h3>
@@ -381,7 +393,7 @@
             </article>
             <article class="manual-card">
               <h3>Hotkeys</h3>
-              <p>F9 starts or stops recording and F12 adds a marker. The camera bindings (F10, F11, Shift+F11) stay in the keymap but do nothing while camera capture is parked.</p>
+              <p>F9 starts or stops recording and F12 adds a marker. Camera visibility and placement shortcuts operate only when the Auto-edit take has an admitted camera.</p>
             </article>
           </div>
         </section>

@@ -106,6 +106,79 @@ pub(crate) fn spawn_microphone_capture(
     }
 }
 
+/// A resolved native microphone plus the process-local claim that keeps another
+/// Cut capture from opening the same device while this session is live.
+#[cfg(feature = "mic")]
+pub(crate) struct ReservedMicrophoneCapture {
+    device: cpal::Device,
+    reservation: crate::mic::MicrophoneCaptureReservation,
+}
+
+/// Resolve the exact selected/default source before a standalone voiceover
+/// session starts. This is deliberately separate from worker spawning so the
+/// caller can refuse a busy or missing device before it creates any artifact.
+#[cfg(feature = "mic")]
+pub(crate) fn reserve_microphone_capture(
+    source: &MicrophoneSource,
+) -> Result<ReservedMicrophoneCapture> {
+    resolve_microphone_source(source)?;
+    let reservation = crate::mic::reserve_microphone_capture()?;
+    match cpal_device_for_source(source) {
+        Ok(device) => Ok(ReservedMicrophoneCapture {
+            device,
+            reservation,
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(feature = "mic")]
+pub(crate) fn spawn_reserved_microphone_capture(
+    path: String,
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    capture_started: Instant,
+    reserved: ReservedMicrophoneCapture,
+    recording_gate: Option<Arc<crate::mic::MicRecordingGate>>,
+) -> JoinHandle<Result<crate::mic::CapturedMicrophone>> {
+    crate::mic::spawn_device_mic_reserved(
+        path,
+        reserved.device,
+        stop,
+        ready,
+        capture_started,
+        reserved.reservation,
+        recording_gate,
+    )
+}
+
+/// Private pause-owner variant. The returned WAV starts at the first received
+/// microphone packet; its offset remains a separately sealed fact consumed by
+/// the common pause projection exactly once.
+#[cfg(feature = "mic")]
+#[cfg_attr(
+    not(all(windows, feature = "capture-windows")),
+    allow(dead_code, reason = "private Windows pause-sidecar capture path")
+)]
+pub(crate) fn spawn_reserved_microphone_capture_unpadded(
+    path: String,
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    capture_started: Instant,
+    reserved: ReservedMicrophoneCapture,
+    recording_gate: Option<Arc<crate::mic::MicRecordingGate>>,
+) -> JoinHandle<Result<crate::mic::CapturedMicrophone>> {
+    crate::mic::spawn_device_mic_reserved_unpadded(
+        path,
+        reserved.device,
+        stop,
+        ready,
+        capture_started,
+        reserved.reservation,
+        recording_gate,
+    )
+}
+
 /// Run the bounded warm/test against the same source resolution used by capture.
 /// No device name is part of the public result projection.
 pub fn warm_microphone(source: &MicrophoneSource, max_ms: u64) -> crate::MicWarm {

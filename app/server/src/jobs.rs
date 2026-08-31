@@ -4,6 +4,9 @@
 //! observable across crashes. Callers are dispatch plus jobs.status/list/cancel.
 
 mod dependency;
+mod locking;
+#[cfg(test)]
+mod locking_tests;
 mod outcome;
 mod persistence;
 mod process;
@@ -20,7 +23,7 @@ pub(crate) use process::{run_owned, ProcessControl, ProcessTermination};
 pub use queue::JobQueueInfo;
 pub use retry::{
     JobInputFingerprint, JobRetry, JobRetryDescriptor, ScreenRecordExportRetryDescriptor,
-    ScreenRecordExportRetryFormat,
+    ScreenRecordExportRetryFormat, VerifyRerunRetryDescriptor,
 };
 use runtime::JobTaskControl;
 pub(crate) use runtime::{
@@ -110,9 +113,6 @@ pub struct JobRecord {
 }
 
 /// In-memory job table + persistence dir. Cloneable handle (Arc inside).
-// Contract scaffold: create/progress/finish/fail are wired by job-spawning verbs
-// (media.import chain, render.final) — dead-code warnings would be noise now.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct JobManager {
     inner: Arc<Mutex<JobManagerInner>>,
@@ -120,8 +120,6 @@ pub struct JobManager {
     pub events: EventBus,
 }
 
-// Contract scaffold: fields consumed by job-spawning verbs.
-#[allow(dead_code)]
 #[derive(Debug)]
 struct JobManagerInner {
     jobs: HashMap<String, JobRecord>,
@@ -142,8 +140,6 @@ struct JobManagerInner {
     next_seq: u64,
 }
 
-// Contract scaffold: create/progress/finish/fail are driven by job-spawning verbs.
-#[allow(dead_code)]
 impl JobManager {
     pub fn new(events: EventBus) -> Self {
         Self {
@@ -167,7 +163,7 @@ impl JobManager {
     /// late results into a project the user has already closed (or deleted).
     pub async fn detach_project(&self) -> Result<(), CutError> {
         let (mut tasks, active_ids) = {
-            let mut inner = self.inner.lock().expect("job lock");
+            let mut inner = self.lock_inner();
             let tasks = inner.tasks.drain().collect::<Vec<_>>();
             let active_ids = inner
                 .jobs
@@ -203,7 +199,7 @@ impl JobManager {
                 .map(|(job_id, _)| job_id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            let mut inner = self.inner.lock().expect("job lock");
+            let mut inner = self.lock_inner();
             inner.tasks.extend(pending);
             return Err(CutError::new(
                 "job_cancel_pending",
@@ -218,7 +214,7 @@ impl JobManager {
             ));
         }
 
-        let mut inner = self.inner.lock().expect("job lock");
+        let mut inner = self.lock_inner();
         let detached_ids = inner.jobs.keys().cloned().collect::<Vec<_>>();
         for job_id in detached_ids {
             if inner.detached_job_ids.insert(job_id.clone()) {
@@ -249,7 +245,7 @@ impl JobManager {
     /// quarantine and are disclosed through jobs.list instead of being skipped.
     pub fn attach_project(&self, project_dir: &std::path::Path) -> Result<(), CutError> {
         let recovered = recover(project_dir)?;
-        let mut inner = self.inner.lock().expect("job lock");
+        let mut inner = self.lock_inner();
         // Derive from both filenames and valid records before corrupt entries
         // are moved, so reopening never reuses a damaged history id.
         inner.next_seq = inner.next_seq.max(recovered.next_seq);
@@ -275,9 +271,7 @@ impl JobManager {
         F: Future<Output = ()> + Send + 'static,
     {
         let old = self
-            .inner
-            .lock()
-            .expect("job lock")
+            .lock_inner()
             .tasks
             .insert(job_id.to_string(), JobTaskControl::spawn(future));
         if let Some(old) = old {
@@ -298,7 +292,7 @@ impl JobManager {
     }
 
     fn limiter(&self, key: &str, max_running: usize) -> Arc<Semaphore> {
-        let mut inner = self.inner.lock().expect("job lock");
+        let mut inner = self.lock_inner();
         inner
             .limiters
             .entry(key.to_string())
@@ -309,7 +303,7 @@ impl JobManager {
     /// Request cancellation for an active job from this run. The persisted
     /// record is terminal only after the task and every owned worker stopped.
     pub async fn abort(&self, job_id: &str) -> Result<bool, CutError> {
-        let control = self.inner.lock().expect("job lock").tasks.remove(job_id);
+        let control = self.lock_inner().tasks.remove(job_id);
         let Some(mut control) = control else {
             return Ok(false);
         };
@@ -330,11 +324,7 @@ impl JobManager {
             return Ok(false);
         }
         if !drained {
-            self.inner
-                .lock()
-                .expect("job lock")
-                .tasks
-                .insert(job_id.to_string(), control);
+            self.lock_inner().tasks.insert(job_id.to_string(), control);
             return Err(CutError::new(
                 "job_cancel_pending",
                 format!("job '{job_id}' is still stopping"),
@@ -374,39 +364,24 @@ impl JobManager {
 
     /// Fetch a record (jobs.status).
     pub fn get(&self, job_id: &str) -> Option<JobRecord> {
-        self.inner
-            .lock()
-            .expect("job lock")
-            .jobs
-            .get(job_id)
-            .cloned()
+        self.lock_inner().jobs.get(job_id).cloned()
     }
 
     /// All records (debug surface / status bar).
     pub fn list(&self) -> Vec<JobRecord> {
-        self.inner
-            .lock()
-            .expect("job lock")
-            .jobs
-            .values()
-            .cloned()
-            .collect()
+        self.lock_inner().jobs.values().cloned().collect()
     }
 
     /// Recovery-time corruption notices. Quarantine locations are project-
     /// relative, so API callers do not receive host filesystem paths.
     pub(crate) fn persistence_notices(&self) -> Vec<JobPersistenceNotice> {
-        self.inner
-            .lock()
-            .expect("job lock")
-            .persistence_notices
-            .clone()
+        self.lock_inner().persistence_notices.clone()
     }
 
     /// Shared mutate + persist + timestamp path. Returns the job kind so
     /// callers can publish typed events without re-locking.
     fn update(&self, job_id: &str, f: impl FnOnce(&mut JobRecord)) -> Option<String> {
-        let mut inner = self.inner.lock().expect("job lock");
+        let mut inner = self.lock_inner();
         let persist_dir = inner.persist_dir.clone();
         let Some(rec) = inner.jobs.get_mut(job_id) else {
             if inner.detached_job_ids.contains(job_id) {
@@ -446,7 +421,7 @@ impl JobManager {
 
     #[cfg(test)]
     fn active_task_count_for_tests(&self) -> usize {
-        self.inner.lock().expect("job lock").tasks.len()
+        self.lock_inner().tasks.len()
     }
 }
 #[cfg(test)]
@@ -576,11 +551,7 @@ mod tests {
         assert_eq!(mgr.active_task_count_for_tests(), 0);
         assert!(mgr.list().is_empty());
         assert!(
-            mgr.inner
-                .lock()
-                .expect("job lock")
-                .detached_job_ids
-                .contains(&job.job_id),
+            mgr.lock_inner().detached_job_ids.contains(&job.job_id),
             "only fully detached project jobs become quiet late-update tombstones"
         );
 
@@ -699,9 +670,7 @@ mod tests {
         timeout(Duration::from_secs(1), async {
             loop {
                 if mgr
-                    .inner
-                    .lock()
-                    .expect("job lock")
+                    .lock_inner()
                     .tasks
                     .values()
                     .all(|task| !task.has_blocking_workers())

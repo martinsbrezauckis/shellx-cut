@@ -1,4 +1,5 @@
 import type { TimelineWord, WordSpan } from '../../lib/client'
+import type { TranscriptChapter } from './chapterNavigationModel'
 
 export type Aggressiveness = 'calm' | 'natural' | 'jumpy'
 
@@ -32,16 +33,23 @@ export function numberField(v: object, name: string): number | undefined {
   return typeof value === 'number' ? value : undefined
 }
 
-export function chaptersOf(v: unknown): { start_ms: number; title?: string }[] {
+export function chaptersOf(v: unknown): TranscriptChapter[] {
   if (!isObject(v)) return []
   const value = Reflect.get(v, 'chapters')
   if (!Array.isArray(value)) return []
-  const chapters: { start_ms: number; title?: string }[] = []
+  const chapters: TranscriptChapter[] = []
   for (const ch of value) {
     if (!isObject(ch)) continue
     const startMs = Reflect.get(ch, 'start_ms')
+    const endMs = Reflect.get(ch, 'end_ms')
     const title = Reflect.get(ch, 'title')
-    if (typeof startMs === 'number') chapters.push({ start_ms: startMs, title: typeof title === 'string' ? title : undefined })
+    if (typeof startMs === 'number') {
+      chapters.push({
+        start_ms: startMs,
+        end_ms: typeof endMs === 'number' ? endMs : undefined,
+        title: typeof title === 'string' ? title : undefined,
+      })
+    }
   }
   return chapters
 }
@@ -50,6 +58,10 @@ export interface Sel {
   asset: string
   anchor: number
   head: number
+  /** A Timeline selection retains its occurrence identity so a reused source
+   * clips only that exact Program/Clip instance. Source selections omit it. */
+  location?: 'source' | 'timeline'
+  clipId?: string | null
 }
 
 export const selRange = (s: Sel): [number, number] => [Math.min(s.anchor, s.head), Math.max(s.anchor, s.head)]

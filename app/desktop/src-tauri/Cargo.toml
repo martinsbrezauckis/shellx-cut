@@ -13,7 +13,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 [package]
 name = "shellx-cut"
-version = "0.6.112"
+version = "0.6.113"
 default-run = "shellx-cut"
 edition = "2021"
 description = "ShellX Cut — agent-first video editor, wrapped as a native Tauri 2 desktop app. The shell spawns the bundled cutd engine on loopback and points the webview at it."
@@ -34,6 +34,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.2", features = [] }
+# The macOS foreground Region picker is an owned AppKit overlay compiled into
+# the Tauri shell. It must never be linked into the cutd sidecar: AppKit modal
+# interaction belongs to the process that owns the foreground window.
+cc = "1"
 
 [dependencies]
 # Core webview + IPC only. cutd is spawned as a plain std::process child (the
@@ -49,10 +53,11 @@ serde_json = "1"
 base64 = "0.22"
 minisign-verify = "0.2.5"
 sha2 = "0.10"
+getrandom = "0.3"
 # Timer for the 6-hourly periodic update re-check (update_state.rs). Tauri's
 # async runtime IS tokio, but the tauri crate does not enable tokio's "time"
 # feature — declare it explicitly (features are additive; no second runtime).
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync"] }
 
 # Auto-updater (desktop only). The CHECK + install run in the Rust shell (NOT the
 # engine-served remote-origin UI, which Tauri denies plugin IPC) → the native
@@ -74,6 +79,9 @@ tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-wdio-webdriver = { version = "1.2.0", optional = true }
 tauri-plugin-wdio = { version = "1.2.0", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6"
 
 [features]
 # Production builds use the embedded asset protocol (no devUrl).

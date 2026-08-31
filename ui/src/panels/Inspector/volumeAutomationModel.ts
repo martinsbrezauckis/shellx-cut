@@ -242,6 +242,15 @@ export function createVolumeAutomationMutationController(initialRevision: string
   }
 }
 
+/** Admit writes only from current props or the same clip's complete projection. */
+export function volumeAutomationProjectLeaseAdmits(projectLease: VolumeAutomationMutationState, clipLease: VolumeAutomationMutationState, authoritativeRevision: string | null | undefined, projectedRevision: string | null | undefined): boolean {
+  const projectRevision = revisionOrNull(projectLease.projectRevision)
+  return projectRevision !== null
+    && !projectLease.inFlight
+    && !clipLease.inFlight
+    && clipLease.projectRevision === projectRevision
+    && (revisionOrNull(authoritativeRevision) === projectRevision || revisionOrNull(projectedRevision) === projectRevision)
+}
 let volumeAutomationRequestSequence = 0
 
 /** Unique per UI save, valid for the server's durable request-id schema. */

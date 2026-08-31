@@ -20,6 +20,14 @@ pub(crate) fn monitor_id(monitor: &WcMonitor) -> Option<String> {
         .and_then(|key| opaque_native_monitor_id(NativeMonitorPlatform::Windows, &key))
 }
 
+/// Convert a physical target path captured in the foreground picker's exact
+/// DisplayConfig snapshot into the opaque monitor identity. Unlike a GDI
+/// source name, this does not perform a later second enumeration that could
+/// bind an equal-sized replacement display to the original crop.
+pub(crate) fn monitor_id_from_target_path(target_path: &str) -> Option<String> {
+    opaque_native_monitor_id(NativeMonitorPlatform::Windows, target_path)
+}
+
 /// Resolve only a current native display that hashes to `id`. The recording
 /// backend uses this for `CaptureConfig.monitor_id`; no ordinal fallback exists.
 pub(crate) fn resolve_monitor(id: &str) -> Result<WcMonitor, &'static str> {

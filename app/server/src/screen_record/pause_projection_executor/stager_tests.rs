@@ -153,7 +153,6 @@ fn make_source(path: &Path, color: &str) {
             &format!("color=c={color}:s=16x16:r=30"),
             "-frames:v",
             "3",
-            "-an",
             "-c:v",
             "libx264",
             "-pix_fmt",

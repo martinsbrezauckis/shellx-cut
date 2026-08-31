@@ -1,24 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Keyframe, KfInterp } from '../../lib/client'
-import { runUserVerb } from '../../lib/userActionFeedback'
+import { useVolumeAutomation } from '../../app/VolumeAutomationContext'
 import {
   clampAutomationPercent,
   clampAutomationTime,
-  createVolumeAutomationMutationController,
   formatAutomationPercent,
   formatAutomationTime,
-  nextVolumeAutomationRequestId,
   removeVolumeAutomationPoint,
   replaceVolumeAutomationPoint,
   volumeAutomationInterpolation,
-  volumeAutomationKeyframesFingerprint,
-  volumeAutomationNeedsAuthoritativeRefresh,
-  volumeAutomationTrack,
-  volumeAutomationUnavailableReason,
-  type VolumeAutomationTransientState,
   VOLUME_AUTOMATION_MAX_PERCENT,
   VOLUME_AUTOMATION_INTERPOLATIONS,
 } from './volumeAutomationModel'
+import { seedVolumeAutomationPoints } from '../Timeline/volumeAutomationLaneModel'
 export interface VolumeAutomationEditorProps {
   clipId: string
   /** Realized clip-local duration after any retime, as enforced by edit.keyframe. */
@@ -28,8 +22,8 @@ export interface VolumeAutomationEditorProps {
   projectRevision?: string | null
   /** `edit.keyframe` fails closed while the clip has a non-linear speed ramp. */
   hasSpeedRamp?: boolean
-  /** Keeps the sibling static-Gain controls safe before project refresh catches up. */
-  onAutomationStateChange?: (state: VolumeAutomationTransientState) => void
+  /** Static gain seeds the first automation track without changing playback. */
+  staticGainDb?: number
 }
 /** Inspector-level manual volume automation: a real clip-local control-point editor, not a faux timeline lane. */
 export default function VolumeAutomationEditor({
@@ -38,70 +32,17 @@ export default function VolumeAutomationEditor({
   keyframes,
   projectRevision,
   hasSpeedRamp = false,
-  onAutomationStateChange,
+  staticGainDb = 0,
 }: VolumeAutomationEditorProps) {
-  const serverTrack = useMemo(() => volumeAutomationTrack(keyframes), [keyframes])
-  const keyframesFingerprint = useMemo(() => volumeAutomationKeyframesFingerprint(keyframes), [keyframes])
-  const mutationController = useRef(createVolumeAutomationMutationController(projectRevision))
-  const [mutationState, setMutationState] = useState(() => mutationController.current.state())
-  // Keep one successful edit projected until its equal-or-newer refresh, so a normal
-  // follow-up click uses the complete SET-semantics track from the last save.
-  const [projectedTrack, setProjectedTrack] = useState<{
-    projectRevision: string
-    track: ReturnType<typeof volumeAutomationTrack>
-  } | null>(null)
-  const track = projectedTrack?.projectRevision === mutationState.projectRevision ? projectedTrack.track : serverTrack
-  const hasProjectedTrack = projectedTrack?.projectRevision === mutationState.projectRevision
+  const automation = useVolumeAutomation({ clipId, durationMs, keyframes, projectRevision, hasSpeedRamp, staticGainDb })
+  const track = automation.track
   const [timeMs, setTimeMs] = useState(0)
   const [percent, setPercent] = useState(100)
   const [interp, setInterp] = useState<KfInterp>(track.interp)
   const [selectedPointMs, setSelectedPointMs] = useState<number | null>(null)
-  const [note, setNote] = useState('')
-  const [error, setError] = useState('')
-  const [refreshRequired, setRefreshRequired] = useState(false)
-  const refreshRequiredRef = useRef(false)
-  const unavailableReason = volumeAutomationUnavailableReason(durationMs, hasSpeedRamp)
-    ?? (mutationState.projectRevision ? null : 'Volume automation is waiting for the current project revision.')
+  const unavailableReason = automation.unavailableReason
   const automationAvailable = unavailableReason === null
-  const busy = mutationState.inFlight
-  const reportAutomationState = (
-    inFlight: boolean,
-    effectivePointCount: number,
-    projected: boolean,
-    needsRefresh = refreshRequiredRef.current,
-    currentProjectRevision = mutationController.current.state().projectRevision,
-  ) => {
-    onAutomationStateChange?.({ clipId, inFlight, effectivePointCount, projected, projectRevision: currentProjectRevision, refreshRequired: needsRefresh })
-  }
-  useEffect(() => {
-    const observed = mutationController.current.observeAuthoritative(projectRevision)
-    setMutationState(observed.state)
-    if (refreshRequiredRef.current && observed.applied) {
-      refreshRequiredRef.current = false
-      setRefreshRequired(false)
-    }
-    if (!observed.applied) return
-    setProjectedTrack((current) => {
-      if (!current || current.projectRevision !== observed.state.projectRevision) return null
-      return JSON.stringify(current.track) === JSON.stringify(serverTrack) ? null : current
-    })
-  }, [keyframesFingerprint, projectRevision, serverTrack])
-  useEffect(() => () => { mutationController.current.dispose() }, [])
-
-  useEffect(() => {
-    onAutomationStateChange?.({
-      clipId,
-      inFlight: busy,
-      effectivePointCount: track.points.length,
-      projected: hasProjectedTrack,
-      projectRevision: mutationState.projectRevision,
-      refreshRequired,
-    })
-  }, [busy, clipId, hasProjectedTrack, onAutomationStateChange, refreshRequired, track.points.length])
-
-  useEffect(() => () => {
-    onAutomationStateChange?.({ clipId, inFlight: false, effectivePointCount: 0, projected: false, refreshRequired: false })
-  }, [clipId, onAutomationStateChange])
+  const busy = automation.mutationState.inFlight
 
   // A new clip needs a fresh drafting point; project refresh supplies the list.
   useEffect(() => {
@@ -109,82 +50,12 @@ export default function VolumeAutomationEditor({
     setPercent(100)
     setInterp(track.interp)
     setSelectedPointMs(null)
-    setNote('')
-    setError('')
   }, [clipId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => setInterp(track.interp), [track.interp])
 
-  const commit = async (points: { t_ms: number; value: number }[], nextInterp: KfInterp, rationale: string) => {
-    // Synchronize before the synchronous lock. An older snapshot keeps
-    // the active expected_revision rather than reopening this editor.
-    const observed = mutationController.current.observeAuthoritative(projectRevision)
-    setMutationState(observed.state)
-    const requestId = nextVolumeAutomationRequestId()
-    const controls = mutationController.current.begin(requestId)
-    if (!controls) {
-      const current = mutationController.current.state()
-      setMutationState(current)
-      if (!current.inFlight && !current.projectRevision) {
-        setError('Volume automation needs the current project revision before it can save.')
-      }
-      return null
-    }
-    setMutationState(mutationController.current.state())
-    // Reach VolumeSection's ref before its Gain input can rerender disabled.
-    reportAutomationState(true, points.length, true, false)
-    setNote('')
-    setError('')
-    let response: Awaited<ReturnType<typeof runUserVerb>> = null
-    try {
-      response = await runUserVerb(
-        'edit.keyframe',
-        { clip: clipId, param: 'volume', points, interp: nextInterp, rationale, ...controls },
-        'Could not update volume automation.',
-      )
-    } finally {
-      const completion = mutationController.current.complete(requestId, {
-        ok: response?.ok === true,
-        projectRevision: response?.project_revision,
-        errorCode: response?.error?.code,
-      })
-      if (completion.owned) {
-        setMutationState(completion.state)
-        if (response?.ok && completion.status === 'saved') {
-          setProjectedTrack({ projectRevision: completion.state.projectRevision!, track: { points, interp: nextInterp } })
-          refreshRequiredRef.current = false
-          setRefreshRequired(false)
-          reportAutomationState(false, points.length, true, false)
-          if (points.length === 0) setSelectedPointMs(null)
-          setNote(points.length
-            ? `${points.length} volume point${points.length === 1 ? '' : 's'} · ${nextInterp.replaceAll('_', ' ')}`
-            : 'Volume automation cleared — static Gain applies again.')
-        } else if (volumeAutomationNeedsAuthoritativeRefresh(response !== null, completion)) {
-          mutationController.current.requireAuthoritativeAfter(controls.expected_revision)
-          setMutationState(mutationController.current.state())
-          refreshRequiredRef.current = true
-          setRefreshRequired(true)
-          setProjectedTrack(null)
-          reportAutomationState(false, serverTrack.points.length, false, true)
-          setError('Could not confirm volume automation. Refresh project state before changing static Gain or automation.')
-        } else if (completion.status === 'conflict' || completion.status === 'external-refresh') {
-          setProjectedTrack(null)
-          refreshRequiredRef.current = false
-          setRefreshRequired(false)
-          reportAutomationState(false, serverTrack.points.length, false, false)
-          setError(completion.state.projectRevision
-            ? 'Project changed while saving. Volume automation was reloaded; review the current points before trying again.'
-            : 'Project changed while saving. Refresh project state before changing volume automation.')
-        } else {
-          refreshRequiredRef.current = false
-          setRefreshRequired(false)
-          reportAutomationState(false, serverTrack.points.length, false, false)
-          setError('Could not save volume automation. Your point edits are still in the fields; try again.')
-        }
-      }
-    }
-    return response
-  }
+  const commit = (points: { t_ms: number; value: number }[], nextInterp: KfInterp, rationale: string) =>
+    automation.commit(points, nextInterp, rationale)
 
   const addOrUpdate = () => {
     if (busy || !automationAvailable) return
@@ -193,7 +64,8 @@ export default function VolumeAutomationEditor({
     setTimeMs(nextTime)
     setPercent(nextPercent)
     setSelectedPointMs(nextTime)
-    const points = replaceVolumeAutomationPoint(track.points, nextTime, nextPercent)
+    const seeded = seedVolumeAutomationPoints(track.points, durationMs, staticGainDb)
+    const points = replaceVolumeAutomationPoint(seeded, nextTime, nextPercent)
     void commit(points, interp, `inspector: volume automation at ${nextTime}ms = ${nextPercent}%`)
   }
 
@@ -215,9 +87,22 @@ export default function VolumeAutomationEditor({
     setTimeMs(point.t_ms)
     setPercent(Math.round(point.value * 100))
     setSelectedPointMs(point.t_ms)
-    setError('')
-    setNote(`Editing point at ${formatAutomationTime(point.t_ms)}.`)
   }
+
+  useEffect(() => {
+    const editFromTimeline = (event: Event) => {
+      const detail = (event as CustomEvent<{ clipId?: string; tMs?: number }>).detail
+      if (detail?.clipId !== clipId || typeof detail.tMs !== 'number') return
+      const point = track.points.find((candidate) => candidate.t_ms === detail.tMs)
+      if (!point) return
+      selectPoint(point)
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(`[data-cut-volume-automation-point="${point.t_ms}"] [data-cut-action="volume-automation-point"]`)?.focus()
+      })
+    }
+    document.addEventListener('cut:edit-volume-automation-point', editFromTimeline)
+    return () => document.removeEventListener('cut:edit-volume-automation-point', editFromTimeline)
+  }, [clipId, track.points])
 
   const basic = VOLUME_AUTOMATION_INTERPOLATIONS.filter((option) => option.group === 'Basic')
   const advanced = VOLUME_AUTOMATION_INTERPOLATIONS.filter((option) => option.group === 'Advanced')
@@ -344,7 +229,7 @@ export default function VolumeAutomationEditor({
       ) : (
         <p className="insp__hint" data-cut-volume-automation-empty>No automation points yet.</p>
       )}
-      <p className={`insp__hint${error ? ' insp__hint--error' : ''}`} data-cut-volume-automation-status role="status" aria-live="polite">{error || note}</p>
+      <p className={`insp__hint${automation.message.startsWith('Could not') || automation.message.startsWith('Project changed') ? ' insp__hint--error' : ''}`} data-cut-volume-automation-status role="status" aria-live="polite">{automation.message}</p>
     </div>
   )
 }

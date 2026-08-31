@@ -179,13 +179,13 @@ async fn screen_record_studio_event_appends_camera_transform() {
     assert!(r.ok, "{:?}", r.error);
     let result = r.result.as_ref().unwrap();
     assert_eq!(result["count"], 1);
-    let events_path = cap_dir.join("studio-events.json");
-    let body: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&events_path).unwrap()).unwrap();
-    assert_eq!(body["version"], 1);
-    assert_eq!(body["events"][0]["source"], "camera");
-    assert_eq!(body["events"][0]["kind"], "transform");
-    assert_eq!(body["events"][0]["x"], 0.72);
+    let events_path = cap_dir.join("studio-events.jsonl");
+    let log = crate::screen_record_studio::read_studio_events(&events_path).unwrap();
+    assert_eq!(log.events.len(), 1);
+    assert_eq!(log.events[0].logical_ts, Some(1));
+    assert_eq!(log.events[0].source, "camera");
+    assert_eq!(log.events[0].kind, "transform");
+    assert_eq!(log.events[0].x, Some(0.72));
 }
 
 #[tokio::test]
