@@ -17075,7 +17075,7 @@
     {
       "name": "media.intelligence_search",
       "domain": "media",
-      "description": "Search the current, rebuildable MediaEvidenceIndex@1 and return cursor-bounded EvidenceHit@1 citations. Exact transcript, marker, and metadata matches remain distinct from structural scene/beat matches and semantic visual similarity; scores from different evidence systems are never presented as one universal confidence. Each hit carries an opaque evidence id, sanitized excerpt, exact source range/anchor, current availability, authoritative provenance hashes, and bounded live timeline occurrences. Stale evidence is excluded, not returned with a warning. Visual results use existing media.index embeddings and the local text encoder; non-visual results remain usable when visual coverage/runtime is absent. Read-only and never moves the playhead, inserts media, or sends an agent turn.",
+      "description": "Search the current, rebuildable MediaEvidenceIndex@1 and return cursor-bounded EvidenceHit@1 citations. Exact transcript, marker, and metadata matches remain distinct from structural scene/beat matches and semantic visual similarity; scores from different evidence systems are never presented as one universal confidence. Each hit carries an opaque evidence id, sanitized excerpt, exact source range/anchor, current availability, authoritative provenance hashes, and bounded live timeline occurrences. Stale evidence is excluded, not returned with a warning. Visual similarity reads the existing media.index through the local text encoder; non-visual results remain usable when visual coverage/runtime is absent. Read-only and never moves the playhead, inserts media, or sends an agent turn.",
       "args": {
         "type": "object",
         "required": [
