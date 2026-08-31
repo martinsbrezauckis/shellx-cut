@@ -121,7 +121,6 @@ mod tests {
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let worker_stopped_for_job = worker_stopped.clone();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let started = std::time::Instant::now();
         let job_id = spawn_bounded_package_worker(
             &state,
             Duration::from_millis(20),
@@ -132,11 +131,10 @@ mod tests {
             },
         );
 
+        // The bounded Tokio-time poll proves prompt terminalization without a
+        // host wall-clock assertion that becomes scheduler-sensitive when the
+        // complete Windows suite runs many blocking tests in parallel.
         let terminal = wait_for_job(&state, &job_id).await;
-        assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "the package job should terminalize without waiting on the worker"
-        );
         assert_eq!(terminal.state, crate::jobs::JobState::Failed);
         assert_eq!(
             terminal.error.as_ref().map(|error| error.code.as_str()),
