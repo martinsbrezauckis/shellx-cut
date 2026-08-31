@@ -15,7 +15,7 @@ mod rerun_preparation;
 #[path = "rerun_receipt.rs"]
 mod rerun_receipt;
 use rerun_execution::spawn_verify_rerun_job;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use rerun_output::fenced_output_for_receipt;
 #[cfg(test)]
 use rerun_preparation::retry_descriptor;

@@ -195,7 +195,7 @@ fn invalid(detail: impl Into<String>) -> RecordError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use record_core::{fixtures, Settings};

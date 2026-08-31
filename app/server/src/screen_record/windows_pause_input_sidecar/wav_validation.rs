@@ -191,7 +191,7 @@ fn same_open_file(left: &File, right: &File) -> Result<bool, String> {
                 info.nFileIndexLow,
             ))
         }
-        return Ok(identity(left)? == identity(right)?);
+        Ok(identity(left)? == identity(right)?)
     }
     #[cfg(not(any(unix, windows)))]
     {

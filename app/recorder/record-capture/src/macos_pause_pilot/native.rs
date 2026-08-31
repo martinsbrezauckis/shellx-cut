@@ -251,7 +251,7 @@ fn sealed_file(
     }
     let (sha256, media_duration_ms) = wav_facts(&mut file)?;
     let after = file.metadata().map_err(|_| ())?;
-    if before.len() != after.len() || same_identity(&before, &after) == false {
+    if before.len() != after.len() || !same_identity(&before, &after) {
         return Err(());
     }
     let second = open_local(path)?;

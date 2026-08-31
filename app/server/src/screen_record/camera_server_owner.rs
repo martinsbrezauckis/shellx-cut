@@ -164,7 +164,7 @@ impl PrivateWindowsCameraProjectOwner {
     /// new readiness/use work. A sealed artifact stays retained across a
     /// placement conflict so retry neither reopens the device nor creates a
     /// second receipt. Device loss remains owned by the native terminal state.
-    pub(super) fn stop_and_place(
+    fn stop_and_place(
         &mut self,
         store: &mut ProjectStore,
         requested_terminal: CameraTerminalState,

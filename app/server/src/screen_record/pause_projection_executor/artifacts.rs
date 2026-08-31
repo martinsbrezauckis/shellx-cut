@@ -339,6 +339,6 @@ fn invalid(detail: impl Into<String>) -> CutError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "artifacts_tests.rs"]
 mod tests;

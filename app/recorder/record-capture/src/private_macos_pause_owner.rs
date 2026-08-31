@@ -17,8 +17,8 @@ use crate::macos_pause_pilot::{
 };
 use crate::windows_pause_pilot::{
     channel, WindowsPausePilotChannelError, WindowsPausePilotCommand,
-    WindowsPausePilotCommandReceiver, WindowsPausePilotCommandSender, WindowsPausePilotEvent,
-    WindowsPausePilotEventReceiver, WindowsPausePilotEventSender, WindowsPausePilotOperation,
+    WindowsPausePilotCommandReceiver, WindowsPausePilotCommandSender,
+    WindowsPausePilotEventReceiver, WindowsPausePilotEventSender,
 };
 use crate::{CheckpointConfig, MicrophoneSource};
 

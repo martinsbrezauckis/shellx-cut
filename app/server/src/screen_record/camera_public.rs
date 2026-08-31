@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 pub(super) fn capability() -> Value {
     #[cfg(any(windows, target_os = "macos"))]
     {
-        return match record_capture::private_camera_owner::devices() {
+        match record_capture::private_camera_owner::devices() {
             Ok(devices) => {
                 let rows = devices
                     .iter()
@@ -34,7 +34,7 @@ pub(super) fn capability() -> Value {
                 "devices": [],
                 "detail": format!("Camera discovery is unavailable: {}", error.message),
             }),
-        };
+        }
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     json!({

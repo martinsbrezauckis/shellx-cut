@@ -370,7 +370,7 @@ impl CaptureSessionControl {
         self.terminal_scene_result()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn terminalize_at_for_test(
         &self,
         at: Instant,
@@ -378,7 +378,7 @@ impl CaptureSessionControl {
         self.terminalize_at(at, None)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn terminalize_after_capture_at_for_test(
         &self,
         at: Instant,
@@ -672,7 +672,7 @@ impl CaptureSessionControl {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn bind_backend_clock_for_test(&self, clock: CaptureClock) {
         self.bind_backend_clock(clock).unwrap();
     }
@@ -717,7 +717,7 @@ impl CaptureSessionControl {
         control
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn install_scene_append_hook(
         &self,
         entered: Arc<std::sync::Barrier>,
@@ -750,7 +750,7 @@ impl CaptureSessionControl {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn install_terminal_stop_hook(
         &self,
         entered: Arc<std::sync::Barrier>,

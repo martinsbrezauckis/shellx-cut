@@ -81,10 +81,10 @@ impl CameraCaptureSidecar {
                         &error.to_string(),
                     )
                 })?;
-            return Ok(Some(Self {
+            Ok(Some(Self {
                 worker: Some(worker),
                 terminal_tx: Some(terminal_tx),
-            }));
+            }))
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
@@ -114,12 +114,12 @@ impl CameraCaptureSidecar {
                 .worker
                 .take()
                 .expect("camera worker exists until finish");
-            return worker.join().map_err(|_| {
+            worker.join().map_err(|_| {
                 camera_error(
                     "camera capture worker terminated unexpectedly",
                     "the camera owner panicked before terminal hand-off",
                 )
-            })?;
+            })?
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {

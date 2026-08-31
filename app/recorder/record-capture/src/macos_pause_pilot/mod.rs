@@ -26,11 +26,12 @@ pub(crate) use native::RequiredMacosPauseAudioFactory;
 pub(crate) use owner::{MacosPauseRunOwner, MacosPauseScreenOwner};
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 pub(crate) use screen::RequiredMacosPauseScreenOwner;
+#[cfg(test)]
+pub(crate) use types::MacosPausePilotRefusal;
 pub(crate) use types::{
     MacosPauseAcceptedScreen, MacosPauseAudioLayout, MacosPauseCommand, MacosPauseCommandRejection,
-    MacosPausePilotEvent, MacosPausePilotProfile, MacosPausePilotRefusal, MacosPausePilotRequest,
-    MacosPausePilotStarted, MacosPauseScreenRange, MacosPauseStartError, MacosSealedAudioRun,
-    MacosSealedScreenRun,
+    MacosPausePilotEvent, MacosPausePilotProfile, MacosPausePilotRequest, MacosPausePilotStarted,
+    MacosPauseScreenRange, MacosPauseStartError, MacosSealedAudioRun, MacosSealedScreenRun,
 };
 
 #[cfg(test)]

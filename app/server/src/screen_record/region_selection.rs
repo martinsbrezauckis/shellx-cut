@@ -19,7 +19,7 @@ const DEFAULT_CAPACITY: usize = 32;
 const DEFAULT_TTL: Duration = Duration::from_secs(90);
 const RETIRED_TTL: Duration = Duration::from_secs(90);
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 pub(crate) use super::region_selection_value::NativeTopologyFingerprint;
 #[cfg(windows)]
 pub(crate) use super::region_selection_value::NativeWindowsTopologySnapshot;

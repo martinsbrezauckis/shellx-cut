@@ -28,8 +28,6 @@
 //!
 //! Dependencies: record-core/-engine/-render/-capture, cut_core (CutError). Primary
 //! callers: dispatch.rs (`screen_record_doctor`/`_start`/`_autoedit`/`_polish`/`_export`).
-#[cfg(any(windows, target_os = "macos"))]
-use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

@@ -112,10 +112,11 @@ impl PrivateFrameGridProjection {
             camera_artifact: None,
             webcam_video: None,
             audio: audio.clone(),
-            microphone_outcome: audio
-                .is_some()
-                .then_some(MicrophoneCaptureOutcome::Saved)
-                .unwrap_or(MicrophoneCaptureOutcome::NotRequested),
+            microphone_outcome: if audio.is_some() {
+                MicrophoneCaptureOutcome::Saved
+            } else {
+                MicrophoneCaptureOutcome::NotRequested
+            },
             settings: project.settings,
             capture_quality: None,
             verified_media: None,
