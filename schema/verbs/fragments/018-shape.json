@@ -1,0 +1,135 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "shape",
+  "verbs": [
+    {
+      "name": "shape.update",
+      "domain": "shape",
+      "description": "Edit a PLACED shape overlay clip's properties (shape kind, label text, color, geometry, …) IN PLACE — the edit companion to edit.add_shape (which only ADDS). Selecting a shape clip used to give a generic 'Video clip' inspector with no way to change it. Shapes and titles both live on `title*` overlay tracks; this recovers the originating edit.add_shape spec from the op-log (the robust shape-vs-title distinction: a shape clip has an edit.add_shape creating op, a title clip a title.add one — a title clip is refused, use title.update), merges the provided overrides (`label`/`color` are the common cases; any edit.add_shape field — shape/fill/stroke/stroke_px/opacity/radius_px/head_px/font_px/animation/x/y/w/h/x2/y2 — may also be overridden), RE-RENDERS a fresh transparent overlay .mov at the SAME duration via the SAME render path edit.add_shape uses, and swaps the clip onto the new asset. The clip id, timeline range, track, and position are all kept; only its pixels change. Committed as ONE lowered op (the asset swap; the new .mov's media.import rides ahead of it) so undo reverts the whole edit and replay re-imports + re-swaps. NOTE: `label` is the public name for the centered label text (edit.add_shape calls it `text`); `range_ms` is NOT editable here (the re-render keeps the same duration).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Shape clip id (a clip on a 'title*' overlay track created by edit.add_shape, from project.state — it carries the shape_kind annotation)"
+          },
+          "shape": {
+            "type": "string",
+            "enum": [
+              "rect",
+              "ellipse",
+              "line",
+              "arrow"
+            ],
+            "description": "Override the shape kind (see edit.add_shape)"
+          },
+          "label": {
+            "type": "string",
+            "description": "New centered label text (the common edit; maps to edit.add_shape's `text`)"
+          },
+          "color": {
+            "type": "string",
+            "description": "Override the label text color #RRGGBB"
+          },
+          "fill": {
+            "type": "string",
+            "description": "Override the fill color #RRGGBB (rect/ellipse)"
+          },
+          "stroke": {
+            "type": "string",
+            "description": "Override the stroke/border color #RRGGBB (rect/ellipse) or the line color (line/arrow)"
+          },
+          "stroke_px": {
+            "type": "number",
+            "description": "Override the stroke/line width in px"
+          },
+          "opacity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Override the fill opacity 0..1"
+          },
+          "radius_px": {
+            "type": "number",
+            "description": "Override the rect corner radius in px"
+          },
+          "head_px": {
+            "type": "number",
+            "description": "Override the arrowhead length in px (arrow)"
+          },
+          "font_px": {
+            "type": "number",
+            "description": "Override the label font size in px"
+          },
+          "animation": {
+            "type": "string",
+            "enum": [
+              "fade",
+              "slide_up",
+              "slide_down",
+              "slide_left",
+              "slide_right",
+              "pop",
+              "none"
+            ],
+            "description": "Override the entry/exit animation"
+          },
+          "x": {
+            "type": "number",
+            "description": "Override box left (rect/ellipse) OR start point x (line/arrow), normalized [0,1]"
+          },
+          "y": {
+            "type": "number",
+            "description": "Override box top (rect/ellipse) OR start point y (line/arrow), normalized [0,1]"
+          },
+          "w": {
+            "type": "number",
+            "description": "Override box width (rect/ellipse), normalized [0,1]"
+          },
+          "h": {
+            "type": "number",
+            "description": "Override box height (rect/ellipse), normalized [0,1]"
+          },
+          "x2": {
+            "type": "number",
+            "description": "Override end point x (line/arrow), normalized [0,1]"
+          },
+          "y2": {
+            "type": "number",
+            "description": "Override end point y (line/arrow), normalized [0,1]"
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Internal composite-action identity used by native Motion reimports so all changed objects undo as one user action."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, track, asset_id, shape, label}; one lowered op appended (re-renders the overlay + swaps the clip's asset in place)",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "shape_update",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

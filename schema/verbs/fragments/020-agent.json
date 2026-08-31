@@ -1,0 +1,86 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "agent",
+  "verbs": [
+    {
+      "name": "agent.chat",
+      "domain": "agent",
+      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Provider version text is informational only; required containment flags are verified before every turn. Claude uses Cut's contained capability contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place; Cut grants session-scoped trust only to that newly created empty workspace so Grok can start the project-scoped Cut MCP server. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional media attachments are registered project asset IDs only (maximum 8). Optional cited-moment attachments are up to 12 opaque evidence IDs plus their exact MediaEvidenceIndex@1 snapshot: Cut resolves them through inspect.range before launch and the agent must inspect that same current evidence rather than trust copied prompt prose. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
+      "args": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "The natural-language edit request, e.g. \"add a marker at 1 second\" or \"split the clip at 2s and delete the first half\"."
+          },
+          "attachments": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Optional registered asset IDs from the currently open project. Source paths are not accepted; cutd validates every ID before launching the agent."
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 12,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^ev_[a-f0-9]{24}$"
+            },
+            "description": "Optional opaque cited-moment ids from media.intelligence_search. Non-empty evidence_ids requires evidence_index_id; Cut resolves every id through current inspect.range before launch."
+          },
+          "evidence_index_id": {
+            "type": "string",
+            "pattern": "^idx_[a-f0-9]{24}$",
+            "description": "Exact MediaEvidenceIndex@1 snapshot for evidence_ids. Refused when the index or an authority changed after selection."
+          },
+          "agent": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex",
+              "grok",
+              "antigravity"
+            ],
+            "description": "Which local subscription CLI to drive. Claude, Codex, Grok, and Antigravity are wired with provider-specific launch boundaries; Antigravity is available when its resolved CLI advertises Cut's required sandbox and non-interactive flags. Omit = the first installed + chat-wired agent, preferring Claude. An unavailable explicit pick degrades honestly."
+          },
+          "model": {
+            "type": "string",
+            "description": "Optional model override passed to the CLI (e.g. a specific claude model)."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "Turn timeout (default 180000; clamped 10000–600000)."
+          }
+        }
+      },
+      "result": "{ok, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment fields echo validated current identities; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "agent_chat",
+        "project_state": "optional",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

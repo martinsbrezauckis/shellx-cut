@@ -1,0 +1,596 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "project",
+  "verbs": [
+    {
+      "name": "project.create",
+      "domain": "project",
+      "description": "Create a new project directory with default tracks (v1 video, a1t audio), empty op-log, receipts/ and proxies/ subdirs. Becomes the server's open project. dir defaults to a managed <ShellX Cut Projects>/<name>.cutproj under the OS home (~/Documents/ShellX Cut Projects/ on Windows, ~/ShellX Cut Projects/ on macOS/Linux), falling back to <cwd> only when no home resolves. When settings are omitted, the internal 1920x1080@30 fallback is automatically replaced by the first imported video's source width, height, and frame rate while the format remains untouched. starter:first-edit installs the bundled synthetic tutorial clip inside the new project and returns its path for normal media.import.",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Project name"
+          },
+          "settings": {
+            "type": "object",
+            "description": "Optional explicit timeline composition settings. The internal fallback is 1920x1080@30, 48kHz; when omitted, the first imported video adopts its source width, height, and frame rate while the format remains untouched.",
+            "additionalProperties": false,
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 16
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 16
+              },
+              "fps": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "audio_rate": {
+                "type": "integer",
+                "minimum": 8000
+              }
+            }
+          },
+          "dir": {
+            "type": "string",
+            "description": "Target .cutproj directory path; default is the managed ShellX Cut Projects directory under the OS home, with <cwd> used only when no home resolves"
+          },
+          "starter": {
+            "type": "string",
+            "enum": [
+              "first-edit"
+            ],
+            "description": "Optional bundled project starter. first-edit installs the self-owned synthetic tutorial clip and returns starter_asset_path; it is not imported until media.import is called."
+          }
+        }
+      },
+      "result": "{path, project, starter_asset_path?} plus envelope op_ids/project_revision — absolute .cutproj path, full project.json state, initial project.create op, and optional bundled starter media path",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_create",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.open",
+      "domain": "project",
+      "description": "Open an existing .cutproj directory. Rebuilds project.json from ops.jsonl if the cache is missing or corrupt. Before activation, scans project-local screen-record checkpoint journals: only a dead owner with a contiguous, independently playable finalized checkpoint prefix may be remuxed to recovered.mp4; live or ambiguous owners are never signalled, and corrupt journals fail closed into quarantine. The returned recovery_scan is an immediate report; screen_record.recovery_status is the durable, paginated receipt projection after navigation.",
+      "args": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the .cutproj directory"
+          }
+        }
+      },
+      "result": "{path, project, project_revision, recovery_scan:{recovered:[capture_id], deferred:[detail], failed_closed:[detail]}} — the loaded project state and latest durable op id; recovery_scan reports this activation scan only. Query screen_record.recovery_status for durable per-capture receipt/loss state.",
+      "behavior": {
+        "mutation_class": "navigation",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_open",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.list",
+      "domain": "project",
+      "description": "List recent projects from the global index (~/.shellx-cut/projects.json), reconciled against the managed projects dir + the filesystem: projects whose .cutproj vanished are flagged missing:true, and un-indexed .cutproj dirs found in the managed dir are discovered and added. READ-ONLY discovery — reopen a listed project with project.open{path}. The index is updated as a side-effect of project.create/open/rename.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sort": {
+            "type": "string",
+            "enum": [
+              "recent",
+              "name",
+              "created"
+            ],
+            "default": "recent",
+            "description": "Order: recent (last-opened desc, default) | name (asc) | created (newest first)."
+          },
+          "q": {
+            "type": "string",
+            "description": "Case-insensitive name or tag substring filter."
+          }
+        }
+      },
+      "result": "{projects: [{id, name, path, created_ms, last_opened_ms, thumb?, duration_ms?, clip_count?, missing?}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_list",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.forget",
+      "domain": "project",
+      "description": "Drop a project from the recent index by id OR path, or bulk-forget every DEAD entry with missing:true. Does NOT delete the .cutproj on disk (forget ≠ delete) — the project can be re-discovered by project.list if it still lives in the managed dir, or reopened by path. missing:true drops every entry whose .cutproj directory does not exist on disk AT CALL TIME (a fresh per-entry check, never the stored missing flag — a project on a remounted drive survives); this is the registry-hygiene path for the ghosts that deleted test/scratch projects leave behind. Pass exactly one of id/path/missing.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The project's index id (from project.list)."
+          },
+          "path": {
+            "type": "string",
+            "description": "The project's .cutproj path (alternative to id)."
+          },
+          "missing": {
+            "type": "boolean",
+            "description": "true ⇒ bulk mode: forget EVERY index entry whose .cutproj no longer exists on disk. Returns {forgotten, removed: N}. Mutually exclusive with id/path."
+          }
+        }
+      },
+      "result": "{forgotten: bool, removed?: int}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_forget",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.delete",
+      "domain": "project",
+      "description": "PERMANENTLY delete a project's .cutproj directory from disk AND drop it from the recent index (forget = index only; delete = the files). DESTRUCTIVE — the UI confirms before calling. GUARDRAILS: the resolved path must be an existing *.cutproj DIRECTORY, and it must NOT be the currently-open project (open/create another first → error conflict). Source MEDIA referenced by the project lives OUTSIDE the .cutproj (linked by path) and is NEVER touched — only the project's own dir (edits/proxies/receipts) is removed. Pass exactly one of id/path.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The project's index id (from project.list)."
+          },
+          "path": {
+            "type": "string",
+            "description": "The project's .cutproj path (alternative to id)."
+          }
+        }
+      },
+      "result": "{deleted: bool, path: string, forgotten: bool}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_delete",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.save",
+      "domain": "project",
+      "description": "Force-write project.json (the cache) to disk. Normally automatic after every applied op; exists for belt-and-braces agent flows.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{saved: true, path}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_save",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.state",
+      "domain": "project",
+      "description": "Return the materialized project state, or a bounded revision delta when since_revision is current enough. Linked Motion media clips include a transient replay-backed motion_link with current local availability and a bounded path-free keying/roto summary; these machine-local fields are not persisted in project.json.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "since_revision": {
+            "type": "string",
+            "description": "Last applied project revision. Returns a bounded applicable delta when every missed op has a safe client patch; otherwise returns a full snapshot with sync.mode:'snapshot' and a reason."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 512,
+            "description": "Maximum missed operations considered for a delta (default 128)."
+          }
+        }
+      },
+      "result": "full project state with project_revision and sync:{mode:'snapshot',reason,...}, or {sync:{mode:'delta',from_revision,project_revision,ops,changes,affected,encoded_bytes}}; no_project if no project is open. Linked media clips may carry motion_link.effects:{schema:'shellx-cut/motion-effects-summary@1',available,ownership:'motion',editableInCut:false,keyedLayerCount?,rotoLayerCount?,trackedRotoLayerCount?,truncated?,layers?}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_state",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.health",
+      "domain": "project",
+      "description": "Read a bounded, path-free Health & Recovery report for the open project. It first strictly revalidates the journal identity. A live external-change or identity failure is disclosed as journal attention/unavailable and deliberately returns no asset membership until the project is closed and reopened. When the journal is current, each page checks at most 128 registered assets for source, proxy and filmstrip availability. The first page also reports a bounded apparent-byte inventory of only recognized flat rebuildable proxy and thumbnail outputs, including how much is no longer referenced by the project. Its read-only cleanup preview divides those unreferenced outputs by a 24-hour file-change safety window; this is not last-use evidence or permission to delete, and active producers must be rechecked before any future removal. It never follows symlinks or descends into unexpected directories and excludes exports, captures, receipts, source media, and foreign files. The first page returns an opaque project_revision; every cursor continuation must send that exact revision so pages cannot mix project membership across an edit. This read never repairs, deletes, promotes, or follows an unregistered derived path. Job persistence notices are intentionally reported by jobs.list and capture-recovery inventory by screen_record.recovery_status.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "description": "Asset id returned as next_cursor by the prior page. Requires revision and means strictly after that stable asset-id cursor."
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^op_[0-9]{6,}$",
+            "description": "Opaque project_revision from the first page. Required with cursor; a changed revision fails with restart guidance rather than mixing pages."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128,
+            "description": "Maximum registered assets examined in this page (default 64)."
+          }
+        }
+      },
+      "result": "{schema:'shellx-cut/project-health/1',project_revision?,journal:{status:'verified'|'recovered'|'attention'|'unavailable',log_records?,cache:'matched'|'rebuilt',snapshot:{status:'not_present'|'verified'|'rejected',prefix_ops?},notices:[{code,message,discarded_bytes?,discarded_start?,discarded_end?}]},editing_cache?:{status:'ready'|'partial',bytes,files,reclaimable_bytes,reclaimable_files,cleanup_preview:{status:'ready'|'blocked',minimum_age_ms,aged_unreferenced_bytes,aged_unreferenced_files,recent_unreferenced_bytes,recent_unreferenced_files},latest_modified_ms?,categories:[{kind:'proxies'|'thumbnails',status:'ready'|'partial',bytes,files,reclaimable_bytes,reclaimable_files,scanned_entries,skipped_entries,truncated,entry_limit,latest_modified_ms?}]},media:{status:'ready'|'unavailable',asset_count,checked_count,page:{offline,proxy_available,proxy_missing,proxy_not_recorded,proxy_not_applicable,filmstrip_available,filmstrip_missing,filmstrip_not_recorded,filmstrip_not_applicable},assets:[{asset,source:'available'|'offline',proxy:'available'|'missing'|'not_recorded'|'not_applicable',filmstrip:'available'|'missing'|'not_recorded'|'not_applicable'}],limit,cursor?,next_cursor?,has_more}}. `editing_cache` is first-page-only, path-free, bounded apparent usage for recognized flat rebuildable proxies/thumbnails. `reclaimable_*` counts recognized outputs not referenced by current asset metadata. `cleanup_preview` divides those facts by a 24-hour minimum file-change age and blocks on an incomplete scan; it is informational, does not prove last use or inactive producers, and is not a delete authorization. Symlinks, unexpected directories/files, exports, captures, receipts, and source media are excluded and make the scan partial when encountered. `next_cursor` is present only while `has_more` is true. Page counters describe only returned assets; aggregate every revision-bound page before claiming whole-project healthy. No paths are returned and no delete runs.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_health",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.sequence_list",
+      "domain": "project",
+      "description": "List the independently editable timelines in the open project. Legacy projects expose one implicit Main sequence until the first sequence mutation. Read-only.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{active_sequence, sequences:[{id, name, active, duration_ms, clip_count, settings}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_sequence_list",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.sequence_index",
+      "domain": "project",
+      "description": "Read-only searchable Sequence Index across every timeline in the open project. Returns path-light clip and marker metadata with stable sequence/track/item IDs and laid timeline ranges, including inactive sequences, so a user or agent can filter and navigate without opening sequences one by one. `at_ms`/`end_ms` use the same post-transition layout as rendering and ui.playhead: a valid crossfade pulls its incoming clip and every later row on that track back by the resolved overlap. Text search is case-insensitive and matches all whitespace-separated terms against sequence name, track metadata, clip/asset labels, effect names, live offline state, and marker label/note/color. The exact `asset` filter is applied before the result limit and returns only matching media rows, avoiding text-match collisions for per-asset navigation. The status filter can isolate offline media, timeline gaps, effect-bearing clips, and clips on hidden/locked/muted tracks. Anonymous timeline gaps are returned only when status is gaps/issues or the text query explicitly asks for gap/gaps, preserving the default clip/marker index. Source paths are never returned.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "default": "",
+            "description": "Optional case-insensitive text query. Every whitespace-separated term must match the row metadata. Empty lists the filtered index."
+          },
+          "asset": {
+            "type": "string",
+            "description": "Optional exact stable media asset id. Applied before limit and excludes marker, caption, and gap rows. Combine with query/status/sequence filters when needed."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "all",
+              "clip",
+              "marker"
+            ],
+            "default": "all"
+          },
+          "sequence": {
+            "type": "string",
+            "description": "Optional sequence id from project.sequence_list."
+          },
+          "track_kind": {
+            "type": "string",
+            "enum": [
+              "video",
+              "audio",
+              "caption"
+            ],
+            "description": "Optional clip-track filter. When set, marker rows are excluded."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "all",
+              "issues",
+              "offline",
+              "gaps",
+              "effects",
+              "hidden",
+              "locked",
+              "muted"
+            ],
+            "default": "all",
+            "description": "Optional live clip/status filter. issues includes offline media plus explicit timeline gaps; non-all values exclude marker rows. Gap rows are synthetic path-light clip rows addressed by track and timeline position, not mutable clip IDs."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 200
+          }
+        }
+      },
+      "result": "{query, asset?, kind, sequence?, track_kind?, status, total, clip_count, marker_count, issue_count, effect_clip_count, truncated, results:[clip {kind:'clip',sequence_id,sequence_name,active,id,at_ms,end_ms,track_id,track_kind,clip_kind:'media'|'caption'|'gap',label,asset?,src_in_ms?,src_out_ms?,effect_count,effects,offline,track_visible,track_locked,track_muted,issues} | marker {kind:'marker',sequence_id,sequence_name,active,id,at_ms,end_ms,label,note?,color?}]} — at_ms/end_ms are laid positions after valid crossfade overlap",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_sequence_index",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.sequence_create",
+      "domain": "project",
+      "description": "Create and activate a new sequence in the open project. from:empty creates default video/audio tracks; from:active duplicates the active sequence's complete composition state. Assets and reusable galleries remain shared. Replay-safe and establishes the new sequence's undo baseline.",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "from": {
+            "type": "string",
+            "enum": [
+              "empty",
+              "active"
+            ],
+            "default": "empty"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{sequence:{id, name, active, duration_ms, clip_count, settings}, active_sequence}; one op appended",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_sequence_create",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.sequence_switch",
+      "domain": "project",
+      "description": "Save the active sequence's composition state and activate another sequence. Undo, redo, checkpoints, revert, and restore remain scoped to the selected sequence.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{active_sequence}; one op appended",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_sequence_switch",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.sequence_rename",
+      "domain": "project",
+      "description": "Rename one sequence without changing the project name or timeline state. Sequence names are unique within the project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{id, name}; one op appended",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_sequence_rename",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

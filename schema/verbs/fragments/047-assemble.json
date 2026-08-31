@@ -1,0 +1,101 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "assemble",
+  "verbs": [
+    {
+      "name": "assemble.broll",
+      "domain": "assemble",
+      "description": "ASSEMBLY AUTOMATION — fill a list of b-roll SLOTS by retrieving a clip per slot and placing it on a b-roll track. For each `{query, at_ms, duration_ms}`: search the `provider` (default local_folder; any assets.* provider — openverse/archive_org/wikimedia/nasa for stock, or local_folder with `dir`) for `query`, FETCH the top hit as a project asset, and edit.insert its first `duration_ms` at `at_ms` (no ripple — the b-roll lands on its own track). ORCHESTRATOR (like audio.cleanup_voice / autopilot.run): records NO op of its own — it wraps the work in an auto-checkpoint and dispatches assets.search + assets.fetch + edit.insert as real, replay-safe ops, so the whole assembly reverts in ONE step. STOPS on the first failing slot and returns the checkpoint + a revert_hint (never a silently half-assembled timeline). `track` targets an existing track; omitted = a 'broll' video track (created if absent). `source:\"generate\"` is reserved for assets.generate. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "slots"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "slots": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "query",
+                "at_ms",
+                "duration_ms"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "What this slot is about — the provider search query."
+                },
+                "at_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Timeline position to place the retrieved clip."
+                },
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "How much of the retrieved source to place (its first duration_ms)."
+                }
+              }
+            },
+            "description": "The b-roll slots to fill, in any order."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "search",
+              "generate"
+            ],
+            "description": "search (default) = retrieve from a provider; generate = reserved for assets.generate."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Which assets.* provider to search (default local_folder). e.g. local_folder, openverse, archive_org, wikimedia, nasa."
+          },
+          "dir": {
+            "type": "string",
+            "description": "Search dir for the local_folder provider."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "video",
+              "image",
+              "audio"
+            ],
+            "description": "Media kind to retrieve (default video)."
+          },
+          "track": {
+            "type": "string",
+            "description": "Target track id (default: a 'broll' video track, created if absent)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{status, track, slots_filled, placed:[{slot,query,asset_id,clip_id,at_ms,duration_ms}], checkpoint, revert_hint} — or {status:\"failed\", slot, failed_step, error, placed, checkpoint, revert_hint} on the first failing slot. Orchestrator: no op of its own; the sub-verbs (assets.search/fetch, edit.insert) record the ops.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "assemble_broll",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "autopilot",
+  "verbs": [
+    {
+      "name": "autopilot.run",
+      "domain": "autopilot",
+      "description": "Receipted Autopilot : render → verify → MECHANICALLY self-fix from the receipt's fix_actions → re-verify, capped, all under ONE auto-checkpoint so the whole run reverts in one step. The self-fix loop is deterministic (no model): a render-param fix (lufs→normalize_loudness, uniform_border→fit:cover) merges into the next render; a timeline-edit fix (cut_on_word→edit.trim snap-to-word-edge, silence_at_edges→edit.trim_edges, caption overlap→captions.reflow) is applied as its verb. policy:\"preview\" (DEFAULT) renders+verifies once and returns the PLAN (what it WOULD fix) WITHOUT applying — approve first; \"auto_low_risk\" applies the mechanical fixes. comment_id pre-applies that review note's drafted changes (comment.apply). returns {job_id, checkpoint}; the clean report lands in the job result.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "goal": {
+            "type": "string",
+            "description": "Free-text label/intent for the run (recorded in the report; v1 does not LLM-plan arbitrary verbs from it — use comment_id for planned changes)."
+          },
+          "comment_id": {
+            "type": "string",
+            "description": "Pre-apply this review note's drafted verb changes (comment.apply) before the verify/self-fix loop."
+          },
+          "policy": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "auto_low_risk"
+            ],
+            "description": "preview (default) = stop at the plan/diff for approval; auto_low_risk = apply the mechanical fixes."
+          },
+          "max_fix_iters": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6,
+            "description": "Cap on render→fix→re-verify passes (default 3)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{job_id, checkpoint} — clean report in the job result: {summary_line, policy, goal, checks_pass, stalled, iterations, fixes_applied:[{check,via}], plan:[{check,fix_verb,auto_fixable,rationale}], changed:DiffSummary, checkpoint, receipt_ids, restore_hint}",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "checkpoint"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "checkpoint": {
+            "type": "string"
+          },
+          "x-async-result": {
+            "type": "string",
+            "const": "{summary_line, policy, checks_pass, iterations, fixes_applied, plan, changed, checkpoint, receipt_ids, restore_hint} via jobs.status"
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "autopilot_run",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

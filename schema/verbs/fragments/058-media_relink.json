@@ -1,0 +1,63 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "media",
+  "verbs": [
+    {
+      "name": "media.relink_preview",
+      "domain": "media",
+      "description": "Bounded, symlink-safe recovery preview for every OFFLINE asset in the open project. It scans one chosen folder without following symlinks, hashes at most 512 regular files, probes local candidates for private diagnostics, and returns an opaque plan_hash. Only a unique candidate whose COMPLETE sha256 digest exactly equals an asset's stored complete sha256 identity is eligible. When exact identity cannot select a row, metadata_review means exactly one candidate has the same basename, kind, stored raw format byte size, and exact duration (audio/video) or dimensions (still); any available dimension, normalized container, or codec mismatch refuses. Missing stored probe/size yields metadata_insufficient and equal top private ranks yield ambiguous_metadata. Metadata rows, duplicate exact hashes, and sampled/missing source hashes are diagnostics only and cannot be applied. The result exposes only safe matched-fact labels, never candidate paths, selected root, raw probes, timestamps, scores, or metadata values. This read never changes project, Library, derived assets, or jobs.",
+      "args": {
+        "type": "object",
+        "required": ["root"],
+        "additionalProperties": false,
+        "properties": {
+          "root": { "type": "string", "description": "Existing local folder to scan. Symlinks, paths outside its canonical root, depth over 16, and more than 512 regular files refuse the preview." }
+        }
+      },
+      "result": "shellx-cut/media-relink-preview/1: {schema,project_identity,project_revision,plan_hash,scan:{status,files,directories,reason?},assets:[{asset,expected_hash,display_name,disposition,diagnostics:[safe_matched_fact_label],candidate?}]} — eligible_exact_hash is the ONLY selectable outcome. metadata_review is a disabled, one-file-review hint; preview never returns candidate paths, selected root, raw probes, timestamps, ranks, or metadata values",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": { "filesystem": true, "process": true, "network": false, "ui": false },
+        "dispatch": "media_relink_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.relink_apply",
+      "domain": "media",
+      "description": "Apply selected exact-hash rows from a fresh media.relink_preview. Requires request_id, expected_revision, and plan_hash; it rescans and fully rehashes before one all-or-nothing, project-local metadata journal op. It refuses ambiguity, metadata_review, and every other metadata-only evidence state. The exact source hash, chosen path, disposition, project identity, revisions, plan hash, and grouped operation id are returned in an immutable versioned result and request receipt for B6 portable packaging. It changes ONLY asset.path: no Library transaction, no import/proxy/enrichment job, no derived-state deletion, and no Ctrl-Z promise.",
+      "args": {
+        "type": "object",
+        "required": ["root", "plan_hash", "accept"],
+        "additionalProperties": false,
+        "properties": {
+          "root": { "type": "string", "description": "The same recovery folder used for the preview; it is rescanned under the bounded symlink-safe policy." },
+          "plan_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$", "description": "Opaque full SHA-256 of the exact preview. A mismatch refuses all selected rows." },
+          "accept": { "type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": { "type": "string" }, "description": "Asset ids selected from eligible_exact_hash preview rows only." },
+          "rationale": { "type": "string" }
+        }
+      },
+      "result": "shellx-cut/media-relink-receipt/1 immutable result: {schema,immutable,project_identity,pre_revision,post_revision,plan_hash,grouped_op_id,assets:[{asset,expected_hash,chosen,disposition:'relinked'}]} — generic shellx-cut/mutation-request/1 receipt is atomically persisted per request_id",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": { "filesystem": true, "process": false, "network": false, "ui": false },
+        "dispatch": "media_relink_apply",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

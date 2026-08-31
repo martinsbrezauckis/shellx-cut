@@ -1,0 +1,144 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "jobs",
+  "verbs": [
+    {
+      "name": "jobs.status",
+      "domain": "jobs",
+      "description": "Status of one background job (probe/proxy/transcribe/perception/render/judge). jobs domain replaces media.status.",
+      "args": {
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "JobRecord {job_id, kind, state: queued|running|done|failed, completion?: success|done_with_warnings, outcome?: succeeded|failed|cancelled|interrupted|superseded, outcome_reason?: completed|completed_with_warnings|true_failure|user_cancelled|project_switch_cancelled|restart_interrupted|superseded, progress 0..1, message?, queue?:{resource,max_running}, waiting_on?:{job_id,kind}, error?, result?}. message is the latest durable human-readable progress or terminal phase; it is absent on queued/legacy records until a worker reports one. queue is present only while a limited job waits for the named shared local resource and states its concurrency capacity; it clears when the slot is acquired or the job becomes terminal. waiting_on is present only while an orchestrator awaits the named active child and is relationship evidence, not a retry promise. state remains backward-compatible; outcome/outcome_reason explain terminal cause and are absent on legacy persisted records. completion is present on newly completed jobs; done_with_warnings means the result is usable but partial and its result.warnings must be inspected.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_status",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.list",
+      "domain": "jobs",
+      "description": "All job records of this server run, newest first (status bar + agent overview). Active records retain their latest human-readable message so a reconnect can restore the current phase without waiting for another progress event.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{jobs: JobRecord[], persistence_notices: [{code:'job_record_quarantined',record,message,quarantine}]}. persistence_notices is empty unless project recovery quarantined malformed job JSON; quarantine is relative to the project's jobs directory.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_list",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.cancel",
+      "domain": "jobs",
+      "description": "Cancel one active background job from this server run. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
+      "args": {
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{job_id, cancelled:true}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_cancel",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_applicable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "jobs.retry",
+      "domain": "jobs",
+      "description": "Admit one fresh durable child for an eligible failed default-output screen_record.export job. This is not generic historical request replay: Cut validates the persisted recorder-export descriptor against the active project's exact revision and SHA-256 fingerprints of the source, EditPlan, and recorder audio inputs before reserving a fresh default output lease. The source job is consumed and linked to exactly one child atomically; a second retry returns conflict. Explicit Save As exports, cancellations, successes, superseded jobs, legacy records, changed inputs, and changed project revisions are ineligible and must start a new export.",
+      "args": {
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Eligible failed default-output screen_record.export job id"
+          }
+        }
+      },
+      "result": "{job_id, retry_of, root_job_id, attempt, path, format:'mp4'|'gif', status:'queued'} — a newly admitted linked child with a fresh fenced default destination; poll jobs.status for progress and terminal result.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "jobs_retry",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_applicable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

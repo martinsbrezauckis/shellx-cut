@@ -1,0 +1,330 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "transcript",
+  "verbs": [
+    {
+      "name": "transcript.remove_silences",
+      "domain": "transcript",
+      "description": "Remove detected silences. Timeline-wide by default; optional asset/track narrows scope. aggressiveness is REQUIRED — named presets: calm = long pauses only, natural = default feel, jumpy = tight cut. ONE op per removed span (skim-reviewable).",
+      "args": {
+        "type": "object",
+        "required": [
+          "aggressiveness"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "aggressiveness": {
+            "type": "string",
+            "enum": [
+              "calm",
+              "natural",
+              "jumpy"
+            ]
+          },
+          "min_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Only remove silences at least this long; preset default"
+          },
+          "padding_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Breathing room kept on each side; preset default"
+          },
+          "asset": {
+            "type": "string",
+            "description": "Narrow to clips of this asset"
+          },
+          "track": {
+            "type": "string",
+            "description": "Narrow DETECTION to spans present on this track; the cut itself still ripples all tracks (AV sync)"
+          },
+          "allow_extreme": {
+            "type": "boolean",
+            "default": false,
+            "description": "Totality guard override: without it the verb REFUSES (code guardrail) when the pass would remove >80% of the timeline — near-total removal usually means silent-by-design footage, not a wanted cut"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{spans_removed: n, total_removed_ms, op_ids} — one op per span",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "transcript_remove_silences",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "destructive",
+        "facets": [
+          "transcript_cut"
+        ]
+      }
+    },
+    {
+      "name": "transcript.remove_fillers",
+      "domain": "transcript",
+      "description": "Cut filler words (default lexicon 'um','uh','erm','ah','hmm','mhm'). Timeline-wide by default; optional asset/track narrows scope. ONE op per removed run. Custom lexicon overrides the default English filler list; entries are lowercased and stripped to alphanumeric characters using the same normalization as transcript words.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "lexicon": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filler words to target; default English list. Entries are normalized like transcript words, so 'uh-huh' matches a word token rendered as 'uh-huh'/'uhhuh'."
+          },
+          "asset": {
+            "type": "string",
+            "description": "Narrow to clips of this asset"
+          },
+          "track": {
+            "type": "string",
+            "description": "Narrow DETECTION to spans present on this track; the cut itself still ripples all tracks (AV sync)"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{fillers_removed: n, total_removed_ms, op_ids} — one op per filler run",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "transcript_remove_fillers",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "destructive",
+        "facets": [
+          "transcript_cut"
+        ]
+      }
+    },
+    {
+      "name": "transcript.remove_retakes",
+      "domain": "transcript",
+      "description": "Auto-remove repeated line ATTEMPTS (retakes / do-overs) from a talking-head transcript, KEEPING the best take. Segments the transcript into utterances (sentence punctuation OR a pause gap > pause_ms), detects runs of consecutive near-identical utterances by token-sequence similarity (normalized Levenshtein ≥ similarity), keeps ONE per run (keep: last=good final take | first | longest) and ripple-cuts the rest — reusing transcript.remove_fillers' cut path (the cut ripples all tracks for AV sync). Timeline-wide by default; optional asset/track narrows scope. min_words ignores 1-2 word utterances. No transcribed asset in scope → actionable transcribe-first error; no retakes found → ok with removed_takes:0 (clean no-op).",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Narrow to clips of this asset"
+          },
+          "track": {
+            "type": "string",
+            "description": "Narrow DETECTION to spans present on this track; the cut itself still ripples all tracks (AV sync)"
+          },
+          "similarity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Min token-sequence similarity (normalized Levenshtein) for two utterances to count as the same line. Default 0.6."
+          },
+          "pause_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Pause gap (ms) between consecutive words that ends an utterance. Default 600."
+          },
+          "keep": {
+            "type": "string",
+            "enum": [
+              "last",
+              "first",
+              "longest"
+            ],
+            "description": "Which take to keep from a run of attempts: last (default — the good final take) | first | longest (most content words)."
+          },
+          "min_words": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Ignore utterances with fewer content tokens (never a retake). Default 3."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{removed_takes, kept, keep_policy, words_removed, ms_removed, clusters:[{asset, kept:{word_range,at_ms,text}, removed:[{word_range,at_ms,text}]}], op_ids} — one ripple op per removed-take timeline span",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "removed_takes",
+          "kept",
+          "keep_policy",
+          "words_removed",
+          "ms_removed",
+          "clusters"
+        ],
+        "properties": {
+          "removed_takes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kept": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "keep_policy": {
+            "type": "string"
+          },
+          "words_removed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ms_removed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "clusters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "asset",
+                "kept",
+                "removed"
+              ],
+              "properties": {
+                "asset": {
+                  "type": "string"
+                },
+                "kept": {
+                  "type": "object"
+                },
+                "removed": {
+                  "type": "array"
+                }
+              }
+            }
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "transcript_remove_retakes",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "destructive",
+        "facets": [
+          "transcript_cut"
+        ]
+      }
+    },
+    {
+      "name": "transcript.translate",
+      "domain": "transcript",
+      "description": "Translate an asset's word-level transcript into target_lang (TEXT only -- no dubbing/audio/TTS), writing a SIBLING transcript artifact receipts/<asset>.<lang>.words.json (the SOURCE transcript is left untouched). BACKEND: PRIMARY = the user's OWN subscription CLI agent (claude/codex/grok -- the SAME CLI agent.chat uses; pure text in/out, NO MCP/tools), the best-quality path (idioms, names, context); FALLBACK = a LOCAL self-hosted model (Opus-MT light per-pair, or MADLAD-400 universal via model) run by translate_runner.py in the perception venv (the model DOWNLOADS on first use -- not bundled). backend:auto (default)=CLI if available else local; cli/local force one. The translator works at SENTENCE-ISH SEGMENT grain (better quality than per-word); segment-level timing is EXACT, and per-word timing within a segment is LINEARLY INTERPOLATED (honest limit: true per-word timing needs forced alignment on the translated text, out of scope). Read-only w.r.t. the op-log (writes to receipts/, the evidence store, like media.transcribe). asset is optional when exactly one asset has a transcript. Feeds export/search/captions in the target language.",
+      "args": {
+        "type": "object",
+        "required": [
+          "target_lang"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset whose transcript to translate. Optional when exactly one asset has a transcript."
+          },
+          "target_lang": {
+            "type": "string",
+            "description": "Language to translate INTO (e.g. \"es\", \"lv\", \"Latvian\"). For the LOCAL backend a 2-letter code is required."
+          },
+          "source_lang": {
+            "type": "string",
+            "description": "Source language. Optional for the CLI backend (the LLM auto-detects); REQUIRED for the local Opus-MT backend (per-pair). Defaults to the transcript's detected language when present."
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "cli",
+              "local"
+            ],
+            "description": "auto (default) = CLI if available else local; cli/local force one."
+          },
+          "model": {
+            "type": "string",
+            "description": "Override the model: a CLI model name (e.g. a claude model) or a local HF id (e.g. a MADLAD-400 build). Default local = Opus-MT for the pair."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "Spawn timeout. CLI default 180000 (clamp 10000..600000); local default 1800000 (first run downloads the model)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{asset, source_lang, target_lang, backend, backend_proven, model, agent, segments_translated, words, transcript, word_timing:\"interpolated\", note} -- transcript is the relative path of the written receipts/<asset>.<lang>.words.json. No op appended (artifact under receipts/).",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "transcript_translate",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

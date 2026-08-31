@@ -1,0 +1,574 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "edit",
+  "verbs": [
+    {
+      "name": "edit.adjustment",
+      "domain": "edit",
+      "description": "ADJUSTMENT LAYER — a non-destructive colour grade / look effect applied across a TIME SPAN to the COMPOSITE of everything beneath it, NOT baked per clip (an adjustment-layer workflow). One toggleable layer over [start,end] that affects all clips below it in the span. v1 renders it as the TOP-MOST composite layer (so 'the tracks beneath' = all video tracks; captions/titles stay above it), as a single TIME-GATED grade/effect pass on the intermediate composite — kept OFF the filtergraph entirely when no adjustment exists, so a timeline without one renders byte-identical. Reuses the per-clip shapes: `grade` is the SAME object edit.grade accepts (contrast/brightness/saturation/gamma/temperature_k/lut) and `effect`/`effects` are edit.effect's VISUAL look effects (vignette/sharpen/blur/grain/mirror/flip/hue_shift/rgb_split/pixelize/sepia/auto_color/vhs/posterize/invert/emboss). At least one of grade (non-identity) / effect(s) is required. AUDIO effects (denoise/compressor/gate) and chroma_key are refused (an adjustment grades a composite — it has no audio and no single layer below to key). `grade.lut` is fenced (must exist + end.cube). `track` is ADVISORY in v1 (the layer is always top-most) — recorded for the audit trail; per-track-position layering is a documented v2. A core op (replay-safe; deterministic adjN id).",
+      "args": {
+        "type": "object",
+        "required": [
+          "range_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Composition-local [start_ms, end_ms) span the grade/effect is active over (end > start)."
+          },
+          "grade": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Colour grade over the span (same shape as edit.grade). Omit for an effect-only adjustment.",
+            "properties": {
+              "contrast": {
+                "type": "number",
+                "description": "ffmpeg eq contrast; 1.0 = unchanged"
+              },
+              "brightness": {
+                "type": "number",
+                "description": "ffmpeg eq brightness; 0.0 = unchanged (range ~ -1..1)"
+              },
+              "saturation": {
+                "type": "number",
+                "minimum": 0,
+                "description": "ffmpeg eq saturation; 1.0 = unchanged, 0 = greyscale"
+              },
+              "gamma": {
+                "type": "number",
+                "minimum": 0.1,
+                "description": "ffmpeg eq gamma; 1.0 = unchanged"
+              },
+              "temperature_k": {
+                "type": "integer",
+                "description": "White balance in Kelvin (~6500 neutral, lower = warmer); omit for none"
+              },
+              "lut": {
+                "type": "string",
+                "description": "Path to a user.cube 3D LUT (applied last); must exist and end in.cube"
+              }
+            }
+          },
+          "effect": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "description": "A SINGLE look effect over the span (sugar for effects:[{...}]); merged before `effects`.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "vignette",
+                  "sharpen",
+                  "blur",
+                  "grain",
+                  "mirror",
+                  "flip",
+                  "hue_shift",
+                  "rgb_split",
+                  "pixelize",
+                  "sepia",
+                  "auto_color",
+                  "vhs",
+                  "posterize",
+                  "invert",
+                  "emboss"
+                ]
+              },
+              "amount": {
+                "type": "number"
+              },
+              "radius": {
+                "type": "number"
+              },
+              "degrees": {
+                "type": "number"
+              },
+              "size": {
+                "type": "number"
+              },
+              "levels": {
+                "type": "number"
+              }
+            }
+          },
+          "effects": {
+            "type": "array",
+            "description": "Ordered look effects over the span (same VISUAL items as edit.effect; audio/chroma_key refused).",
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "vignette",
+                    "sharpen",
+                    "blur",
+                    "grain",
+                    "mirror",
+                    "flip",
+                    "hue_shift",
+                    "rgb_split",
+                    "pixelize",
+                    "sepia",
+                    "auto_color",
+                    "vhs",
+                    "posterize",
+                    "invert",
+                    "emboss"
+                  ]
+                },
+                "amount": {
+                  "type": "number"
+                },
+                "radius": {
+                  "type": "number"
+                },
+                "degrees": {
+                  "type": "number"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "levels": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "track": {
+            "type": "string",
+            "description": "ADVISORY in v1 (the adjustment is always the top-most composite layer); recorded for audit."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{op} — committed-op ride-along; the layer (adjustment_id, range_ms, grade, effects) is in op.effects[].detail",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_adjustment",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.reverse",
+      "domain": "edit",
+      "description": "Play a media clip BACKWARD (reverse playback). enabled:true (the default when omitted) reverses the clip; enabled:false restores normal playback. The TIMELINE DURATION is UNCHANGED (a reversed N-frame clip is still N frames) and later clips do not ripple. Video uses ffmpeg `reverse`, audio `areverse` (so a reversed+sped clip reverses then time-stretches). Both buffer the WHOLE clip in memory, so the verb REFUSES a clip too large to reverse at the project resolution (~4 GB cap) with a 'split the clip and reverse the pieces' hint. Media clips only (video/audio; captions have nothing to reverse). CPU-only, so a reversed clip renders on the software path.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true (default) = play backward; false = restore normal playback"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, reverse, old_reverse}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_reverse",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.stabilize",
+      "domain": "edit",
+      "description": "Smooth out CAMERA SHAKE on a video clip (handheld / action footage). enabled:true (default when omitted) stabilizes; enabled:false clears it. Uses the 2-pass ffmpeg `vidstab`: a `vidstabdetect` analysis PRE-PASS caches a per-clip motion file (`.trf` under <project>/stab/, keyed by content + range), then `vidstabtransform` applies the smoothed correction in the render graph. `smoothing` is the look-ahead/behind window in FRAMES (default 15, clamped 1..100; higher = steadier but more locked-down). VIDEO-track media clips only. CPU-only + the pre-pass, so a stabilized clip opts the timeline OUT of the GPU fast-track; the correction is applied on the EXACT render paths (render.final, render.frame{compose}, render.range) — fast preview/scrub show it UNstabilized for speed. The timeline duration is unchanged.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id (on a video track)"
+          },
+          "smoothing": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Smoothing window in frames (default 15; higher = steadier)"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true (default) = stabilize; false = clear"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, stabilize, old_stabilize}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_stabilize",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.freeze",
+      "domain": "edit",
+      "description": "Freeze-frame: HOLD one source frame for a media clip's whole timeline slot. enabled:true (the default when omitted) freezes; enabled:false clears. at_ms is the offset INTO the clip's visible range of the frame to hold (default 0 = the clip's first frame; clamped to the last available frame). The TIMELINE DURATION is UNCHANGED (the held frame fills the existing slot) and later clips do not ripple. The AUDIO plays through untouched (the common 'freeze the picture, audio rolls' effect). A frozen clip IGNORES speed (a held frame has no speed). Compose: split a clip first (edit.split) then freeze one half for a mid-clip 'freeze span'; freeze + edit.animate = Ken Burns pan/zoom over a still. VIDEO-track media clips only (audio/caption clips have no frame to hold). CPU-only (tpad clone), so a frozen clip renders on the software path.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id (on a video track)"
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Offset into the clip's visible range of the frame to hold (default 0 = first frame)"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true (default) = freeze; false = clear the freeze (play normally)"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, freeze, old_freeze}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_freeze",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.animate",
+      "domain": "edit",
+      "description": "Ken Burns PAN/ZOOM animation on a media clip: the zoom window moves linearly from a 'from' state to a 'to' state across the clip's frames (ffmpeg zoompan). Two ways to specify: (1) a PRESET + optional amount (the easy path) — zoom_in, zoom_out, pan_left, pan_right, pan_up, pan_down; amount (default 0.3) sets the zoom factor (1+amount, e.g. 0.3 = a 1.3x move). (2) RAW from/to {zoom, x, y}: zoom >= 1 (1 = no zoom; clamped to 10), x/y = the normalized FOCAL CENTRE the zoom window centres on (0..1; 0.5,0.5 = frame centre). enabled:false (or an identity animation — no zoom, centred both ends) CLEARS it. The TIMELINE DURATION is unchanged. Composes: edit.freeze + edit.animate = a classic Ken Burns pan/zoom over a still photo. VIDEO-track media clips only. CPU-only (zoompan), so an animated clip renders on the software path. The renderer uses an explicit setpts=N/(fps*TB) PTS rebuild so the frame count stays exact (no zoompan frame explosion).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id (on a video track)"
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "zoom_in",
+              "zoom_out",
+              "pan_left",
+              "pan_right",
+              "pan_up",
+              "pan_down"
+            ],
+            "description": "Named pan/zoom; resolved to from/to using amount"
+          },
+          "amount": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Preset zoom strength (default 0.3 = a 1.3x move)"
+          },
+          "from": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "zoom": {
+                "type": "number",
+                "minimum": 1,
+                "description": "Start zoom (1 = whole frame)"
+              },
+              "x": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Start focal centre x (0..1)"
+              },
+              "y": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Start focal centre y (0..1)"
+              }
+            },
+            "description": "Start state (raw; ignored when preset is given)"
+          },
+          "to": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "zoom": {
+                "type": "number",
+                "minimum": 1,
+                "description": "End zoom"
+              },
+              "x": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "End focal centre x"
+              },
+              "y": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "End focal centre y"
+              }
+            },
+            "description": "End state (raw; ignored when preset is given)"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true (default) = animate; false = clear"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, animation, old_animation}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_animate",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.keyframe",
+      "domain": "edit",
+      "description": "Animate ONE parameter of a media clip over time with keyframes (the primitive every pro editor builds animation on). SET semantics: points REPLACES that param's keyframe track; an empty/omitted points list CLEARS it. A keyframed parameter OVERRIDES its static counterpart. param: 'opacity' (video alpha 0..1 — animated fade in/out; the base blends against black and overlays blend over lower layers), 'volume' (linear gain multiplier, 1=unity — audio swells/manual ducking; AUDIO-track clips), 'pos_x'/'pos_y' (overlay PiP position as a fraction of frame width/height — animated PiP motion / slide-in/out; VIDEO-track overlays; NOT clamped, so values <0 or >1 slide the overlay off-screen), or 'scale' (VIDEO-clip animated ZOOM — multiplier 1=native, clamped [1,10]; the multi-point eased generalization of edit.animate's Ken Burns, lowered to a centred zoompan; mutually exclusive with edit.animate on a clip). interp may be 'linear'/'hold' OR any ease_* Penner curve (quad/cubic/expo/back/elastic/bounce × in/out/in_out) — eased motion reads professional, not mechanical. points = control points {t_ms (clip-local), value}; the renderer interpolates between them (linear, stepped for interp:'hold', or eased), clamping to the first/last value outside the range. Times are clip-local ms (0 = clip start). Rendered as an ffmpeg time-expression (opacity → a per-frame alpha/luma expression; volume → `volume='…':eval=frame`; pos_x/pos_y → an `overlay=x:y` time-expression onto a per-segment transparent canvas — the static `pad` placement is kept byte-identical for un-animated overlays; scale → a `zoompan` z-expression); CPU-only, so a keyframed clip renders on the software path. Media clips only.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "param"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id"
+          },
+          "param": {
+            "type": "string",
+            "enum": [
+              "opacity",
+              "volume",
+              "pos_x",
+              "pos_y",
+              "scale"
+            ],
+            "description": "Which parameter to animate (opacity → video clip alpha, with base opacity blending against black; volume → audio clip; pos_x/pos_y → overlay PiP position as a fraction of frame width/height, NOT clamped so the overlay can slide off-screen; scale → video-clip animated ZOOM, multiplier 1=native, clamped [1,10] — the multi-point eased generalization of edit.animate's Ken Burns, lowered to a centred zoompan, mutually exclusive with edit.animate on a clip)"
+          },
+          "points": {
+            "type": "array",
+            "default": [],
+            "description": "Control points (empty clears). Sorted by time by the engine; each t_ms must be within the clip's realized timeline duration after retiming.",
+            "items": {
+              "type": "object",
+              "required": [
+                "t_ms",
+                "value"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "t_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Clip-local timeline time after retiming (ms), no later than the clip's realized timeline duration"
+                },
+                "value": {
+                  "type": "number",
+                  "description": "Param value at this time (opacity 0..1; volume linear, 1=unity; pos_x/pos_y = fraction of frame width/height, unclamped)"
+                }
+              }
+            }
+          },
+          "interp": {
+            "type": "string",
+            "enum": [
+              "linear",
+              "hold",
+              "ease_in_quad",
+              "ease_out_quad",
+              "ease_in_out_quad",
+              "ease_in_cubic",
+              "ease_out_cubic",
+              "ease_in_out_cubic",
+              "ease_in_expo",
+              "ease_out_expo",
+              "ease_in_out_expo",
+              "ease_in_back",
+              "ease_out_back",
+              "ease_in_out_back",
+              "ease_in_elastic",
+              "ease_out_elastic",
+              "ease_in_out_elastic",
+              "ease_in_bounce",
+              "ease_out_bounce",
+              "ease_in_out_bounce"
+            ],
+            "description": "Interpolation between points. linear (default) / hold (stepped) are the originals; the ease_* variants are the Penner curve set — quad/cubic/expo (smooth), back (anticipation overshoot), elastic (spring), bounce (settling hops), each in in/out/in_out. Eased motion reads professional vs mechanical linear; applies to every param (opacity/volume/pos_x/pos_y/scale)."
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Internal composite-action identity used when a native Motion import creates an object and its supported keyframe tracks as one undoable action."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, param, keyframes, old_keyframes}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_keyframe",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

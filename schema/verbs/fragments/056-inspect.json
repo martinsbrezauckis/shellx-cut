@@ -1,0 +1,96 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "inspect",
+  "verbs": [
+    {
+      "name": "inspect.media",
+      "domain": "inspect",
+      "description": "Inspect registered media in the open project through a bounded path-light read model. Returns current asset identity, availability, media shape, and cited-evidence coverage without source paths, provider data, analysis execution, UI navigation, or project mutation. This is the agent-facing projection of the same current project and MediaEvidenceIndex@1 authorities used by Find > Moment.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Optional exact registered project asset ids. Omit for all project media, bounded to the first 100 assets."
+          }
+        }
+      },
+      "result": "MediaInspection@1 {schema, project_revision, index_id?, count, assets:[{asset_id, content_hash, available, media_kind, duration_ms?, has_video, has_audio, evidence:{kind:{source,indexed,state}}}]} — current project/index authorities, no source paths",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "inspect_media",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "inspect.range",
+      "domain": "inspect",
+      "description": "Resolve up to 12 opaque EvidenceHit@1 ids against the current MediaEvidenceIndex@1 and current project authorities. Returns the exact current source ranges, provenance hashes, availability, and live bounded timeline occurrences in request order. An optional index_id makes a UI-selected attachment fail closed if the index changed before inspection. Missing, stale, foreign-project, or changed evidence is refused rather than summarized from an old prompt. Read-only: never opens media, moves the playhead, sends a chat turn, or edits the project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "evidence_ids"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "evidence_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^ev_[a-f0-9]{24}$"
+            },
+            "description": "Opaque evidence ids returned by media.intelligence_search."
+          },
+          "index_id": {
+            "type": "string",
+            "pattern": "^idx_[a-f0-9]{24}$",
+            "description": "Optional exact index snapshot expected by the caller. Evidence attachments always supply it."
+          }
+        }
+      },
+      "result": "EvidenceInspection@1 {schema, index_id, count, hits:[EvidenceHit@1]} — the same evidence identity and current source/timeline citations used by Find > Moment",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "inspect_range",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "debug",
+  "verbs": [
+    {
+      "name": "debug.screenshot",
+      "domain": "debug",
+      "description": "DEBUG (verification primitive): capture a SERVER-SIDE screenshot of the actual primary display (or a chosen `monitor`/`window`) to a PNG, returned inline as base64. Unlike `ui.screenshot` (which relays to the connected WebView and fails with no UI client), this grabs the REAL screen via the in-process OS recorder (ScreenCaptureKit/macOS, WGC/Windows, portal/Linux) — so it works HEADLESS / regardless of UI-client state, the tool for visually verifying the app, dialogs and right-click menus while driving cutd over the debug API. Implemented as a sub-second screen capture whose first frame is extracted to PNG. No project required; no audio, no input capture.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "monitor": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "1-based monitor index from screen_record.doctor's `monitors` (omit = primary display)."
+          },
+          "window": {
+            "type": "string",
+            "description": "Capture one application window by its opaque live native screen_record.doctor.windows[].id (Windows/macOS). The identity is revalidated at capture time; title text is never accepted. Omit for the whole display."
+          },
+          "inline": {
+            "type": "boolean",
+            "description": "Return the PNG inline as base64 `png_base64` (default true). false = return the path only."
+          }
+        }
+      },
+      "result": "{path, width, height, mime:\"image/png\", png_base64?, bytes?} — the screenshot file path + pixel dimensions + (when inline, the default) the base64-encoded PNG so an agent can SEE the result. not_found if no screen-capture backend is compiled for this build/OS.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "debug_screenshot",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}
