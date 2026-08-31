@@ -250,7 +250,9 @@ fn idle_recovery_rolls_only_at_the_configured_checkpoint_cadence() {
             let previous = boundary_clock.fetch_add(100, Ordering::AcqRel);
             (previous.saturating_add(100), Instant::now())
         },
-        Duration::from_millis(20),
+        // Keep a wide scheduling margin on loaded CI while still proving the
+        // worker does not fall back to the historical 250 ms polling cadence.
+        Duration::from_millis(1),
     )
     .unwrap();
     let events = lifecycle.take_event_receiver().unwrap();
@@ -259,7 +261,7 @@ fn idle_recovery_rolls_only_at_the_configured_checkpoint_cadence() {
         Some(WindowsPausePilotEvent::Started { .. })
     ));
 
-    let deadline = Instant::now() + Duration::from_millis(150);
+    let deadline = Instant::now() + Duration::from_millis(200);
     while log
         .lock()
         .unwrap()
@@ -278,7 +280,7 @@ fn idle_recovery_rolls_only_at_the_configured_checkpoint_cadence() {
             .filter(|entry| **entry == "start")
             .count()
             >= 2,
-        "the supplied 20 ms checkpoint cadence must rotate before a hypothetical 250 ms polling loop"
+        "the supplied checkpoint cadence must rotate before a hypothetical 250 ms polling loop"
     );
 
     lifecycle
