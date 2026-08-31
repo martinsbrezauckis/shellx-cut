@@ -6,7 +6,7 @@
 //! first append also syncs its newly-created parent directory on Unix.
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use cut_core::{error_codes, CutError};
@@ -185,8 +185,9 @@ fn append_record(
     let created = !path.exists();
     let mut file = OpenOptions::new()
         .create(true)
-        .append(true)
+        .truncate(false)
         .read(true)
+        .write(true)
         .open(path)
         .map_err(|error| journal_io_error(path, "open", error))?;
     let actual_len = file
@@ -204,6 +205,8 @@ fn append_record(
         file.sync_data()
             .map_err(|error| journal_io_error(path, "sync recovered tail", error))?;
     }
+    file.seek(SeekFrom::Start(durable_len))
+        .map_err(|error| journal_io_error(path, "seek to durable tail", error))?;
     file.write_all(&bytes)
         .and_then(|()| file.write_all(b"\n"))
         .map_err(|error| journal_io_error(path, "append", error))?;

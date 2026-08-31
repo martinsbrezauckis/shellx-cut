@@ -910,6 +910,8 @@ mod tests {
             ));
         }
         assert!(validate_contents(&valid, spec, PYTHON_VERSION).is_ok());
+        let windows_checkout = valid.replace('\n', "\r\n");
+        assert!(validate_contents(&windows_checkout, spec, PYTHON_VERSION).is_ok());
 
         let unpinned = valid.replacen("numpy==1.0", "numpy>=1.0", 1);
         assert!(

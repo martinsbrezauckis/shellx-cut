@@ -232,11 +232,7 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         .as_str()
         .unwrap()
         .to_string();
-    assert!(
-        dispatch(&state, "project.close", json!({}), test_actor())
-            .await
-            .ok
-    );
+    close_camera_test_project_after_jobs_drain(&state, "after durable camera import").await;
     let state = AppState::new();
     let opened = dispatch(
         &state,
@@ -315,11 +311,7 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
     // second camera asset or clip.
     let first_camera_asset_id = result["camera_asset_id"].as_str().unwrap().to_string();
     let first_camera_clip_id = camera_clip_id.to_string();
-    assert!(
-        dispatch(&state, "project.close", json!({}), test_actor())
-            .await
-            .ok
-    );
+    close_camera_test_project_after_jobs_drain(&state, "after camera polish").await;
     let reopened = AppState::new();
     let opened = dispatch(
         &reopened,
@@ -361,6 +353,26 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         1,
         "retry must not duplicate the durable camera clip"
     );
+}
+
+async fn close_camera_test_project_after_jobs_drain(state: &AppState, phase: &str) {
+    let mut last_pending = String::new();
+    for _ in 0..10 {
+        let closed = dispatch(state, "project.close", json!({}), test_actor()).await;
+        if closed.ok {
+            return;
+        }
+        let code = closed.error.as_ref().map(|error| error.code.as_str());
+        let detail = format!("{:?}", closed.error);
+        assert_eq!(
+            code,
+            Some("job_cancel_pending"),
+            "camera test project close failed {phase}: {detail}"
+        );
+        last_pending = detail;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("camera test project close kept draining {phase}: {last_pending}");
 }
 
 #[test]

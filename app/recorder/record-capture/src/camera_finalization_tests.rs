@@ -241,7 +241,9 @@ mod linux {
 
 #[test]
 fn production_seal_and_publication_are_source_private_and_anchored() {
-    let finalizer = include_str!("camera_finalization.rs");
+    // A public checkout may use CRLF on Windows. Source-boundary assertions
+    // must verify the Rust structure, not the checkout's line-ending policy.
+    let finalizer = include_str!("camera_finalization.rs").replace("\r\n", "\n");
     let seal = include_str!("camera_finalization_seal.rs");
     let anchored = include_str!("camera_finalization_anchored.rs");
     let identity = include_str!("camera_finalization_identity.rs");

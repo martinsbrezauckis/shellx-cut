@@ -128,11 +128,16 @@ pub(super) fn validate_contents(
     spec: PerceptionLockSpec,
     python_version: &str,
 ) -> Result<(), String> {
-    let expected_header = format!(
-        "# {PERCEPTION_LOCK_SCHEMA}\n# python={python_version}\n# platform={}",
-        spec.platform
-    );
-    if !contents.starts_with(&expected_header) {
+    // `str::lines` accepts both LF and CRLF, so the same reviewed lock remains
+    // valid when a Windows checkout applies its native line-ending policy.
+    let mut header = contents.lines();
+    let schema_header = format!("# {PERCEPTION_LOCK_SCHEMA}");
+    let python_header = format!("# python={python_version}");
+    let platform_header = format!("# platform={}", spec.platform);
+    if header.next() != Some(schema_header.as_str())
+        || header.next() != Some(python_header.as_str())
+        || header.next() != Some(platform_header.as_str())
+    {
         return Err(format!(
             "expected manifest header for Python {python_version} on {}",
             spec.platform

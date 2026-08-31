@@ -51,6 +51,8 @@ pub(crate) fn completed_receipt_for_stop(
         .existing_capture_dir(capture_id)
         .map_err(cut_root_error)?
         .ok_or_else(|| receipt_error("capture directory is unavailable"))?;
+    let capture_dir = capture_dir.canonicalize().map_err(cut_io_error)?;
+    let out_dir = out_dir.canonicalize().map_err(cut_io_error)?;
     if capture_dir != out_dir {
         return Err(receipt_error(
             "public scene receipt capture directory does not match screen_record.stop",
@@ -101,17 +103,24 @@ pub(super) fn receipt_for_autoedit(
     let root = CaptureRoot::open_existing(project_dir)
         .map_err(cut_root_error)?
         .ok_or_else(|| receipt_error("screen-record capture root is unavailable"))?;
-    if root
+    let expected_capture_dir = root
         .existing_capture_dir(&capture_id)
         .map_err(cut_root_error)?
-        .as_deref()
-        != Some(capture_dir)
-    {
+        .ok_or_else(|| receipt_error("capture directory is unavailable"))?
+        .canonicalize()
+        .map_err(cut_io_error)?;
+    let expected_receipt = super::plain_existing_file_under_dir(
+        &expected_capture_dir,
+        &expected_capture_dir.join(RECORDING_SCENE_RECEIPT_FILE),
+        "Recording Scenes receipt",
+        RETRY_CAPTURE_ACTION,
+    )?;
+    if expected_receipt != path {
         return Err(receipt_error(
             "scene_receipt is not under the capture directory named by its receipt",
         ));
     }
-    verify_receipt(capture_dir, &path, &capture_id)
+    verify_receipt(&expected_capture_dir, &path, &capture_id)
 }
 
 /// Lower a verified replay into the ordinary editable plan primitive. Presenter
@@ -146,7 +155,17 @@ fn verify_receipt(
     path: &Path,
     expected_capture_id: &str,
 ) -> Result<VerifiedSceneReceipt, CutError> {
-    if path != capture_dir.join(RECORDING_SCENE_RECEIPT_FILE) {
+    // Canonicalizing a directory and canonicalizing a child can spell the same
+    // Windows path differently (notably a short-name temp root). Resolve the
+    // fixed leaf itself before comparing identities; this still fails closed
+    // for a missing, linked, or substituted receipt.
+    let fixed_path = super::plain_existing_file_under_dir(
+        capture_dir,
+        &capture_dir.join(RECORDING_SCENE_RECEIPT_FILE),
+        "Recording Scenes receipt",
+        RETRY_CAPTURE_ACTION,
+    )?;
+    if path != fixed_path {
         return Err(receipt_error(
             "Recording Scenes receipt is not the fixed capture-owned leaf",
         ));
