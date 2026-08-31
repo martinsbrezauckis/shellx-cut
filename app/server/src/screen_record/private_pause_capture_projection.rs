@@ -31,7 +31,7 @@ impl PrivateFrameGridProjection {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(super) fn test_without_completed_audio_receipt(
         root: CaptureRoot,
         capture_id: String,
