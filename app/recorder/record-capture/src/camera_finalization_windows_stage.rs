@@ -169,9 +169,7 @@ impl WindowsNoReplaceCameraStage {
     }
 
     fn discard(&self) {
-        let disposition = FILE_DISPOSITION_INFO {
-            DeleteFile: true.into(),
-        };
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
         // SAFETY: this marks only the retained CREATE_NEW leaf for deletion on
         // close; no pathname is resolved and no pre-existing leaf can be hit.
         let _ = unsafe {

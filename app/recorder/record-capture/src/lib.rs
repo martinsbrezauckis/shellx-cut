@@ -43,13 +43,13 @@ mod camera_timing;
 // REC-CAMERA-01b provides the private adapter registry and explicit-use/Stop
 // ownership seam. Platform adapters remain crate-private; the server reaches
 // them only through the selected-camera screen-recording owner.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod camera_finalization_post_sync_tests;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod camera_finalization_race_tests;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod camera_finalization_test_support;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod camera_finalization_tests;
 #[allow(
     dead_code,
@@ -409,6 +409,10 @@ pub fn private_windows_region_selection_is_current(
 /// separate owner. Native device identities stay inside `windows_camera`.
 #[cfg(all(windows, feature = "capture-windows"))]
 #[doc(hidden)]
+#[allow(
+    dead_code,
+    reason = "private Windows camera construction awaits its reviewed server owner"
+)]
 pub(crate) fn private_windows_camera_runtime(
     capture_directory: &std::path::Path,
 ) -> record_core::Result<camera_runtime::CameraRuntime> {

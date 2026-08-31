@@ -254,7 +254,9 @@ fn production_seal_and_publication_are_source_private_and_anchored() {
 
     assert!(seal.contains("pub(super) fn from_finalizer"));
     assert!(!seal.contains("pub(crate) fn from_finalizer"));
-    assert!(finalizer.contains("#[cfg(test)]\npub(super) use test_seam"));
+    assert!(
+        finalizer.contains("#[cfg(all(test, target_os = \"linux\"))]\npub(super) use test_seam")
+    );
     assert!(test_seam.contains("pub(crate) fn finalize_after_close_for_test"));
     assert!(test_seam.contains("pub(crate) fn finalize_after_close_with_sync_for_test"));
     assert!(test_seam.contains("pub(crate) fn finalize_after_close_with_post_sync_for_test"));

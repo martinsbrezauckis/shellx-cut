@@ -44,10 +44,10 @@ pub(crate) use windows_no_replace::finalize_windows_no_replace;
 #[cfg(all(windows, feature = "capture-windows"))]
 pub(crate) use windows_stage::{reserve_windows_no_replace_output, WindowsNoReplaceCameraStage};
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "camera_finalization_test_seam.rs"]
 mod test_seam;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) use test_seam::{
     finalize_after_close_for_test, finalize_after_close_with_post_sync_for_test,
     finalize_after_close_with_sync_for_test,

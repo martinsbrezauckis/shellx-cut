@@ -38,12 +38,12 @@ thread_local! {
     static NEXT_HOOKS: std::cell::RefCell<Vec<SceneJournalIoHook>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn inject_once(hook: SceneJournalIoHook) {
     inject_sequence(&[hook]);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn inject_sequence(hooks: &[SceneJournalIoHook]) {
     NEXT_HOOKS.with(|next| *next.borrow_mut() = hooks.to_vec());
 }

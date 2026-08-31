@@ -294,7 +294,7 @@ fn ceil_screen_millisecond(
         .unwrap_or_default();
     let whole_ms = u64::try_from(elapsed.as_millis()).map_err(|_| ())?;
     let rounded_ms = whole_ms
-        .checked_add(u64::from(elapsed.subsec_nanos() % 1_000_000 != 0))
+        .checked_add(u64::from(!elapsed.subsec_nanos().is_multiple_of(1_000_000)))
         .ok_or(())?;
     screen_origin
         .checked_add(Duration::from_millis(rounded_ms))

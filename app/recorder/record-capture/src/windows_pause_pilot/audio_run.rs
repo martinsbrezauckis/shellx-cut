@@ -90,6 +90,13 @@ pub(crate) fn seal_selected_after_screen(
 
 /// Screen-only production construction. A real selected-audio profile replaces
 /// this with the Windows factory below; it cannot silently return an empty list.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "screen-only Windows pause construction is exercised by the private test owner"
+    )
+)]
 pub(crate) struct DisabledWindowsPauseAudioFactory;
 
 impl WindowsPauseAudioFactory for DisabledWindowsPauseAudioFactory {

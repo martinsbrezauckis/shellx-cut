@@ -92,7 +92,7 @@ pub(crate) fn verify_nameless_stage(
     }
     #[cfg(not(unix))]
     {
-        let _ = capture_filesystem;
+        let _ = (verified, capture_filesystem);
         Err(finalization_error(
             "camera unnamed-stage identity is unavailable on this host",
             "finalization fails closed until the native platform can prove a nameless stage",

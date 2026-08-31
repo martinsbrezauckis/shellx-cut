@@ -6,7 +6,9 @@ use std::path::Path;
 use record_core::Result;
 
 use crate::camera_finalization_error::finalization_error;
-use crate::camera_finalization_identity::{from_opened_regular, VerifiedRegularFile};
+#[cfg(target_os = "linux")]
+use crate::camera_finalization_identity::from_opened_regular;
+use crate::camera_finalization_identity::VerifiedRegularFile;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::fs::File;
@@ -103,8 +105,11 @@ impl AnchoredDirectory {
 }
 
 #[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "awaits a reviewed camera adapter")
+    not(all(test, target_os = "linux")),
+    allow(
+        dead_code,
+        reason = "Linux-only anchored finalization awaits a reviewed camera adapter"
+    )
 )]
 pub(crate) fn open_capture_dir(path: &Path) -> Result<AnchoredDirectory> {
     #[cfg(target_os = "linux")]
@@ -178,29 +183,22 @@ pub(crate) fn ensure_non_writable_mode(file: &File) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn require_read_only_descriptor(file: &File) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
-        if flags < 0 {
-            return Err(finalization_error(
-                "camera stage descriptor flags cannot be read",
-                &std::io::Error::last_os_error().to_string(),
-            ));
-        }
-        if flags & libc::O_ACCMODE != libc::O_RDONLY {
-            return Err(finalization_error(
-                "camera closed stage descriptor is writable",
-                "native close must return a read-only descriptor after retiring every writer",
-            ));
-        }
-        Ok(())
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(finalization_error(
+            "camera stage descriptor flags cannot be read",
+            &std::io::Error::last_os_error().to_string(),
+        ));
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = file;
-        Err(unsupported())
+    if flags & libc::O_ACCMODE != libc::O_RDONLY {
+        return Err(finalization_error(
+            "camera closed stage descriptor is writable",
+            "native close must return a read-only descriptor after retiring every writer",
+        ));
     }
+    Ok(())
 }
 
 pub(crate) fn open_child_dir(

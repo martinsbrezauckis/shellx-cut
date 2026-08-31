@@ -165,8 +165,8 @@ pub(crate) fn spawn_device_mic_reserved(
 }
 
 #[cfg_attr(
-    not(all(windows, feature = "capture-windows")),
-    allow(dead_code, reason = "private Windows pause-sidecar capture path")
+    not(all(target_os = "macos", feature = "capture-macos")),
+    allow(dead_code, reason = "private macOS pause-sidecar capture path")
 )]
 pub(crate) fn spawn_device_mic_reserved_unpadded(
     path: String,

@@ -157,8 +157,8 @@ pub(crate) fn spawn_reserved_microphone_capture(
 /// the common pause projection exactly once.
 #[cfg(feature = "mic")]
 #[cfg_attr(
-    not(all(windows, feature = "capture-windows")),
-    allow(dead_code, reason = "private Windows pause-sidecar capture path")
+    not(all(target_os = "macos", feature = "capture-macos")),
+    allow(dead_code, reason = "private macOS pause-sidecar capture path")
 )]
 pub(crate) fn spawn_reserved_microphone_capture_unpadded(
     path: String,

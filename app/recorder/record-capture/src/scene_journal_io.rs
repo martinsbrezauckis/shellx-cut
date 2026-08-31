@@ -34,7 +34,7 @@ pub(super) fn reject_existing_leaf(path: &Path) -> SceneJournalResult<()> {
 pub(super) fn create_new_nofollow(path: &Path) -> SceneJournalResult<File> {
     #[cfg(windows)]
     {
-        return crate::scene_journal_windows::open_windows_anchored(path, true, true);
+        crate::scene_journal_windows::open_windows_anchored(path, true, true)
     }
     #[cfg(not(windows))]
     {
@@ -63,7 +63,7 @@ pub(super) fn require_parent_durability() -> SceneJournalResult<()> {
 pub(super) fn open_existing_nofollow(path: &Path, append: bool) -> SceneJournalResult<File> {
     #[cfg(windows)]
     {
-        return crate::scene_journal_windows::open_windows_anchored(path, false, append);
+        crate::scene_journal_windows::open_windows_anchored(path, false, append)
     }
     #[cfg(not(windows))]
     {

@@ -10,8 +10,8 @@
 pub(super) enum MicrophoneWavLayout {
     PaddedToCaptureClock,
     #[cfg_attr(
-        not(all(windows, feature = "capture-windows")),
-        allow(dead_code, reason = "private Windows pause-sidecar capture layout")
+        not(all(target_os = "macos", feature = "capture-macos")),
+        allow(dead_code, reason = "private macOS pause-sidecar capture layout")
     )]
     PacketStart,
 }

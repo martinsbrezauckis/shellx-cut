@@ -227,7 +227,7 @@ fn final_path(file: &File, path: &Path) -> SceneJournalResult<PathBuf> {
     if length == 0
         || usize::try_from(length)
             .ok()
-            .map_or(true, |size| size >= buffer.len())
+            .is_none_or(|size| size >= buffer.len())
     {
         return Err(io_error(path, std::io::Error::last_os_error()));
     }

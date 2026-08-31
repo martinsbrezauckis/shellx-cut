@@ -22,7 +22,7 @@ pub(crate) struct CameraCaptureDirectory {
 
 impl CameraCaptureDirectory {
     #[cfg_attr(
-        not(test),
+        not(all(test, target_os = "linux")),
         allow(
             dead_code,
             reason = "the Linux anchored finalizer is exercised by its native fault harness until a reviewed camera adapter owns reservation"
