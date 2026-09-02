@@ -106,7 +106,12 @@ pub(crate) async fn retry_verify_rerun(
         .map_err(retry_revalidation_error)?;
     verify_retry_descriptor_matches(&descriptor, &current)?;
 
-    let child = state.jobs.admit_retry(source_job_id)?;
+    let child = admit_retry_at_revision(
+        state,
+        source_job_id,
+        &prepared.project_dir,
+        &descriptor.project_revision,
+    )?;
     let job_id = child.job_id.clone();
     let retry = child.retry.as_ref().expect("retry child has projection");
     let attempt = retry.attempt;
@@ -123,6 +128,34 @@ pub(crate) async fn retry_verify_rerun(
         "output_hash": output_hash,
         "status": "queued",
     })))
+}
+
+/// Final synchronous admission is protected by the project read lock after
+/// the receipt and artifact have been revalidated. The outer `jobs.retry`
+/// transition lock prevents a project replacement through the queued spawn.
+fn admit_retry_at_revision(
+    state: &AppState,
+    source_job_id: &str,
+    project_dir: &std::path::Path,
+    expected_revision: &str,
+) -> Result<crate::jobs::JobRecord, CutError> {
+    let guard = state.project.try_read().map_err(|_| {
+        retry_conflict("project changed while retry inputs were being revalidated; try again")
+    })?;
+    let store = guard
+        .as_ref()
+        .ok_or_else(|| retry_conflict("no project is open for this retry"))?;
+    let operations = store.log.read_all()?;
+    let current_revision = operations
+        .last()
+        .map(|operation| operation.op_id.as_str())
+        .unwrap_or("op_000000");
+    if store.dir != project_dir || current_revision != expected_revision {
+        return Err(retry_conflict(
+            "project changed while retry inputs were being revalidated; start a new verification instead",
+        ));
+    }
+    state.jobs.admit_retry(source_job_id)
 }
 
 #[cfg(test)]

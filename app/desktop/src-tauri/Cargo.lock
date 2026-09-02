@@ -3270,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "shellx-cut"
-version = "0.6.113"
+version = "0.6.114"
 dependencies = [
  "base64 0.22.1",
  "cc",

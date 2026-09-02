@@ -298,6 +298,23 @@ pub(super) async fn system_doctor(state: &AppState, args: Value) -> Result<VerbR
     Ok(VerbResult::ok(serde_json::to_value(report)?))
 }
 
+/// `system.motion_status {}` — bounded, read-only Motion discovery and
+/// distribution-management posture.  This does not join Doctor's synchronous
+/// cached scan: Motion discovery owns an async child-process runner and must
+/// stay on the async route to avoid blocking the shared environment report.
+///
+/// The route never installs, repairs, updates, removes, logs in, or executes a
+/// connector.  Until MOTION-DIST-01 supplies an immutable verified manifest and
+/// a platform artifact, every lifecycle action is explicitly unavailable.
+pub(super) async fn system_motion_status(args: Value) -> Result<VerbResult, CutError> {
+    #[derive(serde::Deserialize, Default)]
+    struct Args {}
+    let _: Args = parse_args(args)?;
+    Ok(VerbResult::ok(
+        crate::motion_discovery::motion_management_status().await,
+    ))
+}
+
 /// `system.fetch_tool {tool, rationale?}` — consented download+install of a
 /// built-in tool as a job (the background-job contract: returns {job_id}). The tool id is
 /// validated against the fetch registry HERE (fail fast, before a job exists),

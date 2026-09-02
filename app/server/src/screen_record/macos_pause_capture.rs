@@ -163,6 +163,11 @@ impl Capture for MacosPausePilotCapture {
         cfg: &CaptureConfig,
         stop: Arc<AtomicBool>,
     ) -> record_core::Result<CaptureOutput> {
+        if let Some(placement) = cfg.controller_placement.as_ref() {
+            placement.unavailable(
+                "The pause-aware macOS capture owner has no admitted controller-exclusion projection.",
+            );
+        }
         let root = CaptureRoot::for_project(&self.project_dir)
             .map_err(|_| capture_error("open prepared private capture root"))?;
         let project_binding = super::windows_pause_input_sidecar::admit_project_binding(&root)

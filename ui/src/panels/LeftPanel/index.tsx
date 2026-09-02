@@ -178,6 +178,7 @@ export default function LeftPanel({
         <div className="lp__pane" style={{ display: tab === 'assets' ? 'flex' : 'none' }}>
           <Assets
             project={project}
+            projectScope={projectScope}
             doctor={doctor}
             playheadMs={playheadMs}
             onProjectChanged={onProjectChanged}
@@ -195,7 +196,14 @@ export default function LeftPanel({
           />
         </div>
         <div className="lp__pane" style={{ display: tab === 'projects' ? 'flex' : 'none' }}>
-          <ProjectsPanel onReopen={onReopenProject} currentName={project?.name ?? null} active={tab === 'projects'} />
+          <ProjectsPanel
+            onReopen={onReopenProject}
+            currentName={project?.name ?? null}
+            active={tab === 'projects'}
+            b5Receipt={project?.portable_b5_receipt ?? null}
+            projectScope={projectScope}
+            projectRevision={project?.project_revision ?? null}
+          />
         </div>
         {/* The Find pane — a sub-toggle over the embedded media, moment, and
             cross-sequence metadata search surfaces. The tab is permanent; its body mounts only

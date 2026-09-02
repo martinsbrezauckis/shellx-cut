@@ -71,7 +71,7 @@ pub use group::{AtomicGroupPreview, AtomicGroupRejectStatus};
 use name_policy::{validate_logged_project_name, validate_project_name};
 pub use open_health::{ProjectCacheHealth, ProjectOpenHealth, ProjectSnapshotHealth};
 pub use portable::PORTABLE_SNAPSHOT_SCHEMA;
-pub use relink::{is_exact_sha256, RelinkGroupChange, RelinkGroupCommit};
+pub use relink::{current_relink_receipt, is_exact_sha256, RelinkGroupChange, RelinkGroupCommit};
 
 /// A project on disk: the materialized state + its op-log + dir layout.
 #[derive(Debug)]
@@ -109,6 +109,15 @@ pub struct ProjectStore {
     /// callers must still ask `OpLog` to validate live journal identity before
     /// treating materialized state as current.
     open_health: ProjectOpenHealth,
+}
+
+impl ProjectStore {
+    /// The current B5 receipt is reconstructed from the durable grouped-op
+    /// effect, so it remains available after close/reopen without a parallel
+    /// receipt cache.
+    pub fn current_relink_receipt(&self) -> Result<Option<Value>, CutError> {
+        relink::current_relink_receipt(&self.log.read_all()?)
+    }
 }
 
 #[derive(Debug, Clone)]

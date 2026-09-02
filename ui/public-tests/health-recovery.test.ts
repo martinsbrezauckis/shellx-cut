@@ -16,6 +16,7 @@ import {
   loadCaptureRecovery,
   type CaptureRecoveryInventory,
 } from '../src/panels/Environment/captureRecoveryModel'
+import { purgeReconciliation } from '../src/panels/Environment/cacheLifecyclePresentation'
 
 function page(overrides: Partial<ProjectHealthResult> = {}): ProjectHealthResult {
   return {
@@ -83,6 +84,41 @@ function rows(projectHealth: AggregatedProjectHealth | null, jobs: Parameters<ty
 const first = mergeProjectHealthPage(null, page())
 assert.equal(first.complete, false, 'partial revision-bound page stays incomplete')
 assert.equal(rows(first).find((row) => row.id === 'media')?.state, 'checking', 'partial media can never be green')
+
+const cancelledCacheReconciliation = purgeReconciliation({
+  schema: 'shellx-cut/cache-purge-reconciliation/1',
+  status: 'cancelled',
+  reconciliation: {
+    before: { files: 2, bytes: 100 },
+    planned: { files: 2, bytes: 100 },
+    removed: { files: 1, bytes: 40 },
+    after: { files: 1, bytes: 60 },
+    balanced: true,
+    partial_progress: true,
+    after_basis: 'exclusive_lease_delta',
+    ledger_recovery_required: false,
+  },
+})
+assert.equal(cancelledCacheReconciliation?.status, 'cancelled', 'a terminal cancelled cache job keeps its reconciliation projection')
+assert.equal(cancelledCacheReconciliation?.reconciliation.after.bytes, 60, 'partial cleanup keeps its exact remaining bytes')
+assert.equal(
+  purgeReconciliation({ schema: 'shellx-cut/cache-purge-reconciliation/1', status: 'failed', reconciliation: {} }),
+  null,
+  'the UI refuses an incomplete failed-job accounting result instead of guessing',
+)
+assert.equal(
+  purgeReconciliation({
+    schema: 'shellx-cut/cache-purge-reconciliation/1',
+    status: 'failed',
+    reconciliation: {
+      before: { files: -1, bytes: 0 }, planned: { files: 0, bytes: 0 },
+      removed: { files: 0, bytes: 0 }, after: { files: 0, bytes: 0 },
+      balanced: false, partial_progress: false, after_basis: 'strict_scan', ledger_recovery_required: true,
+    },
+  }),
+  null,
+  'the UI rejects an impossible terminal count instead of projecting it as cache accounting',
+)
 
 const continuation = page({
   media: {
@@ -447,39 +483,54 @@ assert.equal(
 
 const surface = readFileSync(new URL('../src/panels/Environment/HealthRecovery.tsx', import.meta.url), 'utf8')
 const cacheSurface = readFileSync(new URL('../src/panels/Environment/CacheLifecycle.tsx', import.meta.url), 'utf8')
+const cacheRebuildSurface = readFileSync(new URL('../src/panels/Environment/CacheRebuildLifecycle.tsx', import.meta.url), 'utf8')
+const cacheContractSurface = `${cacheSurface}\n${cacheRebuildSurface}`
+const cachePresentation = readFileSync(new URL('../src/panels/Environment/cacheLifecyclePresentation.ts', import.meta.url), 'utf8')
 for (const selector of ['data-cut-health-refresh', 'data-cut-health-row', 'data-cut-health-capture', 'data-cut-health-open-assets', 'data-cut-health-open-recording', 'data-cut-health-open-toolchain']) {
   assert.ok(surface.includes(selector), `Health & Recovery has stable ${selector}`)
 }
 for (const evidence of ['data-cut-health-refresh-id', 'data-cut-health-settled', 'data-cut-health-capture-complete', 'data-cut-health-capture-count']) {
   assert.ok(surface.includes(evidence), `Health & Recovery exposes settled model evidence through ${evidence}`)
 }
-for (const selector of ['data-cut-cache-lifecycle', 'data-cut-cache-rebuild-section', 'data-cut-cache-rebuild', 'data-cut-cache-rebuild-status', 'data-cut-cache-rebuild-attention', 'data-cut-cache-rebuild-attention-toggle', 'data-cut-cache-rebuild-disabled', 'data-cut-cache-rebuild-success', 'data-cut-cache-rebuild-error', 'data-cut-cache-cleanup', 'data-cut-cache-preview', 'data-cut-cache-preview-status', 'data-cut-cache-purge', 'data-cut-cache-confirm', 'data-cut-cache-confirm-cancel', 'data-cut-cache-confirm-purge', 'data-cut-cache-job', 'data-cut-cache-cancel', 'data-cut-cache-remeasure']) {
-  assert.ok(cacheSurface.includes(selector), `Cache lifecycle has stable ${selector}`)
+for (const selector of ['data-cut-cache-lifecycle', 'data-cut-cache-rebuild-section', 'data-cut-cache-rebuild', 'data-cut-cache-rebuild-estimate', 'data-cut-cache-rebuild-status', 'data-cut-cache-rebuild-cost', 'data-cut-cache-rebuild-attention', 'data-cut-cache-rebuild-attention-toggle', 'data-cut-cache-rebuild-disabled', 'data-cut-cache-rebuild-success', 'data-cut-cache-rebuild-error', 'data-cut-cache-cleanup', 'data-cut-cache-preview', 'data-cut-cache-preview-status', 'data-cut-cache-purge', 'data-cut-cache-confirm', 'data-cut-cache-confirm-cancel', 'data-cut-cache-confirm-purge', 'data-cut-cache-job', 'data-cut-cache-cancel', 'data-cut-cache-reconciliation', 'data-cut-cache-remeasure']) {
+  assert.ok(cacheContractSurface.includes(selector), `Cache lifecycle has stable ${selector}`)
 }
 for (const verb of ["project.cache_preview", "project.cache_rebuild", "project.cache_purge", "jobs.status", "jobs.cancel"]) {
-  assert.ok(cacheSurface.includes(verb), `Cache lifecycle uses ${verb} through the typed verb client`)
+  assert.ok(cacheContractSurface.includes(verb), `Cache lifecycle uses ${verb} through the typed verb client`)
 }
 assert.ok(cacheSurface.includes('void onComplete()'), 'a terminal cache job remeasures the Health surface')
-assert.ok(!cacheSurface.includes('window.confirm'), 'cache deletion uses a visible in-panel confirmation step')
-assert.ok(cacheSurface.includes('Rebuild missing cache'), 'the existing editing-cache surface offers one non-destructive rebuild action')
-assert.ok(cacheSurface.includes('Original media stays unchanged.'), 'cache rebuild explicitly preserves source media')
-assert.ok(cacheSurface.includes('scheduled_assets') && cacheSurface.includes('fresh_assets') && cacheSurface.includes('attentionReasons'), 'cache rebuild reports queued/up-to-date state and discloses only human attention reasons without a filesystem inventory')
-assert.ok(cacheSurface.includes('disabled={rebuildDisabled}'), 'the rebuild action disables while scheduling or another cache job is active')
+assert.ok(!cacheContractSurface.includes('window.confirm'), 'cache deletion uses a visible in-panel confirmation step')
+assert.ok(cacheContractSurface.includes('Rebuild missing cache'), 'the existing editing-cache surface offers one non-destructive rebuild action')
+assert.ok(cacheContractSurface.includes('Original media stays unchanged.'), 'cache rebuild explicitly preserves source media')
+assert.ok(cacheContractSurface.includes('scheduled_assets') && cacheContractSurface.includes('fresh_assets') && cacheContractSurface.includes('attentionReasons'), 'cache rebuild reports queued/up-to-date state and discloses only human attention reasons without a filesystem inventory')
+assert.ok(cacheRebuildSurface.includes('disabled={disabled}'), 'the rebuild action disables while scheduling or another cache job is active')
 assert.ok(cacheSurface.includes('data-cut-cache-job-kind') && cacheSurface.includes("kind: 'rebuild'"), 'rebuild work uses the existing cancellable jobs status path')
-assert.match(cacheSurface, /result\.status === 'already_queued'[\s\S]*already queued/, 'an already-queued rebuild has a distinct, count-bearing UI summary')
-assert.match(cacheSurface, /item\{[^\n]+\? ' needs' : 's need'\} attention/, 'novice-facing attention copy keeps singular and plural grammar correct')
-assert.ok(!cacheSurface.includes('refused.'), 'novice-facing rebuild copy never exposes the internal refusal term')
+assert.match(cachePresentation, /result\.status === 'already_queued'[\s\S]*already queued/, 'an already-queued rebuild has a distinct, count-bearing UI summary')
+assert.match(cacheRebuildSurface, /item\{[^\n]+\? ' needs' : 's need'\} attention/, 'novice-facing attention copy keeps singular and plural grammar correct')
+assert.ok(!cacheContractSurface.includes('refused.'), 'novice-facing rebuild copy never exposes the internal refusal term')
 assert.ok(surface.includes('projectHealth?.complete') && surface.includes("asset.proxy === 'missing'") && surface.includes("asset.filmstrip === 'not_recorded'"), 'the complete revision-bound Health aggregate selects only missing or unrecorded cache assets')
 assert.ok(cacheSurface.includes('rebuildAssetIds?.slice(0, 64)') && cacheSurface.includes("{ asset_ids: rebuildBatch }"), 'the one-click rebuild submits a deterministic bounded batch rather than an unbounded project request')
-assert.ok(cacheSurface.includes('rebuildAssetIds === null') && cacheSurface.includes('Finish the Health & Recovery check'), 'rebuild stays disabled until media inventory is complete and available')
-assert.ok(cacheSurface.includes('more item') && cacheSurface.includes('after this batch completes'), 'a project with more than one bounded batch is told how to continue without exposing ids')
+assert.ok(cacheSurface.includes('rebuildAssetIds !== null') && cacheRebuildSurface.includes('Finish the Health & Recovery check'), 'rebuild stays disabled until media inventory is complete and available')
+assert.ok(cachePresentation.includes('more item') && cachePresentation.includes('after this batch completes'), 'a project with more than one bounded batch is told how to continue without exposing ids')
 assert.ok(cacheSurface.includes("record.outcome === 'cancelled'"), 'a cancellation outcome is terminal even when the durable job state remains failed')
-assert.ok(!/\bpath\b/i.test(cacheSurface.replace(/cache-lifecycle|CacheLifecycle|project\.cache_/g, '')), 'cache rebuild UI never displays filesystem paths')
+assert.ok(
+  cacheSurface.includes('stateSession === projectSession')
+    && cacheSurface.includes('previewForSession')
+    && cacheSurface.includes('rebuildResultForSession')
+    && cacheSurface.includes('cleanupErrorForSession')
+    && cacheSurface.includes('confirmationOpenForSession')
+    && cacheSurface.includes('activeJob?.session === projectSession')
+    && cacheSurface.includes('jobSession === projectSession'),
+  'a project switch session-binds every cached preview, result, message, confirmation, and job before effects reset local state',
+)
+assert.ok(!/\bpath\b/i.test(cacheContractSurface.replace(/cache-lifecycle|CacheLifecycle|project\.cache_/g, '')), 'cache rebuild UI never displays filesystem paths')
 
 const clientSurface = readFileSync(new URL('../src/lib/client.ts', import.meta.url), 'utf8')
 const clientResultsSurface = readFileSync(new URL('../src/lib/clientResults.ts', import.meta.url), 'utf8')
-assert.ok(clientSurface.includes("'project.cache_rebuild': { asset_ids?: string[] }"), 'typed client accepts the bounded cache rebuild request')
-assert.match(clientResultsSurface, /interface ProjectCacheRebuildResult[\s\S]*status: 'queued' \| 'already_queued' \| 'not_needed'[\s\S]*scheduled_assets: number[\s\S]*scheduled_outputs: number[\s\S]*counts: ProjectCacheRebuildCounts/, 'all cache rebuild statuses carry the uniform count-bearing result contract')
+assert.ok(clientSurface.includes("'project.cache_rebuild': { asset_ids?: string[]; estimate_only?: boolean }"), 'typed client accepts bounded rebuild scheduling or a read-only work estimate')
+assert.match(clientResultsSurface, /interface ProjectCacheRebuildResult[\s\S]*status: 'estimated' \| 'queued' \| 'already_queued' \| 'not_needed'[\s\S]*scheduled_assets: number[\s\S]*scheduled_outputs: number[\s\S]*counts: ProjectCacheRebuildCounts[\s\S]*estimate: ProjectCacheRebuildEstimate/, 'all cache rebuild statuses carry uniform counts and a verified-work estimate')
+assert.ok(cacheContractSurface.includes('estimate_only: true') && cacheContractSurface.includes('Estimate rebuild work') && cacheContractSurface.includes('data-cut-cache-rebuild-cost'), 'the editor obtains and labels a source-verified work-unit estimate before scheduling')
+assert.ok(cacheSurface.includes('purgeReconciliation') && cacheSurface.includes('data-cut-cache-reconciliation') && cacheSurface.includes('Counts reconcile exactly.'), 'terminal cleanup projects exact before/removed/after accounting instead of only asking the user to infer it from a new preview')
 assert.ok(!surface.includes('media.relink'), 'Health & Recovery cannot relink media without an owning confirmed workflow')
 assert.ok(surface.includes('const doctorRefresh = useRef(onRefreshDoctor)'), 'ordinary App refresh callbacks are held in a ref')
 assert.ok(surface.includes('}, [projectSession, refresh])'), 'health loading does not rerun for ordinary project object updates')

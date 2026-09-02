@@ -32,6 +32,9 @@ use cut_core::{error_codes, CutError, VerbResult};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+mod audio_meters;
+#[cfg(test)]
+mod audio_meters_tests;
 mod autoedit_args;
 mod cadence;
 mod camera_capture_sidecar;
@@ -133,6 +136,7 @@ mod raw_mux;
 mod recording_controls;
 mod recording_scenes;
 pub(crate) mod recovery;
+pub(crate) mod rehearsal;
 // Region tickets and geometry remain a private admission foundation pending
 // compiled/native foreground qualification. Do not expose a coordinate-taking
 // verb or an abstract overlay in the meantime.
@@ -157,6 +161,8 @@ mod scene_projection_start;
 #[cfg(test)]
 mod scene_projection_start_tests;
 mod screenshot;
+mod source_preview;
+mod source_preview_handlers;
 mod start_handler;
 mod start_readiness;
 pub(crate) mod system_audio;
@@ -227,6 +233,13 @@ pub(crate) use raw_mux::mux_raw_sources;
 pub(crate) use recovery::recovery_status_handler;
 pub(crate) use scene_projection_start::completed_receipt_for_stop;
 pub use screenshot::capture_screenshot_png;
+pub(crate) use source_preview_handlers::{
+    capability_handler as source_preview_capability_handler,
+    frame_handler as source_preview_frame_handler, hide_handler as source_preview_hide_handler,
+    pause_handler as source_preview_pause_handler, resume_handler as source_preview_resume_handler,
+    start_handler as source_preview_start_handler, status_handler as source_preview_status_handler,
+    stop_handler as source_preview_stop_handler,
+};
 pub(crate) use start_handler::{readiness_status_handler, screen_record_start};
 
 const CAPTURE_FPS_RANGE: std::ops::RangeInclusive<f64> = 1.0..=240.0;
@@ -549,6 +562,7 @@ where
         region,
         audio,
         microphone_source,
+        microphone_level: control.microphone_meter(),
         // On macOS the SCK backend captures desktop/system audio inside the same
         // stream (the avfoundation `:default` loopback recorded the MIC, not system audio).
         // Linux/Windows ignore this field and capture system audio via their parallel loopback
@@ -562,6 +576,8 @@ where
         }),
         clock: Some(clock.clone()),
         readiness: Some(control.readiness()),
+        controller_placement: Some(control.controller_placement()),
+        source_lifecycle: Some(control.source_lifecycle()),
     };
     let system_audio_lease = system_audio_capture::reserve(system_audio)?;
     let reservation = reserve_capture(capture_id.clone(), control.clone())?;
@@ -610,6 +626,7 @@ where
                     let sys_out = out_dir.join("system.wav");
                     let sys_log = log_path.clone();
                     let sys_stop = control_for_thread.stop_signal();
+                    let sys_meter = control_for_thread.system_audio_meter();
                     let clock = cfg.clock.clone();
                     std::thread::Builder::new()
                         .name("cut-system-audio".into())
@@ -625,6 +642,7 @@ where
                                 duration_ms,
                                 sys_stop,
                                 capture_started,
+                                sys_meter,
                             ) {
                                 if let Ok(mut f) = std::fs::OpenOptions::new()
                                     .create(true)

@@ -124,6 +124,8 @@ assert.match(portableCopy, /data-cut-portable-dir-choose/, 'Portable Copy expose
 assert.doesNotMatch(portableCopy, /data-cut-portable-dir[^-][\s\S]{0,120}(?:<input|onChange)/, 'Portable Copy must never ask users to type a destination path')
 assert.match(portableCopy, /callVerb\('project\.package_plan'/, 'Portable Copy gets counts and collision truth from the server plan')
 assert.match(portableCopy, /callVerb\('project\.package_create'/, 'Portable Copy creates only after the explicit confirmation route')
+assert.equal([...portableCopy.matchAll(/b5_receipt: b5Receipt/g)].length, 2,
+  'Portable Copy carries current durable B5 relink evidence into both package calls')
 assert.match(portableCopy, /callVerb\('jobs\.status'/, 'Portable Copy displays only actual job state and progress')
 assert.match(portableCopy, /data-cut-portable-review/, 'Portable Copy has a deliberate review-before-create step')
 assert.match(gradePanel, /data-cut-grade-lut-pick/, 'Color grading selects LUT files through the native picker')

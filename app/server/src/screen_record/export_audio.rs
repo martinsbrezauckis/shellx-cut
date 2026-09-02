@@ -96,6 +96,21 @@ impl CaptureExportAudio {
         self.system_offset_ms
     }
 
+    /// Rebind a retry attempt to the private copies it just fingerprinted.
+    /// The caller keeps those copies alive for the entire queued render, so an
+    /// external replacement of a capture sibling cannot change FFmpeg input.
+    pub(crate) fn with_staged_retry_inputs(
+        &self,
+        mic: Option<PathBuf>,
+        system: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            mic,
+            system,
+            system_offset_ms: self.system_offset_ms,
+        }
+    }
+
     /// Return a renderer-ready audio input. A one-source capture passes its
     /// validated WAV directly. Two sources (or a delayed system-only source) are
     /// prepared as PCM before the normal planned render; this is deliberately not

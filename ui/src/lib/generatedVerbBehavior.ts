@@ -4671,6 +4671,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "external",
     "facets": []
   },
+  "system.motion_status": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "system_motion_status",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
+    "facets": []
+  },
   "system.set_stt_model": {
     "mutation_class": "external_side_effect",
     "side_effects": {
@@ -5299,6 +5317,186 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
+    "facets": []
+  },
+  "screen_record.preview_capability": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_capability",
+    "project_state": "none",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.preview_start": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_start",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.preview_status": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_status",
+    "project_state": "none",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.preview_frame": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_frame",
+    "project_state": "none",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.preview_pause": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_pause",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.preview_resume": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_resume",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.preview_hide": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_hide",
+    "project_state": "none",
+    "idempotency": "natural",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.preview_stop": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_preview_stop",
+    "project_state": "none",
+    "idempotency": "natural",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
+    "facets": []
+  },
+  "screen_record.rehearsal_start": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": true,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "screen_record_rehearsal_start",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
+    "facets": []
+  },
+  "screen_record.rehearsal_discard": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": true
+    },
+    "dispatch": "screen_record_rehearsal_discard",
+    "project_state": "none",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "reversible",
     "facets": []
   }
 }

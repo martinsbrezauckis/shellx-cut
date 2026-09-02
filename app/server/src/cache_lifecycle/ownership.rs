@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Component, Path};
 
+mod recovery;
+pub(crate) use recovery::pending_rebuild_outputs_for_asset;
+pub(super) use recovery::retire_orphaned_pending_outputs;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct OwnershipLedger {
     schema: String,

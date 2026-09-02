@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub const RELINK_GROUP_SCHEMA: &str = "shellx-cut/media-relink-group/1";
+pub const RELINK_RECEIPT_SCHEMA: &str = "shellx-cut/media-relink-receipt/1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelinkGroupChange {
@@ -134,6 +135,88 @@ impl ProjectStore {
     }
 }
 
+/// Recover the current B5 evidence directly from the durable project journal.
+///
+/// The relink result is deliberately not a second mutable project cache: the
+/// grouped operation already contains its immutable preimage and chosen paths.
+/// A package may consume this receipt only while that operation is the current
+/// project revision; any later mutation must produce a fresh package plan.
+pub fn current_relink_receipt(ops: &[OpRecord]) -> Result<Option<Value>, CutError> {
+    let Some((index, op)) = ops.iter().enumerate().next_back() else {
+        return Ok(None);
+    };
+    if op.verb != "media.relink_apply" || op.status != OpStatus::Applied {
+        return Ok(None);
+    }
+    let pre_revision = index
+        .checked_sub(1)
+        .and_then(|previous| ops.get(previous))
+        .map(|previous| previous.op_id.clone())
+        .unwrap_or_else(|| "op_000000".to_string());
+    let detail = op
+        .effects
+        .iter()
+        .map(|effect| &effect.detail)
+        .find(|detail| detail.get("schema").and_then(Value::as_str) == Some(RELINK_GROUP_SCHEMA))
+        .ok_or_else(|| replay_corrupt(op, "bulk relink effect payload is missing"))?;
+    let project_identity = detail
+        .get("project_identity")
+        .cloned()
+        .filter(Value::is_object)
+        .ok_or_else(|| replay_corrupt(op, "bulk relink effect has no project identity"))?;
+    let plan_hash = detail
+        .get("plan_hash")
+        .and_then(Value::as_str)
+        .filter(|value| is_exact_sha256(value))
+        .ok_or_else(|| replay_corrupt(op, "bulk relink effect has no exact plan hash"))?;
+    let changes: Vec<RelinkGroupChange> = serde_json::from_value(
+        detail
+            .get("relinks")
+            .cloned()
+            .ok_or_else(|| replay_corrupt(op, "bulk relink effect is missing relinks"))?,
+    )
+    .map_err(|error| replay_corrupt(op, format!("bulk relink effect is invalid: {error}")))?;
+    if changes.is_empty() {
+        return Err(replay_corrupt(op, "bulk relink effect has no relinks"));
+    }
+    let mut seen = BTreeSet::new();
+    let assets = changes
+        .into_iter()
+        .map(|change| {
+            if !seen.insert(change.asset_id.clone())
+                || !is_exact_sha256(&change.expected_hash)
+                || change.chosen_path.is_empty()
+            {
+                return Err(replay_corrupt(
+                    op,
+                    "bulk relink effect has an invalid receipt asset row",
+                ));
+            }
+            Ok(json!({
+                "asset": change.asset_id,
+                "expected_hash": change.expected_hash,
+                "chosen": {"path": change.chosen_path, "sha256": change.expected_hash},
+                "disposition": "relinked",
+            }))
+        })
+        .collect::<Result<Vec<_>, CutError>>()?;
+    Ok(Some(json!({
+        "schema": RELINK_RECEIPT_SCHEMA,
+        "immutable": true,
+        "project_identity": project_identity,
+        "pre_revision": pre_revision,
+        "post_revision": op.op_id,
+        "plan_hash": plan_hash,
+        "grouped_op_id": op.op_id,
+        "assets": assets,
+        "scope": {
+            "library_transaction": false,
+            "import_or_proxy_job": false,
+            "undo": "not_promised",
+        },
+    })))
+}
+
 pub(super) fn replay_group(project: &mut Project, op: &OpRecord) -> Result<(), CutError> {
     let detail = op
         .effects
@@ -228,7 +311,43 @@ mod tests {
         assert_eq!(store.log.read_all().unwrap().len(), prior + 1);
         assert!(committed.op.inverse.is_none());
         assert_eq!(store.project.assets["a1"].path, "/restored/one.mov");
+        let receipt = store.current_relink_receipt().unwrap().unwrap();
+        assert_eq!(receipt["schema"], RELINK_RECEIPT_SCHEMA);
+        assert_eq!(receipt["grouped_op_id"], committed.op.op_id);
+        assert_eq!(receipt["assets"][0]["chosen"]["path"], "/restored/one.mov");
         let reopened = ProjectStore::open(&store.dir).unwrap();
         assert_eq!(reopened.project.assets["a1"].path, "/restored/one.mov");
+        assert_eq!(reopened.current_relink_receipt().unwrap(), Some(receipt));
+    }
+
+    #[test]
+    fn first_operation_receipt_uses_the_defensive_baseline_sentinel() {
+        let op = OpRecord {
+            op_id: "op_000001".into(),
+            ts: OpRecord::now_ts(),
+            actor: Actor::system(),
+            verb: "media.relink_apply".into(),
+            args: json!({}),
+            rationale: None,
+            effects: vec![edit::fx(
+                None,
+                json!({
+                    "schema": RELINK_GROUP_SCHEMA,
+                    "project_identity": {"schema": "shellx-cut/project-identity/1", "id": "test"},
+                    "plan_hash": exact(),
+                    "relinks": [{
+                        "asset_id": "a1",
+                        "expected_hash": exact(),
+                        "old_path": "/gone/one.mov",
+                        "chosen_path": "/restored/one.mov",
+                    }],
+                }),
+            )],
+            inverse: None,
+            status: OpStatus::Applied,
+        };
+
+        let receipt = current_relink_receipt(&[op]).unwrap().unwrap();
+        assert_eq!(receipt["pre_revision"], "op_000000");
     }
 }

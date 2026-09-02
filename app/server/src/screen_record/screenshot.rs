@@ -53,12 +53,15 @@ pub fn capture_screenshot_png(
         window,
         audio: false,
         microphone_source: record_capture::MicrophoneSource::SystemDefault,
+        microphone_level: None,
         system_audio: false,
         capture_keys: false,
         out_dir: tmp.to_string_lossy().into_owned(),
         checkpoint: None,
         clock: None,
         readiness: None,
+        controller_placement: None,
+        source_lifecycle: None,
     };
     let captured = cap.capture(&cfg, stop);
     let _ = control.terminalize();

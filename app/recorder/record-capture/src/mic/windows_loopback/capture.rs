@@ -1,3 +1,4 @@
+use super::super::RollingAudioLevel;
 use super::activation::{
     trace_windows_loopback, windows_error, ComApartment, ProcessLoopbackActivation, WindowsEvent,
     PROCESS_LOOPBACK_BITS_PER_SAMPLE, PROCESS_LOOPBACK_BLOCK_ALIGN, PROCESS_LOOPBACK_CHANNELS,
@@ -19,7 +20,20 @@ pub fn capture_system_loopback(
     stop: Arc<AtomicBool>,
     capture_started: Instant,
 ) -> Result<SystemAudioCapture> {
-    capture_process_loopback(path, max_ms, stop, capture_started)
+    capture_process_loopback(path, max_ms, stop, capture_started, None)
+}
+
+/// Capture system audio through the already-open process-loopback stream while
+/// feeding a caller-owned level model from each decoded packet. The level does
+/// not select an endpoint or open a second WASAPI client.
+pub fn capture_system_loopback_with_level(
+    path: &str,
+    max_ms: Option<u64>,
+    stop: Arc<AtomicBool>,
+    capture_started: Instant,
+    level: Arc<RollingAudioLevel>,
+) -> Result<SystemAudioCapture> {
+    capture_process_loopback(path, max_ms, stop, capture_started, Some(level))
 }
 
 /// Process-loopback implementation. Writes a fixed 48 kHz stereo 16-bit WAV.
@@ -28,6 +42,7 @@ fn capture_process_loopback(
     max_ms: Option<u64>,
     stop: Arc<AtomicBool>,
     capture_started: Instant,
+    level: Option<Arc<RollingAudioLevel>>,
 ) -> Result<SystemAudioCapture> {
     use std::mem::{size_of, ManuallyDrop};
     use windows::core::Interface;
@@ -260,6 +275,9 @@ fn capture_process_loopback(
                         trace_windows_loopback("process-loopback first packet released");
                     }
                     timing.record_packet(decoded.len(), packet_received_at)?;
+                    if let Some(level) = level.as_deref() {
+                        level.observe_i16(&decoded);
+                    }
                     for sample in decoded {
                         writer.write_sample(sample).map_err(|e| {
                             RecordError::new(error_codes::IO, "write system audio", e.to_string())

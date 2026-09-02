@@ -3,9 +3,9 @@
   "schema": "shellx-cut/verbs/1",
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
-    "version": "0.6.113",
+    "version": "0.6.114",
     "status": "candidate",
-    "published_version": "0.6.112"
+    "published_version": "0.6.113"
   },
   "mutation_controls": {
     "request_id": {
@@ -357,7 +357,7 @@
     {
       "name": "project.state",
       "domain": "project",
-      "description": "Return the materialized project state, or a bounded revision delta when since_revision is current enough. Linked Motion media clips include a transient replay-backed motion_link with current local availability and a bounded path-free keying/roto summary; these machine-local fields are not persisted in project.json.",
+      "description": "Return the materialized project state, or a bounded revision delta when since_revision is current enough. Every result carries a transient path-free project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name} derived from the canonical open .cutproj origin; raw project paths are never returned by this projection. Linked Motion media clips include a transient replay-backed motion_link with current local availability and a bounded path-free keying/roto summary; these machine-local fields are not persisted in project.json.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -374,7 +374,7 @@
           }
         }
       },
-      "result": "full project state with project_revision and sync:{mode:'snapshot',reason,...}, or {sync:{mode:'delta',from_revision,project_revision,ops,changes,affected,encoded_bytes}}; no_project if no project is open. Linked media clips may carry motion_link.effects:{schema:'shellx-cut/motion-effects-summary@1',available,ownership:'motion',editableInCut:false,keyedLayerCount?,rotoLayerCount?,trackedRotoLayerCount?,truncated?,layers?}",
+      "result": "full project state with project_identity:{schema:'shellx-cut/project-identity/1',origin_path_sha256,project_name}, project_revision and sync:{mode:'snapshot',reason,...}, or {sync:{mode:'delta',from_revision,project_revision,project_identity,ops,changes,affected,encoded_bytes}}; no_project if no project is open. The identity never includes a raw project path. Linked media clips may carry motion_link.effects:{schema:'shellx-cut/motion-effects-summary@1',available,ownership:'motion',editableInCut:false,keyedLayerCount?,rotoLayerCount?,trackedRotoLayerCount?,truncated?,layers?}",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -715,7 +715,7 @@
     {
       "name": "project.cache_rebuild",
       "domain": "project",
-      "description": "Queue one bounded, cancellable deterministic rebuild/backfill of the open project's missing or stale editing proxies and base filmstrips. Before a worker may publish an output, Cut verifies the source still matches the imported content hash and writes a durable ownership-ledger reservation. Cancellation or a server restart leaves only that pending reservation, so a later identical request resumes it without adopting an unowned file. Existing legacy/unowned outputs, source changes, unsupported media, and more than 64 selected assets are reported or refused rather than guessed. This verb never walks arbitrary cache paths, relinks a source, or removes source, export, capture, receipt, or foreign files.",
+      "description": "Queue one bounded, cancellable deterministic rebuild/backfill of the open project's missing or stale editing proxies and base filmstrips. Before a worker may publish an output, Cut verifies the source still matches the imported content hash and writes a durable ownership-ledger reservation. Cancellation or a server restart leaves only that pending reservation, so a later identical request resumes it without adopting an unowned file. If that pending source becomes unavailable or changes, scheduling refuses with a restore, relink, or asset-removal repair path instead of erasing ownership evidence; removal/relink retires only the exact pending base output. Existing legacy/unowned outputs, source changes, unsupported media, and more than 64 selected assets are reported or refused rather than guessed. This verb never walks arbitrary cache paths, relinks a source, or removes source, export, capture, receipt, or foreign files.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -729,10 +729,15 @@
               "pattern": "^a[0-9]+$"
             },
             "description": "Optional bounded registered asset ids. Omit only when the open project has at most 64 assets."
+          },
+          "estimate_only": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, verify a bounded rebuild work-unit estimate without reserving outputs or creating a job. The estimate reports current matching source input bytes and required proxy/filmstrip outputs, not a wall-clock duration promise."
           }
         }
       },
-      "result": "{schema:'shellx-cut/cache-rebuild/1',status:'queued'|'already_queued'|'not_needed',job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets}}. Poll jobs.status; jobs.cancel preserves any unfinished ledger reservation for a later rebuild request. No source or cache filesystem paths are returned.",
+      "result": "{schema:'shellx-cut/cache-rebuild/1',status:'estimated'|'queued'|'already_queued'|'not_needed',job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets},estimate:{basis:'source_hash_match_and_current_import_metadata',assets,verified_source_bytes,proxy_outputs,filmstrip_outputs,proxy_duration_ms}}. estimate_only:true verifies work without creating a job; otherwise poll jobs.status. jobs.cancel preserves any unfinished ledger reservation for a later rebuild request. A pending reservation whose current source is unavailable or changed returns a conflict with the restore/relink/remove repair path. No source or cache filesystem paths are returned.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -775,7 +780,7 @@
           }
         }
       },
-      "result": "{job_id,status:'queued'}. Observe jobs.status, cancel with jobs.cancel, then call project.cache_preview again to remeasure. The job never returns paths or filenames.",
+      "result": "{job_id,status:'queued'}. Observe jobs.status. Its terminal path-free result is {schema:'shellx-cut/cache-purge-reconciliation/1',status:'completed'|'cancelled'|'failed',reconciliation:{before:{files,bytes},planned:{files,bytes},removed:{files,bytes},after:{files,bytes},balanced,partial_progress,after_basis:'strict_scan'|'exclusive_lease_delta',ledger_recovery_required}}. A project-switch cancellation may use the exclusive-lease delta when no ProjectStore remains for a strict scan. If a file was removed but its ledger update could not publish, status is failed with ledger_recovery_required:true; the stale ledger entry blocks later preview rather than hiding that partial removal. Cancel with jobs.cancel, then call project.cache_preview again to remeasure when it is not blocked. The job never returns paths or filenames.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -798,7 +803,7 @@
     {
       "name": "project.package_plan",
       "domain": "project",
-      "description": "B6 dry-run for a Cut-native portable package. The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, refuse offline/symlinked media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; when supplied it must be immutable, journal-backed, and match the current source revision exactly.",
+      "description": "B6 dry-run for a Cut-native portable package. The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, refuse offline/symlinked media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; if the current project revision is a B5 grouped relink, its exact durable receipt is required. When supplied it must be immutable, journal-backed, and match the current source revision exactly.",
       "args": {
         "type": "object",
         "required": [
@@ -3363,7 +3368,7 @@
           }
         }
       },
-      "result": "JobRecord {job_id, kind, state: queued|running|done|failed, completion?: success|done_with_warnings, outcome?: succeeded|failed|cancelled|interrupted|superseded, outcome_reason?: completed|completed_with_warnings|true_failure|user_cancelled|project_switch_cancelled|restart_interrupted|superseded, progress 0..1, message?, queue?:{resource,max_running}, waiting_on?:{job_id,kind}, error?, result?}. message is the latest durable human-readable progress or terminal phase; it is absent on queued/legacy records until a worker reports one. queue is present only while a limited job waits for the named shared local resource and states its concurrency capacity; it clears when the slot is acquired or the job becomes terminal. waiting_on is present only while an orchestrator awaits the named active child and is relationship evidence, not a retry promise. state remains backward-compatible; outcome/outcome_reason explain terminal cause and are absent on legacy persisted records. completion is present on newly completed jobs; done_with_warnings means the result is usable but partial and its result.warnings must be inspected.",
+      "result": "JobRecord {job_id, kind, state: queued|running|done|failed, completion?: success|done_with_warnings, outcome?: succeeded|failed|cancelled|interrupted|superseded, outcome_reason?: completed|completed_with_warnings|true_failure|user_cancelled|project_switch_cancelled|restart_interrupted|superseded, progress 0..1, message?, queue?:{resource,max_running}, waiting_on?:{job_id,kind}, retry?:{eligible,reason?,root_job_id,attempt,retry_of?,retried_by?}, error?, result?}. retry is the engine-authored public eligibility and lineage projection; its replay descriptor and fingerprints remain private. message is the latest durable human-readable progress or terminal phase; it is absent on queued/legacy records until a worker reports one. queue is present only while a limited job waits for the named shared local resource and states its concurrency capacity; it clears when the slot is acquired or the job becomes terminal. waiting_on is present only while an orchestrator awaits the named active child and is relationship evidence, not a retry promise. state remains backward-compatible; outcome/outcome_reason explain terminal cause and are absent on legacy persisted records. completion is present on newly completed jobs; done_with_warnings means the result is usable but partial and its result.warnings must be inspected.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -3451,7 +3456,7 @@
     {
       "name": "jobs.retry",
       "domain": "jobs",
-      "description": "Admit one fresh durable child for an eligible failed default-output screen_record.export job. This is not generic historical request replay: Cut validates the persisted recorder-export descriptor against the active project's exact revision and SHA-256 fingerprints of the source, EditPlan, and recorder audio inputs before reserving a fresh default output lease. The source job is consumed and linked to exactly one child atomically; a second retry returns conflict. Explicit Save As exports, cancellations, successes, superseded jobs, legacy records, changed inputs, and changed project revisions are ineligible and must start a new export.",
+      "description": "Admit one fresh durable child for an eligible failed engine-owned retry descriptor; this is never generic historical request replay. screen_record.export retries require a default output, the active project's exact revision, and SHA-256 fingerprints of its source, EditPlan, and recorder audio inputs before reserving a fresh output lease. verify.rerun retries require the active revision, immutable RenderReceipt, rendered-output hash, and exact receipt/output fingerprints before a fresh output-only verification pass. The source is consumed and linked to exactly one child atomically; a second retry returns conflict. Explicit Save As exports, cancellations, successes, superseded jobs, legacy records, unresolved persistence errors, changed inputs, and changed project revisions are ineligible and must start a new job.",
       "args": {
         "type": "object",
         "required": [
@@ -3461,11 +3466,11 @@
         "properties": {
           "job_id": {
             "type": "string",
-            "description": "Eligible failed default-output screen_record.export job id"
+            "description": "Eligible failed screen_record.export or verify.rerun job id with an engine-owned retry descriptor"
           }
         }
       },
-      "result": "{job_id, retry_of, root_job_id, attempt, path, format:'mp4'|'gif', status:'queued'} — a newly admitted linked child with a fresh fenced default destination; poll jobs.status for progress and terminal result.",
+      "result": "{job_id, retry_of, root_job_id, attempt, status:'queued', path, format:'mp4'|'gif'} for a recorder export, or {job_id, retry_of, root_job_id, attempt, status:'queued', render_id, output_hash} for output-only verification. Poll jobs.status for progress and terminal result.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -15440,7 +15445,7 @@
     {
       "name": "screen_record.status",
       "domain": "screen_record",
-      "description": "Read the short-lived first-screen-frame admission fact for one active capture in this cutd process. This is not crash recovery, output validation, a timer, or a process-start acknowledgement: ready becomes true only after the active native screen path delivered a real screen frame (Windows: accepted by the MP4 encoder; macOS: ScreenCaptureKit screen-sample callback; Linux: PipeWire screen buffer delivered through the GStreamer observer). It never opens a device, starts/stops a capture, reads a media file, exposes a path, or persists a fact. Terminal states are deliberately not ready even if a frame arrived earlier. A completed capture or server restart returns not_found rather than inferring readiness from artifacts.",
+      "description": "Read the short-lived first-screen-frame admission fact, capture-owned selected-source lifecycle, controller-placement conclusion, and bounded native-audio snapshots for one active capture in this cutd process. This is not crash recovery, output validation, a timer, or a process-start acknowledgement: ready becomes true only after the active native screen path delivered a real screen frame (Windows: accepted by the MP4 encoder; macOS: ScreenCaptureKit screen-sample callback; Linux: PipeWire screen buffer delivered through the GStreamer observer). source_lifecycle is source_lost only after a native backend observed its armed selected-source close signal before a Cut-owned close; generic Stop, duration expiry, encoder/disk failure, permission changes, and reservation removal never acquire that label. unavailable means this admitted source has no such defensible signal. controller_placement reports a real native exclusion/hide decision without window handles, process ids, or source identities: Windows requires WDA_EXCLUDEFROMCAPTURE readback, macOS requires an admitted ScreenCaptureKit display filter excluding the owning Cut windows, and Linux portal capture remains unavailable when it cannot prove equivalent exclusion. Window capture preserves its exact selected-window semantics and therefore does not claim display-controller exclusion. Audio meters observe only the already-admitted microphone or system-audio stream and never select or open a device. Terminal, stale, and device_lost sources are not live even when a last packet remains visible. macOS system-audio metering is unavailable because the current Core Audio tap transfers PCM to Rust only when recording stops. It never starts/stops a capture, reads a media file, exposes a path, or persists a fact. A completed capture or server restart returns not_found rather than inferring state from artifacts.",
       "args": {
         "type": "object",
         "required": [
@@ -15457,7 +15462,7 @@
           }
         }
       },
-      "result": "{capture_id, ready, terminal, state:\"awaiting_first_screen_frame\"|\"ready\"|\"terminal_before_first_screen_frame\"|\"terminal_after_first_screen_frame\"} — proceed only when ready:true and terminal:false. ready is false until the actual native screen-frame delivery boundary, and becomes false permanently when the active capture terminalizes; terminal_after_first_screen_frame retains only the diagnostic ordering, not an admission to stop/continue. not_found means that no matching capture is active in this cutd process.",
+      "result": "{capture_id, ready, terminal, state:\"awaiting_first_screen_frame\"|\"ready\"|\"terminal_before_first_screen_frame\"|\"terminal_after_first_screen_frame\", source_lifecycle:{state:\"awaiting_first_frame\"|\"active\"|\"terminal\"|\"source_lost\"|\"unavailable\",reason}, controller_placement:{state:\"excluded\"|\"auto_hidden\"|\"refused\"|\"unavailable\",reason}, audio_meters:{microphone,system_audio}}. source_lifecycle:source_lost is a native selected-source close observation; terminal is not relabelled as source loss and unavailable makes no close-observation claim. Each audio source is {state:\"not_requested\"|\"awaiting_samples\"|\"live\"|\"stale\"|\"device_lost\"|\"stopped\"|\"unavailable\", peak_dbfs|null, rms_dbfs|null, decayed_peak_dbfs|null, sample_age_ms|null, stale, clipping, detail?}; only state:live with stale:false is a current level. proceed only when ready:true and terminal:false. not_found means that no matching capture is active in this cutd process.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -15906,6 +15911,35 @@
           "ui": false
         },
         "dispatch": "system_doctor",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.motion_status",
+      "domain": "system",
+      "description": "Run Cut's bounded, read-only ShellX Motion discovery route. It validates the local runtime probe, connector catalog, and fixed Template-to-Cut descriptor without a caller id, provider login, connector execution, download, installation, repair, update, or removal. A discovered runtime remains explicitly unmanaged and connector execution remains unqualified. Distribution lifecycle operations are unavailable until MOTION-DIST-01 provides a verified immutable distribution manifest and a matching platform artifact; no source checkout, PATH binary, or npm package is treated as an install candidate.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{schema:'shellx-cut/motion-management-status@1', readOnly:true, runtime:{status,engine?,cli?,platform?,provenance?}, connector:{catalog,descriptor,capabilityId,descriptorRevision?,descriptorFingerprint?,availability?,availableOnRuntime,execution}, distribution:{status,blocker:{id:'MOTION-DIST-01',message},manifest:{status,candidate:null,version:null},artifact:{platform,status,version:null},installed:{status:'not-managed',candidate:null,version:null},actions:{install|repair|update|remove:{available:false,prerequisite:'MOTION-DIST-01'}}}}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "system_motion_status",
         "project_state": "none",
         "idempotency": "none",
         "replayability": "not_applicable",
@@ -17723,6 +17757,394 @@
         "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_capability",
+      "domain": "screen_record",
+      "description": "Read whether this recorder build has an in-process native source-preview adapter and the only source-selection mode it admits. available/source_selection:exact accepts one current opaque monitor or window identity; available/source_selection:portal requires one fresh user-consented Linux system-picker selection. This is a capability fact, never a browser OS inference. It does not claim a source has been selected, permission is granted, or a frame arrived. Linux Portal preview owns a user-consented, ephemeral raw-frame session without GStreamer, ffmpeg, a child process, or synthetic pixels.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{state:'available',source_selection:'exact'|'portal'} or {state:'unsupported',prerequisite}. exact means only current opaque monitor/window ids may be used; portal means only {kind:'portal'} may be used and the user picks a source in the system dialog. This returns no source identity, screen name, native handle, frame, path, or permission claim.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_capability",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_start",
+      "domain": "screen_record",
+      "description": "Start one bounded, process-local native source preview for exactly one opaque monitor or window identity from the current screen_record.doctor enumeration. Windows and macOS re-resolve that identity immediately; Linux accepts only Portal and opens a new user-consented, ephemeral PipeWire session. Every adapter retains only the latest bounded BMP in memory. A preview cannot start while a recording owns capture devices. Replacing a source stops/releases the predecessor first; no title, ordinal, native handle, region coordinates, file, restore token, or browser getDisplayMedia fallback is accepted.",
+      "args": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "monitor_id"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "monitor"
+                  },
+                  "monitor_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": "Exact opaque identity copied unchanged from a current screen_record.doctor.monitors[].id row."
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "window_id"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "window"
+                  },
+                  "window_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "description": "Exact opaque identity copied unchanged from a current screen_record.doctor.windows[].id row."
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "portal"
+                  }
+                }
+              }
+            ],
+            "description": "Exact source selector. Names, ordinals, geometry, primary-display fallbacks, and coordinates are not representable."
+          }
+        }
+      },
+      "result": "{action:'start',status:{state,recursion,has_frame,generation}}. state:'starting' means native admission only; ready requires a real delivered frame. status intentionally omits the selected identity and private region.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_start",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_status",
+      "domain": "screen_record",
+      "description": "Read the current process-local native source-preview lifecycle. The owner polls only its already-admitted native mailbox; this never opens capture, starts a portal, reads a file, or returns the selected source. generation changes on every accepted Start/resume and lets callers reject stale frame responses.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{state:'idle'|'starting'|'ready'|'paused'|'hidden'|'permission_required'|'permission_denied'|'source_lost'|'unavailable'|'stopped',recursion:'none'|'detected'|'unavoidable',has_frame,generation|null}. ready is evidence of a retained real frame, never merely successful native startup.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_status",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_frame",
+      "domain": "screen_record",
+      "description": "Read the latest real native source-preview frame and lifecycle snapshot under one owner lock. It returns only a BMP data payload retained in memory by the active generation; no URL, path, image file, screenshot artifact, source identity, title, native handle, or synthetic frame exists. The encoded BMP is capped at 4 MiB before base64 encoding; frame:null is an honest no-frame result.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{status:{state,recursion,has_frame,generation},frame:null|{mime:'image/bmp',bytes:1..4194304,generation,captured_at_ms,base64}}. frame.generation is bound to the returned bytes; a source replacement cannot mix old pixels with a new generation.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_frame",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_pause",
+      "domain": "screen_record",
+      "description": "Pause a current native source preview and synchronously release its active native session and retained frame. resume reopens the exact remembered opaque source with a new generation. This does not pause a recording and has no filesystem or process side effect.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{action:'pause',status:{state,recursion,has_frame,generation}}. A no-op pause reports the truthful existing lifecycle state.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_pause",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_resume",
+      "domain": "screen_record",
+      "description": "Resume only a paused native source preview. A successful native re-open reports starting until a real callback frame arrives; it always advances generation before any frame can be accepted. This does not resume a recording and cannot recreate a released/hidden preview without a new preview_start.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{action:'resume',status:{state,recursion,has_frame,generation}}.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_resume",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_hide",
+      "domain": "screen_record",
+      "description": "Hide a native source preview. It is idempotent: it synchronously releases the native session and pixels if present, then reports hidden without auto-resuming capture. It does not alter a recording.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{action:'hide',status:{state:'hidden',recursion,has_frame:false,generation|null}}.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_hide",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_stop",
+      "domain": "screen_record",
+      "description": "Stop a native source preview. It is idempotent and synchronously releases the native session, latest frame, remembered source, and private region before returning stopped. screen_record.start also performs this release before reserving ordinary recording capture devices.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{action:'stop',status:{state:'stopped',recursion:'none',has_frame:false,generation:null}}.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_preview_stop",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.rehearsal_start",
+      "domain": "screen_record",
+      "description": "Capture one disposable 3- to 5-second native screen rehearsal from the currently selected display or opaque window identity, then return only a revocable opaque playback handle and same-origin playback URL. It does not require, create, open, save, or mutate a project; it creates no recovery marker, checkpoint, capture journal, RecordingProject, Studio event, or timeline media. The bounded temporary bytes are owned solely by cutd, cannot be promoted implicitly, and are discarded when the UI closes playback, starts another rehearsal, or starts an ordinary recording. The normal recorder capability/target admission still applies. This video-only test deliberately does not open microphone or system-audio streams; use the explicit existing audio checks for those inputs.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 3000,
+            "maximum": 5000,
+            "description": "Native test-take cap in milliseconds (default 3000). It is always bounded; open-ended rehearsal is not supported."
+          },
+          "fps": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 240,
+            "description": "Capture rate for the disposable take (default 30)."
+          },
+          "monitor": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Legacy display ordinal when no exact monitor_id is available."
+          },
+          "monitor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "Exact opaque monitor identity from the current screen_record.doctor row. It is revalidated and never falls back."
+          },
+          "window": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "Exact opaque native window identity from the current screen_record.doctor row."
+          }
+        }
+      },
+      "result": "{playback_handle, playback_url, duration_ms, discard_on_start_recording:true, note} — playback_handle is an opaque, process-local capability for the one current temporary take and playback_url is its same-origin bounded route. Neither is a filesystem path; no media bytes, capture id, output directory, recovery item, project receipt, or promotion action is returned.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "screen_record_rehearsal_start",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.rehearsal_discard",
+      "domain": "screen_record",
+      "description": "Idempotently revoke and delete the current disposable rehearsal take. With a handle, it must be the exact opaque playback_handle returned by rehearsal_start; without one, it safely discards whichever temporary rehearsal is current. A repeated cleanup for a recently discarded handle returns discarded:false rather than restoring or exposing bytes. It never accepts a path, project, media asset, capture id, or promotion instruction, and it never enters recovery inventory.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "handle": {
+            "type": "string",
+            "minLength": 58,
+            "maxLength": 58,
+            "description": "Optional opaque playback_handle returned by screen_record.rehearsal_start. Omit for safe unmount cleanup of the current take."
+          }
+        }
+      },
+      "result": "{handle|null, discarded, state:\"discarded\"|\"stopping\"} — discarded:true revokes the opaque route immediately. state:stopping means a native take was signalled and still owns devices until its bounded worker exits; it never yields media or a path.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "screen_record_rehearsal_discard",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
         "facets": []
       }
     }

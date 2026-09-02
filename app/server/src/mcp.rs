@@ -31,6 +31,7 @@ const MAX_TOOLS_LIST_BYTES: usize = 384 * 1024;
 const MAX_TOOL_DESCRIPTION_CHARS: usize = 400;
 const MAX_TOOL_RESULT_DESCRIPTION_CHARS: usize = 180;
 const MAX_INPUT_SCHEMA_DESCRIPTION_CHARS: usize = 80;
+const SHARED_MUTATION_CONTROL_NAMES: [&str; 2] = ["request_id", "expected_revision"];
 
 /// How tools/call executes a verb (the public single-state-holder contract: one state holder).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +212,24 @@ fn trim_schema_descriptions(v: &Value, max: usize) -> Value {
     }
 }
 
+/// The registry injects these two shared controls into every verb input schema
+/// before validation. Their descriptions are identical 305 times over in a
+/// full MCP list, while JSON Schema treats `description` as an annotation. Keep
+/// every machine-readable control constraint and compact only that duplicate
+/// prose; the complete annotation remains in the canonical verb registry.
+fn compact_mcp_input_schema(v: &Value) -> Value {
+    let mut schema = trim_schema_descriptions(v, MAX_INPUT_SCHEMA_DESCRIPTION_CHARS);
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        return schema;
+    };
+    for name in SHARED_MUTATION_CONTROL_NAMES {
+        if let Some(control) = properties.get_mut(name).and_then(Value::as_object_mut) {
+            control.remove("description");
+        }
+    }
+    schema
+}
+
 /// True if a JSON value contains a `$ref` anywhere (a schema referencing an
 /// external/custom URI a generic MCP client can't resolve).
 fn json_contains_ref(v: &Value) -> bool {
@@ -271,7 +290,7 @@ where
                     concise(&v.description, MAX_TOOL_DESCRIPTION_CHARS),
                     concise(&v.result, MAX_TOOL_RESULT_DESCRIPTION_CHARS),
                 ),
-                "inputSchema": trim_schema_descriptions(&v.args, MAX_INPUT_SCHEMA_DESCRIPTION_CHARS),
+                "inputSchema": compact_mcp_input_schema(&v.args),
             });
             // Forward the machine-readable result contract as MCP outputSchema
             // when the verb declares one, but only if it is self-contained.
@@ -368,6 +387,38 @@ mod tests {
             bytes <= MAX_TOOLS_LIST_BYTES,
             "MCP tools/list reply is {bytes} bytes; supported client budget is {MAX_TOOLS_LIST_BYTES}"
         );
+    }
+
+    #[test]
+    fn mcp_input_schemas_keep_shared_mutation_control_constraints_without_repeating_prose() {
+        let state = AppState::new();
+        for tool in list_tools(&state) {
+            let properties = tool["inputSchema"]["properties"]
+                .as_object()
+                .expect("every MCP tool must retain an input properties object");
+            let request_id = &properties["request_id"];
+            assert_eq!(request_id["type"], json!("string"));
+            assert_eq!(request_id["minLength"], json!(8));
+            assert_eq!(request_id["maxLength"], json!(128));
+            assert_eq!(
+                request_id["pattern"],
+                json!("^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+            );
+            assert!(
+                request_id.get("description").is_none(),
+                "{} repeated request_id prose in tools/list",
+                tool["name"]
+            );
+
+            let expected_revision = &properties["expected_revision"];
+            assert_eq!(expected_revision["type"], json!("string"));
+            assert_eq!(expected_revision["pattern"], json!("^op_[0-9]{6,}$"));
+            assert!(
+                expected_revision.get("description").is_none(),
+                "{} repeated expected_revision prose in tools/list",
+                tool["name"]
+            );
+        }
     }
 
     #[test]

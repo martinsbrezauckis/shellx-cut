@@ -20,6 +20,7 @@ import type {
   KfInterp,
   KfParam,
   MarkerColor,
+  PortableB5RelinkReceipt,
   Project,
   ProjectSettings,
 } from './clientModel'
@@ -37,6 +38,7 @@ import type {
   RecordingSceneStartConfig,
   RecordingSceneTimerArgs,
 } from '../panels/Record/recordingScenes'
+import type { RecordingSourcePreviewSelection } from '../panels/Record/recordingNativeSourcePreview'
 
 export type {
   AnimState,
@@ -72,6 +74,7 @@ export type {
   Marker,
   MotionClipLink,
   OpRecord,
+  PortableB5RelinkReceipt,
   Project,
   ProjectSettings,
   Sequence,
@@ -85,6 +88,7 @@ export type {
   Waveform,
   WordSpan,
 } from './clientModel'
+export type { ProjectIdentity } from './projectIdentity'
 export { isIdentityTransform, mediaClipTimelineDurationMs } from './clientModel'
 export type * from './clientResults'
 
@@ -109,7 +113,7 @@ export interface VerbResult<T = unknown> {
 export const UI_OPEN_PANELS = UI_OPEN_SURFACE_IDS
 export type UiOpenPanel = (typeof UI_OPEN_PANELS)[number]
 
-// Verb args map — one entry per verb in schema/verbs.json (294 verbs, 34 domains).
+// Verb args map — one entry per verb in schema/verbs.json (305 verbs, 34 domains).
 // Keys ARE the wire names; keep in sync with the registry. Later additions
 // edit.crop, edit.crossfade, edit.move_marker, audio.add_music,
 // captions.set_range + ripple flags on edit.ripple_delete (lift) / edit.move.
@@ -119,14 +123,12 @@ export interface VerbArgs {
   'project.create': { name: string; settings?: Partial<ProjectSettings>; dir?: string; starter?: 'first-edit' }
   'project.open': { path: string }
   'project.save': Record<string, never>
-  // B6 is deliberately agent-only in this slice; these typings keep the
-  // shared client contract complete without implying a human editor control.
-  'project.package_plan': { destination: string; name: string; b5_receipt?: Record<string, unknown> }
-  'project.package_create': { destination: string; name: string; plan_hash: string; b5_receipt?: Record<string, unknown> }
+  'project.package_plan': { destination: string; name: string; b5_receipt?: PortableB5RelinkReceipt }
+  'project.package_create': { destination: string; name: string; plan_hash: string; b5_receipt?: PortableB5RelinkReceipt }
   'project.state': { since_revision?: string; limit?: number }
   'project.health': { cursor?: string; revision?: string; limit?: number }
   'project.cache_preview': Record<string, never>
-  'project.cache_rebuild': { asset_ids?: string[] }
+  'project.cache_rebuild': { asset_ids?: string[]; estimate_only?: boolean }
   'project.cache_purge': { plan_id: string; confirm: true }
   'project.sequence_list': Record<string, never>
   'project.sequence_index': { query?: string; asset?: string; kind?: 'all' | 'clip' | 'marker'; sequence?: string; track_kind?: 'video' | 'audio' | 'caption'; status?: 'all' | 'issues' | 'offline' | 'gaps' | 'effects' | 'hidden' | 'locked' | 'muted'; limit?: number }
@@ -702,12 +704,26 @@ export interface VerbArgs {
   'screen_record.microphone_selection': { mode: 'system_default' | 'selected'; microphone_token?: string }
   'screen_record.system_audio_probe': { max_ms?: number }
   'screen_record.recovery_status': { after?: string; limit?: number }
+  // Memory-only native source preview. Exact source identities come from the
+  // current recorder enumeration; Portal is Linux's user-consented selection.
+  'screen_record.preview_capability': Record<string, never>
+  'screen_record.preview_start': { source: RecordingSourcePreviewSelection }
+  'screen_record.preview_status': Record<string, never>
+  'screen_record.preview_frame': Record<string, never>
+  'screen_record.preview_pause': Record<string, never>
+  'screen_record.preview_resume': Record<string, never>
+  'screen_record.preview_hide': Record<string, never>
+  'screen_record.preview_stop': Record<string, never>
   // Live duration-bounded capture. `start` launches an in-process
   // recorder thread and returns a capture_id; `stop` polls for the
   // finalized project.json then surfaces the events track (+ optional autoedit).
   // `monitor_id`, when supplied from Doctor, is revalidated as the exact native
   // target. `monitor` remains the legacy ordinal compatibility path.
   'screen_record.start': { duration_ms?: number; fps?: number; quality?: { output_size: 'source' | '1080p' | '720p'; profile: 'standard' | 'high' }; audio?: boolean; system_audio?: boolean; studio?: unknown; scenes?: RecordingSceneStartConfig; pause?: { mode: 'enabled' }; keys?: boolean; monitor?: number; monitor_id?: string; window?: string; rationale?: string }
+  // A 3–5 second native video test take. It is process-local disposable media,
+  // not a project recording; playback is an opaque server capability only.
+  'screen_record.rehearsal_start': { duration_ms?: number; fps?: number; monitor?: number; monitor_id?: string; window?: string }
+  'screen_record.rehearsal_discard': { handle?: string }
   'screen_record.status': { capture_id: string }
   // Proposed v0.6.113 recording-scenes API. Record negotiates Doctor support
   // before it ever sends this optional request to a current engine.
@@ -1024,6 +1040,7 @@ export interface VerbArgs {
   // System domain — environment doctor + consented tool fetch.
   'system.mcp_test': Record<string, never>
   'system.doctor': { refresh?: boolean }
+  'system.motion_status': Record<string, never>
   // Manual ffmpeg override (Change-ffmpeg control); path:null clears → automatic.
   'system.set_ffmpeg': { path?: string | null }
   'system.set_stt_model': { model?: string; language?: string; clear?: boolean; rationale?: string }

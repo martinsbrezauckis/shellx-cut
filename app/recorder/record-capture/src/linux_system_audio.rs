@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::linux_system_audio_target::default_sink_target;
+use crate::mic::RollingAudioLevel;
 use crate::system_audio_timing::{SystemAudioCapture, SystemAudioTimingTracker};
 
 const SAMPLE_RATE: u32 = 48_000;
@@ -27,6 +28,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 struct State {
     format: AudioInfoRaw,
     timing: SystemAudioTimingTracker,
+    level: Option<Arc<RollingAudioLevel>>,
     writer: Option<hound::WavWriter<BufWriter<File>>>,
     error: Option<String>,
 }
@@ -60,6 +62,9 @@ fn record_packet(
         "PipeWire delivered a nonempty system-audio buffer with an invalid S16LE frame size"
             .to_string()
     })?;
+    if let Some(level) = state.level.as_deref() {
+        level.observe_s16le_bytes(bytes);
+    }
     // Timestamp a real packet before decoding or disk I/O adds scheduling delay.
     state
         .timing
@@ -90,6 +95,35 @@ pub fn capture_system_pipewire(
     duration_ms: Option<u64>,
     stop: Arc<AtomicBool>,
     capture_started: Instant,
+) -> Result<SystemAudioCapture> {
+    capture_system_pipewire_with_optional_level(path, duration_ms, stop, capture_started, None)
+}
+
+/// Capture through the already-selected PipeWire monitor while feeding the
+/// supplied level from its `process` callback. This does not create another
+/// PipeWire stream or alter the persisted WAV contract.
+pub fn capture_system_pipewire_with_level(
+    path: &Path,
+    duration_ms: Option<u64>,
+    stop: Arc<AtomicBool>,
+    capture_started: Instant,
+    level: Arc<RollingAudioLevel>,
+) -> Result<SystemAudioCapture> {
+    capture_system_pipewire_with_optional_level(
+        path,
+        duration_ms,
+        stop,
+        capture_started,
+        Some(level),
+    )
+}
+
+fn capture_system_pipewire_with_optional_level(
+    path: &Path,
+    duration_ms: Option<u64>,
+    stop: Arc<AtomicBool>,
+    capture_started: Instant,
+    level: Option<Arc<RollingAudioLevel>>,
 ) -> Result<SystemAudioCapture> {
     let parent = path.parent().ok_or_else(|| {
         io_error(
@@ -125,6 +159,7 @@ pub fn capture_system_pipewire(
         let state = Rc::new(RefCell::new(State {
             format: AudioInfoRaw::new(),
             timing: SystemAudioTimingTracker::default(),
+            level,
             writer: Some(writer),
             error: None,
         }));
@@ -301,45 +336,5 @@ pub fn capture_system_pipewire(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{packet_samples, record_packet, State};
-    use crate::system_audio_timing::SystemAudioTimingTracker;
-    use std::fs::File;
-    use std::io::BufWriter;
-    use std::time::Duration;
-
-    fn state() -> State {
-        let path = tempfile::NamedTempFile::new().unwrap();
-        let writer = hound::WavWriter::new(
-            BufWriter::new(File::create(path.path()).unwrap()),
-            hound::WavSpec {
-                channels: 2,
-                sample_rate: 48_000,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            },
-        )
-        .unwrap();
-        State {
-            format: Default::default(),
-            timing: SystemAudioTimingTracker::default(),
-            writer: Some(writer),
-            error: None,
-        }
-    }
-
-    #[test]
-    fn first_nonempty_pipewire_packet_keeps_a_delayed_capture_clock_offset() {
-        let mut state = state();
-        assert_eq!(packet_samples(&[]), None, "empty buffers are not packets");
-        record_packet(&mut state, &[0, 0, 1, 0], Duration::from_millis(2_350)).unwrap();
-        assert_eq!(state.timing.first_packet_offset_ms(), Some(2_350));
-    }
-
-    #[test]
-    fn malformed_packet_cannot_create_timing_or_wav_samples() {
-        let mut state = state();
-        assert!(record_packet(&mut state, &[0], Duration::ZERO).is_err());
-        assert_eq!(state.timing.first_packet_offset_ms(), None);
-    }
-}
+#[path = "linux_system_audio_tests.rs"]
+mod tests;

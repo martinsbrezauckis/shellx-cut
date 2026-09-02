@@ -18,7 +18,7 @@ fn actor() -> Actor {
 
 fn plan(disposition: &str) -> RelinkPlan {
     RelinkPlan {
-        project_identity: json!({"schema": PROJECT_ID_SCHEMA, "origin_path_sha256": "sha256:test"}),
+        project_identity: json!({"schema": "shellx-cut/project-identity/1", "origin_path_sha256": "sha256:test"}),
         project_revision: "op_000002".into(),
         root: "/safe".into(),
         scan_files: 1,

@@ -166,12 +166,7 @@ pub(super) fn build_preview(store: &ProjectStore, plan_id: String) -> Result<Pre
     let ledger = read_ledger(&store.dir)?;
     let (snapshot, roots, targets, counts) = scan(store, &ledger, now)?;
     let (project_revision, _) = store.log.current_revision_and_count()?;
-    let total_files = counts
-        .iter()
-        .fold(0u64, |total, category| total.saturating_add(category.files));
-    let total_bytes = counts
-        .iter()
-        .fold(0u64, |total, category| total.saturating_add(category.bytes));
+    let inventory = total_cache_measurement(&counts);
     let purgeable_files = counts.iter().fold(0u64, |total, category| {
         total.saturating_add(category.purgeable_files)
     });
@@ -183,7 +178,7 @@ pub(super) fn build_preview(store: &ProjectStore, plan_id: String) -> Result<Pre
         "status": "ready",
         "plan_id": plan_id,
         "minimum_age_ms": CACHE_RETENTION_MS,
-        "inventory": {"files": total_files, "bytes": total_bytes},
+        "inventory": inventory.public(),
         "purgeable": {"files": purgeable_files, "bytes": purgeable_bytes},
         "categories": [
             {"kind": "proxies", "files": counts[0].files, "bytes": counts[0].bytes, "purgeable_files": counts[0].purgeable_files, "purgeable_bytes": counts[0].purgeable_bytes},
@@ -201,6 +196,7 @@ pub(super) fn build_preview(store: &ProjectStore, plan_id: String) -> Result<Pre
             roots,
             snapshot,
             targets,
+            before: inventory,
         }),
     })
 }

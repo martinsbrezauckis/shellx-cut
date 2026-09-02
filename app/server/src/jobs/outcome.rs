@@ -8,6 +8,8 @@ use super::{JobCancellationReason, JobCompletion, JobManager, JobRecord, JobStat
 use cut_core::CutError;
 use serde::{Deserialize, Serialize};
 
+mod terminal;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobOutcome {
@@ -92,6 +94,32 @@ impl JobManager {
         self.terminate(job_id, outcome, reason, error, message);
     }
 
+    /// Preserve a path-free accounting payload when a true failure happens
+    /// after a worker has already made a known change. The terminal state stays
+    /// Failed with its original error; callers must not treat the result as a
+    /// successful completion.
+    pub(crate) fn fail_with_result(
+        &self,
+        job_id: &str,
+        error: CutError,
+        result: serde_json::Value,
+    ) {
+        let (outcome, reason, message) = match error.code.as_str() {
+            "job_cancelled" | cut_core::error::codes::RENDER_CANCELLED => (
+                JobOutcome::Cancelled,
+                JobOutcomeReason::UserCancelled,
+                "cancelled",
+            ),
+            "job_superseded" => (
+                JobOutcome::Superseded,
+                JobOutcomeReason::Superseded,
+                "superseded",
+            ),
+            _ => (JobOutcome::Failed, JobOutcomeReason::TrueFailure, "failed"),
+        };
+        self.terminate_with_result(job_id, outcome, reason, error, message, result);
+    }
+
     pub(crate) fn cancel_by_user(&self, job_id: &str) {
         self.terminate(
             job_id,
@@ -129,6 +157,63 @@ impl JobManager {
         }
     }
 
+    /// Preserve a path-free progress reconciliation when a cooperative worker
+    /// has already made a reversible, partially completed change. The job
+    /// remains a normal cancelled/interrupted/superseded terminal record; this
+    /// only gives its owner a truthful result payload instead of implying that
+    /// cancellation happened before all work.
+    pub(crate) fn cancel_from_worker_with_result(
+        &self,
+        job_id: &str,
+        reason: JobCancellationReason,
+        result: serde_json::Value,
+    ) {
+        let (outcome, outcome_reason, error, message) = match reason {
+            JobCancellationReason::CancelledByUser => (
+                JobOutcome::Cancelled,
+                JobOutcomeReason::UserCancelled,
+                CutError::new(
+                    "job_cancelled",
+                    format!("job '{job_id}' was cancelled"),
+                    "the active background task was aborted",
+                ),
+                "cancelled",
+            ),
+            JobCancellationReason::ProjectSwitch => (
+                JobOutcome::Cancelled,
+                JobOutcomeReason::ProjectSwitchCancelled,
+                CutError::new(
+                    "job_cancelled",
+                    format!("job '{job_id}' was cancelled because the project changed"),
+                    "background work cannot continue after its owning project is closed",
+                ),
+                "cancelled for project switch",
+            ),
+            JobCancellationReason::Superseded => (
+                JobOutcome::Superseded,
+                JobOutcomeReason::Superseded,
+                CutError::new(
+                    "job_superseded",
+                    format!("job '{job_id}' was superseded"),
+                    "a newer request replaced this job before it could commit",
+                ),
+                "superseded",
+            ),
+            JobCancellationReason::Restart => (
+                JobOutcome::Interrupted,
+                JobOutcomeReason::RestartInterrupted,
+                CutError::new(
+                    "job_failed",
+                    format!("job '{job_id}' was interrupted"),
+                    "the server restarted while its owned worker was stopping",
+                ),
+                "interrupted by restart",
+            ),
+            JobCancellationReason::None => return,
+        };
+        self.terminate_with_result(job_id, outcome, outcome_reason, error, message, result);
+    }
+
     pub(crate) fn cancel_for_project_switch(&self, job_id: &str) {
         self.terminate(
             job_id,
@@ -157,67 +242,6 @@ impl JobManager {
             ),
             "superseded",
         );
-    }
-
-    fn complete(
-        &self,
-        job_id: &str,
-        result: serde_json::Value,
-        completion: JobCompletion,
-        reason: JobOutcomeReason,
-        message: &str,
-    ) {
-        let kind = self.update(job_id, |record| {
-            record.state = JobState::Done;
-            record.queue = None;
-            record.waiting_on = None;
-            record.completion = Some(completion);
-            record.progress = 1.0;
-            record.outcome = Some(JobOutcome::Succeeded);
-            record.outcome_reason = Some(reason);
-            record.message = Some(message.to_string());
-            record.result = Some(result);
-            if let Some(retry) = record.retry.as_mut() {
-                retry.terminal(JobOutcome::Succeeded);
-            }
-        });
-        self.publish_terminal_progress(job_id, kind, message);
-    }
-
-    fn terminate(
-        &self,
-        job_id: &str,
-        outcome: JobOutcome,
-        reason: JobOutcomeReason,
-        error: CutError,
-        message: &str,
-    ) {
-        let kind = self.update(job_id, |record| {
-            record.state = JobState::Failed;
-            record.queue = None;
-            record.waiting_on = None;
-            record.completion = None;
-            record.progress = 1.0;
-            record.outcome = Some(outcome);
-            record.outcome_reason = Some(reason);
-            record.message = Some(message.to_string());
-            record.error = Some(error);
-            if let Some(retry) = record.retry.as_mut() {
-                retry.terminal(outcome);
-            }
-        });
-        self.publish_terminal_progress(job_id, kind, message);
-    }
-
-    fn publish_terminal_progress(&self, job_id: &str, kind: Option<String>, message: &str) {
-        if let Some(kind) = kind {
-            self.events.publish(crate::events::Event::JobProgress {
-                job_id: job_id.to_string(),
-                kind,
-                progress: 1.0,
-                message: Some(message.to_string()),
-            });
-        }
     }
 }
 

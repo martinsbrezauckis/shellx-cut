@@ -174,7 +174,10 @@ fn write_depadded<W: std::io::Write>(
     true
 }
 
-fn valid_chunk_data(data: &[u8], offset: usize, size: usize) -> Option<&[u8]> {
+/// Bound a PipeWire producer's initialized chunk before either encoder or
+/// memory-only preview reads it. The caller still applies `offset` when walking
+/// scanlines, so no producer bytes outside this checked prefix are exposed.
+pub(crate) fn valid_chunk_data(data: &[u8], offset: usize, size: usize) -> Option<&[u8]> {
     if size == 0 {
         return None;
     }

@@ -20,7 +20,7 @@ fn restricted_mcp_marker_requires_the_agent_chat_actor() {
 }
 
 #[test]
-fn schema_classifies_every_registry_verb_and_preserves_the_safe_103_191_split() {
+fn schema_classifies_every_registry_verb_and_requires_review_for_new_safe_capabilities() {
     let registry = crate::registry::VerbRegistry::load();
     let mut allowed = 0;
     let mut denied = 0;
@@ -30,9 +30,14 @@ fn schema_classifies_every_registry_verb_and_preserves_the_safe_103_191_split() 
             AgentChatCapability::Deny => denied += 1,
         }
     }
-    assert_eq!(allowed, 103, "schema-derived safe capability count");
-    assert_eq!(denied, 191, "schema-derived denied capability count");
+    // The contained broker fails closed for newly registered verbs: a change
+    // to this reviewed safe-capability budget requires an explicit policy
+    // decision, while new schema verbs classified as deny need no stale count
+    // update. The current 305-verb registry therefore remains 103 safe / 202
+    // denied without making the growth of the denied surface a magic number.
+    assert_eq!(allowed, 103, "reviewed safe capability budget");
     assert_eq!(allowed + denied, registry.verbs.len());
+    assert_eq!(denied, registry.verbs.len() - allowed);
 }
 
 #[test]
@@ -50,6 +55,21 @@ fn prohibited_cut_tools_are_denied_but_marker_edits_are_available() {
         // This is a Human Record-workspace preference that persists an
         // app-local microphone selection, not a project edit an agent may make.
         "screen_record.microphone_selection",
+        // Native preview/rehearsal owns temporary capture bytes and/or a live
+        // native source outside the contained agent's reversible project scope.
+        "screen_record.preview_capability",
+        "screen_record.preview_frame",
+        "screen_record.preview_hide",
+        "screen_record.preview_pause",
+        "screen_record.preview_resume",
+        "screen_record.preview_start",
+        "screen_record.preview_status",
+        "screen_record.preview_stop",
+        "screen_record.rehearsal_discard",
+        "screen_record.rehearsal_start",
+        // Connector capability is host/provider state, not an open-project
+        // inspection surface exposed to contained Agent Chat.
+        "system.motion_status",
     ] {
         let spec = registry.get(denied).expect("registered denied verb");
         assert_eq!(capability(spec), AgentChatCapability::Deny);

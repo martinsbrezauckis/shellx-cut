@@ -19,10 +19,6 @@ use std::time::{Duration, Instant};
 use record_core::{error_codes, EventTrack, Monitor as RMonitor, RecordError, Result, Settings};
 
 use windows_capture::{
-    capture::{Context, GraphicsCaptureApiHandler},
-    encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder},
-    frame::Frame,
-    graphics_capture_api::InternalCaptureControl,
     monitor::Monitor as WcMonitor,
     settings::{
         ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -31,13 +27,14 @@ use windows_capture::{
     window::Window as WcWindow,
 };
 
+use crate::windows_wgc_handler::{EncFlags, Handler, LiveWgcControl};
 use crate::{
     checkpoint::Checkpoints,
     input,
     region_geometry::NativePixelCrop,
     surface_coordinates,
     windows_wgc_run::{
-        WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher, WgcNativeControl, WgcRunOwner,
+        WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher, WgcRunOwner,
         WgcStartObservation, WgcStartedControl,
     },
     Capture, CaptureConfig, CaptureOutput, MonitorInfo, WindowInfo,
@@ -59,19 +56,6 @@ impl WgcCheckpointPublisher for WindowsCheckpointPublisher {
         facts: record_recovery::CheckpointFacts,
     ) -> Result<record_recovery::Checkpoint> {
         self.checkpoints.publish(sequence, staging, facts)
-    }
-}
-
-pub(crate) struct LiveWgcControl {
-    pub(crate) close: Option<Box<dyn FnOnce() -> Result<()> + Send>>,
-}
-
-impl WgcNativeControl for LiveWgcControl {
-    fn close(&mut self) -> Result<()> {
-        self.close
-            .take()
-            .ok_or_else(|| cap_err("finalize WGC checkpoint", "WGC control already closed"))?(
-        )
     }
 }
 
@@ -155,72 +139,6 @@ pub(crate) fn list_windows() -> Vec<WindowInfo> {
 pub(crate) fn cap_err(ctx: &str, e: impl std::fmt::Display) -> RecordError {
     RecordError::new(error_codes::CAPTURE, ctx, e.to_string())
         .with_action("ensure this is a Windows desktop session with Graphics Capture available")
-}
-
-/// Encoder flags handed to the capture handler (its `new` builds the encoder).
-#[derive(Clone)]
-pub(crate) struct EncFlags {
-    pub(crate) w: u32,
-    pub(crate) h: u32,
-    pub(crate) fps: u32,
-    pub(crate) path: String,
-    pub(crate) crop: Option<NativePixelCrop>,
-    pub(crate) readiness: Option<crate::CaptureReadiness>,
-}
-
-/// windows-capture handler: each arrived frame is fed to the MP4 encoder.
-pub(crate) struct Handler {
-    encoder: Option<VideoEncoder>,
-    crop: Option<NativePixelCrop>,
-    crop_surface: Option<crate::windows_gpu_crop::GpuCropSurface>,
-    readiness: Option<crate::CaptureReadiness>,
-}
-
-impl GraphicsCaptureApiHandler for Handler {
-    type Flags = EncFlags;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
-
-    fn new(ctx: Context<Self::Flags>) -> std::result::Result<Self, Self::Error> {
-        let f = ctx.flags;
-        let encoder = VideoEncoder::new(
-            VideoSettingsBuilder::new(f.w, f.h).frame_rate(f.fps),
-            AudioSettingsBuilder::default().disabled(true),
-            ContainerSettingsBuilder::default(),
-            &f.path,
-        )?;
-        Ok(Self {
-            encoder: Some(encoder),
-            crop: f.crop,
-            crop_surface: None,
-            readiness: f.readiness,
-        })
-    }
-
-    fn on_frame_arrived(
-        &mut self,
-        frame: &mut Frame,
-        _ctl: InternalCaptureControl,
-    ) -> std::result::Result<(), Self::Error> {
-        if let Some(crop) = self.crop {
-            crate::windows_gpu_crop::crop_frame_to_origin(frame, crop, &mut self.crop_surface)?;
-        }
-        if let Some(e) = self.encoder.as_mut() {
-            e.send_frame(frame)?;
-            // WGC delivered a native frame and the MP4 encoder accepted it. A
-            // callback/start success alone is not enough for readiness.
-            if let Some(readiness) = self.readiness.as_ref() {
-                readiness.mark_first_screen_frame_delivered();
-            }
-        }
-        Ok(())
-    }
-
-    fn on_closed(&mut self) -> std::result::Result<(), Self::Error> {
-        if let Some(e) = self.encoder.take() {
-            e.finish()?;
-        }
-        Ok(())
-    }
 }
 
 /// Live Windows capture backend.
@@ -327,6 +245,10 @@ impl Capture for WindowsCapture {
             let surface = monitor_surface(&monitor);
             (Src::Monitor(monitor), mw, mh, surface)
         };
+        crate::windows_controller_exclusion::admit_controller_placement(
+            cfg.controller_placement.as_ref(),
+            matches!(src, Src::Window(_)),
+        );
 
         let (w, h, surface, crop) = match cfg.region {
             Some(region) => {
@@ -390,13 +312,24 @@ impl Capture for WindowsCapture {
         let input = input::InputListener::start(start, cfg.capture_keys)?;
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
-            Some(crate::mic_endpoint::spawn_microphone_capture(
-                format!("{out_dir}/mic.wav"),
-                cfg.microphone_source.clone(),
-                stop.clone(),
-                ready,
-                start,
-            ))
+            let mic_path = format!("{out_dir}/mic.wav");
+            Some(match cfg.microphone_level.clone() {
+                Some(level) => crate::mic_endpoint::spawn_microphone_capture_with_level(
+                    mic_path,
+                    cfg.microphone_source.clone(),
+                    stop.clone(),
+                    ready,
+                    start,
+                    level,
+                ),
+                None => crate::mic_endpoint::spawn_microphone_capture(
+                    mic_path,
+                    cfg.microphone_source.clone(),
+                    stop.clone(),
+                    ready,
+                    start,
+                ),
+            })
         } else {
             None
         };
@@ -415,50 +348,70 @@ impl Capture for WindowsCapture {
             },
             range,
         )?;
-        let start_wgc =
-            |target: &Src, destination: &Path| -> Result<WgcStartedControl<LiveWgcControl>> {
-                let flags = EncFlags {
-                    w,
-                    h,
-                    fps,
-                    path: destination.display().to_string(),
-                    crop,
-                    readiness: cfg.readiness.clone(),
-                };
-                let control = match *target {
-                    Src::Monitor(m) => Handler::start_free_threaded(WcSettings::new(
-                        m,
-                        CursorCaptureSettings::WithoutCursor,
-                        DrawBorderSettings::WithoutBorder,
-                        SecondaryWindowSettings::Default,
-                        MinimumUpdateIntervalSettings::Default,
-                        DirtyRegionSettings::Default,
-                        ColorFormat::Rgba8,
-                        flags,
-                    )),
-                    Src::Window(win) => Handler::start_free_threaded(WcSettings::new(
-                        win,
-                        CursorCaptureSettings::WithoutCursor,
-                        DrawBorderSettings::WithoutBorder,
-                        SecondaryWindowSettings::Default,
-                        MinimumUpdateIntervalSettings::Default,
-                        DirtyRegionSettings::Default,
-                        ColorFormat::Rgba8,
-                        flags,
-                    )),
+        let mut selected_window_segment_started = false;
+        let mut start_wgc = |target: &Src,
+                             destination: &Path|
+         -> Result<WgcStartedControl<LiveWgcControl>> {
+            let source_lifecycle = cfg.source_lifecycle.clone();
+            if matches!(target, Src::Window(_)) {
+                if let Some(lifecycle) = source_lifecycle.as_ref() {
+                    if selected_window_segment_started {
+                        lifecycle.arm_next_owned_segment(
+                                "Windows Graphics Capture is watching the exact selected window for closure.",
+                            );
+                    } else {
+                        lifecycle.arm_initial_selected_source(
+                                "Windows Graphics Capture is watching the exact selected window for closure.",
+                            );
+                        selected_window_segment_started = true;
+                    }
                 }
-                .map_err(|e| cap_err("start capture", e))?;
-                Ok(WgcStartedControl::new(
-                    LiveWgcControl {
-                        close: Some(Box::new(move || {
-                            control
-                                .stop()
-                                .map_err(|error| cap_err("finalize WGC checkpoint", error))
-                        })),
-                    },
-                    accepted.clone(),
-                ))
+            }
+            let flags = EncFlags {
+                w,
+                h,
+                fps,
+                path: destination.display().to_string(),
+                crop,
+                readiness: cfg.readiness.clone(),
+                source_lifecycle: source_lifecycle.clone(),
+                stop: stop.clone(),
             };
+            let control = match *target {
+                Src::Monitor(m) => Handler::start_free_threaded(WcSettings::new(
+                    m,
+                    CursorCaptureSettings::WithoutCursor,
+                    DrawBorderSettings::WithoutBorder,
+                    SecondaryWindowSettings::Default,
+                    MinimumUpdateIntervalSettings::Default,
+                    DirtyRegionSettings::Default,
+                    ColorFormat::Rgba8,
+                    flags,
+                )),
+                Src::Window(win) => Handler::start_free_threaded(WcSettings::new(
+                    win,
+                    CursorCaptureSettings::WithoutCursor,
+                    DrawBorderSettings::WithoutBorder,
+                    SecondaryWindowSettings::Default,
+                    MinimumUpdateIntervalSettings::Default,
+                    DirtyRegionSettings::Default,
+                    ColorFormat::Rgba8,
+                    flags,
+                )),
+            }
+            .map_err(|e| cap_err("start capture", e))?;
+            Ok(WgcStartedControl::new(
+                LiveWgcControl {
+                    close: Some(Box::new(move || {
+                        control
+                            .stop()
+                            .map_err(|error| cap_err("finalize WGC checkpoint", error))
+                    })),
+                    source_lifecycle,
+                },
+                accepted.clone(),
+            ))
+        };
         let (duration_ms, checkpoints) = match Checkpoints::open(cfg.checkpoint.as_ref())? {
             Some(checkpoints) => {
                 let interval_ms = checkpoints.interval_ms();
@@ -474,6 +427,9 @@ impl Capture for WindowsCapture {
                     }
                     let ended_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     if stop.load(Ordering::Relaxed) || ended_ms >= dur {
+                        if let Some(lifecycle) = cfg.source_lifecycle.as_ref() {
+                            lifecycle.expect_terminal_close();
+                        }
                         let sealed = owner
                             .stop(|| {
                                 u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
@@ -499,6 +455,9 @@ impl Capture for WindowsCapture {
                     thread::sleep(Duration::from_millis(50));
                 }
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                if let Some(lifecycle) = cfg.source_lifecycle.as_ref() {
+                    lifecycle.expect_terminal_close();
+                }
                 control.close()?;
                 (duration_ms, None)
             }

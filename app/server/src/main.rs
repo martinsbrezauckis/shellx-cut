@@ -23,6 +23,8 @@ mod matte;
 mod mcp;
 mod motion_artifact;
 mod motion_bridge;
+mod motion_discovery;
+mod motion_discovery_contract;
 mod motion_edit_return;
 mod motion_editable_import;
 // Structural generic adapter is compiled in every server build. The later

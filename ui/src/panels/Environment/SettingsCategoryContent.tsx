@@ -8,6 +8,7 @@ import EnvCards, { type EnvCardGroup } from './EnvCards'
 import ExportDestination from './ExportDestination'
 import KeymapEditor from './KeymapEditor'
 import HealthRecovery from './HealthRecovery'
+import MotionManagement from './MotionManagement'
 import SettingsOverview from './SettingsOverview'
 import UpdateNetworkSettings from './UpdateNetworkSettings'
 import type { SettingsCategoryId } from './settingsModel'
@@ -97,6 +98,7 @@ export default function SettingsCategoryContent({
       return (
         <Section id={active} eyebrow="Local tools" title="Video & performance" description="Check the tools that power import, preview and export on this machine.">
           <CardGroups report={report} onRefresh={onRefresh} groups={['tools']} />
+          <MotionManagement />
         </Section>
       )
     case 'ai-transcription':

@@ -1,3 +1,4 @@
+use super::audio_level::RollingAudioLevel;
 use super::device::{CapturedMicrophone, MicRecordingGate, MicStreamControl};
 use super::stream::run_stream;
 use super::wav_layout::MicrophoneWavLayout;
@@ -14,6 +15,7 @@ pub(super) struct DeviceCaptureRequest {
     pub(super) ready: Arc<AtomicBool>,
     pub(super) capture_started: Instant,
     pub(super) meter_peak: Option<Arc<AtomicU32>>,
+    pub(super) level: Option<Arc<RollingAudioLevel>>,
     pub(super) recording_gate: Option<Arc<MicRecordingGate>>,
     pub(super) wav_layout: MicrophoneWavLayout,
 }
@@ -26,12 +28,24 @@ pub(super) fn run_device(request: DeviceCaptureRequest) -> Result<CapturedMicrop
         ready,
         capture_started,
         meter_peak,
+        level,
         recording_gate,
         wav_layout,
     } = request;
-    let supported = device
-        .default_input_config()
-        .map_err(|e| RecordError::new(error_codes::CAPTURE, "mic config", e.to_string()))?;
+    let terminal_level = level.clone();
+    let supported = match device.default_input_config() {
+        Ok(supported) => supported,
+        Err(error) => {
+            if let Some(level) = terminal_level {
+                level.mark_device_lost();
+            }
+            return Err(RecordError::new(
+                error_codes::CAPTURE,
+                "mic config",
+                error.to_string(),
+            ));
+        }
+    };
     let end = run_stream(
         &device,
         supported,
@@ -42,10 +56,15 @@ pub(super) fn run_device(request: DeviceCaptureRequest) -> Result<CapturedMicrop
             ready: &ready,
             capture_started,
             meter_peak,
+            level,
             recording_gate,
             wav_layout,
         },
-    )?;
+    );
+    if let Some(level) = terminal_level {
+        level.mark_stopped();
+    }
+    let end = end?;
     Ok(CapturedMicrophone {
         path: end.samples_written.then_some(path),
         microphone_lost: end.microphone_lost,

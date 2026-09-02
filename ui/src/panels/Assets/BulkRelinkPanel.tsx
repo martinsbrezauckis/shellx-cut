@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { callVerb } from '../../lib/client'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { callVerb, type PortableB5RelinkReceipt } from '../../lib/client'
 import { mediaBasename } from '../../lib/mediaPath'
 import { isTauri, pickFolder } from '../../lib/tauri'
 
@@ -18,7 +18,7 @@ interface Preview {
   scan: { files: number; directories: number }
   assets: PreviewRow[]
 }
-interface Receipt { grouped_op_id: string; assets: Array<{ asset: string }> }
+type Receipt = PortableB5RelinkReceipt
 
 function requestId(): string {
   return `bulk-relink-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
@@ -38,11 +38,14 @@ function dispositionLabel(row: PreviewRow): string {
 /** Human-only B5 recovery surface.  It never renders selected folder paths. */
 export default function BulkRelinkPanel({
   offlineCount,
+  scopeKey,
   onProjectChanged,
   onRefresh,
   onReviewIndividually,
 }: {
   offlineCount: number
+  /** App project session plus current revision; a hard preview boundary. */
+  scopeKey: string
   onProjectChanged?: () => void | Promise<void>
   onRefresh: () => Promise<void>
   onReviewIndividually?: (assetId: string) => void | Promise<void>
@@ -54,6 +57,11 @@ export default function BulkRelinkPanel({
   const [request, setRequest] = useState('')
   const [note, setNote] = useState<string | null>(null)
   const [receipt, setReceipt] = useState<Receipt | null>(null)
+  const activeScope = useRef<string | null>(scopeKey)
+  useEffect(() => {
+    activeScope.current = scopeKey
+    return () => { activeScope.current = null }
+  }, [scopeKey])
   const eligible = useMemo(() => preview?.assets.filter((row) => row.disposition === 'eligible_exact_hash') ?? [], [preview])
 
   const start = async () => {
@@ -61,10 +69,12 @@ export default function BulkRelinkPanel({
     setReceipt(null)
     if (!isTauri()) { setNote('Bulk relink needs the desktop app to choose a local recovery folder.'); return }
     const root = await pickFolder({ title: 'Find offline media — ShellX Cut' })
+    if (activeScope.current !== scopeKey) return
     if (!root) return
     setPhase('previewing')
     try {
       const response = await callVerb('media.relink_preview', { root })
+      if (activeScope.current !== scopeKey) return
       if (!response.ok || !response.result) { setNote(response.error?.message ?? 'Could not inspect the selected folder.'); setPhase('idle'); return }
       const next = response.result as Preview
       setPreview(next)
@@ -72,7 +82,11 @@ export default function BulkRelinkPanel({
       setSelected(new Set(next.assets.filter((row) => row.disposition === 'eligible_exact_hash').map((row) => row.asset)))
       setRequest(requestId())
       setPhase('ready')
-    } catch { setNote('Recovery preview could not reach the local engine.'); setPhase('idle') }
+    } catch {
+      if (activeScope.current !== scopeKey) return
+      setNote('Recovery preview could not reach the local engine.')
+      setPhase('idle')
+    }
   }
 
   const cancel = () => {
@@ -92,12 +106,17 @@ export default function BulkRelinkPanel({
         expected_revision: preview.project_revision,
         rationale: 'Grouped exact-hash offline-media recovery',
       })
+      if (activeScope.current !== scopeKey) return
       if (!response.ok || !response.result) { setNote(response.error?.message ?? 'No media was relinked.'); setPhase('ready'); return }
       setReceipt(response.result as Receipt)
       setPhase('done')
       await onProjectChanged?.()
       await onRefresh()
-    } catch { setNote('Bulk relink could not reach the local engine. No success was confirmed.'); setPhase('ready') }
+    } catch {
+      if (activeScope.current !== scopeKey) return
+      setNote('Bulk relink could not reach the local engine. No success was confirmed.')
+      setPhase('ready')
+    }
   }
 
   return (

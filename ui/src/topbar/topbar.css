@@ -981,3 +981,39 @@
   background: #ef4444;
 }
 .tb-mode--record.tb-mode--on .tb-mode-dot { background: #fff; }
+
+/* Recording Studio owns the middle row while active. Its chrome keeps only
+   project identity, an exit, and global help/settings; timeline edit and export
+   actions remain in Edit where they have an effect. */
+.tb--recording {
+  gap: 10px;
+  padding-inline: 14px;
+  border-bottom-color: rgba(239, 68, 68, .22);
+}
+.tb--recording .tb-brand { min-width: 240px; }
+.tb-recording-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(239, 68, 68, .3);
+  border-radius: 999px;
+  background: rgba(239, 68, 68, .09);
+  color: var(--ink);
+  font: 700 var(--fs-ui-sm) / 1 var(--sans);
+  white-space: nowrap;
+}
+.tb-recording-mode > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, .14);
+}
+.tb-recording-back { white-space: nowrap; }
+
+@media (max-width: 1279px) {
+  .tb--recording .tb-brand { min-width: 190px; }
+  .tb--recording .tb-nav-label { display: none; }
+}

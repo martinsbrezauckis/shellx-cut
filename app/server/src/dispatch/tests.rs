@@ -51,6 +51,7 @@ mod captions_kinetic_regression;
 mod detach_audio;
 mod generation_cli;
 mod group_review_request_idempotency;
+mod jobs_retry;
 mod nest_media_io;
 mod output_contract;
 mod output_path_fencing;

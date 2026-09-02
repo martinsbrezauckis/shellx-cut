@@ -155,9 +155,7 @@ export function RecordingSourceControl({
           )}
           {visibleSourceKind === 'display' && monitors.length < 2 && windows.length < 1 && (
             <p className="rec__source-note" data-cut-rec-source-note>
-              {(/Mac/i.test(navigator.platform) || /Mac OS X/.test(navigator.userAgent))
-                ? 'On macOS, capture records your main display. The first capture asks for Screen Recording permission (and Microphone, if audio is on).'
-                : 'On Linux the OS screen-share dialog lets you pick which display/window at the start of capture.'}
+              Choose a source here when it is listed. If this recorder reports a system-picker capture path, that picker makes the final user-consented choice.
             </p>
           )}
         </>

@@ -20,6 +20,9 @@ capture-linux = ["dep:ashpd", "dep:tokio", "dep:enumflags2", "dep:rdevin", "dep:
 # pure-Rust, cross-platform; only compiled in capture builds (needs platform audio
 # libs — WASAPI/CoreAudio/ALSA — so never in the plain Linux default build).
 mic = ["dep:cpal", "dep:hound", "dep:windows", "dep:windows-core"]
+# Enables only the opaque cross-crate source-preview test injector. It is never
+# part of the default/native capture feature sets.
+source-preview-test-support = []
 
 [dependencies]
 record-core = { workspace = true }

@@ -44,6 +44,13 @@ pub(super) fn capture_sessions() -> &'static Mutex<HashMap<String, CaptureSessio
     CAPTURE_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(super) fn has_active_capture() -> bool {
+    !capture_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .is_empty()
+}
+
 fn camera_owners() -> &'static Mutex<HashMap<String, CameraOwnerEntry>> {
     CAMERA_OWNERS.get_or_init(|| Mutex::new(HashMap::new()))
 }

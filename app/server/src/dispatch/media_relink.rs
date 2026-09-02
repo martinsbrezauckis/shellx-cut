@@ -6,13 +6,12 @@ mod scan;
 #[cfg(test)]
 mod tests;
 
+use super::project_workspace::path_free_project_identity;
 use super::*;
 use plan::{accepted_changes, build_plan, preview_result};
-use sha2::{Digest, Sha256};
 
 const PREVIEW_SCHEMA: &str = "shellx-cut/media-relink-preview/1";
 const RECEIPT_SCHEMA: &str = "shellx-cut/media-relink-receipt/1";
-const PROJECT_ID_SCHEMA: &str = "shellx-cut/project-identity/1";
 const MAX_SCAN_FILES: usize = 512;
 const MAX_SCAN_DEPTH: usize = 16;
 const MAX_SCAN_BYTES: u64 = 32 * 1024 * 1024 * 1024;
@@ -233,7 +232,7 @@ async fn snapshot(state: &AppState, root: PathBuf) -> Result<RelinkSnapshot, Cut
         .collect::<Vec<_>>();
     assets.sort_by(|left, right| left.asset_id.cmp(&right.asset_id));
     Ok(RelinkSnapshot {
-        project_identity: project_identity(store),
+        project_identity: path_free_project_identity(store)?,
         project_revision: revision,
         root,
         assets,
@@ -247,20 +246,4 @@ fn source_path(project_dir: &Path, asset: &cut_core::Asset) -> PathBuf {
     } else {
         path
     }
-}
-
-fn project_identity(store: &ProjectStore) -> Value {
-    let canonical = store
-        .dir
-        .canonicalize()
-        .unwrap_or_else(|_| store.dir.clone());
-    let origin_path_sha256 = format!(
-        "sha256:{:x}",
-        Sha256::digest(canonical.to_string_lossy().as_bytes())
-    );
-    json!({
-        "schema": PROJECT_ID_SCHEMA,
-        "origin_path_sha256": origin_path_sha256,
-        "project_name": store.project.name,
-    })
 }

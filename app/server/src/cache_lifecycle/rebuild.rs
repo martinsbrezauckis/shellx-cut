@@ -6,18 +6,24 @@
 //! durable ownership ledger.
 
 use super::ownership::{
-    abandon_rebuild_output, complete_rebuild_output, rebuild_output_state, relative_output,
+    pending_rebuild_outputs_for_asset, rebuild_output_state, relative_output,
     reserve_rebuild_output, RebuildOutputState,
 };
 use super::*;
 use crate::dispatch::run_blocking;
-use crate::jobs::{begin_current_process_worker, current_job_cancellation};
 use crate::state::AppState;
 use cut_core::{error_codes, CutError, VerbResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+mod admission;
+mod estimate;
+mod worker;
+use admission::{retire_orphaned_reservations, revalidate_snapshot, snapshot_assets};
+use estimate::{RebuildEstimate, SourceCheck};
+use worker::execute_rebuild;
 
 const CACHE_REBUILD_ASSET_LIMIT: usize = 64;
 const CACHE_REBUILD_OUTPUT_LIMIT: usize = CACHE_REBUILD_ASSET_LIMIT * 2;
@@ -27,6 +33,11 @@ const PROXY_MAX_RUNNING: usize = 1;
 struct RebuildArgs {
     #[serde(default)]
     asset_ids: Vec<String>,
+    /// Run the same bounded source-identity admission pass without reserving
+    /// outputs or creating a job. This is intentionally an estimate of known
+    /// work units, not an invented duration prediction.
+    #[serde(default)]
+    estimate_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +63,9 @@ enum OutputAction {
 struct RebuildAssetPlan {
     asset: RebuildAsset,
     outputs: Vec<(CacheKind, OutputAction)>,
+    /// The current source byte count measured only after its imported hash
+    /// matched during this admission pass.
+    source_bytes: u64,
 }
 
 #[derive(Default)]
@@ -101,6 +115,10 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
         ));
     }
 
+    // A rebuild owns an absolute project directory after it is queued. Hold the
+    // transition through snapshot, final admission, and task registration so a
+    // project replacement cannot detach jobs between those steps.
+    let _transition = state.project_transition.lock().await;
     if let Some(active) = state.cache_rebuild_active.lock().await.clone() {
         return Ok(VerbResult::ok(json!({
             "schema": "shellx-cut/cache-rebuild/1",
@@ -110,6 +128,7 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
             "scheduled_assets": active.assets.len(),
             "scheduled_outputs": active.scheduled_outputs,
             "counts": active.counts,
+            "estimate": active.estimate,
         })));
     }
 
@@ -120,10 +139,9 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
             Ok(assets
                 .iter()
                 .map(|asset| {
-                    let actual = cut_core::hash_file(&asset.source).ok();
                     (
                         asset.asset_id.clone(),
-                        (actual == Some(asset.hash.clone()), actual.is_some()),
+                        SourceCheck::verify(&asset.source, &asset.hash),
                     )
                 })
                 .collect::<Vec<_>>())
@@ -150,22 +168,27 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
             "scheduled_assets": active.assets.len(),
             "scheduled_outputs": active.scheduled_outputs,
             "counts": active.counts,
+            "estimate": active.estimate,
         })));
     }
     revalidate_snapshot(state, &project_dir, &assets).await?;
+    retire_orphaned_reservations(state, &project_dir).await?;
 
     let mut counts = ScheduleCounts::default();
     let mut plans = Vec::new();
     for asset in assets {
-        let Some((matches, readable)) = source_checks.get(&asset.asset_id).copied() else {
+        let Some(check) = source_checks.get(&asset.asset_id).copied() else {
+            pending_source_recovery(&project_dir, &asset.asset_id, "unavailable")?;
             counts.source_unavailable = counts.source_unavailable.saturating_add(1);
             continue;
         };
-        if !readable {
+        if !check.readable {
+            pending_source_recovery(&project_dir, &asset.asset_id, "unavailable")?;
             counts.source_unavailable = counts.source_unavailable.saturating_add(1);
             continue;
         }
-        if !matches {
+        if !check.matches {
+            pending_source_recovery(&project_dir, &asset.asset_id, "changed")?;
             counts.source_changed = counts.source_changed.saturating_add(1);
             continue;
         }
@@ -204,7 +227,12 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
             counts.fresh_assets = counts.fresh_assets.saturating_add(1);
             continue;
         }
-        plans.push(RebuildAssetPlan { asset, outputs });
+        plans.push(RebuildAssetPlan {
+            asset,
+            outputs,
+            // `readable` proves the measured bytes are present.
+            source_bytes: check.bytes.unwrap_or_default(),
+        });
     }
 
     let output_count = plans.iter().map(|plan| plan.outputs.len()).sum::<usize>();
@@ -214,6 +242,17 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
             "cache rebuild would exceed its bounded output inventory",
             format!("schedule at most {CACHE_REBUILD_OUTPUT_LIMIT} rebuild outputs at once"),
         ));
+    }
+    let estimate = RebuildEstimate::from_plans(&plans).public();
+    if args.estimate_only {
+        return Ok(VerbResult::ok(json!({
+            "schema": "shellx-cut/cache-rebuild/1",
+            "status": "estimated",
+            "scheduled_assets": plans.len(),
+            "scheduled_outputs": output_count,
+            "counts": counts.public(),
+            "estimate": estimate,
+        })));
     }
     for plan in &plans {
         for (kind, action) in &plan.outputs {
@@ -235,6 +274,7 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
             "scheduled_assets": 0,
             "scheduled_outputs": 0,
             "counts": counts.public(),
+            "estimate": estimate,
         })));
     }
 
@@ -250,6 +290,7 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
         assets: active_assets,
         scheduled_outputs: output_count,
         counts: counts.public(),
+        estimate: estimate.clone(),
     });
     let worker_state = state.clone();
     let worker_job_id = job_id.clone();
@@ -264,96 +305,28 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
         "scheduled_assets": active_count,
         "scheduled_outputs": output_count,
         "counts": counts.public(),
+        "estimate": estimate,
     })))
 }
 
-async fn snapshot_assets(
-    state: &AppState,
-    requested: &BTreeSet<String>,
-) -> Result<(PathBuf, Vec<RebuildAsset>), CutError> {
-    let guard = state.project.read().await;
-    let store = guard.as_ref().ok_or_else(|| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            "no project open",
-            "open a project before rebuilding its editing cache",
-        )
-    })?;
-    let mut assets = store
-        .project
-        .assets
-        .iter()
-        .filter(|(asset_id, _)| requested.is_empty() || requested.contains(*asset_id))
-        .map(|(asset_id, asset)| RebuildAsset {
-            asset_id: asset_id.clone(),
-            path: asset.path.clone(),
-            source: source_path(&store.dir, &asset.path),
-            hash: asset.hash.clone(),
-            probe: asset.probe.clone().unwrap_or(Value::Null),
-            kind: asset
-                .probe
-                .as_ref()
-                .and_then(|probe| probe.get("kind"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            duration_ms: asset
-                .probe
-                .as_ref()
-                .and_then(|probe| probe.get("duration_ms"))
-                .and_then(Value::as_u64),
-            proxy: asset.proxy.clone(),
-            filmstrip: asset.filmstrip.clone(),
-        })
-        .collect::<Vec<_>>();
-    if !requested.is_empty() && assets.len() != requested.len() {
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            "a requested cache rebuild asset is not in the open project",
-            "call project.health or project.state and retry with current asset ids",
-        ));
-    }
-    if assets.len() > CACHE_REBUILD_ASSET_LIMIT {
-        return Err(CutError::new(
-            error_codes::CONFLICT,
-            "cache rebuild needs an explicit bounded asset selection",
-            format!(
-                "the open project has more than {CACHE_REBUILD_ASSET_LIMIT} assets; request a bounded asset_ids list"
-            ),
-        ));
-    }
-    assets.sort_by(|left, right| compare_asset_ids(&left.asset_id, &right.asset_id));
-    Ok((store.dir.clone(), assets))
-}
-
-async fn revalidate_snapshot(
-    state: &AppState,
-    project_dir: &Path,
-    snapshot: &[RebuildAsset],
+fn pending_source_recovery(
+    project_dir: &std::path::Path,
+    asset: &str,
+    state: &str,
 ) -> Result<(), CutError> {
-    let guard = state.project.read().await;
-    let store = guard.as_ref().ok_or_else(|| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            "no project open",
-            "the project closed while cache rebuild admission was running",
-        )
-    })?;
-    if store.dir != project_dir
-        || snapshot.iter().any(|candidate| {
-            store
-                .project
-                .assets
-                .get(&candidate.asset_id)
-                .is_none_or(|asset| !asset_matches_snapshot(asset, candidate))
-        })
-    {
-        return Err(cache_error(
-            "cache rebuild admission is no longer current",
-            "asset source metadata changed while rebuild scheduling was verifying it",
-        ));
+    if pending_rebuild_outputs_for_asset(project_dir, asset)?.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    Err(CutError::new(
+        error_codes::CONFLICT,
+        "cache rebuild requires pending source recovery",
+        format!(
+            "a pending rebuild reservation cannot be retired while its source is {state}; restore the exact source, relink it, or remove the asset before retrying"
+        ),
+    )
+    .with_suggested_action(
+        "restore or relink the source, or remove the asset; then retry cache rebuild to reconcile its pending reservation",
+    ))
 }
 
 fn required_outputs(asset: &RebuildAsset) -> Option<Vec<CacheKind>> {
@@ -364,291 +337,6 @@ fn required_outputs(asset: &RebuildAsset) -> Option<Vec<CacheKind>> {
         "image" => Some(vec![CacheKind::Thumbnails]),
         _ => None,
     }
-}
-
-async fn execute_rebuild(
-    state: AppState,
-    job_id: String,
-    project_dir: PathBuf,
-    plans: Vec<RebuildAssetPlan>,
-) {
-    let _process_guard = begin_current_process_worker();
-    let outcome = state
-        .jobs
-        .with_limit(
-            "proxy",
-            PROXY_MAX_RUNNING,
-            execute_rebuild_inner(&state, &job_id, &project_dir, &plans),
-        )
-        .await;
-    clear_active(&state, &job_id).await;
-    match outcome {
-        Ok(result) => state.jobs.finish(&job_id, result),
-        Err(RebuildWorkerError::Cancelled(reason)) => {
-            state.jobs.cancel_from_worker(&job_id, reason)
-        }
-        Err(RebuildWorkerError::Failed(error)) => state.jobs.fail(&job_id, error),
-    }
-}
-
-enum RebuildWorkerError {
-    Cancelled(crate::jobs::JobCancellationReason),
-    Failed(CutError),
-}
-
-impl From<CutError> for RebuildWorkerError {
-    fn from(error: CutError) -> Self {
-        Self::Failed(error)
-    }
-}
-
-async fn execute_rebuild_inner(
-    state: &AppState,
-    job_id: &str,
-    project_dir: &Path,
-    plans: &[RebuildAssetPlan],
-) -> Result<Value, RebuildWorkerError> {
-    let cancellation = current_job_cancellation();
-    if let Some(reason) = cancellation.reason() {
-        return Err(RebuildWorkerError::Cancelled(reason));
-    }
-    // This exclusive lease prevents manual cache producers, purge, and another
-    // scheduler from interleaving final filenames with the reservation protocol.
-    let _cache_lease = state.cache_lifecycle_lease.write().await;
-    let total = plans.len().max(1) as f32;
-    let mut rebuilt_outputs = 0u64;
-    let mut backfilled_outputs = 0u64;
-
-    for (index, plan) in plans.iter().enumerate() {
-        if let Some(reason) = cancellation.reason() {
-            return Err(RebuildWorkerError::Cancelled(reason));
-        }
-        state.jobs.progress(
-            job_id,
-            0.05 + (index as f32 / total) * 0.85,
-            Some("verifying source identity for deterministic cache rebuild".into()),
-        );
-        if !source_matches(&plan.asset).await? {
-            abandon_generated_outputs(project_dir, plan)?;
-            return Err(RebuildWorkerError::Failed(cache_error(
-                "cache rebuild refused a changed source",
-                "the source identity no longer matches the imported asset; relink the asset before rebuilding its cache",
-            )));
-        }
-
-        for (kind, action) in &plan.outputs {
-            if let Some(reason) = cancellation.reason() {
-                return Err(RebuildWorkerError::Cancelled(reason));
-            }
-            if *action == OutputAction::Backfill {
-                backfilled_outputs = backfilled_outputs.saturating_add(1);
-                continue;
-            }
-            rebuild_output(state, job_id, project_dir, &plan.asset, *kind).await?;
-            rebuilt_outputs = rebuilt_outputs.saturating_add(1);
-        }
-
-        if let Some(reason) = cancellation.reason() {
-            return Err(RebuildWorkerError::Cancelled(reason));
-        }
-        if !source_matches(&plan.asset).await? {
-            abandon_generated_outputs(project_dir, plan)?;
-            return Err(RebuildWorkerError::Failed(cache_error(
-                "cache rebuild discarded output from a changed source",
-                "the source changed during rebuilding, so no derived cache was published",
-            )));
-        }
-        for (kind, action) in &plan.outputs {
-            if *action == OutputAction::Generate {
-                complete_rebuild_output(
-                    project_dir,
-                    *kind,
-                    &plan.asset.asset_id,
-                    &plan.asset.hash,
-                )?;
-            }
-        }
-        apply_backfill(state, project_dir, plan).await?;
-    }
-
-    Ok(json!({
-        "rebuilt_outputs": rebuilt_outputs,
-        "backfilled_outputs": backfilled_outputs,
-        "retention_minimum_age_ms": CACHE_RETENTION_MS,
-        "note": "only current-source, ledger-reserved proxy and base filmstrip outputs were rebuilt",
-    }))
-}
-
-async fn rebuild_output(
-    state: &AppState,
-    job_id: &str,
-    project_dir: &Path,
-    asset: &RebuildAsset,
-    kind: CacheKind,
-) -> Result<(), RebuildWorkerError> {
-    match kind {
-        CacheKind::Proxies => {
-            let source = asset.source.clone();
-            let proxies = project_dir.join("proxies");
-            let asset_id = asset.asset_id.clone();
-            let total = asset.duration_ms.unwrap_or_default();
-            let progress_state = state.clone();
-            let progress_job = job_id.to_owned();
-            run_blocking("cache.rebuild proxy", move || {
-                let progress = move |fraction: f32| {
-                    progress_state.jobs.progress(
-                        &progress_job,
-                        0.10 + fraction.clamp(0.0, 1.0) * 0.70,
-                        Some("rebuilding editing proxy".into()),
-                    );
-                };
-                cut_media::make_proxy_with_progress(&source, &proxies, &asset_id, total, &progress)
-            })
-            .await?;
-        }
-        CacheKind::Thumbnails if asset.kind == "video" => {
-            let proxy = project_dir
-                .join("proxies")
-                .join(format!("{}.mp4", asset.asset_id));
-            let filmstrip = project_dir.join("filmstrip");
-            let asset_id = asset.asset_id.clone();
-            let duration = asset.duration_ms.ok_or_else(|| {
-                cache_error(
-                    "cache rebuild cannot derive a filmstrip",
-                    "the video asset has no positive recorded duration",
-                )
-            })?;
-            state
-                .jobs
-                .progress(job_id, 0.86, Some("rebuilding timeline filmstrip".into()));
-            run_blocking("cache.rebuild filmstrip", move || {
-                cut_media::filmstrip::make_filmstrip(&proxy, &filmstrip, &asset_id, duration)
-            })
-            .await?;
-        }
-        CacheKind::Thumbnails if asset.kind == "image" => {
-            let source = asset.source.clone();
-            let filmstrip = project_dir.join("filmstrip");
-            let asset_id = asset.asset_id.clone();
-            state.jobs.progress(
-                job_id,
-                0.60,
-                Some("rebuilding still-image thumbnail".into()),
-            );
-            run_blocking("cache.rebuild image thumbnail", move || {
-                cut_media::filmstrip::make_image_thumb(&source, &filmstrip, &asset_id)
-            })
-            .await?;
-        }
-        _ => {
-            return Err(RebuildWorkerError::Failed(cache_error(
-                "cache rebuild target is not supported",
-                "only video proxies and video/image base filmstrips are rebuildable",
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn abandon_generated_outputs(project_dir: &Path, plan: &RebuildAssetPlan) -> Result<(), CutError> {
-    for (kind, action) in &plan.outputs {
-        if *action == OutputAction::Generate {
-            abandon_rebuild_output(project_dir, *kind, &plan.asset.asset_id, &plan.asset.hash)?;
-        }
-    }
-    Ok(())
-}
-
-async fn apply_backfill(
-    state: &AppState,
-    project_dir: &Path,
-    plan: &RebuildAssetPlan,
-) -> Result<(), RebuildWorkerError> {
-    let mut guard = state.project.write().await;
-    let store = guard.as_mut().ok_or_else(|| {
-        cache_error(
-            "cache rebuild cannot publish metadata",
-            "the project closed before rebuilt cache metadata could be saved",
-        )
-    })?;
-    if store.dir != project_dir {
-        return Err(RebuildWorkerError::Failed(cache_error(
-            "cache rebuild cannot publish metadata",
-            "a different project became active before rebuilt cache metadata could be saved",
-        )));
-    }
-    let asset = store
-        .project
-        .assets
-        .get_mut(&plan.asset.asset_id)
-        .ok_or_else(|| {
-            cache_error(
-                "cache rebuild cannot publish metadata",
-                "the asset was removed before rebuilt cache metadata could be saved",
-            )
-        })?;
-    if !asset_matches_snapshot(asset, &plan.asset) {
-        return Err(RebuildWorkerError::Failed(cache_error(
-            "cache rebuild cannot publish metadata",
-            "the asset source metadata changed while rebuilding; no stale cache reference was saved",
-        )));
-    }
-    for (kind, _) in &plan.outputs {
-        let relative = relative_output(*kind, &plan.asset.asset_id)?;
-        match kind {
-            CacheKind::Proxies => asset.proxy = Some(relative),
-            CacheKind::Thumbnails => asset.filmstrip = Some(relative),
-        }
-    }
-    store.save()?;
-    Ok(())
-}
-
-async fn clear_active(state: &AppState, job_id: &str) {
-    let mut active = state.cache_rebuild_active.lock().await;
-    if active.as_ref().is_some_and(|entry| entry.job_id == job_id) {
-        *active = None;
-    }
-}
-
-fn source_path(project_dir: &Path, value: &str) -> PathBuf {
-    let value = PathBuf::from(value);
-    if value.is_relative() {
-        project_dir.join(value)
-    } else {
-        value
-    }
-}
-
-fn asset_matches_snapshot(asset: &cut_core::Asset, snapshot: &RebuildAsset) -> bool {
-    asset.path == snapshot.path
-        && asset.hash == snapshot.hash
-        && asset.probe.clone().unwrap_or(Value::Null) == snapshot.probe
-}
-
-fn compare_asset_ids(left: &str, right: &str) -> std::cmp::Ordering {
-    let number = |value: &str| {
-        value
-            .strip_prefix('a')
-            .and_then(|suffix| suffix.parse::<u64>().ok())
-    };
-    match (number(left), number(right)) {
-        (Some(left_number), Some(right_number)) => {
-            left_number.cmp(&right_number).then_with(|| left.cmp(right))
-        }
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => left.cmp(right),
-    }
-}
-
-async fn source_matches(asset: &RebuildAsset) -> Result<bool, RebuildWorkerError> {
-    let source = asset.source.clone();
-    let expected = asset.hash.clone();
-    Ok(run_blocking("cache.rebuild source identity", move || {
-        Ok(cut_core::hash_file(&source).ok().as_deref() == Some(expected.as_str()))
-    })
-    .await?)
 }
 
 #[cfg(test)]

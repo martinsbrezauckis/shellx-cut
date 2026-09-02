@@ -10,7 +10,7 @@
 // Callers: panels/LeftPanel (the 'projects' tab). Deps: lib/client, ./projects.css.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { callVerb, type ProjectEntry } from '../../lib/client'
+import { callVerb, type PortableB5RelinkReceipt, type ProjectEntry } from '../../lib/client'
 import { confirmAction, showMessage } from '../../lib/tauri'
 import { Icon } from '../../icons'
 import ProjectContextMenu, { type ProjectContextMenuState } from './ProjectContextMenu'
@@ -24,6 +24,11 @@ export interface ProjectsPanelProps {
   currentName: string | null
   /** True when this tab is the active one (drives a refresh on (re)activation). */
   active: boolean
+  /** Current durable B5 evidence, reconstructed by project.state after reopen. */
+  b5Receipt?: PortableB5RelinkReceipt | null
+  /** Project session plus revision invalidate a portable preview synchronously. */
+  projectScope: number
+  projectRevision?: string | null
 }
 
 /** ms → "3m04s" / "45s" (whole-project duration). */
@@ -55,7 +60,7 @@ function explainProjectError(
   return [message, error?.suggested_action].filter(Boolean).join(' · ')
 }
 
-export default function ProjectsPanel({ onReopen, currentName, active }: ProjectsPanelProps) {
+export default function ProjectsPanel({ onReopen, currentName, active, b5Receipt = null, projectScope, projectRevision = null }: ProjectsPanelProps) {
   const [loading, setLoading] = useState(true)
   const [projects, setProjects] = useState<ProjectEntry[]>([])
   const [err, setErr] = useState<string | null>(null)
@@ -206,7 +211,12 @@ export default function ProjectsPanel({ onReopen, currentName, active }: Project
           </span>
         </div>
 
-        <PortableCopy projectName={currentName} />
+        <PortableCopy
+          key={`${projectScope}:${projectRevision ?? ''}`}
+          projectName={currentName}
+          b5Receipt={b5Receipt}
+          scopeKey={`${projectScope}:${projectRevision ?? ''}`}
+        />
 
         {projects.length > 4 && (
           <input

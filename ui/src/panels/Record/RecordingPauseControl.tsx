@@ -1,6 +1,8 @@
 import type { RecordingPauseCapability, RecordingPauseState } from './recordingPause'
 
 interface RecordingPauseControlProps {
+  /** Setup exposes admission; live mode renders the acknowledged action only. */
+  mode?: 'setup' | 'live'
   capability: RecordingPauseCapability
   enabled: boolean
   state: RecordingPauseState
@@ -10,8 +12,32 @@ interface RecordingPauseControlProps {
   onControl: () => void
 }
 
+function PauseResumeButton({
+  state, compact, onControl,
+}: {
+  state: RecordingPauseState
+  compact: boolean
+  onControl: () => void
+}) {
+  const switching = state === 'pausing' || state === 'resuming'
+  const isPaused = state === 'paused' || state === 'resuming'
+  const action = isPaused ? 'Resume' : 'Pause'
+  return (
+    <button
+      type="button"
+      className="rec__export-btn rec-pause__action"
+      data-cut-action="record-pause-resume"
+      disabled={switching}
+      onClick={onControl}
+    >
+      {switching ? (state === 'pausing' ? 'Pausing…' : 'Resuming…') : `${isPaused ? '▶' : 'Ⅱ'} ${action}${compact ? '' : ' recording'}`}
+    </button>
+  )
+}
+
 /** One novice opt-in plus one live Pause/Resume action, both capability-gated. */
 export function RecordingPauseControl({
+  mode = 'setup',
   capability,
   enabled,
   state,
@@ -22,7 +48,16 @@ export function RecordingPauseControl({
 }: RecordingPauseControlProps) {
   const switching = state === 'pausing' || state === 'resuming'
   const recording = state === 'recording' || state === 'paused' || switching
-  const isPaused = state === 'paused' || state === 'resuming'
+  if (mode === 'live') {
+    if (!recording) return null
+    return (
+      <div className="rec-pause rec-pause--live-only" data-cut-rec-pause-state={state}>
+        <PauseResumeButton state={state} compact onControl={onControl} />
+        <span className="rec-pause__live-status" data-cut-rec-pause-status role="status">{message}</span>
+      </div>
+    )
+  }
+
   return (
     <div className="rec-pause" data-cut-rec-pause-supported={capability.supported ? 'true' : 'false'}>
       <label className="rec__toggle rec-pause__enable" data-cut-rec-pause-enable>
@@ -43,15 +78,7 @@ export function RecordingPauseControl({
       )}
       {recording && (
         <div className="rec-pause__live" data-cut-rec-pause-state={state}>
-          <button
-            type="button"
-            className="rec__export-btn rec-pause__action"
-            data-cut-action="record-pause-resume"
-            disabled={switching}
-            onClick={onControl}
-          >
-            {switching ? (state === 'pausing' ? 'Pausing…' : 'Resuming…') : isPaused ? '▶ Resume recording' : 'Ⅱ Pause recording'}
-          </button>
+          <PauseResumeButton state={state} compact={false} onControl={onControl} />
           <p className="rec__source-note" data-cut-rec-pause-status role="status">{message}</p>
         </div>
       )}

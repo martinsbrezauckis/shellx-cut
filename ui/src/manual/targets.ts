@@ -201,6 +201,7 @@ const TARGETS: ManualFeatureTarget[] = [
   exact('cut.timeline.track_listen', '[data-cut-listen-track]', 'timeline'),
   exact('cut.timeline.track_gain', '[data-cut-gain-track]', 'timeline'),
   exact('cut.timeline.track_pan', '[data-cut-pan-track]', 'timeline'),
+  exact('cut.timeline.voiceover', '[data-cut-voiceover-control]', 'timeline'),
   surface('cut.timeline.base_overlay', 'timeline'),
   exact('cut.timeline.save_assets', '[data-cut-action="save-range"]', 'timeline'),
 

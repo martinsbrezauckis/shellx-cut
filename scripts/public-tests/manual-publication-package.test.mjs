@@ -197,7 +197,7 @@ test('manual packaging writes an interactive Vite closure at the /manual/cut rou
     const embedded = editor.contentFrame()
     assert.equal(await embedded.locator('#root > *').count() > 0, true, 'the embedded editor frontend rendered')
     await embedded.locator('[data-cut-settings-body="overview"]').waitFor({ state: 'visible' })
-    assert.equal((await page.locator('[data-cut-manual-explanation] h2').textContent())?.trim(), 'Settings and cache cleanup')
+    assert.equal((await page.locator('[data-cut-manual-explanation] h2').textContent())?.trim(), 'Settings and editing cache')
     assert.equal(new URL(page.url()).searchParams.get('feature'), 'cut.top.settings', 'established query deep links select and reveal the real subwindow')
 
     await embedded.locator('[data-cut-environment-close]').click()

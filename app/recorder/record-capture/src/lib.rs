@@ -71,14 +71,18 @@ mod camera_session_timing_tests;
 mod capture_clock;
 mod capture_output;
 mod checkpoint;
+mod controller_placement;
 pub mod doctor;
 mod doctor_portal;
 mod doctor_probe;
 mod doctor_process;
 mod doctor_system_audio;
+mod source_lifecycle;
 // REC-REGION-01 first fixes the cross-host crop contract; the native backends
 // consume it in the next slice. Keep that bounded foundation compiled on native
 // feature builds without weakening dead-code diagnostics elsewhere.
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_capture_target;
 #[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
 mod macos_region_plan;
 mod pause_stream_coordinator;
@@ -118,6 +122,28 @@ mod replay;
 mod session_clock;
 #[cfg(test)]
 mod session_clock_tests;
+// REC-SOURCE-PREVIEW-01 keeps preview ownership separate from recording output.
+// Native adapters receive exact opaque selections and explicit lifecycle commands;
+// this core never accepts paths, ordinals, titles, or artifact directories.
+pub mod source_preview;
+mod source_preview_bitmap;
+#[cfg(test)]
+mod source_preview_bitmap_tests;
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod source_preview_linux;
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod source_preview_linux_pipewire;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod source_preview_macos;
+pub mod source_preview_native;
+#[cfg(test)]
+mod source_preview_native_tests;
+#[cfg(test)]
+mod source_preview_tests;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod source_preview_windows;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_controller_exclusion;
 // REC-SCENES-01 owns only a private, capture-contained scene receipt journal.
 // It intentionally has no server verb, UI registration, device access, or live
 // switch behavior until an explicit capture coordinator consumes it.
@@ -223,6 +249,8 @@ mod windows_picker;
 mod windows_region_capture;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_runtime;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_handler;
 
 // REC-CAMERA-01c is a private Media Foundation Capture Engine adapter. It has
 // no server verb, UI registration, Doctor card, or public device identity.
@@ -553,8 +581,11 @@ pub fn warm_microphone(source: &MicrophoneSource, max_ms: u64) -> MicWarm {
     mic_endpoint::warm_microphone(source, max_ms)
 }
 
+pub use controller_placement::{
+    CaptureControllerPlacement, CaptureControllerPlacementState, CaptureControllerPlacementStatus,
+};
 #[cfg(all(target_os = "linux", feature = "capture-linux"))]
-pub use linux_system_audio::capture_system_pipewire;
+pub use linux_system_audio::{capture_system_pipewire, capture_system_pipewire_with_level};
 /// Native endpoint-independent WASAPI process-loopback capture (desktop/system
 /// audio) → 16-bit WAV (no ffmpeg, no virtual cable). The returned metadata
 /// records the first real packet offset from the caller's capture clock; the WAV
@@ -565,7 +596,12 @@ pub use linux_system_audio::capture_system_pipewire;
 /// loopback API — both reuse the same WAV contract. Other OSes keep the ffmpeg
 /// monitor path for now (later they fold into this native module too).
 #[cfg(all(windows, feature = "mic"))]
-pub use mic::capture_system_loopback;
+pub use mic::{capture_system_loopback, capture_system_loopback_with_level};
+#[cfg(feature = "mic")]
+pub use mic::{AudioLevelLifecycle, AudioLevelSnapshot, RollingAudioLevel};
+pub use source_lifecycle::{
+    CaptureSourceLifecycle, CaptureSourceLifecycleState, CaptureSourceLifecycleStatus,
+};
 #[cfg(feature = "mic")]
 pub use system_audio_timing::SystemAudioCapture;
 
@@ -733,6 +769,12 @@ pub struct CaptureConfig {
     /// Existing callers that omit it preserve the OS-system-default behavior.
     #[serde(skip, default)]
     pub microphone_source: MicrophoneSource,
+    /// Caller-owned continuous level state fed by the same admitted microphone
+    /// stream. `None` preserves capture without a public meter; no second input
+    /// stream is opened for monitoring.
+    #[cfg(feature = "mic")]
+    #[serde(skip, default)]
+    pub microphone_level: Option<std::sync::Arc<RollingAudioLevel>>,
     /// Capture DESKTOP/SYSTEM audio (game/app sound) in the SAME capture, as a SEPARATE
     /// mixable track. Only the macOS (ScreenCaptureKit) backend reads this — it sets the
     /// stream's `capturesAudio`; the screen_record orchestrator then splits it out to
@@ -758,6 +800,15 @@ pub struct CaptureConfig {
     /// deliberately absent from replay, screenshot, and serialized configs.
     #[serde(skip, default)]
     pub readiness: Option<CaptureReadiness>,
+    /// Capture-owned observed placement for recorder controls. Native backends
+    /// may update it only after a concrete platform exclusion/hide decision;
+    /// it is never serialized into media, requests, or artifacts.
+    #[serde(skip, default)]
+    pub controller_placement: Option<CaptureControllerPlacement>,
+    /// Capture-owned selected-source closure evidence. Native adapters may arm
+    /// it only for a concrete source-close callback; it is never serialized.
+    #[serde(skip, default)]
+    pub source_lifecycle: Option<CaptureSourceLifecycle>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -779,12 +830,16 @@ impl Default for CaptureConfig {
             window: None,
             audio: false,
             microphone_source: MicrophoneSource::SystemDefault,
+            #[cfg(feature = "mic")]
+            microphone_level: None,
             system_audio: false,
             capture_keys: false,
             out_dir: ".".to_string(),
             checkpoint: None,
             clock: None,
             readiness: None,
+            controller_placement: None,
+            source_lifecycle: None,
         }
     }
 }

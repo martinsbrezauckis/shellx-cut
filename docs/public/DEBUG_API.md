@@ -1,13 +1,13 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the candidate Debug API in v0.6.113. v0.6.112 remains
-the latest published release.
+This reference describes the Debug API in v0.6.114 candidate source. v0.6.113
+remains the latest published release.
 
 ## Starting the server
 
@@ -148,33 +148,46 @@ root, journal drift, or cooperating producer makes the operation fail closed;
 it does not return a plan. It neither modifies `project.health` nor treats file
 age as last-use evidence.
 
-`project.cache_rebuild {asset_ids?}` is a separate, non-destructive bounded
-backfill for missing or stale base proxies and filmstrips. It accepts at most
-64 registered asset ids (or every registered asset only when the project has at
-most 64), verifies the current source hash before admission and publication,
-and writes a durable ownership reservation before creating an output. Its
-path-free result always reports `status`, queued asset/output totals, and
-queued/up-to-date/items-needing-attention counts. Existing legacy or unowned files, source
-changes, unavailable sources, and unsupported media are reported or refused;
-they are never adopted or removed. Poll the returned `cache_rebuild` job with
-`jobs.status` and use `jobs.cancel` for cooperative stop. Cancellation or a
-restart leaves only the pending reservation, so a later identical rebuild can
-resume safely; source media, exports, captures, and receipts are untouched.
+`project.cache_rebuild {asset_ids?,estimate_only?}` is a separate, bounded
+backfill for missing or stale base proxies and filmstrips. `estimate_only:true`
+runs the same current-source-hash admission without reserving an output or
+creating a job; it reports verified source-input bytes, proxy/filmstrip output
+counts, and proxy media duration as work units—not a wall-clock promise. A
+scheduling request accepts at most 64 registered asset ids (or every registered
+asset only when the project has at most 64), verifies the current source hash
+before admission and publication, and writes a durable ownership reservation
+before creating an output. Every path-free result reports `status`, work units,
+queued asset/output totals, and queued/up-to-date/items-needing-attention
+counts. Existing legacy or unowned files, source changes, unavailable sources,
+and unsupported media are reported or refused; they are never adopted or
+removed. Poll the returned `cache_rebuild` job with `jobs.status` and use
+`jobs.cancel` for cooperative stop. Cancellation or a restart leaves only the
+pending reservation, so a later identical rebuild can resume safely; source
+media, exports, captures, and receipts are untouched.
 
 `project.cache_purge {plan_id, confirm:true}` consumes that one preview plan
 and returns a cancellable `cache_purge` job. The job takes an exclusive cache
 lease, rechecks journal/root/file identity before removal, removes only the
 previewed ledger-owned files, and updates the ledger durably after each removal.
-Use `jobs.status` for progress, `jobs.cancel` to request cooperative stop, and
-`project.cache_preview` again after the terminal record to remeasure. Source
-media, exports, captures, receipts, and every unowned path remain outside both
-verbs' deletion roots.
+Its terminal `jobs.status.result` carries exact path-free
+`before`/`planned`/`removed`/`after` files and bytes, plus a balance check; a
+cooperative cancellation after deletion retains the same partial-progress
+accounting. Normal terminal results use a strict post-scan; a project-switch
+cancellation can instead report an exact delta under the exclusive lifecycle
+lease after its ProjectStore has been removed. If a cache file was unlinked but
+the replacement ownership ledger could not be published, the job is explicitly
+`failed` with `ledger_recovery_required:true`: the old ledger entry stays
+visible and blocks another preview instead of concealing partial cleanup. Use
+`jobs.status` for progress, `jobs.cancel` to request cooperative stop, and
+`project.cache_preview` again after a terminal record when it is not blocked to
+obtain a new deletion plan. Source media, exports, captures, receipts, and every
+unowned path remain outside both verbs' deletion roots.
 
 ### Executable argument contract
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 291 schemas once at startup and applies the selected schema at the shared
+all 305 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -274,7 +287,9 @@ Long-running verbs return `{job_id}` immediately — poll `jobs.status`, list vi
 `jobs.list`, abort via `jobs.cancel`. An engine-eligible failed default-output
 `screen_record.export` can start exactly one linked child through `jobs.retry`;
 it validates the active revision, source/EditPlan/capture-audio SHA-256 inputs,
-and a fresh default-output lease. An eligible failed `verify.rerun` can likewise
+and a fresh default-output lease, then gives the queued renderer private
+no-follow staged copies of those exact bytes rather than mutable project input
+paths. An eligible failed `verify.rerun` can likewise
 start one linked child only after the active revision, immutable RenderReceipt,
 and exact rendered-output hash are revalidated. Neither route replays raw old
 arguments; explicit Save As exports, changed inputs, and all unowned job kinds
@@ -492,6 +507,34 @@ acceptance on Windows and observable PipeWire/GStreamer delivery on Linux).
 Continue only while `terminal:false`; once the capture terminalizes, readiness
 cannot become true again. Process startup, elapsed time, or output-file growth
 is not equivalent evidence, and inactive captures return `not_found`.
+
+Source preview is a separate opt-in native lifecycle, not evidence that an
+ordinary recording is active. Read `screen_record.preview_capability {}` first:
+`source_selection:"exact"` accepts only a current opaque Doctor monitor/window
+id, while `"portal"` accepts only `{source:{kind:"portal"}}` and opens a fresh
+Linux system picker. `preview_start` replaces and releases any prior source;
+`preview_status` becomes `ready` only after a real native frame; and
+`preview_frame` returns only the latest generation-bound memory BMP, capped at
+4 MiB before base64. Pause releases native capture but remembers the exact
+source, Resume advances generation, and Hide/Stop release frames and device
+ownership. No preview verb accepts a title, ordinal, coordinate, file, restore
+token, or browser-capture fallback. Permission, source loss, recursion, and
+unavailable states remain explicit and path-free.
+
+The Recording UI's continuous mic/system meters are computed from the already
+admitted capture callbacks. They open no monitoring playback and no second
+stream; status snapshots use nonblocking access and label silence, stale input,
+loss, clipping, and unsupported paths truthfully. Current macOS system-audio
+metering is unavailable because tap PCM is only finalized at Stop, even though
+the normal capture may still return a verified system stream.
+
+`screen_record.rehearsal_start` records one video-only 3–5 second native test
+take into an owned temporary root and returns only an opaque same-origin
+playback capability. It creates no project, journal, recovery entry, timeline
+asset, or promotion route. `screen_record.rehearsal_discard` revokes and removes
+that take; unmount, a replacement rehearsal, and ordinary Recording Start use
+the same cleanup boundary. Deletion failures retain private ownership and retry
+only through the bounded cleanup owner instead of exposing or orphaning bytes.
 
 On Windows and macOS, passive Doctor enumeration may advertise opaque camera
 choices without opening a device or prompting for permission. Camera use is
@@ -712,6 +755,16 @@ this is a bounded path-light handoff, not a second filesystem export surface.
 Cut is the editing/orchestration owner; ShellX Motion owns Motion-package
 authoring and rendering. Discover the promoted rich generators instead of
 guessing IDs, preview before insertion, then inspect the resulting Cut state:
+
+`system.motion_status {}` is the read-only management preflight. It runs only a
+bounded shell-free runtime probe, connector catalog, and fixed Template-to-Cut
+descriptor check—no caller id, provider login, connector execution, download,
+or filesystem mutation. A discovered source checkout, PATH binary, or npm
+package remains unmanaged and execution-unqualified. The returned distribution
+card keeps Install/Repair/Update/Remove unavailable with blocker
+`MOTION-DIST-01` until Motion publishes a verified immutable manifest and a
+matching platform artifact; Cut does not invent lifecycle authority from local
+discovery.
 
 ```bash
 curl -sS http://127.0.0.1:6161/api/verb/generate.list \
@@ -989,9 +1042,11 @@ run. It walks every sequence, hashes only referenced source media with complete
 SHA-256, and returns a destination-bound `plan_hash`, byte/file totals, dedupe
 plan, and package-relative member names. Offline media, symlinks/reparse points,
 unsafe destinations, and Motion-linked provenance refuse. It never searches for
-or relinks media. If B5 repaired media, pass its exact immutable receipt: Cut
-checks its project identity, post-revision, grouped journal operation, exact
-hashes, and chosen paths before retaining only the receipt's canonical digest.
+or relinks media. If the current project revision is B5's grouped relink, its
+exact immutable receipt is required; do not reuse that receipt after any later
+project operation. Cut checks its project identity, post-revision, grouped
+journal operation, exact hashes, and chosen paths before retaining only the
+receipt's canonical digest.
 
 `project.package_create {destination, name, plan_hash, b5_receipt?}` recomputes
 that plan, starts a `portable_package` job, copies each unique content digest

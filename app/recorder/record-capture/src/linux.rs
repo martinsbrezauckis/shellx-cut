@@ -49,6 +49,15 @@ impl LinuxCapture {
 
 impl Capture for LinuxCapture {
     fn capture(&self, cfg: &CaptureConfig, stop: Arc<AtomicBool>) -> Result<CaptureOutput> {
+        // The portal may let a user share a display, but it does not publish a
+        // durable fact that this app's controller was excluded or safely hidden.
+        // Do not turn portal consent, a generic Stop, or a browser visibility
+        // event into an exclusion claim.
+        if let Some(placement) = cfg.controller_placement.as_ref() {
+            placement.unavailable(
+                "Linux portal capture does not provide a verifiable controller-exclusion or safe auto-hide state.",
+            );
+        }
         // Open-ended capture: `None` means "run until the external `stop` flag
         // is set" — represented as a huge cap (≈2.9e15 ms ≈ 92 000 years) so the
         // wayland-path deadline `start + dur` is effectively never reached and ONLY
@@ -249,13 +258,24 @@ impl Capture for LinuxCapture {
 
             let mic_handle = if audio_wanted {
                 let ready = Arc::new(AtomicBool::new(false));
-                Some(crate::mic_endpoint::spawn_microphone_capture(
-                    format!("{out_dir_async}/mic.wav"),
-                    cfg.microphone_source.clone(),
-                    stop.clone(),
-                    ready,
-                    start,
-                ))
+                let mic_path = format!("{out_dir_async}/mic.wav");
+                Some(match cfg.microphone_level.clone() {
+                    Some(level) => crate::mic_endpoint::spawn_microphone_capture_with_level(
+                        mic_path,
+                        cfg.microphone_source.clone(),
+                        stop.clone(),
+                        ready,
+                        start,
+                        level,
+                    ),
+                    None => crate::mic_endpoint::spawn_microphone_capture(
+                        mic_path,
+                        cfg.microphone_source.clone(),
+                        stop.clone(),
+                        ready,
+                        start,
+                    ),
+                })
             } else {
                 None
             };

@@ -30,7 +30,7 @@ export interface StatusBarProps {
   /** The environment doctor report drives the environment chip's color/label. */
   doctor: DoctorReport | null
   /** Open the Settings>Environment drawer (the chip's click). */
-  onOpenEnvironment: (category?: 'overview' | 'general') => void
+  onOpenEnvironment: (category?: 'overview' | 'general' | 'health-recovery') => void
 }
 
 /** Build identity: vite mode + package version baked at build time. The
@@ -61,10 +61,8 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [jobCancelErrors, setJobCancelErrors] = useState<Record<string, string>>({})
   const [jobCancelPending, setJobCancelPending] = useState<Record<string, true>>({})
-  const [jobRetryErrors, setJobRetryErrors] = useState<Record<string, string>>({})
-  const [jobRetryPending, setJobRetryPending] = useState<Record<string, true>>({})
   const [outputDir, setOutputDir] = useState<string | null>(() => getStoredOutputDir())
-  const { jobList, retryJobList, removeJob, removeRetryJob } = useTopbarJobs()
+  const { jobList, retryJobList, removeJob } = useTopbarJobs()
   const timeMode = useTimeDisplay() // keep the bar's readout in lockstep with the timeline toggle
   const fps = project?.settings.fps ?? 30
 
@@ -93,38 +91,6 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
       }))
     } finally {
       setJobCancelPending((previous) => {
-        const next = { ...previous }
-        delete next[jobId]
-        return next
-      })
-    }
-  }
-
-  const retryJob = async (jobId: string) => {
-    if (jobRetryPending[jobId]) return
-    setJobRetryErrors((previous) => {
-      const next = { ...previous }
-      delete next[jobId]
-      return next
-    })
-    setJobRetryPending((previous) => ({ ...previous, [jobId]: true }))
-    try {
-      const r = await callVerb('jobs.retry', { job_id: jobId })
-      if (!r.ok) {
-        setJobRetryErrors((previous) => ({
-          ...previous,
-          [jobId]: r.error?.message ?? 'Could not retry this task.',
-        }))
-        return
-      }
-      removeRetryJob(jobId)
-    } catch {
-      setJobRetryErrors((previous) => ({
-        ...previous,
-        [jobId]: 'Server unreachable. Reconnect, then retry this task.',
-      }))
-    } finally {
-      setJobRetryPending((previous) => {
         const next = { ...previous }
         delete next[jobId]
         return next
@@ -215,8 +181,6 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
       })}
 
       {retryJobList.map((j) => {
-        const pending = Boolean(jobRetryPending[j.job_id])
-        const error = jobRetryErrors[j.job_id]
         const retryTask = j.kind === 'screen_record_export'
           ? 'recording export'
           : j.kind === 'verify-rerun'
@@ -228,16 +192,13 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
             Failed {retryTask}
             <button
               type="button"
-              className={`sb-job-retry${error ? ' sb-job-retry--error' : ''}`}
-              data-cut-job-retry={j.job_id}
-              data-cut-job-retry-error={error || undefined}
-              data-cut-job-retry-pending={pending ? 'true' : undefined}
-              disabled={pending}
-              title={pending ? `Checking whether this ${retryTask} can be retried…` : error || `Retry failed ${retryTask}`}
-              aria-label={pending ? `Checking whether this ${retryTask} can be retried` : `Retry failed ${retryTask}`}
-              onClick={() => void retryJob(j.job_id)}
+              className="sb-job-retry"
+              data-cut-job-retry-review={j.job_id}
+              title={`Review durable retry for this ${retryTask}`}
+              aria-label={`Review durable retry for this ${retryTask}`}
+              onClick={() => onOpenEnvironment('health-recovery')}
             >
-              {pending ? 'Retrying…' : 'Retry'}
+              Review
             </button>
           </span>
         )

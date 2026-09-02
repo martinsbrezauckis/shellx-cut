@@ -59,6 +59,53 @@ export async function fetchDoctor(refresh = false): Promise<DoctorReport | null>
   return r.ok ? (r.result as DoctorReport) : null
 }
 
+/** Read-only ShellX Motion discovery and distribution-management posture.
+ *
+ * A local source/PATH/npm runtime is never represented as a managed install.
+ * Lifecycle actions remain unavailable until the backend admits a verified,
+ * immutable manifest plus a matching platform artifact (MOTION-DIST-01). */
+export interface MotionManagementStatus {
+  schema: 'shellx-cut/motion-management-status@1'
+  readOnly: true
+  runtime: {
+    status: 'discovered-unmanaged' | 'unverified' | 'not-discovered'
+    engine: { name: string; version: string } | null
+    cli: { name: string; version: string } | null
+    platform: string | null
+    provenance: {
+      execution: 'source' | 'packed'
+      managedDistribution: 'unmanaged'
+      distributionQualification: 'unverified'
+      cleanHostQualification: 'unverified'
+    } | null
+  }
+  connector: {
+    catalog: 'verified' | 'not-verified'
+    descriptor: 'verified' | 'not-verified'
+    capabilityId: string
+    descriptorRevision: number | null
+    descriptorFingerprint: string | null
+    availability: string | null
+    availableOnRuntime: boolean
+    execution: 'unqualified' | 'not-executed'
+  }
+  distribution: {
+    status: 'blocked'
+    blocker: { id: 'MOTION-DIST-01'; message: string }
+    manifest: { status: 'absent'; candidate: null; version: null }
+    artifact: { platform: string; status: 'absent'; version: null }
+    installed: { status: 'not-managed'; candidate: null; version: null }
+    actions: Record<'install' | 'repair' | 'update' | 'remove', { available: false; prerequisite: 'MOTION-DIST-01' }>
+  }
+}
+
+/** Re-run the bounded Motion discovery route. This never installs, updates,
+ * repairs, removes, signs in, or executes a connector. */
+export async function fetchMotionManagementStatus(): Promise<MotionManagementStatus | null> {
+  const r = await callVerb('system.motion_status', {})
+  return r.ok ? (r.result as MotionManagementStatus) : null
+}
+
 /** Kick the consented tool download. Returns the job id to poll, or null on a
  *  verb-level error (e.g. unknown tool — never happens from the wizard UI). */
 export async function fetchTool(tool: 'ffmpeg'): Promise<{ job_id: string } | null> {

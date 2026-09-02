@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
-import type { OpRecord, Project } from '../src/lib/client'
+import type { OpRecord, Project, ProjectIdentity } from '../src/lib/client'
 import {
   applyProjectDelta,
   loadProjectOpsPages,
@@ -40,14 +40,58 @@ const markerDelta: ProjectDelta = {
   encoded_bytes: 142,
 }
 
+const projectIdentity: ProjectIdentity = {
+  schema: 'shellx-cut/project-identity/1',
+  origin_path_sha256: `sha256:${'a'.repeat(64)}`,
+  project_name: '10k clips',
+}
+
 const updated = applyProjectDelta(project, markerDelta)
 assert.equal(updated.project_revision, 'op_010001')
 assert.equal(updated.markers.length, 1)
 assert.strictEqual(updated.tracks, project.tracks, 'a marker delta must not clone 10k timeline clip containers')
+const identityUpdated = applyProjectDelta(project, { ...markerDelta, project_identity: projectIdentity })
+assert.deepEqual(identityUpdated.project_identity, projectIdentity, 'a server-certified delta carries the path-free current-project identity')
+const decodedIdentity = projectSyncFromVerbResult({ ok: true, result: { sync: { ...markerDelta, project_identity: projectIdentity } } })
+assert.deepEqual(decodedIdentity?.mode === 'delta' ? decodedIdentity.delta.project_identity : undefined, projectIdentity, 'the project.state delta decoder retains the path-free identity')
+assert.equal(projectSyncFromVerbResult({
+  ok: true,
+  result: { sync: { ...markerDelta, project_identity: { ...projectIdentity, origin_path_sha256: 'sha256:not-a-digest' } } },
+}), null, 'the project.state delta decoder refuses a malformed project identity')
 assert.equal(projectDeltaChangesState(markerDelta), false, 'an empty delta does not advance snapshot reconciliation')
 assert.equal(needsColdHistoryLoad(project, false), true, 'the first project object needs one cold history transfer')
 assert.equal(needsColdHistoryLoad({ ...project, markers: updated.markers }, true), false, 'an ordinary delta/snapshot project object replacement does not retrigger cold history')
 assert.equal(needsColdHistoryLoad({ ...project }, false), true, 'the project-switch reset makes a new project eligible for one cold history transfer')
+
+const b5Receipt: NonNullable<ProjectDelta['portable_b5_receipt']> = {
+  schema: 'shellx-cut/media-relink-receipt/1',
+  immutable: true,
+  project_identity: { schema: 'shellx-cut/project-identity/1', origin_path_sha256: 'sha256:test', project_name: '10k clips' },
+  pre_revision: 'op_009999',
+  post_revision: 'op_010000',
+  plan_hash: 'sha256:test',
+  grouped_op_id: 'op_010000',
+  assets: [{
+    asset: 'a1',
+    expected_hash: 'sha256:test',
+    chosen: { path: '/restored/a1.mov', sha256: 'sha256:test' },
+    disposition: 'relinked',
+  }],
+  scope: { library_transaction: false, import_or_proxy_job: false, undo: 'not_promised' },
+}
+const staleB5Project = { ...project, portable_b5_receipt: b5Receipt }
+const clearedB5 = applyProjectDelta(staleB5Project, { ...markerDelta, portable_b5_receipt: null })
+assert.equal(clearedB5.portable_b5_receipt, undefined, 'an explicit delta null clears B5 evidence from an earlier revision')
+const retainedForOlderServer = applyProjectDelta(staleB5Project, markerDelta)
+assert.equal(retainedForOlderServer.portable_b5_receipt, b5Receipt, 'an older server delta without the explicit field does not fabricate a clear')
+const updatedB5 = applyProjectDelta(project, { ...markerDelta, portable_b5_receipt: b5Receipt })
+assert.equal(updatedB5.portable_b5_receipt, b5Receipt, 'an explicit delta receipt becomes the current B5 evidence')
+const decodedB5Clear = projectSyncFromVerbResult({
+  ok: true,
+  result: { sync: { ...markerDelta, portable_b5_receipt: null } },
+})
+assert.equal(decodedB5Clear?.mode, 'delta', 'the project.state delta decoder retains explicit B5 clearing')
+assert.equal(decodedB5Clear?.mode === 'delta' ? decodedB5Clear.delta.portable_b5_receipt : undefined, null)
 const closedProjectSync = projectSyncFromVerbResult({
   ok: false,
   error: { code: 'no_project', message: 'no project is open' },

@@ -1,0 +1,67 @@
+/* ShellX Motion: one compact management boundary, not a second dashboard. */
+.motion-management {
+  margin-top: var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.motion-management-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-left: 3px solid var(--ink-3);
+}
+.motion-management-row--discovered-unmanaged { border-left-color: var(--amber); }
+.motion-management-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.motion-management-detail {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
+}
+.motion-management-detail .env-card-hint { margin: 0; }
+.motion-management-verification-error {
+  margin: 0;
+  color: var(--err);
+  font-size: var(--fs-ui-xs);
+  line-height: 1.35;
+}
+.motion-management-blocker {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-ui-xs);
+  line-height: 1.35;
+}
+.motion-management-blocker strong { color: var(--amber); }
+.motion-management-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.motion-management-actions .env-btn:disabled { cursor: not-allowed; }
+.motion-management-advanced { margin-top: var(--space-1); }
+.motion-management-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--ink-2);
+  font-size: var(--fs-ui-sm);
+}
+@media (max-width: 560px) {
+  .motion-management-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .motion-management-row .env-row-facts { grid-column: 2 / -1; }
+  .motion-management-empty { align-items: flex-start; }
+}

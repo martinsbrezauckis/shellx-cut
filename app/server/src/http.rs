@@ -83,6 +83,10 @@ pub fn build_router(state: AppState, ui_dist: Option<std::path::PathBuf>) -> Rou
         .route("/agent", get(get_agent_info))
         .route("/agent-doc/*path", get(serve_agent_doc))
         .route("/frame", get(get_frame))
+        // A disposable native rehearsal is playable only through an opaque,
+        // process-local server capability.  The handler never accepts a path
+        // and rechecks the owned temporary root before streaming any bytes.
+        .route("/recording-rehearsal/:handle", get(serve_rehearsal_media))
         .route("/events", get(ws_events));
     // This route is absent unless the current cutd was spawned by the one
     // foreground Tauri desktop with fresh private bridge material. It is not
@@ -608,6 +612,73 @@ mod tests {
         assert_eq!(parse_single_range("items=0-1", 16), None); // wrong unit
         assert_eq!(parse_single_range("bytes=abc", 16), None); // garbage
         assert_eq!(parse_single_range("bytes=0-0", 0), None); // empty file
+    }
+
+    /// Rehearsal playback resolves only the server-issued ephemeral handle.
+    /// It accepts byte ranges for immediate video playback, refuses a path-like
+    /// capability, and becomes unavailable as soon as discard revokes it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rehearsal_route_is_opaque_range_capable_and_revocable() {
+        let _guard = crate::screen_record::rehearsal::rehearsal_test_lock()
+            .lock()
+            .await;
+        let handle = crate::screen_record::rehearsal::install_test_playback();
+        let server = spawn_test_server(build_router(AppState::new(), None)).await;
+
+        fn get_range(url: &str, range: &str) -> (u16, String, Vec<u8>) {
+            match ureq::get(url).header("Range", range).call() {
+                Ok(mut response) => {
+                    let content_range = response
+                        .headers()
+                        .get("content-range")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let status = response.status().as_u16();
+                    let body = response.body_mut().read_to_vec().unwrap_or_default();
+                    (status, content_range, body)
+                }
+                Err(ureq::Error::StatusCode(status)) => (status, String::new(), Vec::new()),
+                Err(error) => unreachable!("transport: {error}"),
+            }
+        }
+
+        let url = format!("{}/api/recording-rehearsal/{handle}", server.base_url);
+        let (status, content_range, body) = tokio::task::spawn_blocking({
+            let url = url.clone();
+            move || get_range(&url, "bytes=4-9")
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 206);
+        assert_eq!(content_range, "bytes 4-9/16");
+        assert_eq!(body, b"ftypmp");
+
+        let (bad_status, _, _) = tokio::task::spawn_blocking({
+            let base = server.base_url.clone();
+            move || {
+                get_range(
+                    &format!("{base}/api/recording-rehearsal/%2Ftmp%2Fsource.mp4"),
+                    "bytes=0-1",
+                )
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            bad_status, 404,
+            "a filesystem-shaped route segment is not a capability"
+        );
+
+        crate::screen_record::rehearsal::discard(serde_json::json!({"handle": handle})).unwrap();
+        let (revoked_status, _, _) =
+            tokio::task::spawn_blocking(move || get_range(&url, "bytes=0-1"))
+                .await
+                .unwrap();
+        assert_eq!(
+            revoked_status, 404,
+            "discard revokes the playback route immediately"
+        );
     }
 
     /// The proxy route honors a byte range (206 + Content-Range) so the preview
@@ -1638,6 +1709,79 @@ fn build_library_poster(
 /// range response covers at most this many bytes (the `<video>` simply requests the
 /// next range). Bounds memory per request regardless of source size.
 const SOURCE_CHUNK: u64 = 4 * 1024 * 1024;
+
+/// GET /api/recording-rehearsal/{opaque_handle} — stream one server-owned,
+/// disposable MP4.  This deliberately does not reuse an export/source path
+/// parameter: only the rehearsal owner can turn the opaque handle into a
+/// canonical regular file beneath its temporary root.
+async fn serve_rehearsal_media(
+    Path(handle): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    use axum::http::StatusCode;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let Some(path) = crate::screen_record::rehearsal::playback_media(&handle) else {
+        return (StatusCode::NOT_FOUND, "rehearsal playback unavailable").into_response();
+    };
+    let mut file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(_) => return (StatusCode::NOT_FOUND, "rehearsal playback unavailable").into_response(),
+    };
+    let len = match file.metadata().await {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata.len(),
+        _ => return (StatusCode::NOT_FOUND, "rehearsal playback unavailable").into_response(),
+    };
+    let (start, end) = match headers
+        .get(axum::http::header::RANGE)
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(spec) => match parse_single_range(spec, len) {
+            Some(range) => range,
+            None => {
+                return (
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    [
+                        (axum::http::header::ACCEPT_RANGES, "bytes".to_string()),
+                        (axum::http::header::CONTENT_RANGE, format!("bytes */{len}")),
+                    ],
+                )
+                    .into_response();
+            }
+        },
+        None => (0, len - 1),
+    };
+    let end = end.min(start + SOURCE_CHUNK - 1);
+    let slice_len = (end - start + 1) as usize;
+    if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rehearsal playback seek failed",
+        )
+            .into_response();
+    }
+    let mut bytes = vec![0_u8; slice_len];
+    if file.read_exact(&mut bytes).await.is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rehearsal playback read failed",
+        )
+            .into_response();
+    }
+    (
+        StatusCode::PARTIAL_CONTENT,
+        [
+            (axum::http::header::CONTENT_TYPE, "video/mp4".to_string()),
+            (axum::http::header::ACCEPT_RANGES, "bytes".to_string()),
+            (
+                axum::http::header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{len}"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
 
 /// GET /api/source/{asset} — stream a registered asset's ORIGINAL source media for
 /// the preview `<video>` when no proxy exists yet, allowing editing while

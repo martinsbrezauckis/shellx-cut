@@ -37,12 +37,20 @@ pub(crate) async fn screen_record_start(
     let duration_ms = a.duration_ms;
     let fps = a.fps.unwrap_or(30.0);
     validate_capture_settings(duration_ms, fps)?;
+    // A completed rehearsal is process-local disposable media, never project
+    // material.  Discard it before this ordinary start path creates recovery
+    // state or reserves native devices.  A rehearsal still stopping reports a
+    // clear conflict instead of racing two capture sessions.
+    rehearsal::discard_for_recording()?;
     let quality_requested = a.quality.is_some();
     let capture_quality = record_capture::admit_capture_quality(a.quality).map_err(record_err)?;
     let cadence = cadence::from_server_fps(fps)?;
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     let recorder_doctor = doctor();
     start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
+    // A recording claims the singleton native capture path only after an active
+    // preview has synchronously released its own native session and memory frame.
+    source_preview::release_for_recording()?;
     let monitor_target = monitor_start_admission::admit(
         a.monitor,
         a.monitor_id.as_deref(),
@@ -179,6 +187,42 @@ pub(crate) async fn screen_record_start(
 /// `screen_record.status{capture_id}` — report only the live first-frame
 /// admission fact. This reads process-local reservation state and never opens a
 /// native source, touches a capture path, or changes capture lifecycle.
+fn source_lifecycle_status(
+    readiness: record_capture::CaptureReadinessStatus,
+    source: record_capture::CaptureSourceLifecycleStatus,
+) -> Value {
+    use record_capture::{CaptureReadinessState, CaptureSourceLifecycleState};
+
+    match source.state {
+        CaptureSourceLifecycleState::SourceLost => {
+            return json!({ "state": "source_lost", "reason": source.reason });
+        }
+        CaptureSourceLifecycleState::Unavailable => {
+            return json!({ "state": "unavailable", "reason": source.reason });
+        }
+        CaptureSourceLifecycleState::Observing => {}
+    }
+
+    match readiness.state {
+        CaptureReadinessState::AwaitingFirstScreenFrame => json!({
+            "state": "awaiting_first_frame",
+            "reason": "The admitted native source has not delivered a screen frame yet.",
+        }),
+        CaptureReadinessState::Ready => json!({
+            "state": "active",
+            "reason": "The admitted native source delivered a real screen frame.",
+        }),
+        CaptureReadinessState::TerminalBeforeFirstScreenFrame => json!({
+            "state": "terminal",
+            "reason": "Capture ended before a source frame arrived; this does not claim source loss.",
+        }),
+        CaptureReadinessState::TerminalAfterFirstScreenFrame => json!({
+            "state": "terminal",
+            "reason": "Capture ended after a source frame arrived; Stop is not relabelled as source loss.",
+        }),
+    }
+}
+
 pub(crate) async fn readiness_status_handler(args: Value) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct StatusArgs {
@@ -195,11 +239,42 @@ pub(crate) async fn readiness_status_handler(args: Value) -> Result<VerbResult, 
         .with_suggested_action("start a new recording and retain its returned capture_id")
     })?;
     let status = control.readiness_status();
+    let source_lifecycle = control.source_lifecycle_status();
+    let source_lost = matches!(
+        source_lifecycle.state,
+        record_capture::CaptureSourceLifecycleState::SourceLost
+    );
+    // A source-loss callback revokes readiness itself, but also make the
+    // public projection fail closed if status sampling interleaves that native
+    // boundary. Automation must never see source_lost alongside ready:true.
+    let (ready, terminal, state) = if source_lost {
+        let terminal_state = match status.state {
+            record_capture::CaptureReadinessState::AwaitingFirstScreenFrame
+            | record_capture::CaptureReadinessState::TerminalBeforeFirstScreenFrame => {
+                "terminal_before_first_screen_frame"
+            }
+            record_capture::CaptureReadinessState::Ready
+            | record_capture::CaptureReadinessState::TerminalAfterFirstScreenFrame => {
+                "terminal_after_first_screen_frame"
+            }
+        };
+        (false, true, terminal_state)
+    } else {
+        (status.ready, status.terminal, status.state.as_str())
+    };
+    let audio_meters = control.audio_meters_status();
+    let controller_placement = control.controller_placement().status();
     Ok(VerbResult::ok(json!({
         "capture_id": args.capture_id,
-        "ready": status.ready,
-        "terminal": status.terminal,
-        "state": status.state.as_str(),
+        "ready": ready,
+        "terminal": terminal,
+        "state": state,
+        "audio_meters": audio_meters,
+        "source_lifecycle": source_lifecycle_status(status, source_lifecycle),
+        "controller_placement": {
+            "state": controller_placement.state.as_str(),
+            "reason": controller_placement.reason,
+        },
     })))
 }
 
@@ -211,7 +286,7 @@ mod readiness_status_tests {
     async fn status_requires_a_delivered_frame_and_never_admits_a_terminal_capture() {
         let _capture_lock = super::capture_test_lock().lock().await;
         let capture_id = format!("cap_readiness_{}", std::process::id());
-        let control = CaptureSessionControl::new(None, false, false, false);
+        let control = CaptureSessionControl::new(None, true, true, false);
         let readiness = control.readiness();
         let reservation = reserve_capture(capture_id.clone(), control.clone()).unwrap();
 
@@ -223,6 +298,23 @@ mod readiness_status_tests {
         assert_eq!(pending["state"], "awaiting_first_screen_frame");
         assert_eq!(pending["ready"], false);
         assert_eq!(pending["terminal"], false);
+        assert_eq!(pending["source_lifecycle"]["state"], "unavailable");
+        assert_eq!(pending["controller_placement"]["state"], "unavailable");
+        assert!(pending["controller_placement"]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()));
+        assert_eq!(
+            pending["audio_meters"]["microphone"]["state"],
+            "awaiting_samples"
+        );
+        assert_eq!(
+            pending["audio_meters"]["system_audio"]["state"],
+            if cfg!(target_os = "macos") {
+                "unavailable"
+            } else {
+                "awaiting_samples"
+            }
+        );
 
         readiness.mark_first_screen_frame_delivered();
         let ready = readiness_status_handler(json!({"capture_id": capture_id}))
@@ -233,6 +325,7 @@ mod readiness_status_tests {
         assert_eq!(ready["state"], "ready");
         assert_eq!(ready["ready"], true);
         assert_eq!(ready["terminal"], false);
+        assert_eq!(ready["source_lifecycle"]["state"], "unavailable");
 
         control.terminalize().unwrap();
         let terminal = readiness_status_handler(json!({"capture_id": capture_id}))
@@ -243,11 +336,49 @@ mod readiness_status_tests {
         assert_eq!(terminal["state"], "terminal_after_first_screen_frame");
         assert_eq!(terminal["ready"], false);
         assert_eq!(terminal["terminal"], true);
+        assert_eq!(terminal["source_lifecycle"]["state"], "unavailable");
+        assert!(terminal["source_lifecycle"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("does not expose")));
+        assert_eq!(terminal["audio_meters"]["microphone"]["state"], "stopped");
+        assert_eq!(
+            terminal["audio_meters"]["system_audio"]["state"],
+            if cfg!(target_os = "macos") {
+                "unavailable"
+            } else {
+                "stopped"
+            }
+        );
 
         drop(reservation);
         let missing = readiness_status_handler(json!({"capture_id": capture_id}))
             .await
             .unwrap_err();
         assert_eq!(missing.code, error_codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn status_reports_only_an_armed_unexpected_source_close_as_source_loss() {
+        let _capture_lock = super::capture_test_lock().lock().await;
+        let capture_id = format!("cap_source_loss_{}", std::process::id());
+        let control = CaptureSessionControl::new(None, false, false, false);
+        let source = control.source_lifecycle();
+        let readiness = control.readiness();
+        let reservation = reserve_capture(capture_id.clone(), control).unwrap();
+
+        source.arm_initial_selected_source("native selected-window close callback is armed.");
+        readiness.mark_first_screen_frame_delivered();
+        assert!(source.selected_source_closed("selected window closed."));
+
+        let lost = readiness_status_handler(json!({"capture_id": capture_id}))
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(lost["source_lifecycle"]["state"], "source_lost");
+        assert_eq!(lost["ready"], false);
+        assert_eq!(lost["terminal"], true);
+        assert_eq!(lost["state"], "terminal_after_first_screen_frame");
+        drop(reservation);
     }
 }

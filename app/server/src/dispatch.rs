@@ -553,37 +553,35 @@ async fn dispatch_validated(
         }
         DispatchTarget::ScoreClip => speech_text::score_clip(state, args).await.into(),
 
-        // screen_record.* — recorder-specific routing stays together so this
-        // top-level contract dispatcher remains bounded.
-        DispatchTarget::ScreenRecordDoctor => screen_record_routes::doctor(args).await,
-        DispatchTarget::ScreenRecordMicrophoneSelection => {
-            screen_record_routes::microphone_selection(args).await
+        // screen_record.* — the exhaustive domain list remains visible here;
+        // its adapters live in the bounded recorder router.
+        target @ (DispatchTarget::ScreenRecordDoctor
+        | DispatchTarget::ScreenRecordMicrophoneSelection
+        | DispatchTarget::ScreenRecordSystemAudioProbe
+        | DispatchTarget::ScreenRecordRehearsalStart
+        | DispatchTarget::ScreenRecordRehearsalDiscard
+        | DispatchTarget::ScreenRecordStart
+        | DispatchTarget::ScreenRecordSceneActivate
+        | DispatchTarget::ScreenRecordSceneTimer
+        | DispatchTarget::ScreenRecordPause
+        | DispatchTarget::ScreenRecordResume
+        | DispatchTarget::ScreenRecordRecoveryStatus
+        | DispatchTarget::ScreenRecordStatus
+        | DispatchTarget::ScreenRecordPreviewCapability
+        | DispatchTarget::ScreenRecordPreviewStart
+        | DispatchTarget::ScreenRecordPreviewStatus
+        | DispatchTarget::ScreenRecordPreviewFrame
+        | DispatchTarget::ScreenRecordPreviewPause
+        | DispatchTarget::ScreenRecordPreviewResume
+        | DispatchTarget::ScreenRecordPreviewHide
+        | DispatchTarget::ScreenRecordPreviewStop
+        | DispatchTarget::ScreenRecordStop
+        | DispatchTarget::ScreenRecordStudioEvent
+        | DispatchTarget::ScreenRecordAutoedit
+        | DispatchTarget::ScreenRecordPolish
+        | DispatchTarget::ScreenRecordExport) => {
+            screen_record_routes::dispatch(target, state, args, actor).await
         }
-        DispatchTarget::ScreenRecordSystemAudioProbe => {
-            screen_record_routes::system_audio_probe(args).await
-        }
-        DispatchTarget::ScreenRecordStart => screen_record_routes::start(state, args).await,
-        DispatchTarget::ScreenRecordSceneActivate => {
-            screen_record_routes::scene_activate(state, args).await
-        }
-        DispatchTarget::ScreenRecordSceneTimer => {
-            screen_record_routes::scene_timer(state, args).await
-        }
-        DispatchTarget::ScreenRecordPause => screen_record_routes::pause(args).await,
-        DispatchTarget::ScreenRecordResume => screen_record_routes::resume(args).await,
-        DispatchTarget::ScreenRecordRecoveryStatus => {
-            screen_record_routes::recovery_status(state, args).await
-        }
-        DispatchTarget::ScreenRecordStatus => screen_record_routes::status(args).await,
-        DispatchTarget::ScreenRecordStop => screen_record_routes::stop(state, args, actor).await,
-        DispatchTarget::ScreenRecordStudioEvent => {
-            screen_record_routes::studio_event(state, args).await
-        }
-        DispatchTarget::ScreenRecordAutoedit => screen_record_routes::autoedit(state, args).await,
-        DispatchTarget::ScreenRecordPolish => {
-            screen_record_routes::polish(state, args, actor).await
-        }
-        DispatchTarget::ScreenRecordExport => screen_record_routes::export(state, args).await,
         DispatchTarget::VoiceoverStart => voiceover::start(state, args, actor).await.into(),
         DispatchTarget::VoiceoverTick => voiceover::tick(state, args, actor).await.into(),
         DispatchTarget::VoiceoverStop => voiceover::stop(state, args, actor).await.into(),
@@ -608,6 +606,7 @@ async fn dispatch_validated(
         // ------------------------------------------------------------------
         DispatchTarget::SystemMcpTest => crate::mcp::self_test(state).await.into(),
         DispatchTarget::SystemDoctor => system_doctor(state, args).await.into(),
+        DispatchTarget::SystemMotionStatus => system_motion_status(args).await.into(),
         DispatchTarget::SystemSetFfmpeg => crate::ffmpeg_settings::system_set_ffmpeg(state, args)
             .await
             .into(),
@@ -1336,7 +1335,7 @@ mod screen_record_routes;
 
 mod ui_system;
 use ui_system::{
-    debug_screenshot, system_doctor, system_fetch_tool, system_setup_matte,
+    debug_screenshot, system_doctor, system_fetch_tool, system_motion_status, system_setup_matte,
     system_setup_perception, ui_forward, ui_screenshot, ui_state,
 };
 

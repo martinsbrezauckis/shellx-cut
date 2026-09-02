@@ -38,6 +38,8 @@ import './assets.css'
 
 export interface AssetsProps {
   project: Project | null
+  /** App-monotonic project session; invalidates project-local recovery UI. */
+  projectScope: number
   doctor: DoctorReport | null
   /** Live playhead (timeline ms) — the target for the "Insert" button. */
   playheadMs: number
@@ -181,7 +183,7 @@ function AssetThumb({ assetId, kind, film }: { assetId: string; kind?: string; f
   )
 }
 
-export default function Assets({ project, doctor, playheadMs, onProjectChanged, sourceNavigation }: AssetsProps) {
+export default function Assets({ project, projectScope, doctor, playheadMs, onProjectChanged, sourceNavigation }: AssetsProps) {
   const [busy, setBusy] = useState<string | null>(null) // assetId currently inserting
   const [note, setNote] = useState<string | null>(null)
   const [sourceMonitorId, setSourceMonitorId] = useState<string | null>(null)
@@ -844,7 +846,9 @@ export default function Assets({ project, doctor, playheadMs, onProjectChanged, 
           </div>
           {mediaHealth.offline > 0 && (
             <BulkRelinkPanel
+              key={`${projectScope}:${project?.project_revision ?? ''}`}
               offlineCount={mediaHealth.offline}
+              scopeKey={`${projectScope}:${project?.project_revision ?? ''}`}
               onProjectChanged={onProjectChanged}
               onRefresh={refreshOfflineNow}
               onReviewIndividually={(assetId) => { void relinkAsset(assetId) }}

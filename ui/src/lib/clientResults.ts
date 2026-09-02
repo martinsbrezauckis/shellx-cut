@@ -1213,14 +1213,27 @@ export interface ProjectCacheRebuildCounts {
   unsupported_assets: number
 }
 
+/** Measured rebuild work units from a source-hash-verified admission pass.
+ * This deliberately omits a wall-clock promise: runtime depends on media,
+ * codec, hardware, and any later source-identity refusal. */
+export interface ProjectCacheRebuildEstimate {
+  basis: 'source_hash_match_and_current_import_metadata'
+  assets: number
+  verified_source_bytes: number
+  proxy_outputs: number
+  filmstrip_outputs: number
+  proxy_duration_ms: number
+}
+
 export interface ProjectCacheRebuildResult {
   schema: 'shellx-cut/cache-rebuild/1'
-  status: 'queued' | 'already_queued' | 'not_needed'
+  status: 'estimated' | 'queued' | 'already_queued' | 'not_needed'
   job_id?: string
   deduplicated?: boolean
   scheduled_assets: number
   scheduled_outputs: number
   counts: ProjectCacheRebuildCounts
+  estimate: ProjectCacheRebuildEstimate
 }
 
 export interface ProjectHealthResult {
@@ -1303,6 +1316,109 @@ export interface ScreenRecordSystemAudioProbeResult {
   sample_frames: number
   signal_detected: boolean
   detail: string
+}
+
+/** One temporary, opaque server-owned rehearsal playback capability. */
+export interface ScreenRecordRehearsalStartResult {
+  playback_handle: string
+  /** Same-origin endpoint; never an output/media filesystem path. */
+  playback_url: string
+  duration_ms: number
+  discard_on_start_recording: true
+  note: string
+}
+
+export interface ScreenRecordRehearsalDiscardResult {
+  handle: string | null
+  discarded: boolean
+  state: 'discarded' | 'stopping'
+}
+
+export type ScreenRecordAudioMeterState =
+  | 'not_requested'
+  | 'awaiting_samples'
+  | 'live'
+  | 'stale'
+  | 'device_lost'
+  | 'stopped'
+  | 'unavailable'
+
+/** Process-local reading from a stream admitted by the active recording. */
+export interface ScreenRecordAudioMeter {
+  state: ScreenRecordAudioMeterState
+  peak_dbfs: number | null
+  rms_dbfs: number | null
+  decayed_peak_dbfs: number | null
+  sample_age_ms: number | null
+  stale: boolean
+  clipping: boolean
+  detail?: string
+}
+
+/** Read-only active-capture status. It never reopens native audio inputs. */
+export interface ScreenRecordStatusResult {
+  capture_id: string
+  ready: boolean
+  terminal: boolean
+  state: 'awaiting_first_screen_frame' | 'ready' | 'terminal_before_first_screen_frame' | 'terminal_after_first_screen_frame'
+  audio_meters: {
+    microphone: ScreenRecordAudioMeter
+    system_audio: ScreenRecordAudioMeter
+  }
+  /** Bounded native selected-source evidence; generic Stop is never source loss. */
+  source_lifecycle: {
+    state: 'awaiting_first_frame' | 'active' | 'terminal' | 'source_lost' | 'unavailable'
+    reason: string
+  }
+  /** Native controller placement conclusion without a window handle or source identity. */
+  controller_placement: {
+    state: 'excluded' | 'auto_hidden' | 'refused' | 'unavailable'
+    reason: string
+  }
+}
+
+/** In-process adapter admission only; it never proves a selected source or frame. */
+export type ScreenRecordSourcePreviewCapability =
+  | { state: 'available'; source_selection: 'exact' | 'portal' }
+  | { state: 'unsupported'; prerequisite: string }
+
+export type ScreenRecordSourcePreviewState =
+  | 'idle'
+  | 'starting'
+  | 'ready'
+  | 'paused'
+  | 'hidden'
+  | 'permission_required'
+  | 'permission_denied'
+  | 'source_lost'
+  | 'unavailable'
+  | 'stopped'
+
+/** Public-safe lifecycle projection; source identities and regions remain native-private. */
+export interface ScreenRecordSourcePreviewStatus {
+  state: ScreenRecordSourcePreviewState
+  recursion: 'none' | 'detected' | 'unavoidable'
+  has_frame: boolean
+  generation: number | null
+}
+
+/** Bounded BMP bytes, emitted from memory only for the returned generation. */
+export interface ScreenRecordSourcePreviewFrame {
+  mime: 'image/bmp'
+  bytes: number
+  generation: number
+  captured_at_ms: number
+  base64: string
+}
+
+export interface ScreenRecordSourcePreviewFrameResult {
+  status: ScreenRecordSourcePreviewStatus
+  frame: ScreenRecordSourcePreviewFrame | null
+}
+
+export interface ScreenRecordSourcePreviewActionResult {
+  action: 'start' | 'pause' | 'resume' | 'hide' | 'stop'
+  status: ScreenRecordSourcePreviewStatus
 }
 
 export interface McpSelfTestResult {
@@ -1553,7 +1669,18 @@ export interface VerbResults {
   'media.check': MediaCheckResult
   'project.health': ProjectHealthResult
   'screen_record.system_audio_probe': ScreenRecordSystemAudioProbeResult
+  'screen_record.preview_capability': ScreenRecordSourcePreviewCapability
+  'screen_record.preview_start': ScreenRecordSourcePreviewActionResult
+  'screen_record.preview_status': ScreenRecordSourcePreviewStatus
+  'screen_record.preview_frame': ScreenRecordSourcePreviewFrameResult
+  'screen_record.preview_pause': ScreenRecordSourcePreviewActionResult
+  'screen_record.preview_resume': ScreenRecordSourcePreviewActionResult
+  'screen_record.preview_hide': ScreenRecordSourcePreviewActionResult
+  'screen_record.preview_stop': ScreenRecordSourcePreviewActionResult
+  'screen_record.rehearsal_start': ScreenRecordRehearsalStartResult
+  'screen_record.rehearsal_discard': ScreenRecordRehearsalDiscardResult
   'screen_record.recovery_status': ScreenRecordRecoveryStatusResult
+  'screen_record.status': ScreenRecordStatusResult
   'media.relink': {
     asset: string
     path: string

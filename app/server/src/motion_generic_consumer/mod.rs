@@ -18,6 +18,11 @@ mod status;
 mod status_fields;
 mod syntax;
 
+// Discovery is deliberately reusable without exposing the injected transport or
+// a submission lane.  The runtime probe/catalog validators remain the single
+// structural authority for every Cut-owned Motion discovery caller.
+pub(crate) use contract::ConsumerContract;
+
 #[cfg(test)]
 mod tests;
 

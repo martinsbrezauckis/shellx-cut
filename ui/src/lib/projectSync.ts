@@ -2,7 +2,8 @@
 // change below is lossless to apply locally; any other edit arrives as a full
 // snapshot instead of a guessed client-side timeline replay.
 
-import { callVerb, type OpRecord, type Project, type VerbResult } from './client'
+import { callVerb, type OpRecord, type PortableB5RelinkReceipt, type Project, type ProjectIdentity, type VerbResult } from './client'
+import { isProjectIdentity } from './projectIdentity'
 
 /** Ephemeral revision metadata is intentionally kept out of the durable
  * project model: only project.state response consumers need it. */
@@ -22,6 +23,10 @@ export interface ProjectDelta {
   mode: 'delta'
   from_revision: string
   project_revision?: string | null
+  /** Explicit current-revision B5 evidence. Null clears stale B5 state. */
+  portable_b5_receipt?: PortableB5RelinkReceipt | null
+  /** Explicit path-free current-project binding on every current server delta. */
+  project_identity?: ProjectIdentity
   ops: OpRecord[]
   changes: ProjectChange[]
   affected: { markers: number; assets: number; project: number }
@@ -83,10 +88,24 @@ function deltaFrom(value: unknown): ProjectDelta | null {
   const affected = record(sync.affected)
   const bytes = typeof sync.encoded_bytes === 'number' ? sync.encoded_bytes : null
   if (!from || !ops || !changes || !affected || bytes == null) return null
+  const hasPortableB5Receipt = Object.hasOwn(sync, 'portable_b5_receipt')
+  const portableB5Receipt = sync.portable_b5_receipt
+  if (hasPortableB5Receipt && portableB5Receipt !== null && !record(portableB5Receipt)) return null
+  const hasProjectIdentity = Object.hasOwn(sync, 'project_identity')
+  let projectIdentity: ProjectIdentity | undefined
+  if (hasProjectIdentity) {
+    const candidate = sync.project_identity
+    if (!isProjectIdentity(candidate)) return null
+    projectIdentity = candidate
+  }
   return {
     mode: 'delta',
     from_revision: from,
     project_revision: string(sync.project_revision) ?? null,
+    ...(hasPortableB5Receipt
+      ? { portable_b5_receipt: portableB5Receipt as PortableB5RelinkReceipt | null }
+      : {}),
+    ...(projectIdentity ? { project_identity: projectIdentity } : {}),
     ops,
     changes,
     affected: {
@@ -118,6 +137,7 @@ export function projectSyncFromVerbResult(result: VerbResult<unknown>): ProjectS
   if (delta) return { mode: 'delta', delta }
   const project = result.result as SyncedProject
   const sync = record(project.sync)
+  if (sync?.mode === 'delta') return null
   return {
     mode: 'snapshot',
     project,
@@ -168,7 +188,7 @@ export function applyProjectDelta(project: SyncedProject, delta: ProjectDelta): 
         break
     }
   }
-  return {
+  const next: SyncedProject = {
     ...project,
     markers,
     assets,
@@ -176,6 +196,15 @@ export function applyProjectDelta(project: SyncedProject, delta: ProjectDelta): 
     project_revision: delta.project_revision ?? project.project_revision,
     sync: { mode: 'delta', project_revision: delta.project_revision, affected: delta.affected },
   }
+  // The server emits this key on every supported delta. Preserve compatibility
+  // with an older server that does not, but delete (rather than retain) an
+  // explicitly-null receipt so B6 never receives B5 evidence for an old tip.
+  if (Object.hasOwn(delta, 'portable_b5_receipt')) {
+    if (delta.portable_b5_receipt) next.portable_b5_receipt = delta.portable_b5_receipt
+    else delete next.portable_b5_receipt
+  }
+  if (Object.hasOwn(delta, 'project_identity')) next.project_identity = delta.project_identity
+  return next
 }
 
 /** Empty bounded deltas only acknowledge a revision already held by the UI;

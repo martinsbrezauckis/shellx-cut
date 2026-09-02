@@ -42,6 +42,7 @@ import DropZone from './DropZone'
 import type { GenerateWorkspaceTab } from './panels/GenerateTemplates'
 import StatusBar from './statusbar'
 import TopBar from './topbar'
+import RecordingTopBar from './topbar/RecordingTopBar'
 import AppDrawerStack, { type AppDrawer } from './app/AppDrawerStack'
 import AppRightRail from './app/AppRightRail'
 import AppWorkspace from './app/AppWorkspace'
@@ -662,7 +663,28 @@ export default function App() {
   return (
     <OfflineMediaProvider project={project} onProjectChanged={resync}>
     <VolumeAutomationProvider key={projectSession}>
-    <div ref={embeddedManualFrontend ? undefined : appRootMountReporter.current} className="app" data-cut-app-root>
+    <div
+      ref={embeddedManualFrontend ? undefined : appRootMountReporter.current}
+      className="app"
+      data-cut-app-root
+      data-cut-workspace-mode={layout.workspaceMode}
+    >
+      {layout.workspaceMode === 'record' ? (
+        <RecordingTopBar
+          projectName={project?.name ?? null}
+          doctor={doctor}
+          manualOpen={!embeddedManualFrontend && localManual.open}
+          onBackToEdit={() => setLayout((current) => ({ ...current, workspaceMode: 'edit' }))}
+          onOpenSetup={() => {
+            setWizardOpen(false)
+            setEnvCategory('general')
+            setEnvOpen(true)
+          }}
+          onOpenManual={() => {
+            if (!embeddedManualFrontend) setLocalManual(toggleLocalManual)
+          }}
+        />
+      ) : (
       <TopBar
         project={project}
         onOpenMusic={() => toggleDrawer('music')}
@@ -698,9 +720,10 @@ export default function App() {
         }}
         manualOpen={!embeddedManualFrontend && localManual.open}
       />
+      )}
 
       <div
-        className="app__middle"
+        className={`app__middle${layout.workspaceMode === 'record' ? ' app__middle--record' : ''}`}
         ref={middleRef}
         data-cut-overlay-rail-open={!layout.railCollapsed && !layout.railPinned ? 'true' : undefined}
         style={{ '--cut-overlay-rail-width': `${layout.railW}px` } as CSSProperties}
@@ -750,7 +773,7 @@ export default function App() {
         />
 
         <AppRightRail
-          hidden={layout.workspaceMode === 'library'}
+          hidden={layout.workspaceMode !== 'edit'}
           layout={layout}
           setLayout={setLayout}
           dragRail={dragRail}

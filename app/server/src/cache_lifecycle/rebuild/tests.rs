@@ -1,3 +1,4 @@
+use super::super::ownership::complete_rebuild_output;
 use super::*;
 use crate::events::EventBus;
 use crate::jobs::{JobManager, JobState};
@@ -98,6 +99,14 @@ async fn active_rebuild_request_deduplicates_without_rescanning_or_spawning() {
             "legacy_outputs": 0,
             "unsupported_assets": 0,
         }),
+        estimate: json!({
+            "basis": "source_hash_match_and_current_import_metadata",
+            "assets": 1,
+            "verified_source_bytes": 9,
+            "proxy_outputs": 0,
+            "filmstrip_outputs": 1,
+            "proxy_duration_ms": 0,
+        }),
     });
 
     let result = start_rebuild(&state, json!({}))
@@ -110,6 +119,35 @@ async fn active_rebuild_request_deduplicates_without_rescanning_or_spawning() {
     assert_eq!(result["scheduled_assets"], 1);
     assert_eq!(result["scheduled_outputs"], 1);
     assert_eq!(result["counts"]["fresh_assets"], 0);
+    assert_eq!(result["estimate"]["verified_source_bytes"], 9);
+}
+
+#[tokio::test]
+async fn estimate_only_verifies_rebuild_work_without_reserving_or_starting_a_job() {
+    let (_root, state, _source, _hash) = state_with_image_asset().await;
+    let result = start_rebuild(&state, json!({"asset_ids": ["a1"], "estimate_only": true}))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(result["status"], "estimated");
+    assert_eq!(result["scheduled_assets"], 1);
+    assert_eq!(result["scheduled_outputs"], 1);
+    assert_eq!(result["estimate"]["assets"], 1);
+    assert_eq!(result["estimate"]["verified_source_bytes"], 9);
+    assert_eq!(result["estimate"]["proxy_outputs"], 0);
+    assert_eq!(result["estimate"]["filmstrip_outputs"], 1);
+    assert!(
+        state.jobs.list().is_empty(),
+        "an estimate must not create a background worker"
+    );
+    let project_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+    assert!(
+        !project_dir
+            .join(".shellx-cut-cache-ownership.json")
+            .exists(),
+        "an estimate must not reserve a cache output"
+    );
 }
 
 #[tokio::test]
@@ -131,6 +169,106 @@ async fn source_revision_change_is_reported_without_reserving_or_starting_a_work
             .exists(),
         "a changed source never receives a cache reservation"
     );
+}
+
+#[tokio::test]
+async fn changed_or_unavailable_source_with_a_pending_reservation_stays_recoverable() {
+    let (_root, state, source, hash) = state_with_image_asset().await;
+    let project_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+    reserve_rebuild_output(&project_dir, CacheKind::Thumbnails, "a1", &hash).unwrap();
+    std::fs::write(&source, b"source-v2").unwrap();
+    let changed = start_rebuild(&state, json!({"asset_ids": ["a1"]}))
+        .await
+        .expect_err("a changed source cannot silently discard a pending output");
+    assert_eq!(changed.code, error_codes::CONFLICT);
+    assert!(changed.cause.contains("source is changed"));
+    std::fs::remove_file(source).unwrap();
+
+    let error = start_rebuild(&state, json!({"asset_ids": ["a1"]}))
+        .await
+        .expect_err("an unavailable source cannot silently discard a pending output");
+    assert_eq!(error.code, error_codes::CONFLICT);
+    assert_eq!(
+        error.message,
+        "cache rebuild requires pending source recovery"
+    );
+    assert!(
+        error
+            .cause
+            .contains("restore the exact source, relink it, or remove the asset"),
+        "the precise repair paths stay public: {}",
+        error.cause
+    );
+    assert_eq!(
+        rebuild_output_state(&project_dir, CacheKind::Thumbnails, "a1", &hash).unwrap(),
+        RebuildOutputState::Pending,
+        "the durable reservation remains visible until an exact recovery action"
+    );
+}
+
+#[tokio::test]
+async fn removed_asset_retires_its_pending_reservation_through_media_remove() {
+    let (_root, state, _source, hash) = state_with_image_asset().await;
+    let project_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+    reserve_rebuild_output(&project_dir, CacheKind::Thumbnails, "a1", &hash).unwrap();
+
+    let removed = crate::dispatch::dispatch(
+        &state,
+        "media.remove",
+        json!({"asset": "a1"}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(removed.ok, "remove: {:?}", removed.error);
+    assert!(
+        crate::cache_lifecycle::pending_rebuild_outputs_for_asset(&project_dir, "a1")
+            .unwrap()
+            .is_empty(),
+        "asset removal retires an exact pending ledger entry even without a metadata pointer"
+    );
+    let preview = crate::dispatch::dispatch(
+        &state,
+        "project.cache_preview",
+        json!({}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(preview.ok, "retired reservation: {:?}", preview.error);
+}
+
+#[tokio::test]
+async fn stale_removed_asset_reservation_is_repaired_before_an_empty_rebuild() {
+    let (_root, state, _source, hash) = state_with_image_asset().await;
+    let project_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+    reserve_rebuild_output(&project_dir, CacheKind::Thumbnails, "a1", &hash).unwrap();
+    {
+        let mut project = state.project.write().await;
+        let store = project.as_mut().unwrap();
+        store
+            .record_remove_asset("a1", cut_core::Actor::system(), None)
+            .unwrap();
+    }
+
+    let result = start_rebuild(&state, json!({}))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(result["status"], "not_needed");
+    assert!(
+        crate::cache_lifecycle::pending_rebuild_outputs_for_asset(&project_dir, "a1")
+            .unwrap()
+            .is_empty(),
+        "a restart-era orphan is retired under the lifecycle lease rather than blocking every preview"
+    );
+    let preview = crate::dispatch::dispatch(
+        &state,
+        "project.cache_preview",
+        json!({}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(preview.ok, "orphan reconciliation: {:?}", preview.error);
 }
 
 #[test]

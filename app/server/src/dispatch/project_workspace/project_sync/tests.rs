@@ -76,10 +76,20 @@ async fn state_and_ops_use_the_same_bounded_revision_cursor_end_to_end() {
         cut_core::Actor::system(),
     )
     .await;
-    let revision = baseline.result.unwrap()["project_revision"]
+    let baseline = baseline.result.unwrap();
+    let identity = baseline["project_identity"].clone();
+    assert_eq!(identity["schema"], "shellx-cut/project-identity/1");
+    assert_eq!(identity["project_name"], "sync");
+    assert!(identity["origin_path_sha256"]
         .as_str()
-        .unwrap()
-        .to_string();
+        .is_some_and(|value| value.starts_with("sha256:")));
+    assert!(
+        !serde_json::to_string(&identity)
+            .unwrap()
+            .contains(&dir.path().display().to_string()),
+        "project.state identity must not expose the canonical project path"
+    );
+    let revision = baseline["project_revision"].as_str().unwrap().to_string();
 
     let marker = crate::dispatch::dispatch(
         &state,
@@ -99,8 +109,14 @@ async fn state_and_ops_use_the_same_bounded_revision_cursor_end_to_end() {
     .await;
     let delta = delta.result.unwrap();
     assert_eq!(delta["sync"]["mode"], "delta");
+    assert_eq!(delta["sync"]["project_identity"], identity);
     assert_eq!(delta["sync"]["ops"].as_array().unwrap().len(), 1);
     assert_eq!(delta["sync"]["changes"][0]["kind"], "marker_upsert");
+    assert_eq!(
+        delta["sync"]["portable_b5_receipt"],
+        Value::Null,
+        "every bounded delta explicitly clears absent current B5 evidence"
+    );
 
     let page = crate::dispatch::dispatch(
         &state,
@@ -168,4 +184,35 @@ async fn state_and_ops_use_the_same_bounded_revision_cursor_end_to_end() {
     .unwrap();
     assert_eq!(too_large["sync"]["mode"], "snapshot");
     assert_eq!(too_large["sync"]["reason"], "delta_too_large");
+}
+
+#[tokio::test]
+async fn state_fails_closed_when_open_project_origin_is_no_longer_canonicalizable() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let created = crate::dispatch::dispatch(
+        &state,
+        "project.create",
+        json!({"name":"missing-origin", "dir": dir.path().join("missing-origin.cutproj")}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(created.ok, "project create: {:?}", created.error);
+
+    {
+        let mut project = state.project.write().await;
+        let store = project.as_mut().expect("created project remains open");
+        store.dir = dir.path().join("no-longer-present.cutproj");
+    }
+    let response = crate::dispatch::dispatch(
+        &state,
+        "project.state",
+        json!({}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(!response.ok);
+    let error = response.error.expect("state refusal must be actionable");
+    assert_eq!(error.code, error_codes::IO);
+    assert_eq!(error.message, "open project origin cannot be resolved");
 }

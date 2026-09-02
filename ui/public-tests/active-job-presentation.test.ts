@@ -51,10 +51,16 @@ explicitlyIneligible.retry = {
   attempt: 1,
 }
 const unrelatedFailure = record('job_052', '2026-08-09T07:00:00Z', 'failed')
+const queuedEligibleProjection = record('job_053', '2026-08-09T07:30:00Z', 'queued')
+queuedEligibleProjection.retry = { eligible: true, root_job_id: 'job_053', attempt: 1 }
+const cancelledEligibleProjection = record('job_054', '2026-08-09T08:00:00Z', 'failed')
+cancelledEligibleProjection.outcome = 'cancelled'
+cancelledEligibleProjection.outcome_reason = 'user_cancelled'
+cancelledEligibleProjection.retry = { eligible: true, root_job_id: 'job_054', attempt: 1 }
 assert.deepEqual(
-  retryableJobViews([unrelatedFailure, explicitlyIneligible, retryable, retryableVerification]).map((entry) => entry.job_id),
+  retryableJobViews([unrelatedFailure, explicitlyIneligible, queuedEligibleProjection, cancelledEligibleProjection, retryable, retryableVerification]).map((entry) => entry.job_id),
   ['job_049', 'job_050'],
-  'only the engine retry.eligible projection exposes a retry control',
+  'only failed, engine-eligible non-cancelled jobs expose a recovery navigation control',
 )
 const projected = activeJobViews([
   record('job_003', '2026-08-09T03:00:00Z', 'queued'),
@@ -80,12 +86,16 @@ assert.equal(
 
 const statusbarCss = readFileSync(new URL('../src/statusbar/statusbar.css', import.meta.url), 'utf8')
 const statusbarSource = readFileSync(new URL('../src/statusbar/index.tsx', import.meta.url), 'utf8')
+const retryRecoverySource = readFileSync(new URL('../src/panels/Environment/JobRetryRecovery.tsx', import.meta.url), 'utf8')
 const cancelRule = statusbarCss.match(/[.]sb-job-cancel\s*\{([^}]*)\}/)?.[1] || ''
 assert.match(cancelRule, /width:\s*24px/)
 assert.match(cancelRule, /height:\s*24px/)
 assert.match(cancelRule, /flex:\s*none/)
-assert.match(statusbarSource, /data-cut-job-retry=/, 'retryable failed tasks expose a stable retry selector')
-assert.match(statusbarSource, /callVerb\('jobs[.]retry'/, 'the retry control invokes the typed durable retry verb')
+assert.match(statusbarSource, /data-cut-job-retry-review=/, 'retryable failed tasks expose a stable recovery-navigation selector')
+assert.match(statusbarSource, /onOpenEnvironment\('health-recovery'\)/, 'status-bar recovery navigation reaches the sole retry owner')
+assert.doesNotMatch(statusbarSource, /callVerb\('jobs[.]retry'/, 'status bar cannot create a competing retry request')
+assert.match(retryRecoverySource, /data-cut-job-retry-action=/, 'Health & Recovery exposes the stable retry action selector')
+assert.match(retryRecoverySource, /callVerb\('jobs[.]retry'/, 'Health & Recovery invokes the typed durable retry verb')
 assert.match(statusbarSource, /'output check'/, 'receipt-bound verification retry has novice-facing task copy')
 
 console.log('PASS active jobs use human labels and truthful queued/running progress')

@@ -74,6 +74,8 @@ const WEBDRIVER_TEST_BUILD_MARKER: &str = "shellx-cut/webdriver-test-enabled@1";
 #[cfg(desktop)]
 use tauri::Emitter;
 
+#[cfg(target_os = "macos")]
+mod macos_controller_owner;
 mod macos_region_bridge;
 mod source_reveal;
 mod tools;
@@ -84,6 +86,8 @@ mod update_state;
 #[cfg(desktop)]
 mod updater_key_transition;
 pub mod updater_signature;
+#[cfg(windows)]
+mod windows_controller_placement;
 mod windows_region_bridge;
 #[cfg(windows)]
 mod windows_region_picker;
@@ -482,6 +486,7 @@ fn spawn_engine(
     resource_dir: &std::path::Path,
     tools: &ToolResolution,
     portal_parent_window: Option<&str>,
+    controller_placement: Option<&str>,
 ) -> Result<
     (
         Option<Child>,
@@ -553,6 +558,33 @@ fn spawn_engine(
         if let Some(parent_window) = portal_parent_window {
             cmd.env(ENV_PORTAL_PARENT_WINDOW, parent_window);
         }
+    }
+    #[cfg(windows)]
+    {
+        // Scrub a parent shell's inherited values. Only this spawned child may
+        // receive a conclusion observed by the owning Tauri process; adopted
+        // engines do not pass this branch and remain unavailable.
+        cmd.env_remove(windows_controller_placement::ENV_CONTROLLER_PLACEMENT);
+        cmd.env_remove(windows_controller_placement::ENV_CONTROLLER_PLACEMENT_OWNER);
+        if ui_present {
+            if let Some(controller_placement) = controller_placement {
+                cmd.env(
+                    windows_controller_placement::ENV_CONTROLLER_PLACEMENT,
+                    controller_placement,
+                );
+                cmd.env(
+                    windows_controller_placement::ENV_CONTROLLER_PLACEMENT_OWNER,
+                    windows_controller_placement::PLACEMENT_OWNER,
+                );
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Only a direct Tauri child may identify its controller windows. An
+        // adopted cutd returns before this spawn path and has no marker; scrub
+        // inherited values so an external parent cannot become a controller.
+        macos_controller_owner::apply_to_spawned_child(&mut cmd, ui_present);
     }
     let agent_docs_dir = resource_dir.join("agent-docs");
     if agent_docs_dir.join("skill/shellx-cut/SKILL.md").is_file() {
@@ -1009,7 +1041,19 @@ pub fn run() {
             #[cfg(not(target_os = "linux"))]
             let portal_parent_window: Option<String> = None;
 
-            match spawn_engine(&resource_dir, &tool_res, portal_parent_window.as_deref()) {
+            #[cfg(windows)]
+            let controller_placement = app
+                .get_webview_window("main")
+                .and_then(|window| windows_controller_placement::observe(&window));
+            #[cfg(not(windows))]
+            let controller_placement: Option<&str> = None;
+
+            match spawn_engine(
+                &resource_dir,
+                &tool_res,
+                portal_parent_window.as_deref(),
+                controller_placement,
+            ) {
                 Ok((mut child, url, ui, engine_version, foreground_region_bridge)) => {
                     let mode = if child.is_some() { "spawned" } else { "external" };
                     let allow_foreground_region = foreground_region_bridge.is_some();

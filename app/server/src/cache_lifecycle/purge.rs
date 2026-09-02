@@ -1,94 +1,26 @@
 //! Preview admission, atomic plan consumption, and exact deletion job.
 
-use super::inventory::{build_preview, scan};
+use super::inventory::scan;
 use super::ownership::{cache_root, identity, key, read_ledger, write_ledger};
 use super::*;
 use crate::jobs::{begin_current_process_worker, current_job_cancellation};
 use crate::state::AppState;
-use cut_core::{error_codes, CutError, ProjectStore, VerbResult};
-use serde::Deserialize;
-use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
+use cut_core::{error_codes, CutError, ProjectStore};
 
-pub(crate) async fn preview(state: &AppState) -> Result<VerbResult, CutError> {
-    let _lease = state
-        .cache_lifecycle_lease
-        .try_write()
-        .map_err(|_| cache_busy_error())?;
-    let plan_id = format!(
-        "cache_plan_{}",
-        state
-            .cache_purge_plan_seq
-            .fetch_add(1, Ordering::AcqRel)
-            .saturating_add(1)
-    );
-    let preview = {
-        let project = state.project.read().await;
-        let store = project.as_ref().ok_or_else(|| {
-            CutError::new(
-                error_codes::NOT_FOUND,
-                "no project open",
-                "open a project before previewing its editing cache",
-            )
-        })?;
-        build_preview(store, plan_id)?
-    };
-    *state.cache_purge_plan.lock().await = preview.plan;
-    Ok(VerbResult::ok(preview.public))
-}
-
-#[derive(Deserialize)]
-struct PurgeArgs {
-    plan_id: String,
-    confirm: bool,
-}
-
-pub(crate) async fn start_purge(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
-    let args: PurgeArgs = serde_json::from_value(args).map_err(|_| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            "invalid cache purge confirmation",
-            "send the plan_id returned by project.cache_preview and confirm: true",
-        )
-    })?;
-    if !args.confirm {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            "cache purge requires confirmation",
-            "send confirm: true only after reviewing the current preview",
-        ));
-    }
-    let plan = {
-        let mut stored = state.cache_purge_plan.lock().await;
-        match stored.take() {
-            Some(plan) if plan.plan_id == args.plan_id => plan,
-            Some(plan) => {
-                *stored = Some(plan);
-                return Err(cache_error(
-                    "cache purge plan is not current",
-                    "preview the cache again and confirm the returned plan",
-                ));
-            }
-            None => {
-                return Err(cache_error(
-                    "cache purge plan is not current",
-                    "preview the cache again before confirming deletion",
-                ))
-            }
-        }
-    };
-    let job = state.jobs.create("cache_purge");
-    let job_id = job.job_id.clone();
-    let job_state = state.clone();
-    let jid = job_id.clone();
-    state.jobs.spawn(
-        &job_id,
-        async move { execute_purge(job_state, jid, plan).await },
-    );
-    Ok(VerbResult::ok(
-        json!({"job_id": job_id, "status": "queued"}),
-    ))
-}
+mod admission;
+mod reconciliation;
+#[cfg(test)]
+mod reconciliation_tests;
+#[cfg(test)]
+mod tests;
+pub(crate) use admission::{preview, start_purge};
+#[cfg(test)]
+pub(super) use reconciliation::derived_after;
+use reconciliation::post_measurement;
+pub(super) use reconciliation::{
+    cancel_with_reconciliation, fail_after_removed, fail_with_reconciliation,
+    reconciliation_result, ReconciliationStatus,
+};
 
 fn revalidate_plan(store: &ProjectStore, plan: &CachePurgePlan) -> Result<(), CutError> {
     if now_ms()?.saturating_sub(plan.created_ms) > 5 * 60 * 1_000 {
@@ -121,11 +53,14 @@ fn revalidate_plan(store: &ProjectStore, plan: &CachePurgePlan) -> Result<(), Cu
     Ok(())
 }
 
-async fn execute_purge(state: AppState, job_id: String, plan: CachePurgePlan) {
+pub(super) async fn execute_purge(state: AppState, job_id: String, plan: CachePurgePlan) {
     let _process_guard = begin_current_process_worker();
     let cancellation = current_job_cancellation();
     if let Some(reason) = cancellation.reason() {
-        state.jobs.cancel_from_worker(&job_id, reason);
+        // The plan already contains a strict before measurement. Before the
+        // worker has the lifecycle lease we may retain a fresh strict zero-
+        // removal reconciliation, but never derive one from a stale plan.
+        cancel_with_reconciliation(&state, &job_id, reason, &plan, 0, 0, false).await;
         return;
     }
     let _lease = match state.cache_lifecycle_lease.try_write() {
@@ -154,7 +89,17 @@ async fn execute_purge(state: AppState, job_id: String, plan: CachePurgePlan) {
         revalidate_plan(store, &plan)
     };
     if let Err(error) = validation {
-        state.jobs.fail(&job_id, error);
+        if let Some(reason) = cancellation.reason() {
+            // A project transition can take the store between acquiring the
+            // lease and validation. Preserve its cancellation terminal state.
+            cancel_with_reconciliation(&state, &job_id, reason, &plan, 0, 0, false).await;
+        } else {
+            state.jobs.fail(&job_id, error);
+        }
+        return;
+    }
+    if let Some(reason) = cancellation.reason() {
+        cancel_with_reconciliation(&state, &job_id, reason, &plan, 0, 0, true).await;
         return;
     }
     let mut ledger = match read_ledger(&plan.project_dir) {
@@ -169,13 +114,30 @@ async fn execute_purge(state: AppState, job_id: String, plan: CachePurgePlan) {
     let mut deleted_bytes = 0u64;
     for (index, target) in plan.targets.iter().enumerate() {
         if let Some(reason) = cancellation.reason() {
-            state.jobs.cancel_from_worker(&job_id, reason);
+            cancel_with_reconciliation(
+                &state,
+                &job_id,
+                reason,
+                &plan,
+                deleted_files,
+                deleted_bytes,
+                true,
+            )
+            .await;
             return;
         }
         let root = match cache_root(&plan.project_dir, target.kind) {
             Ok(root) => root,
             Err(error) => {
-                state.jobs.fail(&job_id, error);
+                fail_with_reconciliation(
+                    &state,
+                    &job_id,
+                    &plan,
+                    deleted_files,
+                    deleted_bytes,
+                    error,
+                )
+                .await;
                 return;
             }
         };
@@ -187,65 +149,103 @@ async fn execute_purge(state: AppState, job_id: String, plan: CachePurgePlan) {
             )
         });
         if current_root.as_ref().ok() != expected_root.map(|expected| &expected.canonical) {
-            state.jobs.fail(
+            fail_with_reconciliation(
+                &state,
                 &job_id,
+                &plan,
+                deleted_files,
+                deleted_bytes,
                 cache_error(
                     "cache purge plan is no longer valid",
                     "a cache root changed after the preview",
                 ),
-            );
+            )
+            .await;
             return;
         }
         let path = root.join(&target.name);
         match identity(target.kind, target.name.clone(), &path) {
             Ok(current) if current == *target => {}
             Ok(_) => {
-                state.jobs.fail(
+                fail_with_reconciliation(
+                    &state,
                     &job_id,
+                    &plan,
+                    deleted_files,
+                    deleted_bytes,
                     cache_error(
                         "cache purge plan is no longer valid",
                         "a cache entry changed after the preview",
                     ),
-                );
+                )
+                .await;
                 return;
             }
             Err(error) => {
-                state.jobs.fail(&job_id, error);
+                fail_with_reconciliation(
+                    &state,
+                    &job_id,
+                    &plan,
+                    deleted_files,
+                    deleted_bytes,
+                    error,
+                )
+                .await;
                 return;
             }
         }
         if std::fs::remove_file(&path).is_err() {
-            state.jobs.fail(
+            fail_with_reconciliation(
+                &state,
                 &job_id,
+                &plan,
+                deleted_files,
+                deleted_bytes,
                 cache_error(
                     "cache purge could not remove a cache entry",
                     "the planned cache file could not be removed",
                 ),
-            );
+            )
+            .await;
             return;
         }
         let Some(entry_key) = key(target.kind, &target.name) else {
-            state.jobs.fail(
+            fail_after_removed(
+                &state,
                 &job_id,
+                &plan,
+                deleted_files.saturating_add(1),
+                deleted_bytes.saturating_add(target.bytes),
                 cache_error(
                     "cache purge plan is no longer valid",
-                    "a cache filename is not valid text",
+                    "a cache filename is not valid text after it was removed",
                 ),
             );
             return;
         };
         if ledger.entries.remove(&entry_key).is_none() {
-            state.jobs.fail(
+            fail_after_removed(
+                &state,
                 &job_id,
+                &plan,
+                deleted_files.saturating_add(1),
+                deleted_bytes.saturating_add(target.bytes),
                 cache_error(
                     "cache purge plan is no longer valid",
-                    "an ownership record disappeared after the preview",
+                    "an ownership record disappeared after the cache file was removed",
                 ),
             );
             return;
         }
         if let Err(error) = write_ledger(&plan.project_dir, &ledger) {
-            state.jobs.fail(&job_id, error);
+            fail_after_removed(
+                &state,
+                &job_id,
+                &plan,
+                deleted_files.saturating_add(1),
+                deleted_bytes.saturating_add(target.bytes),
+                error,
+            );
             return;
         }
         deleted_files = deleted_files.saturating_add(1);
@@ -256,13 +256,60 @@ async fn execute_purge(state: AppState, job_id: String, plan: CachePurgePlan) {
             Some("removing confirmed rebuildable cache files".into()),
         );
     }
+    // Cancellation can race the final deletion and the after-scan. Check it
+    // once more so a project transition cannot flatten an otherwise exact
+    // partial/full delta into a generic no-project failure.
+    if let Some(reason) = cancellation.reason() {
+        cancel_with_reconciliation(
+            &state,
+            &job_id,
+            reason,
+            &plan,
+            deleted_files,
+            deleted_bytes,
+            true,
+        )
+        .await;
+        return;
+    }
+    let after = match post_measurement(&state, &plan).await {
+        Ok(after) => after,
+        Err(error) => {
+            if let Some(reason) = cancellation.reason() {
+                cancel_with_reconciliation(
+                    &state,
+                    &job_id,
+                    reason,
+                    &plan,
+                    deleted_files,
+                    deleted_bytes,
+                    true,
+                )
+                .await;
+            } else {
+                fail_with_reconciliation(
+                    &state,
+                    &job_id,
+                    &plan,
+                    deleted_files,
+                    deleted_bytes,
+                    error,
+                )
+                .await;
+            }
+            return;
+        }
+    };
     state.jobs.finish(
         &job_id,
-        json!({
-            "deleted_files": deleted_files,
-            "deleted_bytes": deleted_bytes,
-            "retention_minimum_age_ms": CACHE_RETENTION_MS,
-            "note": "only ledger-owned, unreferenced, aged proxy and filmstrip files were eligible"
-        }),
+        reconciliation_result(
+            &plan,
+            deleted_files,
+            deleted_bytes,
+            after,
+            ReconciliationStatus::Completed,
+            true,
+            false,
+        ),
     );
 }

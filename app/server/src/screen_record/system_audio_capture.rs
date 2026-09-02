@@ -123,28 +123,50 @@ pub(crate) fn capture_system_audio_until(
     duration_ms: Option<u64>,
     stop: Arc<AtomicBool>,
     capture_started: Instant,
+    meter: Option<Arc<record_capture::RollingAudioLevel>>,
 ) -> Result<Option<record_capture::SystemAudioCapture>, CutError> {
     #[cfg(windows)]
     {
         #[allow(clippy::needless_return)]
-        return record_capture::capture_system_loopback(
-            &out.to_string_lossy(),
-            duration_ms,
-            stop,
-            capture_started,
-        )
+        return match meter {
+            Some(meter) => record_capture::capture_system_loopback_with_level(
+                &out.to_string_lossy(),
+                duration_ms,
+                stop,
+                capture_started,
+                meter,
+            ),
+            None => record_capture::capture_system_loopback(
+                &out.to_string_lossy(),
+                duration_ms,
+                stop,
+                capture_started,
+            ),
+        }
         .map(Some)
         .map_err(super::record_err);
     }
     #[cfg(target_os = "linux")]
     {
         #[allow(clippy::needless_return)]
-        return record_capture::capture_system_pipewire(out, duration_ms, stop, capture_started)
-            .map(Some)
-            .map_err(super::record_err);
+        return match meter {
+            Some(meter) => record_capture::capture_system_pipewire_with_level(
+                out,
+                duration_ms,
+                stop,
+                capture_started,
+                meter,
+            ),
+            None => {
+                record_capture::capture_system_pipewire(out, duration_ms, stop, capture_started)
+            }
+        }
+        .map(Some)
+        .map_err(super::record_err);
     }
     #[cfg(all(not(windows), not(target_os = "linux")))]
     {
+        let _ = meter;
         let _ = capture_started;
         if let Some(ms) = duration_ms {
             super::capture_system_audio(out, ms)?;

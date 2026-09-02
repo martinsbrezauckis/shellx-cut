@@ -40,6 +40,7 @@ pub(crate) fn capture_system_audio_artifact(
     duration_ms: Option<u64>,
     stop: Arc<AtomicBool>,
     capture_started: Instant,
+    meter: Option<Arc<record_capture::RollingAudioLevel>>,
 ) -> Result<(), CutError> {
     let capture_dir = out.parent().ok_or_else(|| {
         CutError::new(
@@ -53,7 +54,12 @@ pub(crate) fn capture_system_audio_artifact(
     // refuses the incomplete current-format artifact instead of treating it as a
     // legacy zero-offset recording.
     publication::begin_timing_publication(capture_dir)?;
-    let capture = match capture_system_audio_until(out, duration_ms, stop, capture_started) {
+    let capture =
+        capture_system_audio_until(out, duration_ms, stop, capture_started, meter.clone());
+    if let Some(meter) = meter {
+        meter.mark_stopped();
+    }
+    let capture = match capture {
         Ok(capture) => capture,
         Err(error) => {
             publication::discard_incomplete_timing_publication(out, capture_dir);

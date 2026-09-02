@@ -81,6 +81,13 @@ pub(crate) fn build_motion_cli_command(
 ) -> MotionCommandSpec {
     connector_args.push("--caller-id".to_string());
     connector_args.push(motion_caller_id(caller_scope));
+    build_motion_command_without_caller(connector_args)
+}
+
+/// Resolve a fixed internal Motion argv without adding a caller id.  Callers
+/// must keep their command set closed; the discovery lane does that in
+/// `motion_discovery.rs`, while connector callers use `build_motion_cli_command`.
+pub(crate) fn build_motion_command_without_caller(command_args: Vec<String>) -> MotionCommandSpec {
     let timeout_ms = std::env::var(ENV_MOTION_TIMEOUT_MS)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -92,25 +99,25 @@ pub(crate) fn build_motion_cli_command(
         }
         return MotionCommandSpec {
             program: bin,
-            args: connector_args,
+            args: command_args,
             cwd: None,
             timeout_ms,
         };
     }
     if let Some(root) = find_motion_root() {
-        let mut args = vec![
+        let mut launch_args = vec![
             "--filter".to_string(),
             "@shellx-motion/cli".to_string(),
             "run".to_string(),
             "cli".to_string(),
             "--".to_string(),
         ];
-        args.extend(connector_args);
+        launch_args.extend(command_args);
         return MotionCommandSpec {
             // On Windows pnpm is the `pnpm.cmd` shim; `resolve_spawn` launches
             // its contained Node entrypoint directly. Elsewhere it is bare pnpm.
             program: motion_pnpm_program(),
-            args,
+            args: launch_args,
             cwd: Some(root),
             timeout_ms,
         };
@@ -126,7 +133,7 @@ pub(crate) fn build_motion_cli_command(
     };
     MotionCommandSpec {
         program,
-        args: connector_args,
+        args: command_args,
         cwd: None,
         timeout_ms,
     }

@@ -97,15 +97,23 @@ pub(super) async fn project_state(state: &AppState, args: Value) -> Result<VerbR
     let Some((changes, affected)) = bounded_changes(&page.ops) else {
         return snapshot(store, "unsupported_delta");
     };
+    // This is ephemeral B5-to-B6 evidence, but it remains revision-bound just
+    // like the rest of a delta. Always include it so a supported later mutation
+    // can explicitly clear the receipt rather than leave the client carrying a
+    // prior revision's authority until its next full snapshot.
+    let portable_b5_receipt = store.current_relink_receipt()?;
+    let project_identity = super::path_free_project_identity(store)?;
     Ok(VerbResult::ok(json!({
         "sync": {
             "mode": "delta",
             "from_revision": since_revision,
             "project_revision": store.log.current_revision()?,
+            "project_identity": project_identity,
             "ops": page.ops,
             "changes": changes,
             "affected": affected,
             "encoded_bytes": page.encoded_bytes,
+            "portable_b5_receipt": portable_b5_receipt,
         }
     })))
 }

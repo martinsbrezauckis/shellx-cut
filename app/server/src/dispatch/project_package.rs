@@ -4,9 +4,10 @@
 //! for the Projects preview-first flow and direct API. It never falls back to
 //! the legacy one-asset relink path or exposes a partially written destination.
 
+use super::project_workspace::path_free_project_identity;
 use super::*;
-use cut_core::store::{is_exact_sha256, PORTABLE_SNAPSHOT_SCHEMA};
-use cut_core::{Clip, Project, ProjectStore};
+use cut_core::store::{current_relink_receipt, is_exact_sha256, PORTABLE_SNAPSHOT_SCHEMA};
+use cut_core::{Clip, Project};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +55,7 @@ struct PackageSourceSnapshot {
     project_identity: Value,
     project_revision: String,
     ops: Vec<OpRecord>,
+    current_b5_receipt: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,6 +320,7 @@ pub(super) async fn project_package_create(
 }
 
 include!("project_package/plan.rs");
+include!("project_package/b5_evidence.rs");
 include!("project_package/source_io.rs");
 include!("project_package/publish.rs");
 include!("project_package/manifest.rs");

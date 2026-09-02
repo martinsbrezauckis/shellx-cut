@@ -4,8 +4,10 @@
 //! preparation, backend start, and terminal stop without exposing pause/resume
 //! controls or claiming that any selected stream can be sealed independently.
 
+use super::audio_meters::{AudioMetersStatus, CaptureAudioMeters};
 use record_capture::{
-    CaptureClock, CaptureReadiness, CaptureReadinessStatus, PauseStreamCoordinator,
+    CaptureClock, CaptureControllerPlacement, CaptureReadiness, CaptureReadinessStatus,
+    CaptureSourceLifecycle, CaptureSourceLifecycleStatus, PauseStreamCoordinator,
     PrivateSceneCoordinator, PrivateSceneCoordinatorError, PrivateSceneProjection,
     RecordingSceneEngine, RecordingSceneProjection, RecordingSceneTimerAction,
     SelectedCaptureStreams, SessionPhase,
@@ -30,6 +32,9 @@ pub(crate) struct CaptureSessionStatus {
 struct CaptureSessionState {
     stop: Arc<AtomicBool>,
     readiness: CaptureReadiness,
+    controller_placement: CaptureControllerPlacement,
+    source_lifecycle: CaptureSourceLifecycle,
+    audio_meters: CaptureAudioMeters,
     native_launch: Mutex<NativeLaunch>,
     timeline: Mutex<CaptureSceneTimeline>,
     terminal_scene_error: Mutex<Option<PrivateSceneCoordinatorError>>,
@@ -119,10 +124,14 @@ impl CaptureSessionControl {
             SelectedCaptureStreams::new(audio, system_audio, false, passive_input_capture_active);
         let coordinator =
             PauseStreamCoordinator::new(streams, duration_ms.map(Duration::from_millis));
+        let readiness = CaptureReadiness::default();
         Self {
             state: Arc::new(CaptureSessionState {
                 stop: Arc::new(AtomicBool::new(false)),
-                readiness: CaptureReadiness::default(),
+                source_lifecycle: CaptureSourceLifecycle::with_readiness(readiness.clone()),
+                readiness,
+                controller_placement: CaptureControllerPlacement::new(),
+                audio_meters: CaptureAudioMeters::new(audio, system_audio),
                 native_launch: Mutex::new(NativeLaunch::Pending),
                 timeline: Mutex::new(CaptureSceneTimeline {
                     coordinator,
@@ -238,6 +247,10 @@ impl CaptureSessionControl {
     /// a poisoned lock preserves its actual coordinator value so neither a failed
     /// observer nor a prior panic can prevent a later stop from taking effect.
     pub(crate) fn terminalize(&self) -> Result<(), PrivateSceneCoordinatorError> {
+        // Stop and all server-owned terminal paths are expected closure. A
+        // backend callback that arrives after this boundary cannot be mistaken
+        // for selected-source disappearance.
+        self.state.source_lifecycle.expect_terminal_close();
         self.terminalize_at(Instant::now(), None)
     }
 
@@ -249,6 +262,7 @@ impl CaptureSessionControl {
         &self,
         media_duration_ms: u64,
     ) -> Result<(), PrivateSceneCoordinatorError> {
+        self.state.source_lifecycle.expect_terminal_close();
         self.terminalize_at(Instant::now(), Some(media_duration_ms))
     }
 
@@ -261,6 +275,7 @@ impl CaptureSessionControl {
         // it before exposing the physical Stop signal so a callback racing Stop
         // cannot make a terminal capture ready again.
         self.state.readiness.mark_terminal();
+        self.state.audio_meters.mark_terminal();
         // Linearize the native handoff first. A worker that has
         // not yet handed off to its native backend must observe `Stopped` and
         // publish the ordinary terminal failure instead of starting devices
@@ -418,8 +433,36 @@ impl CaptureSessionControl {
         self.state.readiness.clone()
     }
 
+    /// A capture backend receives only this observed-placement handle. It
+    /// carries no native controller window or selected-source identity.
+    pub(crate) fn controller_placement(&self) -> CaptureControllerPlacement {
+        self.state.controller_placement.clone()
+    }
+
+    /// A native backend receives only this bounded source-lifecycle handle.
+    /// It contains no selected identifier, window handle, or process identity.
+    pub(crate) fn source_lifecycle(&self) -> CaptureSourceLifecycle {
+        self.state.source_lifecycle.clone()
+    }
+
     pub(crate) fn readiness_status(&self) -> CaptureReadinessStatus {
         self.state.readiness.status()
+    }
+
+    pub(crate) fn source_lifecycle_status(&self) -> CaptureSourceLifecycleStatus {
+        self.state.source_lifecycle.status()
+    }
+
+    pub(crate) fn microphone_meter(&self) -> Option<Arc<record_capture::RollingAudioLevel>> {
+        self.state.audio_meters.microphone_meter()
+    }
+
+    pub(crate) fn system_audio_meter(&self) -> Option<Arc<record_capture::RollingAudioLevel>> {
+        self.state.audio_meters.system_audio_meter()
+    }
+
+    pub(crate) fn audio_meters_status(&self) -> AudioMetersStatus {
+        self.state.audio_meters.status()
     }
 
     /// Whether Stop has already become terminal after native launch was

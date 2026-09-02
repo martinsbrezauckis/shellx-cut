@@ -1,0 +1,16 @@
+.rec-capture-safety {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, .14));
+  border-radius: 9px;
+  color: var(--ink-3, #aab1bd);
+  font: 650 var(--fs-ui-xs, 11px)/1.3 var(--sans);
+}
+
+.rec-capture-safety__controller { min-width: 0; }
+.rec-capture-safety__controller--safe { color: #7ee0b0; }
+.rec-capture-safety__controller--warning { color: #ffb36b; }
+.rec-capture-safety__controller--muted { color: var(--ink-4, #838b99); }

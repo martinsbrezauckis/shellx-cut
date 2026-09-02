@@ -66,7 +66,15 @@ export function activeJobViews(records: JobRecord[]): JobView[] {
  * projection. Clients do not reverse-engineer eligibility from kind/error. */
 export function retryableJobViews(records: JobRecord[]): RetryableJobView[] {
   return records
-    .filter((job) => job.retry?.eligible === true)
+    .filter((job) => (
+      job.state === 'failed'
+      && job.retry?.eligible === true
+      && job.outcome !== 'cancelled'
+      && job.outcome !== 'superseded'
+      && job.outcome_reason !== 'user_cancelled'
+      && job.outcome_reason !== 'project_switch_cancelled'
+      && job.outcome_reason !== 'superseded'
+    ))
     .sort((left, right) => left.created_ts.localeCompare(right.created_ts) || left.job_id.localeCompare(right.job_id))
     .map((job) => ({
       job_id: job.job_id,

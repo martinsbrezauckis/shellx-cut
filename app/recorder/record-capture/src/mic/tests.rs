@@ -1,4 +1,5 @@
-use super::device::{join_bounded, peak_dbfs};
+use super::device::join_bounded;
+use super::device_warm::peak_dbfs;
 use super::loopback_pcm::decode_process_loopback_packet;
 use super::wav::{
     discard_unpublished_staging, should_publish_microphone, wav_i16_sample_capacity,

@@ -1,7 +1,7 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.113",
-  "featureCount": 198,
+  "appVersion": "0.6.114",
+  "featureCount": 199,
   "features": [
     {
       "id": "cut.setup.ffmpeg",
@@ -69,9 +69,9 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Top bar",
-      "description": "Switch from Edit into the Recording Studio workspace for screen capture, background choice, raw streams, and auto-polished recording clips.",
-      "requirement": "Requires a desktop capture backend; FFmpeg is required for recording and output.",
-      "api": "ui.open {panel:\"record\"}, screen_record.doctor"
+      "description": "Switch from Edit into the focused Recording Studio workspace for an exact native source preview, capture-input meters, disposable rehearsal, scenes, live controls, raw streams, and auto-polished recording clips.",
+      "requirement": "Requires a supported desktop capture backend; FFmpeg is required for recording and output. Preview and meter availability is reported by the current native build.",
+      "api": "ui.open {panel:\"record\"}, screen_record.doctor, screen_record.preview_capability"
     },
     {
       "id": "cut.top.projects",
@@ -99,9 +99,9 @@
       "group": "top",
       "title": "Settings and editing cache",
       "where": "Top bar",
-      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Settings > Health & Recovery can non-destructively rebuild missing Cut-owned proxies and filmstrips, then separately preview aged unreferenced cache before an explicit cancellable cleanup; original media, exports, captures, and receipts are never candidates.",
-      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Rebuild and cleanup require an open project; cleanup also requires a complete ownership-ledger preview. Partial, changed, foreign, or symlinked inventories are refused.",
-      "api": "system.doctor, system.mcp_test, project.cache_rebuild, project.cache_preview, project.cache_purge, jobs.cancel"
+      "description": "Configure tools, environment readiness, agents, paths, and editor preferences. Health & Recovery can estimate and rebuild missing Cut-owned proxies and filmstrips, then separately preview aged unreferenced cache before an explicit cancellable cleanup with before/removed/after reconciliation. The Motion card can verify a discovered runtime and connector descriptor read-only; managed lifecycle controls remain unavailable until the verified MOTION-DIST-01 distribution exists.",
+      "requirement": "Some checks require FFmpeg or CLI tools installed locally. Rebuild and cleanup require an open project; cleanup also requires a complete ownership-ledger preview. Partial, changed, foreign, or symlinked inventories are refused. Motion discovery never installs, repairs, updates, removes, logs in, or executes a connector.",
+      "api": "system.doctor, system.mcp_test, system.motion_status, project.cache_rebuild, project.cache_preview, project.cache_purge, jobs.cancel"
     },
     {
       "id": "cut.top.manual",
@@ -719,8 +719,8 @@
       "group": "top",
       "title": "Take a copy with you",
       "where": "Projects",
-      "description": "Open Make a copy, choose a destination folder, and preview the exact used-media count, dedupe, cache exclusion, and current collision state before confirming. The copy contains only media used in the project; the current project and original files remain unchanged.",
-      "requirement": "Requires an open project and the desktop app for the destination-folder picker.",
+      "description": "Open Make a copy, choose a destination folder, and preview the exact used-media count, dedupe, cache exclusion, and current collision state before confirming. When the current revision is a grouped bulk relink, Cut carries that durable receipt into the package plan and refuses missing, stale, or mismatched evidence. The copy contains only used media; the current project and original files remain unchanged.",
+      "requirement": "Requires an open project and the desktop app for the destination-folder picker. Switching project or revision clears older relink/package results before another action can run.",
       "api": "project.package_plan, project.package_create, jobs.status"
     },
     {
@@ -879,8 +879,8 @@
       "group": "left",
       "title": "Transcript tab",
       "where": "Left sidebar",
-      "description": "Work with phrases, transcript modes, caption generation, and transcript tools.",
-      "requirement": "Requires speech-to-text tooling for generated transcripts.",
+      "description": "Browse a timeline-linked phrase and chapter list with exact start-end ranges. Clicking a range seeks the matching timeline occurrence; reused media asks you to choose the occurrence, and unavailable media explains why it cannot open.",
+      "requirement": "Requires speech-to-text tooling for generated transcripts. Offline transcripts remain readable even when their media occurrence cannot be opened.",
       "api": "media.transcribe, transcript.timeline"
     },
     {
@@ -1394,6 +1394,16 @@
       "api": "edit.pan"
     },
     {
+      "id": "cut.timeline.voiceover",
+      "label": "Timeline voiceover",
+      "group": "timeline",
+      "title": "Timeline voiceover",
+      "where": "Audio track header",
+      "description": "Record into the selected audio track after a visible three-second count-in. Start at the playhead or use the current In-Out range; Stop places one sealed take as one Undoable edit, while Cancel adds nothing.",
+      "requirement": "Requires an unlocked audio track, an admitted native microphone, and a supported host. Direct monitoring stays off.",
+      "api": "voiceover.start, voiceover.tick, voiceover.stop, voiceover.cancel, voiceover.observe_playhead"
+    },
+    {
       "id": "cut.timeline.base_overlay",
       "label": "Base track and overlays",
       "group": "timeline",
@@ -1638,10 +1648,10 @@
       "label": "Studio preview",
       "group": "record",
       "title": "Studio preview",
-      "where": "Record workspace",
-      "description": "The large Studio preview shows the screen composition and elapsed recording state. Before Start, choose an Off, 3-second, or 5-second setup countdown; Escape or Cancel stops that setup before any capture starts. Recording keeps a 30 FPS default, offers 24/25/30/50/60 presets plus custom 1–240 FPS validation, and can test System Default or one selected microphone before Start. Where Doctor advertises verified output quality, Source, 1080p, or 720p and Standard or High remain simple choices; final dimensions, cadence, and encoder are shown only after recording. Windows/macOS choices are private native endpoints behind expiring opaque UI tokens and safe labels; Linux remains System Default only.",
-      "requirement": "Requires the Record workspace. The output-quality control appears only on a backend that explicitly supports and verifies it; other backends omit it and refuse direct quality requests. An unavailable saved microphone choice visibly blocks mic-enabled Start until another choice or System Default is selected. Invalid custom FPS and an in-progress microphone test also keep Start unavailable. Real capture still depends on OS permissions.",
-      "api": "screen_record.doctor, screen_record.microphone_selection, screen_record.start, screen_record.stop"
+      "where": "Focused Record workspace",
+      "description": "Record replaces editor chrome with a capture-focused layout. Choose screen and sound on the left, inspect the dominant composition in the centre, adjust scenes and style on the right, and keep Start/Stop visible. Capture setup provides 24/25/30/50/60 FPS presets with custom 1–240 FPS validation and remembers one selected microphone as an app-local preference. Start native preview explicitly to see real bounded pixels from the exact selected display/window, or a fresh Linux Portal choice; pause, hide, stop, permission, source-loss, recursion, and unavailable states are shown truthfully. Microphone and system-audio meters come from the admitted capture streams without monitoring playback or a second stream. A video-only 3–5 second rehearsal can be played immediately and discarded without creating project media. During a normal take, compact live controls expose the real Stop, Pause/Resume, marker, scene, timer, and meter state.",
+      "requirement": "Requires the Record workspace and a supported native capture adapter. Linux preview always uses the system picker. Rehearsal is disposable and video-only; use the explicit audio checks and meters for sound. Unsupported preview or meter inputs stay labeled unavailable, and real capture still depends on OS permissions.",
+      "api": "screen_record.preview_capability, screen_record.preview_start, screen_record.preview_status, screen_record.preview_frame, screen_record.preview_pause, screen_record.preview_resume, screen_record.preview_hide, screen_record.preview_stop, screen_record.rehearsal_start, screen_record.rehearsal_discard, screen_record.start, screen_record.stop"
     },
     {
       "id": "cut.record.scenes",
@@ -1889,9 +1899,9 @@
       "group": "workflow",
       "title": "Record, polish, export, and retry",
       "where": "Record workspace and status bar",
-      "description": "Open Record, confirm FFmpeg/readiness, choose source, frame rate, microphone, optional camera, audio and background, test the resolved microphone when needed, then start capture. Lost microphone or camera media is reported honestly; only finalized takes are retained. A qualifying failed default-output Recording Studio export shows one Retry action after Cut rechecks the project revision, capture and edit-plan hashes, and output lease.",
-      "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Camera capture is Windows/macOS Auto-edit-only and requires explicit OS permission plus a real first frame. Retry is available only for an eligible failed Recording Studio export.",
-      "api": "screen_record.doctor, screen_record.microphone_selection, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export, jobs.retry, jobs.status"
+      "description": "Open Record, verify the exact source with native preview, watch admitted input meters, optionally make and discard a short rehearsal, then start capture. Lost source, microphone, camera, or system audio is reported honestly; only finalized normal takes are retained. A qualifying failed default-output export shows one Retry after Cut rechecks durable lineage, project revision, source, EditPlan, capture-audio bytes, and output lease; the queued renderer receives private staged input copies instead of reopening mutable paths.",
+      "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Rehearsal is video-only and never becomes project media. Retry is available only for one engine-declared eligible failed Recording Studio export; cancellation, stale inputs, non-durable records, or consumed attempts are refused.",
+      "api": "screen_record.preview_start, screen_record.rehearsal_start, screen_record.rehearsal_discard, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export, jobs.retry, jobs.status"
     },
     {
       "id": "cut.workflow.review",

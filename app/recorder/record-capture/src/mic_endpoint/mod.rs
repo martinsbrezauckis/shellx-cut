@@ -106,6 +106,34 @@ pub(crate) fn spawn_microphone_capture(
     }
 }
 
+/// Open the resolved microphone source through its normal one-stream path and
+/// feed the caller-owned level model from that stream's existing callbacks.
+/// The level is not process-global and cannot cause an implicit device open.
+#[cfg(feature = "mic")]
+pub(crate) fn spawn_microphone_capture_with_level(
+    path: String,
+    source: MicrophoneSource,
+    stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    capture_started: Instant,
+    level: Arc<crate::mic::RollingAudioLevel>,
+) -> JoinHandle<Result<crate::mic::CapturedMicrophone>> {
+    match cpal_device_for_source(&source) {
+        Ok(device) => crate::mic::spawn_device_mic_with_level(
+            path,
+            device,
+            stop,
+            ready,
+            capture_started,
+            level,
+        ),
+        Err(error) => thread::spawn(move || {
+            level.mark_device_lost();
+            Err(error)
+        }),
+    }
+}
+
 /// A resolved native microphone plus the process-local claim that keeps another
 /// Cut capture from opening the same device while this session is live.
 #[cfg(feature = "mic")]

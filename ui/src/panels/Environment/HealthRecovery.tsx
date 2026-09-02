@@ -3,6 +3,7 @@ import { callVerb } from '../../lib/client'
 import type { DoctorReport } from '../../lib/doctor'
 import type { JobsListResult } from '../../lib/clientResults'
 import CacheLifecycle from './CacheLifecycle'
+import JobRetryRecovery from './JobRetryRecovery'
 import {
   loadCaptureRecovery,
   type CaptureRecoveryInventory,
@@ -228,6 +229,7 @@ export default function HealthRecovery({
           )
         })}
       </div>
+      <JobRetryRecovery jobs={jobs} projectSession={projectSession} onRefresh={refresh} />
       <CacheLifecycle hasProject={hasProject} projectSession={projectSession} rebuildAssetIds={rebuildAssetIds} onComplete={refresh} />
       <p className="settings-health-note" data-cut-health-confirmation>Recovery actions with ambiguous or destructive consequences stay in their owning workflow and require your confirmation.</p>
     </section>

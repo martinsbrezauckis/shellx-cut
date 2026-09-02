@@ -1,6 +1,6 @@
 //! Persisted retry projection and lineage for jobs with a safe replay owner.
 
-use super::{persist, JobManager, JobOutcome, JobRecord, JobState};
+use super::{persist, JobManager, JobManagerInner, JobOutcome, JobRecord, JobState};
 use cut_core::CutError;
 use serde::{Deserialize, Serialize};
 
@@ -106,10 +106,15 @@ impl JobRetry {
         }
     }
 
-    pub(super) fn initialize(&mut self, job_id: &str) {
-        if self.root_job_id.is_empty() {
-            self.root_job_id = job_id.to_string();
-        }
+    /// Normalize creation-time lineage. Callers construct a recipe before the
+    /// manager assigns its id, so they must never be able to pre-seed a root
+    /// id, retry links, or an attempt counter on a newly created record.
+    pub(super) fn initialize_root(&mut self, job_id: &str) {
+        self.eligible = false;
+        self.root_job_id = job_id.to_string();
+        self.attempt = 1;
+        self.retry_of = None;
+        self.retried_by = None;
     }
 
     pub(super) fn terminal(&mut self, outcome: JobOutcome) {
@@ -137,7 +142,12 @@ impl JobRetry {
             eligible: false,
             reason: Some("retry attempt is queued".into()),
             root_job_id: self.root_job_id.clone(),
-            attempt: self.attempt.saturating_add(1),
+            // `admit_retry` rejects the final valid attempt before creating a
+            // child, preserving the same finite lineage rule as recovery.
+            attempt: self
+                .attempt
+                .checked_add(1)
+                .expect("retry admission checked the attempt bound"),
             retry_of: Some(parent_id.to_string()),
             retried_by: None,
             descriptor: self.descriptor.clone(),
@@ -154,6 +164,16 @@ impl JobRetry {
         !self.eligible
             && self.reason.as_deref() == Some(RETRIED_REASON)
             && self.retried_by.as_deref() == Some(child_id)
+    }
+
+    pub(super) fn descriptor_matches_kind(&self, job_kind: &str) -> bool {
+        matches!(
+            (&self.descriptor, job_kind),
+            (
+                Some(JobRetryDescriptor::ScreenRecordExport(_)),
+                "screen_record_export"
+            ) | (Some(JobRetryDescriptor::VerifyRerun(_)), "verify-rerun")
+        )
     }
 }
 
@@ -183,7 +203,12 @@ impl JobManager {
             persistence_error: None,
         };
         if let Some(retry) = rec.retry.as_mut() {
-            retry.initialize(&rec.job_id);
+            retry.initialize_root(&rec.job_id);
+            if retry.descriptor.is_some() && !retry.descriptor_matches_kind(kind) {
+                retry.eligible = false;
+                retry.reason = Some("retry descriptor does not match this job owner".into());
+                retry.descriptor = None;
+            }
         }
         if let Some(dir) = inner.persist_dir.clone() {
             if let Err(error) = persist(&dir.join(format!("{}.json", rec.job_id)), &rec) {
@@ -204,42 +229,18 @@ impl JobManager {
     /// marked as consumed while the same manager lock is held.
     pub fn admit_retry(&self, source_job_id: &str) -> Result<JobRecord, CutError> {
         let mut inner = self.lock_inner();
-        let source = inner.jobs.get(source_job_id).cloned().ok_or_else(|| {
-            CutError::new(
-                cut_core::error_codes::NOT_FOUND,
-                format!("job '{source_job_id}' was not found"),
-                "refresh jobs.list and select an existing failed export",
-            )
-        })?;
-        let retry = source.retry.as_ref().ok_or_else(|| {
+        let source = Self::retry_candidate_locked(&inner, source_job_id)?;
+        let retry = source
+            .retry
+            .as_ref()
+            .expect("retry candidate has a retry projection");
+        let dir = inner.persist_dir.clone().ok_or_else(|| {
             CutError::new(
                 cut_core::error_codes::CONFLICT,
-                format!("job '{source_job_id}' has no retry descriptor"),
-                "only jobs with an engine-owned retry descriptor can be retried",
+                "retry requires an attached project job store",
+                "open the project and restore its durable job history before retrying",
             )
         })?;
-        if !matches!(source.state, JobState::Failed) || !retry.eligible {
-            return Err(CutError::new(
-                cut_core::error_codes::CONFLICT,
-                format!("job '{source_job_id}' is not eligible for retry"),
-                retry.reason.clone().unwrap_or_else(|| {
-                    "only failed jobs with an engine-owned retry descriptor can be retried".into()
-                }),
-            ));
-        }
-        if inner.jobs.values().any(|record| {
-            record
-                .retry
-                .as_ref()
-                .and_then(|retry| retry.retry_of.as_deref())
-                == Some(source_job_id)
-        }) {
-            return Err(CutError::new(
-                cut_core::error_codes::CONFLICT,
-                format!("job '{source_job_id}' already has a retry child"),
-                "refresh jobs.status to inspect the admitted retry attempt",
-            ));
-        }
 
         inner.next_seq += 1;
         let now = cut_core::OpRecord::now_ts();
@@ -262,15 +263,13 @@ impl JobManager {
             error: None,
             persistence_error: None,
         };
-        if let Some(dir) = inner.persist_dir.clone() {
-            persist(&dir.join(format!("{}.json", child.job_id)), &child).map_err(|error| {
-                CutError::new(
-                    cut_core::error_codes::IO,
-                    format!("could not persist retry job '{}': {error}", child.job_id),
-                    "retry was not admitted; resolve project storage and try again",
-                )
-            })?;
-        }
+        persist(&dir.join(format!("{}.json", child.job_id)), &child).map_err(|error| {
+            CutError::new(
+                cut_core::error_codes::IO,
+                format!("could not persist retry job '{}': {error}", child.job_id),
+                "retry was not admitted; resolve project storage and try again",
+            )
+        })?;
         inner.jobs.insert(child_id.clone(), child.clone());
         let persist_dir = inner.persist_dir.clone();
         if let Some(source) = inner.jobs.get_mut(source_job_id) {
@@ -285,6 +284,78 @@ impl JobManager {
             }
         }
         Ok(child)
+    }
+
+    /// Return a source that is still safe to revalidate and admit. Dispatch
+    /// calls this before it reserves output paths or re-hashes inputs; admission
+    /// repeats the same check under the manager lock.
+    pub fn retry_candidate(&self, source_job_id: &str) -> Result<JobRecord, CutError> {
+        let inner = self.lock_inner();
+        Self::retry_candidate_locked(&inner, source_job_id)
+    }
+
+    fn retry_candidate_locked(
+        inner: &JobManagerInner,
+        source_job_id: &str,
+    ) -> Result<JobRecord, CutError> {
+        let source = inner.jobs.get(source_job_id).cloned().ok_or_else(|| {
+            CutError::new(
+                cut_core::error_codes::NOT_FOUND,
+                format!("job '{source_job_id}' was not found"),
+                "refresh jobs.list and select an existing failed export",
+            )
+        })?;
+        let retry = source.retry.as_ref().ok_or_else(|| {
+            CutError::new(
+                cut_core::error_codes::CONFLICT,
+                format!("job '{source_job_id}' has no retry descriptor"),
+                "only jobs with an engine-owned retry descriptor can be retried",
+            )
+        })?;
+        if source.persistence_error.is_some() {
+            return Err(CutError::new(
+                cut_core::error_codes::CONFLICT,
+                format!("job '{source_job_id}' has an unresolved persistence error"),
+                "resolve project storage and restart the server before retrying this job",
+            ));
+        }
+        if !matches!(source.state, JobState::Failed) || !retry.eligible {
+            return Err(CutError::new(
+                cut_core::error_codes::CONFLICT,
+                format!("job '{source_job_id}' is not eligible for retry"),
+                retry.reason.clone().unwrap_or_else(|| {
+                    "only failed jobs with an engine-owned retry descriptor can be retried".into()
+                }),
+            ));
+        }
+        if !retry.descriptor_matches_kind(&source.kind) {
+            return Err(CutError::new(
+                cut_core::error_codes::CONFLICT,
+                format!("job '{source_job_id}' has a retry descriptor for another job owner"),
+                "start a new job; this persisted retry recipe is not safe to replay",
+            ));
+        }
+        if retry.attempt == u32::MAX {
+            return Err(CutError::new(
+                cut_core::error_codes::CONFLICT,
+                format!("job '{source_job_id}' reached the maximum retry attempt"),
+                "start a new job; this retry lineage cannot be extended safely",
+            ));
+        }
+        if inner.jobs.values().any(|record| {
+            record
+                .retry
+                .as_ref()
+                .and_then(|retry| retry.retry_of.as_deref())
+                == Some(source_job_id)
+        }) {
+            return Err(CutError::new(
+                cut_core::error_codes::CONFLICT,
+                format!("job '{source_job_id}' already has a retry child"),
+                "refresh jobs.status to inspect the admitted retry attempt",
+            ));
+        }
+        Ok(source)
     }
 }
 
@@ -395,6 +466,119 @@ mod tests {
                 .unwrap()
                 .attempt,
             3
+        );
+    }
+
+    #[test]
+    fn admission_refuses_unresolved_persistence_or_exhausted_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = JobManager::new(EventBus::new());
+        mgr.attach_project(dir.path()).unwrap();
+        let parent = mgr.create_with_retry(
+            "screen_record_export",
+            Some(JobRetry::screen_record_export(
+                ScreenRecordExportRetryDescriptor {
+                    project_revision: "op_000001".into(),
+                    source: "source.mp4".into(),
+                    plan: "edit.json".into(),
+                    format: ScreenRecordExportRetryFormat::Mp4,
+                    inputs: Vec::new(),
+                    system_audio_offset_ms: 0,
+                },
+            )),
+        );
+        mgr.fail(
+            &parent.job_id,
+            CutError::new("job_failed", "fixture export failure", "fixture"),
+        );
+        {
+            let mut inner = mgr.lock_inner();
+            inner
+                .jobs
+                .get_mut(&parent.job_id)
+                .unwrap()
+                .persistence_error = Some("disk full".into());
+        }
+        assert_eq!(
+            mgr.retry_candidate(&parent.job_id).unwrap_err().code,
+            cut_core::error_codes::CONFLICT
+        );
+        {
+            let mut inner = mgr.lock_inner();
+            let record = inner.jobs.get_mut(&parent.job_id).unwrap();
+            record.persistence_error = None;
+            record.retry.as_mut().unwrap().attempt = u32::MAX;
+        }
+        assert_eq!(
+            mgr.admit_retry(&parent.job_id).unwrap_err().code,
+            cut_core::error_codes::CONFLICT
+        );
+        assert_eq!(mgr.list().len(), 1, "unsafe admission must not add a child");
+    }
+
+    #[test]
+    fn admission_refuses_a_retry_without_an_attached_durable_job_store() {
+        let mgr = JobManager::new(EventBus::new());
+        let parent = mgr.create_with_retry(
+            "screen_record_export",
+            Some(JobRetry::screen_record_export(
+                ScreenRecordExportRetryDescriptor {
+                    project_revision: "op_000001".into(),
+                    source: "source.mp4".into(),
+                    plan: "edit.json".into(),
+                    format: ScreenRecordExportRetryFormat::Mp4,
+                    inputs: Vec::new(),
+                    system_audio_offset_ms: 0,
+                },
+            )),
+        );
+        mgr.fail(
+            &parent.job_id,
+            CutError::new("job_failed", "fixture export failure", "fixture"),
+        );
+
+        let error = mgr.admit_retry(&parent.job_id).unwrap_err();
+        assert_eq!(error.code, cut_core::error_codes::CONFLICT);
+        assert!(error.message.contains("attached project job store"));
+        assert_eq!(
+            mgr.list().len(),
+            1,
+            "non-durable admission must add no child"
+        );
+        assert!(
+            mgr.get(&parent.job_id).unwrap().retry.unwrap().eligible,
+            "failed source remains available after a fail-closed refusal"
+        );
+    }
+
+    #[test]
+    fn creation_canonicalizes_root_lineage_and_rejects_wrong_owner_recipe() {
+        let mgr = JobManager::new(EventBus::new());
+        let mut retry = JobRetry::screen_record_export(ScreenRecordExportRetryDescriptor {
+            project_revision: "op_000001".into(),
+            source: "source.mp4".into(),
+            plan: "edit.json".into(),
+            format: ScreenRecordExportRetryFormat::Mp4,
+            inputs: Vec::new(),
+            system_audio_offset_ms: 0,
+        });
+        retry.eligible = true;
+        retry.root_job_id = "forged-root".into();
+        retry.attempt = 42;
+        retry.retry_of = Some("forged-parent".into());
+        retry.retried_by = Some("forged-child".into());
+
+        let record = mgr.create_with_retry("verify-rerun", Some(retry));
+        let retry = record.retry.unwrap();
+        assert_eq!(retry.root_job_id, record.job_id);
+        assert_eq!(retry.attempt, 1);
+        assert!(retry.retry_of.is_none());
+        assert!(retry.retried_by.is_none());
+        assert!(!retry.eligible);
+        assert!(retry.descriptor.is_none());
+        assert_eq!(
+            retry.reason.as_deref(),
+            Some("retry descriptor does not match this job owner")
         );
     }
 }

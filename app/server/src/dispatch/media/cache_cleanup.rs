@@ -35,19 +35,24 @@ fn cache_cleanup_warning(
 pub(super) fn remove_owned_cache_outputs_locked(
     project_dir: &Path,
     asset: &str,
-    outputs: [(crate::cache_lifecycle::CacheKind, Option<&str>); 2],
+    outputs: impl IntoIterator<Item = (crate::cache_lifecycle::CacheKind, Option<String>)>,
     freed: &mut Vec<String>,
     warnings: &mut Vec<cut_core::VerbWarning>,
 ) {
-    if outputs.iter().all(|(_, relative)| relative.is_none()) {
-        return;
-    }
+    let mut seen: Vec<(crate::cache_lifecycle::CacheKind, String)> = Vec::new();
     for (kind, relative) in outputs {
         let Some(relative) = relative else {
             continue;
         };
-        match crate::cache_lifecycle::remove_owned_output(project_dir, kind, asset, relative) {
-            Ok(crate::cache_lifecycle::OwnedRemoval::Retired) => freed.push(relative.into()),
+        if seen
+            .iter()
+            .any(|(seen_kind, seen_relative)| *seen_kind == kind && seen_relative == &relative)
+        {
+            continue;
+        }
+        seen.push((kind, relative.clone()));
+        match crate::cache_lifecycle::remove_owned_output(project_dir, kind, asset, &relative) {
+            Ok(crate::cache_lifecycle::OwnedRemoval::Retired) => freed.push(relative),
             Ok(crate::cache_lifecycle::OwnedRemoval::LedgerRetiredMissing) => {
                 warnings.push(cache_cleanup_warning(
                     kind,
@@ -61,7 +66,7 @@ pub(super) fn remove_owned_cache_outputs_locked(
                 ))
             }
             Ok(crate::cache_lifecycle::OwnedRemoval::UnlinkedLedgerPending(error)) => {
-                freed.push(relative.into());
+                freed.push(relative);
                 warnings.push(cache_cleanup_warning(
                     kind,
                     asset,

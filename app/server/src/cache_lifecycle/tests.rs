@@ -430,11 +430,32 @@ async fn preview_and_confirmed_job_only_remove_aged_owned_unreferenced_cache() {
         matches!(job.state, crate::jobs::JobState::Done),
         "job: {job:?}"
     );
+    let reconciliation = &job.result.as_ref().unwrap()["reconciliation"];
+    assert_eq!(reconciliation["before"]["files"], 1);
+    assert_eq!(reconciliation["before"]["bytes"], 5);
+    assert_eq!(reconciliation["removed"]["files"], 1);
+    assert_eq!(reconciliation["removed"]["bytes"], 5);
+    assert_eq!(reconciliation["after"]["files"], 0);
+    assert_eq!(reconciliation["after"]["bytes"], 0);
+    assert_eq!(reconciliation["balanced"], true);
     assert!(!path.exists());
     assert!(source.exists());
     assert!(export.exists());
     assert!(capture.exists());
     assert!(receipt.exists());
+    let remeasured = crate::dispatch::dispatch(
+        &state,
+        "project.cache_preview",
+        json!({}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(
+        remeasured.ok,
+        "post-purge remeasure: {:?}",
+        remeasured.error
+    );
+    assert_eq!(remeasured.result.unwrap()["inventory"]["files"], 0);
 }
 
 #[tokio::test]

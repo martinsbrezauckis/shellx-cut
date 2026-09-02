@@ -120,6 +120,23 @@ rendered-media Cut import plan. It is not a Motion command or public runtime pro
 submit it re-describes the selected descriptor and refuses catalog/descriptor drift; explicit retry
 also re-negotiates the original bound runtime/catalog/descriptor identity without upgrading it.
 
+## Read-only Motion management status
+
+`system.motion_status` is intentionally outside the connector execution path.
+It runs only Motion's fixed runtime probe, connector catalog, and Template-to-Cut
+descriptor discovery commands without a caller id, provider login, connector
+execution, download, or mutation. A structurally verified local runtime remains
+`discovered-unmanaged`; its connector remains execution-unqualified.
+
+One-click Install, Repair, Update, and Remove are not implemented by Cut. They
+remain blocked by `MOTION-DIST-01` until Motion provides a verified immutable
+distribution manifest and a matching platform artifact that Cut can verify. A
+source checkout, PATH binary, or npm package does not satisfy that prerequisite,
+does not become an install candidate, and cannot establish a managed version,
+rollback point, or native qualification. This is candidate-source contract
+documentation, not evidence that either product has passed an installed
+process-pair or release qualification.
+
 ## ShellX Motion Owns
 
 - MotionIR, TemplateIR, AssetIR, package manifests, and `.shellxmotion` package

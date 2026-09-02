@@ -13,6 +13,8 @@ import type {
 } from './useRecordingScenes'
 
 interface RecordingScenesControlProps {
+  /** The active HUD keeps the same controls, compressed rather than duplicated. */
+  compact?: boolean
   selectedScene: RecordingScenePreset
   status: RecordingSceneStatus
   recovery: RecordingRecoveryState
@@ -38,6 +40,7 @@ function sceneDescription(scene: RecordingScenePreset): string {
 
 /** Compact named scenes for the exact layouts the current Studio preview can render. */
 export function RecordingScenesControl({
+  compact = false,
   selectedScene,
   status,
   recovery,
@@ -62,7 +65,7 @@ export function RecordingScenesControl({
   const timerActionDisabled = disabled || Boolean(unavailableReason) || Boolean(timerDisabledReason) || timerStatus.state === 'switching'
 
   return (
-    <section className="rec-scenes" data-cut-rec-scenes data-cut-rec-scene-state={status.state}>
+    <section className={`rec-scenes${compact ? ' rec-scenes--compact' : ''}`} data-cut-rec-scenes data-cut-rec-scene-state={status.state}>
       <div className="rec-scenes__head">
         <div>
           <span className="rec-studio-controls__label">Scenes</span>
@@ -154,15 +157,17 @@ export function RecordingScenesControl({
           {recording ? timerStatus.message : recordingSceneTimerLabel(timer)}
         </p>
       </div>
-      <div className="rec-scenes__recovery" data-cut-rec-scene-recovery={recovery.state}>
-        <span>Recovery</span>
-        <p role="status">{recovery.message}</p>
-        {recovery.state === 'error' && (
-          <button type="button" className="rec__export-btn rec__export-btn--small" data-cut-action="record-scene-recovery-refresh" onClick={onRefreshRecovery}>
-            Check again
-          </button>
-        )}
-      </div>
+      {!compact && (
+        <div className="rec-scenes__recovery" data-cut-rec-scene-recovery={recovery.state}>
+          <span>Recovery</span>
+          <p role="status">{recovery.message}</p>
+          {recovery.state === 'error' && (
+            <button type="button" className="rec__export-btn rec__export-btn--small" data-cut-action="record-scene-recovery-refresh" onClick={onRefreshRecovery}>
+              Check again
+            </button>
+          )}
+        </div>
+      )}
     </section>
   )
 }

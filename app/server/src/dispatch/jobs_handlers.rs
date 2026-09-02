@@ -81,13 +81,10 @@ pub(super) async fn jobs_retry(state: &AppState, args: Value) -> Result<VerbResu
         job_id: String,
     }
     let a: Args = parse_args(args)?;
-    let record = state.jobs.get(&a.job_id).ok_or_else(|| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            format!("no job '{}'", a.job_id),
-            "select a job returned by jobs.list",
-        )
-    })?;
+    // Keep project replacement from interleaving the source lookup,
+    // owner-specific revalidation, durable admission, and worker spawn.
+    let _transition = state.project_transition.lock().await;
+    let record = state.jobs.retry_candidate(&a.job_id)?;
     match record.kind.as_str() {
         "screen_record_export" => crate::screen_record::retry_screen_record_export(state, &a.job_id).await,
         "verify-rerun" => crate::dispatch::verify_handlers::retry_verify_rerun(state, &a.job_id).await,

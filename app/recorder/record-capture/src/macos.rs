@@ -23,9 +23,7 @@ use std::time::{Duration, Instant};
 use record_core::{error_codes, EventTrack, Monitor as RMonitor, RecordError, Result, Settings};
 
 use crate::macos_finalization::stop_audio_at_video_boundary;
-use crate::macos_region_capture::{
-    prepare_region_capture_from_config, verified_region_output_size,
-};
+use crate::macos_region_capture::verified_region_output_size;
 use crate::macos_system_tap::{SystemAudioResult, SystemAudioTap};
 use crate::{
     checkpoint::Checkpoints, input, macos_checkpoint::SegmentOutput, surface_coordinates, Capture,
@@ -36,6 +34,10 @@ use crate::{
 // cfg(all(target_os="macos", feature="capture-macos")) so the screencapturekit dep is
 // always present here — no per-item cfg needed.
 use screencapturekit::prelude::*;
+use screencapturekit::{
+    error::{SCError, SCStreamErrorCode},
+    stream::StreamCallbacks,
+};
 
 /// SCK requires CoreGraphics to be initialised before `SCShareableContent` is touched
 /// off the main thread, else it aborts with CGS_REQUIRE_INIT. The crate ships a tiny
@@ -66,15 +68,11 @@ pub(crate) fn list_windows() -> Vec<WindowInfo> {
     // Per-element accessors, NOT the batched .snapshot() — snapshot() in screencapturekit
     // v8.0.0 indexes a zero-len Vec and PANICS the moment there is any real content (i.e.
     // once Screen-Recording TCC is granted).
-    // cutd runs as a SIDECAR child of the Tauri shell, and it's the SHELL (the parent) that
-    // owns our on-screen "ShellX Cut" window — so filtering only our own pid still leaves the
-    // app in the picker. Exclude the parent process too.
-    extern "C" {
-        fn getppid() -> i32;
-    }
+    // Only an explicit marker from the immediate Tauri parent admits a parent
+    // as our controller. An adopted engine must not hide its Terminal or an
+    // unrelated launcher merely because it happens to be the OS parent.
     let self_pid = std::process::id() as i32;
-    // SAFETY: getppid takes no arguments and has no memory-safety preconditions.
-    let parent_pid = unsafe { getppid() };
+    let controller_owner_pid = crate::macos_capture_target::admitted_controller_owner_pid();
     let mut out: Vec<WindowInfo> = Vec::new();
     for w in content.windows() {
         if w.window_layer() != 0 {
@@ -88,9 +86,9 @@ pub(crate) fn list_windows() -> Vec<WindowInfo> {
         if app
             .as_ref()
             .map(|a| a.process_id())
-            .is_some_and(|p| p == self_pid || p == parent_pid)
+            .is_some_and(|p| p == self_pid || Some(p) == controller_owner_pid)
         {
-            continue; // never offer our own windows (cutd or the owning Tauri shell)
+            continue; // never offer cutd or the admitted owning Tauri shell
         }
         let app_name = app.map(|a| a.application_name()).unwrap_or_default();
         out.push(WindowInfo {
@@ -141,7 +139,7 @@ fn ffmpeg_bin() -> String {
     std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
 }
 
-fn cap_err(ctx: &str, e: impl std::fmt::Display) -> RecordError {
+pub(super) fn cap_err(ctx: &str, e: impl std::fmt::Display) -> RecordError {
     RecordError::new(error_codes::CAPTURE, ctx, e.to_string()).with_action(
         "grant Screen Recording + Accessibility in System Settings; check \
          `ffmpeg -f avfoundation -list_devices true -i \"\"`",
@@ -150,6 +148,21 @@ fn cap_err(ctx: &str, e: impl std::fmt::Display) -> RecordError {
 
 fn requested_fps(fps: f64) -> u32 {
     record_core::backend_fps_v1(fps)
+}
+
+/// ScreenCaptureKit reports many terminal conditions through one error
+/// callback. Only these typed variants identify the exact selected window as
+/// gone; permission, user Stop, system teardown, encoder, and disk errors are
+/// intentionally not source loss.
+fn selected_window_source_lost(error: &SCError) -> bool {
+    matches!(
+        error,
+        SCError::WindowNotFound(_)
+            | SCError::SCStreamError {
+                code: SCStreamErrorCode::NoCaptureSource,
+                ..
+            }
+    )
 }
 
 pub(super) fn recording_stream_config(
@@ -253,134 +266,48 @@ impl Capture for MacCapture {
         // to source.mp4 via SCRecordingOutput (macOS 15+). The external
         // stop / deadline ends it → stream.stop_capture() finalizes the mp4.
         sck_init_cg();
-        // Region configuration owns its fresh exact display revalidation in a
-        // bounded native module; ordinary display capture stays below.
-        let region_backend = cfg
-            .region
-            .is_some()
-            .then(|| prepare_region_capture_from_config(cfg, fps))
-            .transpose()?;
-        let region_output = region_backend.is_some();
+        // The active SCRecordingOutput stream stays video-only. The target
+        // owner builds the exact display/window filter without opening a
+        // second ScreenCaptureKit stream for controller state or metering.
+        let (
+            filter,
+            requested_w,
+            requested_h,
+            surface,
+            stream_config,
+            region_output,
+            controller_excluded,
+        ) = crate::macos_capture_target::prepare_capture_target(cfg, fps)?;
 
-        // The main stream stays video-only. `capturesAudio` on this
-        // SCRecordingOutput stream can stall video delivery and produce no audio
-        // buffers. SCRecordingOutput + capturesAudio is therefore not used. DESKTOP/
-        // SYSTEM audio is instead captured by a SEPARATE audio-only SCStream started below (the
-        // canonical SCK pattern from the crate README: capturesAudio + an Audio output handler,
-        // NO SCRecordingOutput), so the video path remains independent.
-        let (filter, requested_w, requested_h, surface, stream_config) = if let Some(region) =
-            region_backend
-        {
-            let (width, height) = region.output_size;
-            (
-                region.filter,
-                width,
-                height,
-                Some(region.input_surface),
-                region.stream_config,
-            )
-        } else {
-            use screencapturekit::shareable_content::SCShareableContentInfo;
-
-            let content = SCShareableContent::get()
-                .map_err(|e| cap_err("SCShareableContent::get", format!("{e:?}")))?;
-
-            // Build the filter via the PER-ELEMENT accessors (NOT the batched snapshot(), which
-            // panics on real content in v8.0.0): a specific native window identity or
-            // the chosen display, plus a fallback point size. Title is display-only.
-            let windows = content.windows();
-            let displays = content.displays();
-            let (filter, fb_w, fb_h, surface) = if let Some(ref want) = cfg.window {
-                let want_id =
-                    crate::window_target::parse_macos_window_id(want).ok_or_else(|| {
-                        cap_err(
-                            "find the window to capture",
-                            "the selected window id is malformed; reopen the source picker",
+        let selected_window = cfg.window.is_some();
+        let source_lifecycle = cfg.source_lifecycle.clone();
+        if selected_window {
+            if let Some(lifecycle) = source_lifecycle.as_ref() {
+                lifecycle.arm_initial_selected_source(
+                    "ScreenCaptureKit is watching the exact selected window for disappearance.",
+                );
+            }
+        }
+        let source_stop = stop.clone();
+        let callback_readiness = cfg.readiness.clone();
+        let delegate = StreamCallbacks::new().on_error(move |error| {
+            let _source_lost = selected_window
+                && source_lifecycle.as_ref().is_some_and(|lifecycle| {
+                    selected_window_source_lost(&error)
+                        && lifecycle.selected_source_closed(
+                            "The exact selected macOS window disappeared from ScreenCaptureKit.",
                         )
-                    })?;
-                let win = windows
-                    .iter()
-                    .find(|w| w.window_id() == want_id)
-                    .ok_or_else(|| {
-                        cap_err(
-                            "find the window to capture",
-                            "the selected window is no longer available; reopen the source picker",
-                        )
-                    })?;
-                let fr = win.frame();
-                (
-                    SCContentFilter::create().with_window(win).build(),
-                    fr.size.width as u32,
-                    fr.size.height as u32,
-                    // RecordingOutput gives no capture-clock window geometry samples;
-                    // a launch-time frame would become false-exact after move/resize.
-                    None,
-                )
-            } else {
-                let disp = if let Some(id) = cfg.monitor_id.as_deref() {
-                    // The exact identity is authoritative. Re-enumeration already happened
-                    // above, so only a current display whose opaque id matches may be
-                    // selected; display order, title, primary state, and geometry are never
-                    // replacement candidates.
-                    displays
-                            .iter()
-                            .find(|display| {
-                                crate::macos_monitor_target::monitor_id(display).as_deref()
-                                    == Some(id)
-                            })
-                            .ok_or_else(|| {
-                                cap_err(
-                                    "resolve the selected monitor identity",
-                                    "the selected display is no longer available; reopen the source picker",
-                                )
-                            })?
-                } else {
-                    // cfg.monitor is the 1-based index from list_monitors(); map to the same ordering.
-                    let idx = cfg
-                        .monitor
-                        .and_then(|m| usize::try_from(m).ok())
-                        .map(|m| m.saturating_sub(1))
-                        .unwrap_or(0);
-                    displays
-                        .get(idx)
-                        .or_else(|| displays.first())
-                        .ok_or_else(|| cap_err("select a display", "no displays available"))?
-                };
-                let fr = disp.frame();
-                (
-                    SCContentFilter::create()
-                        .with_display(disp)
-                        .with_excluding_windows(&[])
-                        .build(),
-                    disp.width(),
-                    disp.height(),
-                    surface_coordinates::CaptureSurface::new(
-                        fr.origin.x,
-                        fr.origin.y,
-                        fr.size.width,
-                        fr.size.height,
-                    ),
-                )
-            };
-
-            // Native pixel size handles Retina capture buffers; fall back to
-            // the snapshot point size. Even dims for the H.264 encoder.
-            let (cap_w, cap_h) = SCShareableContentInfo::for_filter(&filter)
-                .map(|i| i.pixel_size())
-                .filter(|(w, h)| *w > 0 && *h > 0)
-                .unwrap_or((fb_w.max(2), fb_h.max(2)));
-            let width = cap_w & !1;
-            let height = cap_h & !1;
-            (
-                filter,
-                width,
-                height,
-                surface,
-                recording_stream_config(width, height, fps, cfg.capture_cursor),
-            )
-        };
-
-        let mut stream = SCStream::new(&filter, &stream_config);
+                });
+            // SCK error delivery ends this stream regardless of type. Only the
+            // typed exact-window transition above can publish source_lost;
+            // UserStopped, permission, encoder, and other errors remain
+            // ordinary terminal capture events.
+            if let Some(readiness) = callback_readiness.as_ref() {
+                readiness.mark_terminal();
+            }
+            source_stop.store(true, Ordering::Release);
+        });
+        let mut stream = SCStream::new_with_delegate(&filter, &stream_config, delegate);
         crate::macos_readiness::attach_first_screen_frame_observer(
             &mut stream,
             cfg.readiness.clone(),
@@ -403,6 +330,13 @@ impl Capture for MacCapture {
         stream
             .start_capture()
             .map_err(|e| cap_err("start ScreenCaptureKit capture", format!("{e:?}")))?;
+        if controller_excluded {
+            if let Some(placement) = cfg.controller_placement.as_ref() {
+                placement.excluded(
+                    "ScreenCaptureKit admitted the display stream with the owning ShellX Cut application excluded.",
+                );
+            }
+        }
         // Open the shared clock only after SCK accepted the output.  Mic/input
         // are deliberately non-blocking, but their timestamps must use this
         // same origin as the later checkpoint facts and external audio worker.
@@ -420,13 +354,24 @@ impl Capture for MacCapture {
         });
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
-            Some(crate::mic_endpoint::spawn_microphone_capture(
-                format!("{out_dir}/mic.wav"),
-                cfg.microphone_source.clone(),
-                stop.clone(),
-                ready,
-                start,
-            ))
+            let mic_path = format!("{out_dir}/mic.wav");
+            Some(match cfg.microphone_level.clone() {
+                Some(level) => crate::mic_endpoint::spawn_microphone_capture_with_level(
+                    mic_path,
+                    cfg.microphone_source.clone(),
+                    stop.clone(),
+                    ready,
+                    start,
+                    level,
+                ),
+                None => crate::mic_endpoint::spawn_microphone_capture(
+                    mic_path,
+                    cfg.microphone_source.clone(),
+                    stop.clone(),
+                    ready,
+                    start,
+                ),
+            })
         } else {
             None
         };
@@ -479,6 +424,9 @@ impl Capture for MacCapture {
                 // Stop native video and Core Audio as one capture-end boundary.
                 // `wait_complete`/checkpoint probing/stitching may take seconds on
                 // a 4K sparse desktop and must not become recorded audio.
+                if let Some(lifecycle) = cfg.source_lifecycle.as_ref() {
+                    lifecycle.expect_terminal_close();
+                }
                 stop.store(true, Ordering::Relaxed); // end mic + input at this boundary
                 stopped_system_audio = stop_audio_at_video_boundary(
                     || {
@@ -666,7 +614,8 @@ impl Capture for MacCapture {
 
 #[cfg(test)]
 mod tests {
-    use super::{recording_stream_config, requested_fps};
+    use super::{recording_stream_config, requested_fps, selected_window_source_lost};
+    use screencapturekit::error::{SCError, SCStreamErrorCode};
 
     #[test]
     fn recording_stream_config_preserves_requested_static_desktop_rate() {
@@ -675,5 +624,23 @@ mod tests {
         assert!(!config.shows_cursor());
         assert!(recording_stream_config(1920, 1080, 30, true).shows_cursor());
         assert_eq!(requested_fps(0.0), 1);
+    }
+
+    #[test]
+    fn only_typed_selected_window_disappearance_is_source_loss() {
+        assert!(selected_window_source_lost(&SCError::WindowNotFound(
+            "fixture window".into()
+        )));
+        assert!(selected_window_source_lost(&SCError::SCStreamError {
+            code: SCStreamErrorCode::NoCaptureSource,
+            message: None,
+        }));
+        assert!(!selected_window_source_lost(&SCError::SCStreamError {
+            code: SCStreamErrorCode::UserStopped,
+            message: None,
+        }));
+        assert!(!selected_window_source_lost(&SCError::CaptureStartFailed(
+            "encoder failure".into()
+        )));
     }
 }

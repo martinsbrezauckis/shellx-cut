@@ -20,6 +20,7 @@ const EXPORT_MAX_RUNNING: usize = 1;
 const EXPORT_LIMIT_KEY: &str = "screen_record.export";
 
 mod retry;
+mod retry_staging;
 pub(crate) use retry::retry_screen_record_export;
 
 #[derive(Clone, Debug)]
@@ -35,6 +36,9 @@ struct PreparedExport {
     out: crate::output_paths::OutputPath,
     format: ExportFormat,
     output_path: String,
+    // Retry-only: owned copies of validated inputs. This remains held while a
+    // queued worker waits for its limiter and through every renderer reopen.
+    _retry_input_staging: Option<retry_staging::RetryInputStaging>,
 }
 
 impl ExportFormat {
@@ -174,6 +178,7 @@ fn allocate_export(
         out,
         format,
         output_path,
+        _retry_input_staging: None,
     })
 }
 
@@ -185,6 +190,7 @@ fn spawn_export_job(state: &AppState, job_id: &str, prepared: PreparedExport) {
         out,
         format,
         output_path,
+        _retry_input_staging,
     } = prepared;
     let output_path_for_task = output_path;
     let format_name = format.name();
@@ -194,6 +200,9 @@ fn spawn_export_job(state: &AppState, job_id: &str, prepared: PreparedExport) {
     state
         .jobs
         .spawn_limited(job_id, EXPORT_LIMIT_KEY, EXPORT_MAX_RUNNING, async move {
+            // Keep retry snapshots alive from queue admission until every FFmpeg
+            // read has finished. Ordinary first exports carry None here.
+            let retry_input_staging = _retry_input_staging;
             let progress = ExportProgressReporter::new(
                 jobs.clone(),
                 job_id_for_task.clone(),
@@ -227,6 +236,7 @@ fn spawn_export_job(state: &AppState, job_id: &str, prepared: PreparedExport) {
                 }
                 Err(error) => jobs.fail(&job_id_for_task, error),
             }
+            drop(retry_input_staging);
         });
 }
 
@@ -334,3 +344,7 @@ async fn await_bounded_export_work<T: Send + 'static>(
 #[cfg(test)]
 #[path = "export_job/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "export_job/retry_staging_tests.rs"]
+mod retry_staging_tests;

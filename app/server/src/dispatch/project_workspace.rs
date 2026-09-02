@@ -7,9 +7,11 @@ use super::*;
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 
 mod project_health;
+mod project_identity;
 mod project_paths;
 mod project_sync;
 use project_health::project_health as project_health_read;
+pub(super) use project_identity::project_identity as path_free_project_identity;
 use project_paths::default_projects_dir;
 
 /// Cache lifecycle is intentionally separate from `project.health`: the health
@@ -127,6 +129,9 @@ async fn activate_project_locked(state: &AppState, next: ProjectStore) -> Result
         return Err(change_error);
     }
 
+    // A successful detach invalidates every opaque, in-memory cache plan from
+    // the old project. Keep it if draining failed and the old project is restored.
+    *state.cache_purge_plan.lock().await = None;
     *state.project.write().await = Some(next);
     state.events.publish(Event::ProjectChanged {
         open: true,
@@ -672,7 +677,16 @@ pub(super) fn full_project_state(store: &ProjectStore, sync: Value) -> Result<Va
             super::motion_link_projection::annotate_project_state(&mut v, &ops);
         }
     }
+    let project_identity = path_free_project_identity(store)?;
     if let Some(object) = v.as_object_mut() {
+        object.insert("project_identity".into(), project_identity);
+        // B5's grouped operation is durable project evidence, not a
+        // renderer-local success toast. Expose it only while it names the
+        // current revision, so Projects can carry the exact evidence through
+        // B6 plan/create even after the project is reopened.
+        if let Some(receipt) = store.current_relink_receipt()? {
+            object.insert("portable_b5_receipt".into(), receipt);
+        }
         object.insert(
             "project_revision".into(),
             serde_json::to_value(store.log.current_revision()?)?,
@@ -885,6 +899,7 @@ pub(super) async fn project_close(state: &AppState) -> Result<VerbResult, CutErr
         *state.project.write().await = previous;
         return Err(error);
     }
+    *state.cache_purge_plan.lock().await = None;
     if closed_name.is_some() {
         state.events.publish(Event::ProjectChanged {
             open: false,

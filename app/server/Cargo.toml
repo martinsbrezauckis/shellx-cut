@@ -112,6 +112,8 @@ record-capture = { workspace = true, features = ["capture-macos"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 http-body-util = "0.1"
+# A narrowly feature-gated fake native mailbox/session for server-owner tests.
+record-capture = { workspace = true, features = ["source-preview-test-support"] }
 
 [lints]
 workspace = true

@@ -104,12 +104,10 @@ export default function AppWorkspace({
   stockImportCoordinator,
 }: AppWorkspaceProps) {
   const recordTimelineDeferred = layout.workspaceMode === 'record'
-    && !(project?.tracks.some((track) => track.clips.length > 0) ?? false)
-  const recordTimelineCompact = layout.workspaceMode === 'record' && !recordTimelineDeferred
 
   return (
     <>
-      {commentsOpen && layout.workspaceMode !== 'library' && (
+      {commentsOpen && layout.workspaceMode === 'edit' && (
         <div className="app__comments">
           <Suspense fallback={<SurfaceLoading />}>
             <Comments
@@ -126,7 +124,7 @@ export default function AppWorkspace({
         className="app__main"
         ref={mainRef}
         data-cut-record-timeline-deferred={recordTimelineDeferred}
-        data-cut-record-timeline-compact={recordTimelineCompact}
+        data-cut-record-timeline-compact={false}
       >
         {layout.workspaceMode === 'library' ? (
           <Suspense fallback={<SurfaceLoading label="Opening Library" />}>
@@ -210,7 +208,7 @@ export default function AppWorkspace({
         {layout.workspaceMode !== 'library' && !recordTimelineDeferred && (
           <>
             <Divider orient="h" id="timeline" onDrag={dragTimeline} />
-            <div className="app__timeline" style={{ height: recordTimelineCompact ? 160 : layout.tlH }}>
+            <div className="app__timeline" style={{ height: layout.tlH }}>
               <Timeline
                 project={project}
                 playheadMs={playheadMs}

@@ -105,3 +105,114 @@ fn cooperative_worker_preserves_its_cancellation_reason() {
         assert_eq!(record.outcome_reason, Some(outcome_reason));
     }
 }
+
+#[test]
+fn cancelled_worker_can_persist_a_path_free_reconciliation_result() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = JobManager::new(EventBus::new());
+    manager.attach_project(dir.path()).unwrap();
+    let job = manager.create("cache_purge");
+    manager.cancel_from_worker_with_result(
+        &job.job_id,
+        JobCancellationReason::CancelledByUser,
+        serde_json::json!({
+            "schema": "shellx-cut/cache-purge-reconciliation/1",
+            "reconciliation": {"removed": {"files": 1, "bytes": 42}}
+        }),
+    );
+
+    let record = manager.get(&job.job_id).unwrap();
+    assert_eq!(record.state, JobState::Failed);
+    assert_eq!(record.outcome, Some(JobOutcome::Cancelled));
+    assert_eq!(record.outcome_reason, Some(JobOutcomeReason::UserCancelled));
+    assert_eq!(
+        record
+            .result
+            .as_ref()
+            .and_then(|result| result["reconciliation"]["removed"]["bytes"].as_u64()),
+        Some(42)
+    );
+    let disk: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("jobs").join(format!("{}.json", job.job_id))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(disk["outcome"], "cancelled");
+    assert_eq!(disk["result"]["reconciliation"]["removed"]["files"], 1);
+}
+
+#[test]
+fn project_switch_terminal_record_accepts_the_workers_late_reconciliation() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = JobManager::new(EventBus::new());
+    manager.attach_project(dir.path()).unwrap();
+    let job = manager.create("cache_purge");
+    let job_id = job.job_id.clone();
+
+    // detach_project records this terminal state before its cooperative worker
+    // has drained. The worker must be able to attach its exact outcome without
+    // changing the cancellation's state or reason.
+    manager.cancel_for_project_switch(&job_id);
+    manager.cancel_from_worker_with_result(
+        &job_id,
+        JobCancellationReason::ProjectSwitch,
+        serde_json::json!({"reconciliation": {"removed": {"files": 1, "bytes": 64}}}),
+    );
+
+    let record = manager.get(&job_id).unwrap();
+    assert_eq!(record.state, JobState::Failed);
+    assert_eq!(record.outcome, Some(JobOutcome::Cancelled));
+    assert_eq!(
+        record.outcome_reason,
+        Some(JobOutcomeReason::ProjectSwitchCancelled)
+    );
+    assert_eq!(
+        record
+            .result
+            .as_ref()
+            .and_then(|result| result["reconciliation"]["removed"]["bytes"].as_u64()),
+        Some(64)
+    );
+    let disk: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("jobs").join(format!("{job_id}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(disk["outcome_reason"], "project_switch_cancelled");
+    assert_eq!(disk["result"]["reconciliation"]["removed"]["files"], 1);
+    drop(manager);
+    let recovered = JobManager::new(EventBus::new());
+    recovered.attach_project(dir.path()).unwrap();
+    assert_eq!(
+        recovered
+            .get(&job_id)
+            .and_then(|record| record.result)
+            .and_then(|result| result["reconciliation"]["removed"]["bytes"].as_u64()),
+        Some(64),
+        "the closed project's durable terminal accounting reopens with the same job record"
+    );
+}
+
+#[test]
+fn failed_worker_can_persist_known_partial_progress_without_becoming_done() {
+    let manager = JobManager::new(EventBus::new());
+    let job = manager.create("cache_purge");
+    manager.fail_with_result(
+        &job.job_id,
+        CutError::new(
+            "cache_ledger_write_failed",
+            "ledger write failed",
+            "fixture",
+        ),
+        serde_json::json!({"reconciliation": {"removed": {"files": 1, "bytes": 64}}}),
+    );
+    let record = manager.get(&job.job_id).unwrap();
+    assert_eq!(record.state, JobState::Failed);
+    assert_eq!(record.outcome, Some(JobOutcome::Failed));
+    assert_eq!(record.outcome_reason, Some(JobOutcomeReason::TrueFailure));
+    assert_eq!(
+        record
+            .result
+            .as_ref()
+            .and_then(|result| result["reconciliation"]["removed"]["bytes"].as_u64()),
+        Some(64)
+    );
+}

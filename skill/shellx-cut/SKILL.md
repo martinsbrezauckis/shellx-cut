@@ -5,12 +5,12 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.113; published=0.6.112 -->
-> **Engine v0.6.113 candidate.** v0.6.112 remains the latest published release.
+<!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
+> **Engine v0.6.114 candidate.** v0.6.113 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **294 verbs across 34 domains** under the public verb contract.
-> **`reference.md` is the full 294-verb table —
+> the file): **305 verbs across 34 domains** under the public verb contract.
+> **`reference.md` is the full 305-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -176,6 +176,14 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   Generation accepts up to four registered image/video
 >   references and an explicit variation label; `assets.generated_list` exposes
 >   a path-light, integrity-checked project history for reference and retry.
+>   `system.motion_status {}` is the separate bounded read-only Motion
+>   management check. It runs only the fixed runtime probe, catalog, and
+>   Template-to-Cut descriptor route without a caller id, provider login,
+>   connector execution, download, or mutation. A discovered source/PATH/npm
+>   runtime remains unmanaged and execution-unqualified. Install, Repair,
+>   Update, and Remove stay unavailable behind `MOTION-DIST-01` until Motion
+>   publishes a verified immutable platform manifest and artifact; never
+>   relabel an existing checkout or CLI as a managed installation.
 > - **Recipe layer** — `recipe.list` / `recipe.describe` / `recipe.run`:
 >   declarative, gated pipeline MANIFESTS over the existing verbs (built-ins
 >   in `schema/recipes.json`: `first-project`, `edit-for-clarity`,
@@ -185,14 +193,19 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `run` is a pure orchestrator — one auto-checkpoint,
 >   per-stage gates, stops + reports on the first failed verb or gate.
 > - **Recording Studio** — the `screen_record.*` domain wires the integrated
->   Cut recorder crates in process: `doctor` / `system_audio_probe` / `start` / `stop` /
+>   Cut recorder crates in process: `doctor` / `system_audio_probe` /
+>   `preview_capability` / `preview_start` / `preview_status` / `preview_frame` /
+>   `preview_pause` / `preview_resume` / `preview_hide` / `preview_stop` /
+>   `rehearsal_start` / `rehearsal_discard` / `start` /
+>   `screen_record.status` / `screen_record.pause` / `screen_record.resume` / `stop` /
 >   `recovery_status` / `studio_event` / `autoedit` / `polish` / `export` (live screen/audio
 >   capture, raw streams, auto-edit plan, content-addressed bake). On Windows and
 >   macOS, Doctor can advertise opaque camera choices for an explicit Auto-edit
 >   recording. The admitted camera is finalized as a separate editable take with
 >   shared-clock evidence; permission, busy-device, and no-frame failures never
 >   fall back to another device. Recording Scenes freezes named Screen and
->   Presenter PiP presets at Start; `scene_activate` and `scene_timer` durably
+>   Presenter PiP presets at Start; `screen_record.scene_activate` and
+>   `screen_record.scene_timer` durably
 >   save shared-clock transitions before acknowledging them.
 >   Doctor health stays strict: on Linux `start_allowed:true` means only the
 >   deliberate prompt-deferred XDG ScreenCast portal card may enter the
@@ -224,7 +237,36 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   admission check for automation: continue only at `ready:true` with
 >   `terminal:false`. Process start, elapsed time, or an output file is not a
 >   substitute for the first real screen frame, and a terminal capture is never
->   admitted even when it delivered frames earlier.
+>   admitted even when it delivered frames earlier. Its `source_lifecycle` is
+>   narrow evidence: `source_lost` means an armed exact native selected-source
+>   close won before Cut's own close, not that Stop, duration expiry, permission,
+>   encoder, or disk failure was relabelled. `controller_placement` reports only
+>   an observed exclusion/hide, refusal, or unavailable conclusion without a
+>   native identity. Its `audio_meters` read only the already-admitted mic/system
+>   streams; live, stale, device-lost, stopped, and unavailable are distinct, and
+>   status never opens a device or starts monitoring playback.
+>   Native preview is separately opt-in and process-local. First read
+>   `preview_capability`: `source_selection:"exact"` admits only an unchanged
+>   current Doctor monitor/window id, while `"portal"` admits only
+>   `{source:{kind:"portal"}}` and lets the Linux system picker choose. Poll
+>   `preview_status`/`preview_frame` slowly enough for the 10 FPS cap and bind
+>   pixels to `generation`; `ready` requires a real bounded memory-only BMP.
+>   Pause releases the native owner but remembers the exact opaque source;
+>   resume advances generation. Hide/Stop and ordinary recording Start release
+>   native preview ownership and pixels. Never infer a source from labels,
+>   ordinals, coordinates, browser OS, or `getDisplayMedia`.
+>   The human Record HUD projects rolling mic/system peak and RMS from the
+>   already admitted capture streams. It never opens monitoring playback or a
+>   second input. Silence, stale packets, loss, clipping, and unsupported inputs
+>   remain explicit; current macOS system-audio metering is unavailable even
+>   though finalized tap audio can still be reported at Stop.
+>   `rehearsal_start` creates one video-only 3–5 second native test take in a
+>   Cut-owned temporary root and returns only an opaque same-origin playback
+>   handle. It creates no project, recovery record, journal, timeline asset, or
+>   promotion path. Always call `rehearsal_discard` when playback closes; a new
+>   rehearsal or ordinary Start also discards it. During a normal take, use the
+>   acknowledged recorder verbs behind the compact live controller—never fake
+>   Pause, markers, scenes, timers, or input state locally.
 >   The visible **Test microphone** control tests System Default or the current
 >   selected source and reports one real peak. Windows/macOS selection consumes
 >   one current opaque Doctor token into private endpoint storage; public labels
@@ -265,7 +307,8 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `jobs.retry {job_id}` can create exactly one linked attempt for either an
 >   eligible failed default-output `screen_record.export` or an eligible failed
 >   `verify.rerun`. The recorder route revalidates the project revision, capture
->   media and audio, EditPlan, and output lease; the verification route
+>   media and audio, EditPlan, and output lease, then gives the queued renderer
+>   private no-follow staged copies of those exact bytes; the verification route
 >   revalidates the active project, immutable RenderReceipt, and exact rendered
 >   bytes. Never retry a cancellation, explicit Save As, success, legacy record,
 >   changed input, unowned job kind, or already retried job.
@@ -436,7 +479,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 294 tools, and same-engine
+the final proof of protocol negotiation, ping, all 305 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -532,7 +575,9 @@ produce a bad render) and falls back to software.
 `project.create {name}` or `project.open {path}`. For the self-contained guided
 sample, use `project.create {name, starter:"first-edit"}` and pass the returned
 `starter_asset_path` through the normal `media.import` path. `project.state {}`
-returns the full materialized timeline (assets, tracks, markers, checkpoints). Drop a
+returns the full materialized timeline (assets, tracks, markers, checkpoints) plus
+path-free `project_identity:{schema:"shellx-cut/project-identity/1",origin_path_sha256,project_name}`;
+the canonical project path remains server-local. Drop a
 checkpoint before any editing pass: `project.checkpoint {name:"pre-edit"}`.
 
 In the desktop UI, Projects is the initial workspace. Dropping video, audio, or
@@ -599,7 +644,11 @@ Do not use Library “Keep a copy” or loop `media.relink` to make a package. A
 person can use Projects → Make a copy: it uses a native destination-folder
 picker, shows the full-SHA-256 preview, and requires an explicit create
 confirmation. For direct API work, first call
-`project.package_plan {destination,name,b5_receipt?}`. It returns the exact
+`project.package_plan {destination,name,b5_receipt?}`. The normal Projects UI
+reconstructs the current receipt from the durable journal after reopen and
+passes it automatically when the current revision is the grouped B5 operation;
+any later revision clears it. Direct clients must preserve the exact current
+receipt themselves. The plan returns the exact
 `plan_hash`, byte totals, dedupe plan, current `target_status`, and B5 receipt
 digest. Pass the B5 receipt only when recovery repaired media; it must be the
 immutable result from the matching source revision. A plan refuses
@@ -616,11 +665,14 @@ closed rather than substituting a weaker publish.
 
 ### Project cache lifecycle
 
-Use `project.cache_rebuild {asset_ids?}` only to backfill missing or stale
+Use `project.cache_rebuild {asset_ids?,estimate_only?}` only to backfill missing or stale
 Cut-owned base proxies/filmstrips for registered current-source assets. Omit
 `asset_ids` only when the project has at most 64 assets; otherwise select at
 most 64 unique ids. Its uniform path-free result reports queued asset/output,
-up-to-date, and items-needing-attention counts for `queued`, `already_queued`, and `not_needed`.
+up-to-date, and items-needing-attention counts for `estimated`, `queued`,
+`already_queued`, and `not_needed`. Use `estimate_only:true` for the same
+source-identity admission and verified work-unit/byte count without reserving
+outputs or creating a job; it is not a guessed duration.
 Poll a queued `cache_rebuild` through `jobs.status` and use `jobs.cancel` when
 requested. It verifies source identity before publication, reserves ownership
 durably before output, never adopts legacy/unowned files, and leaves unfinished
@@ -635,9 +687,13 @@ exports, recordings, receipts, and arbitrary files are never candidates.
 
 Only after the user confirms that exact preview, call
 `project.cache_purge {plan_id,confirm:true}`. Poll its cancellable job through
-`jobs.status`, use `jobs.cancel` when requested, and run a new preview after it
-finishes to remeasure. Never infer deletion authority from directory size, file
-age alone, or `project.health`.
+`jobs.status` and use `jobs.cancel` when requested. Its terminal result reports
+path-free `before`, `planned`, `removed`, and `after` file/byte totals plus
+whether they balance, whether partial progress occurred, whether `after` came
+from a strict scan or the exclusive-lease delta, and whether ledger recovery is
+required. Run a new preview after it finishes before another cleanup. Never
+infer deletion authority from directory size, file age alone, or
+`project.health`.
 
 ### 2. Import and wait for perception
 
@@ -768,8 +824,8 @@ The human Render button and FFmpeg-backed export choices also run
 the action; lower-risk warnings show a concise warning with collapsible details
 and a deliberate Continue button. The warning's Guide action opens the bundled
 manual article `cut.export.preflight`; it does not open the preflight UI or
-start output. The currently published online manual remains legacy reference
-material while separately validated real-frontend publication is pending.
+start output. The stable online manual remains available while the compiled
+real-frontend manual is staged separately for interactive review.
 
 Results land in the project: word-level timestamps (`receipts/<asset>.words.json`)
 and instrument facts — silence, scenes, beats, loudness, and `content_bbox`

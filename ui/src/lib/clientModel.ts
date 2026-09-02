@@ -5,7 +5,11 @@
 // without depending on the verb client runtime.
 
 import type { MotionClipLink } from './motionLinkModel'
+import type { PortableB5RelinkReceipt } from './portableRelinkModel'
+import type { ProjectIdentity } from './projectIdentity'
 export type { MotionClipLink } from './motionLinkModel'
+export type { PortableB5RelinkReceipt } from './portableRelinkModel'
+export type { ProjectIdentity } from './projectIdentity'
 
 // ---------------------------------------------------------------------------
 // Shared model types (mirror cut-core; ms everywhere)
@@ -425,6 +429,8 @@ export interface Project {
   name: string
   /** Latest durable operation id returned by project.state / project sync. */
   project_revision?: string
+  /** TRANSIENT (project.state): canonical origin digest; never a raw path. */
+  project_identity?: ProjectIdentity
   settings: ProjectSettings
   assets: Record<string, Asset>
   tracks: Track[]
@@ -436,6 +442,8 @@ export interface Project {
   sequences?: Sequence[]
   comments?: Comment[]
   transcript_ignores?: TranscriptIgnore[]
+  /** TRANSIENT (project.state): current durable B5 evidence for B6 packaging. */
+  portable_b5_receipt?: PortableB5RelinkReceipt
 }
 
 export interface OpRecord {

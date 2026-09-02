@@ -10,6 +10,30 @@ use std::sync::Arc;
 mod cache_cleanup;
 use cache_cleanup::remove_owned_cache_outputs_locked;
 
+fn pending_rebuild_cleanup_outputs(
+    project_dir: &std::path::Path,
+    asset: &str,
+    warnings: &mut Vec<cut_core::VerbWarning>,
+) -> Vec<(crate::cache_lifecycle::CacheKind, Option<String>)> {
+    match crate::cache_lifecycle::pending_rebuild_outputs_for_asset(project_dir, asset) {
+        Ok(outputs) => outputs
+            .into_iter()
+            .map(|(kind, relative)| (kind, Some(relative)))
+            .collect(),
+        Err(error) => {
+            warnings.push(cut_core::VerbWarning {
+                code: "cache_ownership_cleanup_pending".into(),
+                message: format!(
+                    "kept pending cache ownership for asset '{asset}' because it could not be reconciled: {} ({})",
+                    error.message, error.cause
+                ),
+                detail: Default::default(),
+            });
+            Vec::new()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // media.* handlers — import chain + sidecar jobs
 // ---------------------------------------------------------------------------
@@ -669,13 +693,19 @@ pub(super) async fn media_remove(
         [
             (
                 crate::cache_lifecycle::CacheKind::Proxies,
-                removed.proxy.as_deref(),
+                removed.proxy.clone(),
             ),
             (
                 crate::cache_lifecycle::CacheKind::Thumbnails,
-                removed.filmstrip.as_deref(),
+                removed.filmstrip.clone(),
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(pending_rebuild_cleanup_outputs(
+            &dir,
+            &a.asset,
+            &mut warnings,
+        )),
         &mut freed,
         &mut warnings,
     );
@@ -843,13 +873,19 @@ pub(super) async fn media_relink(
             [
                 (
                     crate::cache_lifecycle::CacheKind::Proxies,
-                    old.proxy.as_deref(),
+                    old.proxy.clone(),
                 ),
                 (
                     crate::cache_lifecycle::CacheKind::Thumbnails,
-                    old.filmstrip.as_deref(),
+                    old.filmstrip.clone(),
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(pending_rebuild_cleanup_outputs(
+                &dir,
+                &a.asset,
+                &mut warnings,
+            )),
             &mut freed,
             &mut warnings,
         );

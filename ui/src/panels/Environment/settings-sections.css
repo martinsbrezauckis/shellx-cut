@@ -243,6 +243,38 @@
 .settings-health-copy p, .settings-health-copy small { display: block; margin: 3px 0 0; color: var(--ink-3); font-size: var(--fs-ui-sm); line-height: 1.4; }
 .settings-health-copy small { color: var(--ink-4); }
 .settings-health-note { margin: var(--space-4) 0 0; color: var(--ink-3); font-size: var(--fs-ui-xs); line-height: 1.4; }
+.settings-job-retry {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+.settings-job-retry-head h4 { margin: 0; color: var(--ink); font-size: var(--fs-ui-sm); }
+.settings-job-retry-head p { margin: 4px 0 0; color: var(--ink-3); font-size: var(--fs-ui-xs); line-height: 1.45; }
+.settings-job-retry-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--hairline); }
+.settings-job-retry-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.settings-job-retry-copy { min-width: 0; }
+.settings-job-retry-copy > div { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.settings-job-retry-copy strong { color: var(--ink); font-size: var(--fs-ui-sm); text-transform: capitalize; }
+.settings-job-retry-copy small,
+.settings-job-retry-copy p { display: block; margin: 4px 0 0; color: var(--ink-3); font-size: var(--fs-ui-xs); line-height: 1.4; overflow-wrap: anywhere; }
+.settings-job-retry-terminal { color: var(--err); font-size: var(--fs-ui-xs); }
+.settings-job-retry-terminal--cancelled,
+.settings-job-retry-terminal--superseded { color: var(--amber); }
+.settings-job-retry-terminal--interrupted { color: var(--cut); }
+.settings-job-retry-unavailable { color: var(--ink-3) !important; }
+.settings-job-retry-admitted { color: var(--green) !important; }
+.settings-job-retry-error { color: var(--err) !important; }
 .settings-cache-lifecycle {
   display: grid;
   gap: var(--space-3);
@@ -276,6 +308,8 @@
   .settings-control-row .env-btn { grid-column: 2; justify-self: start; }
   .settings-health-row { grid-template-columns: auto minmax(0, 1fr); }
   .settings-health-row .env-btn { grid-column: 2; justify-self: start; }
+  .settings-job-retry-item { grid-template-columns: minmax(0, 1fr); }
+  .settings-job-retry-item .env-btn { justify-self: start; }
   .settings-control-actions {
     grid-column: 2;
     justify-content: flex-start;

@@ -481,10 +481,48 @@ mod tests {
         .await;
         assert!(receipt.ok, "{:?}", receipt.error);
         let receipt = receipt.result.unwrap();
+        let missing = dispatch(
+            &state,
+            "project.package_plan",
+            json!({"destination":destination, "name":"packed"}),
+            actor(),
+        )
+        .await;
+        assert!(
+            !missing.ok,
+            "a current B5 relink must require its durable receipt"
+        );
+        assert_eq!(missing.error.unwrap().code, error_codes::CONFLICT);
+
+        let mut tampered = receipt.clone();
+        tampered["assets"][0]["chosen"]["path"] = json!("/tampered/restored.mov");
+        let tampered_plan = dispatch(
+            &state,
+            "project.package_plan",
+            json!({"destination":destination, "name":"packed", "b5_receipt":tampered}),
+            actor(),
+        )
+        .await;
+        assert!(
+            !tampered_plan.ok,
+            "a B5 receipt cannot be substituted or edited"
+        );
+        assert_eq!(tampered_plan.error.unwrap().code, error_codes::CONFLICT);
+
+        let source_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+        let reopened = ProjectStore::open(&source_dir).unwrap();
+        *state.project.write().await = Some(reopened);
+        let reopened_state = dispatch(&state, "project.state", json!({}), actor()).await;
+        assert!(reopened_state.ok, "{:?}", reopened_state.error);
+        let durable_receipt = reopened_state.result.unwrap()["portable_b5_receipt"].clone();
+        assert_eq!(
+            durable_receipt, receipt,
+            "reopen must reconstruct the exact B5 receipt"
+        );
         let planned = dispatch(
             &state,
             "project.package_plan",
-            json!({"destination":destination, "name":"packed", "b5_receipt":receipt}),
+            json!({"destination":destination, "name":"packed", "b5_receipt":durable_receipt}),
             actor(),
         )
         .await;

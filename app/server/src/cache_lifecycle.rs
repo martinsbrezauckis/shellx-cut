@@ -11,7 +11,9 @@ mod rebuild;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use ownership::{record_generated, remove_owned_output, OwnedRemoval};
+pub(crate) use ownership::{
+    pending_rebuild_outputs_for_asset, record_generated, remove_owned_output, OwnedRemoval,
+};
 pub(crate) use purge::{preview, start_purge};
 pub(crate) use rebuild::start_rebuild;
 
@@ -43,6 +45,25 @@ pub(crate) struct CacheRebuildActive {
     /// Keeping it only while the job is active lets a repeated human request
     /// explain the already-queued work without scanning or inventing counts.
     pub(crate) counts: serde_json::Value,
+    /// Exact work-unit estimate from the same source-identity admission pass
+    /// that created this worker. A duplicate request must repeat that result,
+    /// rather than recomputing a potentially different cost while work runs.
+    pub(crate) estimate: serde_json::Value,
+}
+
+/// Path-free cache measurement used to reconcile a confirmed purge. This is
+/// intentionally only a count and byte total: cache filenames and paths stay
+/// inside the private plan/ledger boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CacheMeasurement {
+    pub(crate) files: u64,
+    pub(crate) bytes: u64,
+}
+
+impl CacheMeasurement {
+    pub(crate) fn public(self) -> serde_json::Value {
+        serde_json::json!({"files": self.files, "bytes": self.bytes})
+    }
 }
 
 impl CacheKind {
@@ -86,14 +107,29 @@ pub(crate) struct CachePurgePlan {
     roots: Vec<RootIdentity>,
     snapshot: Vec<FileIdentity>,
     targets: Vec<FileIdentity>,
+    /// Exact strict inventory measurement at preview time. The purge worker
+    /// holds the exclusive lease through deletion and post-measurement so it
+    /// can report a balanced before/removed/after reconciliation.
+    before: CacheMeasurement,
 }
 
 #[derive(Default)]
-struct CategoryCount {
+pub(crate) struct CategoryCount {
     files: u64,
     bytes: u64,
     purgeable_files: u64,
     purgeable_bytes: u64,
+}
+
+pub(crate) fn total_cache_measurement(counts: &[CategoryCount; 2]) -> CacheMeasurement {
+    CacheMeasurement {
+        files: counts
+            .iter()
+            .fold(0u64, |total, category| total.saturating_add(category.files)),
+        bytes: counts
+            .iter()
+            .fold(0u64, |total, category| total.saturating_add(category.bytes)),
+    }
 }
 
 fn cache_error(message: impl Into<String>, cause: impl Into<String>) -> CutError {
