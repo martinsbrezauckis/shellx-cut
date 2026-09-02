@@ -1,0 +1,179 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "assets",
+  "verbs": [
+    {
+      "name": "assets.providers",
+      "domain": "assets",
+      "description": "List the pluggable ASSET PROVIDERS — permission-scoped sources the agent/UI can SEARCH + FETCH media from, imported as normal project assets with the LICENSE + ATTRIBUTION surfaced (the first cut of the tool/plugin API). Each entry is {name, kinds, needs_key, network, note}. Pure READ (no project needed). The server-declared catalog is local_folder (a user-designated folder, filename search, no network — pass `dir` to assets.search; the hit id is the absolute path), openverse (api.openverse.org Creative-Commons media aggregator over Freesound/Jamendo/Wikimedia; keyless but rate-limited; commercial-use results), archive_org (Internet Archive public-domain/CC video and audio), wikimedia (Wikimedia Commons public-domain/CC media), nasa (NASA public-domain image and video), and stickers (offline built-in shape stickers). Network providers are contacted only when assets.search or assets.fetch is invoked; local_folder and stickers make no network request.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{providers: [{name, kinds, needs_key, network, note}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "assets_providers",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "assets.search",
+      "domain": "assets",
+      "description": "Search an asset PROVIDER for media. Stateless — no project needed. Returns normalized hits the caller can preview + credit, then pass an id to assets.fetch. openverse hits are Creative-Commons (commercial-use filtered); local_folder hits are files under `dir` whose name contains `q`. The blocking network/fs work runs off the async runtime.",
+      "args": {
+        "type": "object",
+        "required": [
+          "provider",
+          "q"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "local_folder",
+              "openverse",
+              "archive_org",
+              "wikimedia",
+              "nasa",
+              "stickers"
+            ],
+            "description": "Which provider to search (list them with assets.providers)."
+          },
+          "q": {
+            "type": "string",
+            "description": "Search query (e.g. 'whoosh', 'rain', 'applause'). For local_folder this is a filename substring (empty = list all matching the kind)."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "audio",
+              "image",
+              "video"
+            ],
+            "description": "Media kind (default audio). openverse supports audio + image; local_folder supports all three."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Max hits to return (default 12, clamped 1..50)."
+          },
+          "dir": {
+            "type": "string",
+            "description": "local_folder ONLY: the absolute folder path to search (required for that provider; ignored for openverse)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{provider, kind, count, hits: [{provider, id, title, kind, creator, license, license_url, source_url, download_url, filetype, duration_ms, filesize, attribution, requires_attribution}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "assets_search",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "assets.fetch",
+      "domain": "assets",
+      "description": "Import an asset-provider HIT as a normal project asset. Requires an OPEN project (the asset lands in it). Pass the `provider` + the `id` from a prior assets.search; the verb RE-RESOLVES the hit through the provider (no caller-supplied URL — no SSRF surface), then local_folder imports the file in place only when the id is still under the original search `dir`, while network providers DOWNLOAD it (size-capped, into the project's assets/providers/ dir). Import goes through the normal media-import chain (probe→proxy→filmstrip; receipts/replay intact), so the fetched asset is immediately usable on a track. The LICENSE + ATTRIBUTION are recorded on the import op and returned so the caller can credit the source (requires_attribution is false for CC0 / public-domain / local files).",
+      "args": {
+        "type": "object",
+        "required": [
+          "provider",
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "local_folder",
+              "openverse",
+              "archive_org",
+              "wikimedia",
+              "nasa",
+              "stickers"
+            ],
+            "description": "The provider the id came from (assets.search)."
+          },
+          "id": {
+            "type": "string",
+            "description": "The hit id from assets.search (an Openverse uuid, or an absolute file path for local_folder)."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "audio",
+              "image",
+              "video"
+            ],
+            "description": "The hit's media kind (default audio) — must match the search kind so the provider resolves the right endpoint."
+          },
+          "dir": {
+            "type": "string",
+            "description": "local_folder ONLY: the same folder path passed to assets.search; fetch rejects local hits outside this folder."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{asset_id, job_id, provider, title, license, license_url, attribution, requires_attribution, source_url, op}; lowers to a media import op",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "assets_fetch",
+        "project_state": "optional",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

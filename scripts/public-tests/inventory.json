@@ -1,0 +1,403 @@
+{
+  "schema": "shellx-cut/public-test-inventory@1",
+  "tests": [
+    {
+      "path": "scripts/public-tests/agent-chat-containment.test.mjs",
+      "class": "requires-exact-cutd",
+      "ci": true,
+      "requires": [
+        "CUTD_BIN"
+      ]
+    },
+    {
+      "path": "scripts/public-tests/agent-docs-schema.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/coverage-audit-timeout-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/cross-host-media.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/dependency-audit.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/docs-freshness-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/dual-surface-job.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/dub-runner-retry.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/exact-source-receipt.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/fit-to-fill-fixture.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/full-coverage-receipt.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/generate-adapter-shim.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/hq-candidate-chain.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/hq-media-gate.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/human-copy-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/ignored-test-rigs.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/immutable-source-identity-root.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/installed-cdp-readiness.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/installed-walkthrough-receipt.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/judge-adapter-validation.py",
+      "class": "python",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/judge-adapter.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/large-media-gate.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/linux-ssh-worker-handle.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/linux-wdio-remote-script-continuation.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/local-machine-trust-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/macos-build-target-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/macos-dmg-app-identity.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/macos-installed-walkthrough.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/macos-region-foreground-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/macos-pause-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/macos-release-notarization.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/manual-highlight-geometry-mutation.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/manual-highlight-module-size.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/manual-publication-package.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/manual-ui-assets-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/native-system-audio-evidence.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/native-ui-driver.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/process-tree-safety.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/public-private-layout.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/public-test-inventory.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/real-file-drop-receipt.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/record-camera-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/recording-scenes-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/receipt-summary.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/release-build-input-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/release-doc-truth.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/runtime-action-receipt-union.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/runtime-sealed-b1-b2-gate.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/safe-data.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/smoke-build-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/source-content-manifest.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/source-reveal-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/ssh-stdin-env.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/staged-update-rig.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/tauri-updater-signing-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/third-party-notice.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/ui-accessibility-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/ui-action-coverage-audit.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/ui-action-manifest.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/ui-dist-identity.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/updater-manifest.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/user-action-feedback.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/v06111-doc-coverage.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/v06112-source-doc-coverage.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/verb-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/verb-fragments.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/voiceover-timeline-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-build-target-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-capture-lifecycle-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-region-foreground-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-installed-hq.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-installed-media-inputs.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-installed-startup-readiness.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-qualification-layout.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-sign-command-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-signed-artifact-receipt.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-signing-helper-contract.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-webview-profile.test.mjs",
+      "class": "source",
+      "ci": true
+    },
+    {
+      "path": "scripts/public-tests/windows-workspace-test-root.test.mjs",
+      "class": "source",
+      "ci": true
+    }
+  ]
+}

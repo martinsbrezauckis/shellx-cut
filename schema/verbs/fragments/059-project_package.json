@@ -1,0 +1,110 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "project",
+  "verbs": [
+    {
+      "name": "project.package_plan",
+      "domain": "project",
+      "description": "B6 dry-run for a Cut-native portable package. The Projects > Make a copy flow and direct API both hash every referenced media source with full SHA-256, include tracks from every sequence, refuse offline/symlinked media and unsupported Motion-linked provenance, and return a content/destination/B5-evidence-bound plan_hash. It writes no package and does not mutate source project operations, assets, caches, or media. A B5 shellx-cut/media-relink-receipt/1 is optional only when no offline media was repaired; if the current project revision is a B5 grouped relink, its exact durable receipt is required. When supplied it must be immutable, journal-backed, and match the current source revision exactly.",
+      "args": {
+        "type": "object",
+        "required": [
+          "destination",
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing plain local parent directory for the new <name>.cutproj package. Symlink and reparse-point destinations refuse."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Cross-platform package name: ASCII letters, digits, spaces, hyphens, or underscores; becomes <name>.cutproj."
+          },
+          "b5_receipt": {
+            "type": "object",
+            "description": "Optional immutable shellx-cut/media-relink-receipt/1 returned by B5 for media repaired before packaging. It is validated against the source journal but its source paths are not emitted in the package."
+          }
+        }
+      },
+      "result": "{plan:shellx-cut/portable-package-plan/1:{project_identity,project_revision,destination,name,target,target_status:'available'|'occupied',b5_receipt_sha256?,assets:[{asset,bytes,sha256,package_path}],total_source_bytes,total_package_bytes,source_file_count,unique_media_count,policy},plan_hash:'sha256:<full>'} — a dry run only; target_status is current preview truth and creation rechecks without replacement; duplicate full-content media are represented once in total_package_bytes",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_package_plan",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.package_create",
+      "domain": "project",
+      "description": "B6 Pack project publication used after an explicit Projects > Make a copy confirmation or by direct API. It recomputes the supplied full-SHA-256 plan, copies only referenced media into a private same-parent stage, clears derived-cache pointers, creates a replayable Cut-native portable baseline, verifies every manifest member checksum, then atomically publishes a new destination without replacement. Linux, macOS, and Windows each use their native no-replace directory primitive; unverified targets fail closed. The source project's op log, project cache, asset paths, and media are never changed; source-local job status is the only operational record. It never searches/relinks missing media: repaired source evidence must be B5's immutable receipt.",
+      "args": {
+        "type": "object",
+        "required": [
+          "destination",
+          "name",
+          "plan_hash"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The same existing plain local parent directory used by project.package_plan."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The same package name used by project.package_plan."
+          },
+          "plan_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Unchanged plan_hash returned by project.package_plan."
+          },
+          "b5_receipt": {
+            "type": "object",
+            "description": "The same optional immutable B5 receipt supplied to project.package_plan."
+          }
+        }
+      },
+      "result": "{job_id,plan_hash,source_revision,target,status:'queued'} — poll jobs.status; successful result is {status:'published'|'published_with_warnings',destination,manifest_sha256,source_revision,file_count,bytes,warnings?}. The warning status is only possible after final publication, when a post-publication durability or private-stage cleanup warning is retained for the operator. Existing destinations, stale plan/source/B5 evidence, offline media, checksums, cancellation, and unsupported hosts fail without publishing a final package.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_package_create",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

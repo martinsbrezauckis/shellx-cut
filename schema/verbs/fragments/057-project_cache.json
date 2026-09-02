@@ -1,0 +1,120 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "project",
+  "verbs": [
+    {
+      "name": "project.cache_preview",
+      "domain": "project",
+      "description": "Read a path-free, fail-closed cleanup preview for the open project's rebuildable editing cache. It inventories only flat proxy and filmstrip files that have a matching durable ShellX Cut ownership-ledger entry, excludes referenced or recently changed files, and never deletes. A symlink, unexpected directory/file, malformed/missing ownership state, stale ledger record, oversized root, unavailable clock, journal drift, or active cooperating cache producer blocks the preview rather than guessing. Sources, exports, captures, receipts, and all other project files are outside this verb's roots and are never inspected for deletion.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{schema:'shellx-cut/cache-purge-preview/1',status:'ready',plan_id,minimum_age_ms,inventory:{files,bytes},purgeable:{files,bytes},categories:[{kind:'proxies'|'thumbnails',files,bytes,purgeable_files,purgeable_bytes}],blocked_reasons:[]}. This is a read-only preview; filenames and paths are never returned.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_preview",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.cache_rebuild",
+      "domain": "project",
+      "description": "Queue one bounded, cancellable deterministic rebuild/backfill of the open project's missing or stale editing proxies and base filmstrips. Before a worker may publish an output, Cut verifies the source still matches the imported content hash and writes a durable ownership-ledger reservation. Cancellation or a server restart leaves only that pending reservation, so a later identical request resumes it without adopting an unowned file. If that pending source becomes unavailable or changes, scheduling refuses with a restore, relink, or asset-removal repair path instead of erasing ownership evidence; removal/relink retires only the exact pending base output. Existing legacy/unowned outputs, source changes, unsupported media, and more than 64 selected assets are reported or refused rather than guessed. This verb never walks arbitrary cache paths, relinks a source, or removes source, export, capture, receipt, or foreign files.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^a[0-9]+$"
+            },
+            "description": "Optional bounded registered asset ids. Omit only when the open project has at most 64 assets."
+          },
+          "estimate_only": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, verify a bounded rebuild work-unit estimate without reserving outputs or creating a job. The estimate reports current matching source input bytes and required proxy/filmstrip outputs, not a wall-clock duration promise."
+          }
+        }
+      },
+      "result": "{schema:'shellx-cut/cache-rebuild/1',status:'estimated'|'queued'|'already_queued'|'not_needed',job_id?,deduplicated?,scheduled_assets,scheduled_outputs,counts:{fresh_assets,source_changed,source_unavailable,unowned_outputs,legacy_outputs,unsupported_assets},estimate:{basis:'source_hash_match_and_current_import_metadata',assets,verified_source_bytes,proxy_outputs,filmstrip_outputs,proxy_duration_ms}}. estimate_only:true verifies work without creating a job; otherwise poll jobs.status. jobs.cancel preserves any unfinished ledger reservation for a later rebuild request. A pending reservation whose current source is unavailable or changed returns a conflict with the restore/relink/remove repair path. No source or cache filesystem paths are returned.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_rebuild",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "project.cache_purge",
+      "domain": "project",
+      "description": "Start one confirmed, cancellable cache-purge job from the exact opaque plan returned by project.cache_preview. The plan is single-use. Before each deletion the job reacquires the exclusive cache lease and revalidates project revision, flat roots, ownership ledger, file identity, age, and unreferenced status. It removes only aged, unreferenced, ledger-owned proxy or filmstrip files. It fails closed without deleting a source, export, capture, receipt, foreign/unowned/legacy file, symlink, partial root, or file changed after preview.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["plan_id", "confirm"],
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "pattern": "^cache_plan_[0-9]+$",
+            "description": "Opaque single-use id returned by the current project.cache_preview."
+          },
+          "confirm": {
+            "const": true,
+            "description": "Must be literal true after the person has reviewed the preview."
+          }
+        }
+      },
+      "result": "{job_id,status:'queued'}. Observe jobs.status. Its terminal path-free result is {schema:'shellx-cut/cache-purge-reconciliation/1',status:'completed'|'cancelled'|'failed',reconciliation:{before:{files,bytes},planned:{files,bytes},removed:{files,bytes},after:{files,bytes},balanced,partial_progress,after_basis:'strict_scan'|'exclusive_lease_delta',ledger_recovery_required}}. A project-switch cancellation may use the exclusive-lease delta when no ProjectStore remains for a strict scan. If a file was removed but its ledger update could not publish, status is failed with ledger_recovery_required:true; the stale ledger entry blocks later preview rather than hiding that partial removal. Cancel with jobs.cancel, then call project.cache_preview again to remeasure when it is not blocked. The job never returns paths or filenames.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "project_cache_purge",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_replayable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    }
+  ]
+}

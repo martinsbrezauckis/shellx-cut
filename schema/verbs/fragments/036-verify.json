@@ -1,0 +1,480 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "verify",
+  "verbs": [
+    {
+      "name": "verify.checks",
+      "domain": "verify",
+      "description": "Run (or fetch) the deterministic check battery for a render: cut_on_word, lufs, caption_presence, black_or_frozen_frames, uniform_border (fails on a baked-in letterbox/pillarbox; NOT waived by any footage profile), silence_at_edges, duration_matches_edl. Each → {name, pass, details, evidence}.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "render_id": {
+            "type": "string",
+            "description": "Default: the most recent render"
+          }
+        }
+      },
+      "result": "RenderReceipt {render_id, checks: CheckResult[], pass, output_hash, …}",
+      "result_schema": {
+        "$ref": "shellx-cut://receipts.schema.json#/$defs/RenderReceipt"
+      },
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_checks",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.rerun",
+      "domain": "verify",
+      "description": "Re-run output-only checks against the exact existing render artifact named by render_id. This job fences the receipt output, verifies its full SHA-256 before the sidecar, before ffprobe, and before its separate result receipt, and shares one cancellation/deadline/process-tree owner across the sidecar and ffprobe. It never re-encodes, changes the timeline, or overwrites the source RenderReceipt. The result includes lufs, black_or_frozen_frames, uniform_border, silence_at_edges, and duration_matches_receipt only; timeline/source checks remain on the original receipt.",
+      "args": {
+        "type": "object",
+        "required": [
+          "render_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "render_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+            "description": "Persisted render receipt id whose authorized output will be checked again."
+          }
+        }
+      },
+      "result": "OutputCheckRerunHandle {job_id, render_id, output_hash}; jobs.status.result becomes the separately persisted OutputCheckRerun {source_receipt_id, verification_receipt, scope:'rendered_output', profile, checks, pass, checked_at}. The source render receipt is immutable.",
+      "result_schema": {
+        "$ref": "shellx-cut://receipts.schema.json#/$defs/OutputCheckRerunHandle"
+      },
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_rerun",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.pacing",
+      "domain": "verify",
+      "description": "On-demand pacing report for the CURRENT timeline (in-editor retention/pacing critique). Pure structural analysis of the base video track's shots — no render, no model. Advisory, not pass/fail.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{duration_ms, shot_count, internal_cuts, cuts_per_min, mean_shot_ms, median_shot_ms, shortest_shot_ms, longest_shot_ms}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_pacing",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.captions",
+      "domain": "verify",
+      "description": "Caption-QC receipt : measures each caption cue against the published timed-text standards — reading speed (chars/sec), on-screen duration, inter-cue gap, line length. Thresholds default to BBC/Netflix values (17 CPS, 833ms min / 7s max display, 80ms min gap, 84-char line cap) and are overridable per call. Read-only measurement; pass=true only when every cue is within spec.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "max_cps": {
+            "type": "number",
+            "description": "Max reading speed in characters/second (default 17)."
+          },
+          "min_duration_ms": {
+            "type": "integer",
+            "description": "Min on-screen duration per cue (default 833)."
+          },
+          "max_duration_ms": {
+            "type": "integer",
+            "description": "Max on-screen duration per cue (default 7000)."
+          },
+          "min_gap_ms": {
+            "type": "integer",
+            "description": "Min gap between consecutive cues; smaller nonzero gaps flag as flicker (default 80)."
+          },
+          "max_chars": {
+            "type": "integer",
+            "description": "Max characters per cue (2 lines x 42 = 84 default)."
+          }
+        }
+      },
+      "result": "{cue_count, pass, max_cps, mean_cps, violations:{too_fast,too_short,too_long,too_long_text,short_gap,overlap}, thresholds}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_captions",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.delivery",
+      "domain": "verify",
+      "description": "Verbal-pacing receipt (complements verify.pacing's visual pacing): speaking rate (WPM, speech + articulation), filler density, and longest unbroken stretch, measured over the SOURCE transcript(s). Thresholds default to published speaking-rate guidance (flag <100 or >170 WPM, >3 fillers/min) and are overridable. asset narrows to one asset; omitted aggregates every asset with a transcript. Read-only; scope:source (raw recording, pre-cut).",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Measure only this asset (default: all assets with a transcript)."
+          },
+          "lexicon": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filler words to count (default um/uh/erm/ah/hmm/mhm — same lexicon as transcript.remove_fillers)."
+          },
+          "min_wpm": {
+            "type": "number",
+            "description": "Below this WPM flags too_slow (default 100)."
+          },
+          "max_wpm": {
+            "type": "number",
+            "description": "Above this WPM flags too_fast (default 170)."
+          },
+          "max_fillers_per_min": {
+            "type": "number",
+            "description": "Above this flags high_fillers (default 3)."
+          },
+          "pause_gap_ms": {
+            "type": "integer",
+            "description": "Inter-word gap above which speech is 'broken' for the longest-unbroken-stretch measure (default 600)."
+          }
+        }
+      },
+      "result": "{scope, word_count, speaking_ms, wpm, articulation_wpm, filler_count, fillers_per_min, filler_pct, longest_unbroken_ms, pass, flags:{too_fast,too_slow,high_fillers}, thresholds}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_delivery",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.loudness",
+      "domain": "verify",
+      "description": "Integrated-loudness RECEIPT for one audio-bearing asset: integrated loudness (LUFS), true peak (dBTP), loudness range (LRA), gating threshold, the gap to a target, and a one-line recommendation. The MEASURE half of the loudness loop — the NORMALIZE half is render.final's `normalize_loudness` (a rendered output's loudness is already checked by verify.checks/render.qc). Single fast ffmpeg `loudnorm` analysis pass (no re-encode); ffmpeg-only, needs NO perception venv. Read-only. Standard targets: -14 social, -16 long-form/podcast, -23 EBU R128. Use it to decide whether (and how far) to normalize before publishing, then re-check the render with verify.checks.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "The audio-bearing asset id to measure (a source clip, imported music, or a re-imported render)."
+          },
+          "target_lufs": {
+            "type": "number",
+            "minimum": -40,
+            "maximum": -5,
+            "description": "Target integrated loudness to compare against (default -14, social). gap_lu = measured - target; within_tolerance = |gap| <= 1 LU."
+          }
+        }
+      },
+      "result": "{asset, integrated_lufs, true_peak_dbtp, lra, threshold_lufs, target_lufs, gap_lu, within_tolerance, true_peak_ok, recommendation, reference_targets:{social,podcast,ebu_r128}}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_loudness",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.scopes",
+      "domain": "verify",
+      "description": "VIDEO-SCOPES evidence for ONE frame — objective signal data measured with ffmpeg signalstats, so the agent reads NUMBERS instead of guessing colour from a thumbnail (the verify.* philosophy applied to the picture; complements render.qc). Reports luma min/avg/max, highlight/shadow CLIPPING, BROADCAST-range legality (Rec.709 limited [16,235]), saturation avg/max, white-balance CAST (from the Cb/Cr means), and hue. Source: the COMPOSED timeline frame at at_ms (default 0), or a source `asset`'s frame at at_ms. The analysis never changes project history, but it materializes a fenced exports/scopes/frame_<at_ms>ms.jpg; scope_images:true ALSO writes the classic scope PNGs (vectorscope/waveform/histogram — `kinds` filters which) for a human/VLM to eyeball. The receipt's `flags` (clipped_highlights/crushed_shadows/illegal_levels/colour_cast/over_saturated) + `pass` drive a grade fix (edit.grade). ffmpeg-only, no perception venv.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Frame position (composition-local ms; default 0). For an asset, the seek offset into that source."
+          },
+          "asset": {
+            "type": "string",
+            "description": "Measure a SOURCE asset's frame at at_ms instead of the composed timeline frame."
+          },
+          "scope_images": {
+            "type": "boolean",
+            "description": "Also render the scope PNGs (vectorscope/waveform/histogram) under exports/scopes/ (default false — stats only)."
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "vectorscope",
+                "waveform",
+                "histogram"
+              ]
+            },
+            "description": "Which scope images to render when scope_images:true (default all three)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{at_ms, source, frame, luma:{min,avg,max}, clipping:{highlights,shadows}, broadcast_legal, saturation:{avg,max}, white_balance:{u_avg,v_avg,cast}, hue:{avg,med}, flags:[...], pass, scopes?:{vectorscope,waveform,histogram}}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_scopes",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.brand",
+      "domain": "verify",
+      "description": "Brand-constraint receipt: prove the project's stored caption styles + output geometry conform to brand constraints. With no args, uses the durable project.brand kit; explicit fields form a validated one-call override. Checks font allow-list, colour palette (text+bg), caption position, font-size bounds, and output aspect. Read-only; pass=true only when every pinned constraint is satisfied.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "fonts": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "description": "Allowed caption fonts (case-insensitive)."
+          },
+          "colors": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "pattern": "^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$"
+            },
+            "description": "Allowed colours for caption text+bg, hex (#rgb/#rgba/#rrggbb/#rrggbbaa)."
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "bottom",
+              "top",
+              "center"
+            ],
+            "description": "Required caption position: bottom|top|center."
+          },
+          "min_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 512,
+            "description": "Minimum caption font size px."
+          },
+          "max_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 512,
+            "description": "Maximum caption font size px."
+          },
+          "aspect": {
+            "type": "string",
+            "pattern": "^[0-9]+:[0-9]+$",
+            "description": "Required output aspect as W:H (e.g. 16:9); compared reduced against project geometry."
+          }
+        }
+      },
+      "result": "{source: stored|explicit, styles_checked, pass, note?, violations:{font,color,position,size,aspect}, brand}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_brand",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.judge",
+      "domain": "verify",
+      "description": "Perceptual review of a render as a background job (returns {job_id, render_id}; a review takes ~0.5-3 min depending on rung). JUDGE ACCESS LADDER: spawns the judge ladder, which drives the user's OWN coding-agent CLI as a subprocess vision judge (frames + instrument facts + op-derived edit intent in, post-filtered structured verdict out; vision-only: listened=false, measurement-class claims stripped — instruments own all measured verdicts). The ladder auto-detects available CLIs in order claude -> codex -> antigravity -> grok (the shellX provider set; first found wins), or `backend` forces a specific rung. When NONE is available the job still COMPLETES with an honest SKIP (status not_run + skip_verdict \"skipped\" + a reason on the receipt naming each absent rung — visible, never silent, never a fake pass). The judge-review envelope (schema shellx-cut/judge-review/1) is attached at RenderReceipt.judge, the receipt re-persisted, and receipt_ready RE-EMITTED. Honest statuses: completed | not_run (no judge available, or an explicitly-forced rung's CLI is absent — NEVER a fake pass; job completes) | error (a rung attempted and failed — envelope attached, job fails with the cause).",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "render_id": {
+            "type": "string",
+            "description": "Default: the most recent render receipt"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "cli",
+              "claude",
+              "codex",
+              "antigravity",
+              "grok"
+            ],
+            "default": "auto",
+            "description": "Which rung of the judge access ladder to run. \"auto\" (default; \"cli\" is a backward-compatible alias) walks the ladder claude -> codex -> antigravity -> grok and runs the first detected subscription CLI; \"claude\"/\"codex\"/\"antigravity\"/\"grok\" force that rung (honest not_run if its CLI is absent — an explicit override never silently falls through to a different provider). All four supported rungs are vision judges: claude, codex, antigravity (Google `agy`, the Gemini CLI successor), and grok (Grok Build CLI with native vision through ACP image blocks). Unknown ids fail fast."
+          }
+        }
+      },
+      "result": "{job_id, render_id} — job result: {render_id, status: completed|not_run|error, verdict?, confidence?, issues?, outcome?, outcome_reason?, reason?, receipt}; verdict is the model's raw word (pass|fail|needs_review) and `outcome` is the NORMALIZED gate decision derived from it (approve|reject|advisory — pass→approve, fail→reject, else→advisory; not_run→advisory) so a gate/autopilot can act on a rejection without parsing each CLI's vocabulary. The full envelope lands at RenderReceipt.judge (verdict at judge.review.verdict; a no-judge SKIP shows status=not_run + judge.skip_verdict=\"skipped\" + judge.ladder.skipped=true); receipt_ready re-emitted with the updated receipt",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_judge",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "provider",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "verify.pregate",
+      "domain": "verify",
+      "description": "PRE-RENDER PREDICTIVE QUALITY GATE (a 'pre-render gate + refuse-to-present', made rigorous on our op-log). Reasons over the OPEN project's CURRENT EDL + whatever per-asset perception reports are ALREADY CACHED — NO render spent, no model — and PREDICTS the render problems with a known structural signature so the agent can refuse to 'present' a likely-broken render BEFORE paying for it. Risk kinds: empty_tail (HIGH — the timeline runs past the last VIDEO clip ⇒ plays into BLACK; a real shipped-bug class), black_or_frozen (HIGH — a clip's source overlaps a detected black/frozen span ⇒ dead footage in the cut), slideshow_risk (MED — too few cuts over a long timeline ⇒ the 'slideshow'), silent_output (MED — no audio-bearing clip, or audio that is mostly silence per facts), tiny_or_zero_clips (MED — a media clip shorter than one frame never renders a visible frame), uniform_border (LOW — a clip's asset carries a baked-in letterbox/pillarbox). pass=false IFF any HIGH risk. HONEST: these are PREDICTIONS over structure + cached facts, NOT guarantees — a clean pregate means 'no KNOWN structural problem' (it can't see what the facts don't carry), and a flagged risk is a strong predictor not a certainty (an INTENTIONAL black outro trips empty_tail; a single long take trips slideshow_risk). Missing perception is never an error: assets with no cached report are skipped and listed in uninstrumented_assets (a clean pass over un-analyzed footage is weaker — and visibly so). Read-only: no op, no render, no model.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{pass, risks:[{kind, severity:high|med|low, detail, range_ms?}], summary, thresholds:{empty_tail_tolerance_ms, black_frozen_min_ms, slideshow_min_duration_ms, slideshow_min_cpm, silent_fraction, frame_ms}, perception_assets, uninstrumented_assets:[...]} — pass=false iff a HIGH risk stands; risks carry the numbers behind each verdict and a timeline range_ms when one applies",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "verify_pregate",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

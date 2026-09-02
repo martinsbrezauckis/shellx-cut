@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const read = (path) => readFileSync(resolve(root, path), 'utf8')
+
+test('Recording Scenes schema is bounded and acknowledges durable live actions', () => {
+  const schema = JSON.parse(read('schema/verbs.json'))
+  const doctor = schema.verbs.find((verb) => verb.name === 'screen_record.doctor')
+  const start = schema.verbs.find((verb) => verb.name === 'screen_record.start')
+  const stop = schema.verbs.find((verb) => verb.name === 'screen_record.stop')
+  const activate = schema.verbs.find((verb) => verb.name === 'screen_record.scene_activate')
+  const timer = schema.verbs.find((verb) => verb.name === 'screen_record.scene_timer')
+  const autoedit = schema.verbs.find((verb) => verb.name === 'screen_record.autoedit')
+
+  assert.match(doctor.result, /scenes:\{supported,catalog_revision/)
+  const scenes = start.args.properties.scenes
+  assert.deepEqual(scenes.required, ['catalog_revision', 'initial_scene_id', 'presets', 'timer'])
+  assert.equal(scenes.additionalProperties, false)
+  assert.equal(scenes.properties.presets.maxItems, 32)
+  assert.equal(scenes.properties.timer.oneOf.length, 3)
+  assert.match(start.result, /scenes:\{enabled,saved:true/)
+  assert.match(start.result, /timer_started:false/)
+  assert.deepEqual(activate.args.required, ['capture_id', 'scene_id', 'preset_revision'])
+  assert.match(activate.result, /saved:true/)
+  assert.deepEqual(timer.args.properties.action.enum, ['pause', 'resume', 'reset', 'restart', 'end'])
+  assert.match(timer.result, /state:"running"\|"paused"\|"ended"/)
+  assert.match(stop.result, /scene_receipt/)
+  assert.equal(autoedit.args.properties.scene_receipt.type, 'string')
+  assert.match(autoedit.result, /scene_receipt/)
+})
+
+test('Recording Scenes stays CaptureClock-bound, camera-gated, and projection-revalidatable', () => {
+  const control = read('app/server/src/screen_record/capture_session_control.rs')
+  const server = read('app/server/src/screen_record/recording_scenes.rs')
+  const engine = read('app/recorder/record-capture/src/recording_scenes_engine.rs')
+  const projection = read('app/recorder/record-capture/src/recording_scenes_projection.rs')
+  const journal = read('app/recorder/record-capture/src/scene_journal_io.rs')
+  const windows = read('app/recorder/record-capture/src/scene_journal_windows.rs')
+  const receipt = read('app/server/src/screen_record/scene_projection_start.rs')
+  const receiptSupport = read('app/server/src/screen_record/scene_projection_receipt_support.rs')
+  const renderer = read('app/recorder/record-render/src/compose.rs')
+
+  assert.match(control, /clock\.elapsed_at\(at\)/)
+  assert.match(control, /activation_requires_camera\(&scene_id, preset_revision\)/)
+  assert.match(control, /recording_scenes_camera_admitted/)
+  assert.match(control, /recording_scene_timer_action/)
+  assert.match(server, /"saved": true/)
+  assert.match(server, /"state": timer_state/)
+  assert.match(engine, /RecordingSceneTimerAction::Restart/)
+  assert.match(engine, /SceneEventKind::TimerReset/)
+  assert.match(projection, /Serialize, Deserialize/)
+  assert.match(projection, /pub fn validate\(&self\)/)
+  assert.match(projection, /replay_scene_events/)
+  assert.match(journal, /SeekFrom::End\(0\)/)
+  assert.match(windows, /CREATE_NEW/)
+  assert.match(windows, /FILE_FLAG_WRITE_THROUGH/)
+  assert.match(windows, /FlushFileBuffers/)
+  assert.match(receipt, /completed_recording_scene_projection\(\)/)
+  assert.match(receipt, /projection\.validate\(\)/)
+  assert.match(receipt, /publish_new_capture_file/)
+  assert.match(receiptSupport, /EditableSceneTimeline::from_replay/)
+  assert.match(receiptSupport, /timeline\.terminal != \*receipt\.projection\.scene\(\)/)
+  assert.match(renderer, /scene_timeline/)
+  assert.doesNotMatch(server, /side_by_side/)
+  assert.doesNotMatch(server, /camera_focus/)
+})

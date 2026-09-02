@@ -1,0 +1,35 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "effects",
+  "verbs": [
+    {
+      "name": "effects.list",
+      "domain": "effects",
+      "description": "List the effects-as-data CATALOG : every `edit.effect` effect with its track (video/audio), one-line description, overlay-only flag, and parameter schema (name, type number|color, min/max/default, required). A pure READ (no project needed) so a UI or agent can DISCOVER the available effects + their parameters without hardcoding. Generated from the in-house catalog (drift-guarded against the ClipEffect enum), so it never drifts from what edit.effect accepts. (The render LOWERING stays native Rust to keep every existing effect byte-identical — this registry is the discovery/validation spine beside it.)",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{count, effects: [{key, track, description, overlay_only, params: [{name, kind, min?, max?, default?, required}]}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "effects_list",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

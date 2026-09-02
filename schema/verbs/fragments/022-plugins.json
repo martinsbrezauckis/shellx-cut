@@ -1,0 +1,128 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "plugins",
+  "verbs": [
+    {
+      "name": "plugins.list",
+      "domain": "plugins",
+      "description": "List the registered PLUGINS — each is a PERMISSION-SCOPED SUBSET of the verb registry (NOT a parallel API): {name, version, description, provides, consumes, enabled}. `provides` / `consumes` are verb-name patterns (a trailing `.*` matches a whole domain). The asset providers (openverse-assets) and the matte runtime (matte-runtime) are the first capabilities re-expressed as scoped plugins. `permission_state` is ready, corrupt, or unavailable; corrupt/unavailable blocks every plugin and returns a recovery action. Pure read.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{plugins: [{name, version, description, provides, consumes, enabled}], permission_state:{status:ready|corrupt|unavailable,recovery?}}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "plugins_list",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "plugins.enable",
+      "domain": "plugins",
+      "description": "Enable or disable a plugin, atomically persisted in the app-data dir. A DISABLED plugin fails closed — every plugins.call under its name is rejected (the host stops exposing its scoped verbs through the plugin gateway). If saved state is corrupt, all plugins are blocked until this verb explicitly repairs it; enabling one plugin repairs only that plugin and leaves every other plugin disabled. Direct calls to the underlying verbs are unaffected (the plugin layer is an additional permission fence, not a removal of the core verb).",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The plugin id (from plugins.list)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true = enable (default), false = disable."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{name, enabled, permission_state:ready|recovered}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "plugins_enable",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "plugins.call",
+      "domain": "plugins",
+      "description": "The SCOPED-DISPATCH GATEWAY: run `verb` with `args` UNDER plugin `plugin`'s identity — but ONLY if the plugin is ENABLED and the verb is within its declared scope (provides ∪ consumes). Out-of-scope, disabled, corrupt, or unavailable permission state → rejected (guardrail), so a plugin is 'callable only within its scope'. The host re-dispatches through the SAME verb registry (no parallel API), so the inner verb is fully arg-checked + behaves identically, just permission-fenced. `plugins.*` can never be invoked through the gateway (no privilege escalation). Returns the inner verb's envelope under {plugin, verb, result}.",
+      "args": {
+        "type": "object",
+        "required": [
+          "plugin",
+          "verb"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "plugin": {
+            "type": "string",
+            "description": "The plugin id whose scope gates this call (from plugins.list)."
+          },
+          "verb": {
+            "type": "string",
+            "description": "The inner verb to run (must be within the plugin's provides/consumes scope)."
+          },
+          "args": {
+            "type": "object",
+            "description": "The inner verb's args (forwarded verbatim; arg-checked by the inner verb)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{plugin, verb, result: <inner verb envelope>}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "plugins_call",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

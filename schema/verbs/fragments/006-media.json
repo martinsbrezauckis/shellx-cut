@@ -1,0 +1,145 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "media",
+  "verbs": [
+    {
+      "name": "media.index_status",
+      "domain": "media",
+      "description": "Read VISUAL-SEARCH index status for the current project without running the SigLIP2 indexer. Used by the Find moment UI and agents to tell which imported assets already have persisted embeddings under embeddings/<asset>.json after reopening a project. Model/runtime-free: reports existing indexes only; use media.index to build one.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Optional imported asset id to inspect. Omit to list every indexed asset in the open project."
+          }
+        }
+      },
+      "result": "{count, assets:[{asset, indexed_frames, dim, model, path}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_index_status",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.index",
+      "domain": "media",
+      "description": "Build the VISUAL-SEARCH index for an asset : sample its frames at `fps` and embed each with the SigLIP2 image encoder → embeddings/<asset>.json, so media.search can then find MOMENTS by content ('the slide with the chart'). OPTIONAL + fetch-on-consent (the matte pattern): the indexer needs the perception venv (onnxruntime) + a SigLIP2 ONNX model. When that runtime is ABSENT the verb returns an actionable SETUP error (core editing + search of an already-built index work without re-indexing). Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "The imported asset id to index."
+          },
+          "fps": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 8,
+            "description": "Frames per second to sample for embedding (default 1.0)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{asset, indexed_frames, dim, model, path}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_index",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.search",
+      "domain": "media",
+      "description": "ON-DEVICE VISUAL SEARCH: find the MOMENTS in indexed clips that match a query, by matching a query embedding against the per-frame SigLIP2 image embeddings (media.index) and merging the best adjacent frames into time RANGES. Pass `query` text (embedded live by the SigLIP2 TEXT encoder through the perception runtime — errors with a setup pointer only when that runtime is absent) OR `query_vector` (an already-embedded query — the advanced/agent path, usable without the runtime). `asset` narrows to one clip; omitted searches every indexed asset. Returns ranked {asset, start_ms, end_ms, peak_ms, score}. Requires an open project; errors if nothing is indexed yet (run media.index first). Integration coverage verifies that a text query resolves the matching frame range through real SigLIP2 image and text embeddings.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "A natural-language query (needs the SigLIP2 text encoder). Use `query_vector` to search without the model."
+          },
+          "query_vector": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "An already-embedded query vector (same dim as the index) — searches without needing the text encoder."
+          },
+          "asset": {
+            "type": "string",
+            "description": "Limit the search to one asset's index; omit to search all indexed assets."
+          },
+          "top_k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "How many ranked moments to return (default 8)."
+          },
+          "max_gap_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Adjacent matching frames within this gap merge into one moment (default 2000)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{count, hits: [{asset, start_ms, end_ms, peak_ms, score}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_search",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

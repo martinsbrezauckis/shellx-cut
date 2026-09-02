@@ -1,0 +1,10 @@
+# Identity-only source-file reveal for the validated engine-served UI.
+#
+# The webview supplies an asset id only. The shell re-reads the authoritative
+# cutd project state, validates the registered local regular file, and chooses
+# the platform file manager. No path, URL, shell command, or receipt location
+# is accepted from remote UI content.
+[[permission]]
+identifier = "allow-reveal-registered-source"
+description = "Allows the validated ShellX Cut UI to reveal one server-registered local source file by asset id."
+commands.allow = ["reveal_registered_source"]
