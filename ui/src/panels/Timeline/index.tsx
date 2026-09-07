@@ -392,23 +392,7 @@ export default function Timeline(props: TimelineProps) {
     return !!cfg.current.rows.find((r) => r.id === trackId)?.locked
   }, [])
 
-  // Convert a LAID drop position to the EDITORIAL at_ms edit.insert keys on
-  // (engine cumulative-track cursor). Conversion runs against the drop row's
-  // own laid items when it has any, else the base video track (the default
-  // placement target); an empty timeline is identity (the clocks start
-  // aligned). Editorial clocks stay in lockstep across linked-edited tracks
-  // (a crossfade shortens LAID time only), so one converted value serves the
-  // linked video+audio pair placeLinkedAV inserts.
-  const dropMsToEditorial = useCallback((laidMs: number, row: TrackRow | null): number => {
-    const c = cfg.current
-    const trackId = row && c.allItems.some((i) => i.trackId === row.id)
-      ? row.id
-      : c.rows.find((r) => r.kind === 'video' && r.kindIndex === 0)?.id
-    if (!trackId) return Math.round(laidMs)
-    return Math.round(laidToEditorialMs(c.allItems.filter((i) => i.trackId === trackId), laidMs))
-  }, [])
-
-  useTimelineAssetDrop({ scrollRef, clientXToMs, clientYToRow, setAssetDnd, dropMsToEditorial })
+  useTimelineAssetDrop({ project, scrollRef, clientXToMs, clientYToRow, setAssetDnd })
 
   // --- zoom with anchor identity (timeline behavior contract) ----------------------------
   const pendingAnchor = useRef<{ anchorMs: number; viewportOffset: number } | null>(null)

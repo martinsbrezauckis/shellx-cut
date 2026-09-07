@@ -187,7 +187,7 @@ unowned path remain outside both verbs' deletion roots.
 
 Every public verb's `args` entry in `schema/verbs.json` is an executable JSON
 Schema Draft 7 contract, not documentation-only metadata. The server compiles
-all 305 schemas once at startup and applies the selected schema at the shared
+all 306 schemas once at startup and applies the selected schema at the shared
 dispatch boundary. Direct/internal dispatch, REST, `cutd verb`, and
 `cutd mcp` therefore reject the same malformed input before a handler runs.
 
@@ -421,6 +421,22 @@ Pass `linked:false` only for a deliberate independent move or trim, such as a
 split edit. Ambiguous or locked counterparts are rejected instead of silently
 desynchronizing media.
 
+## Atomic linked A/V insert
+
+`edit.insert_linked` is the only insertion route for a probed video asset with
+audio. It needs an editorial `at_ms`, plus exactly one video destination
+strategy (`video_track` or `create_video_track:true`) and exactly one audio
+strategy (`audio_track` or `create_audio_track:true`). An optional
+`src_range_ms` applies to both clips and `ripple` opens timeline time once.
+Audio-only, video-without-audio, and still-image placement continue to use
+`edit.insert`.
+
+Cut validates the source, both typed destinations or requested track creations,
+the shared range, and the crossfade-adjusted editorial coordinate before it
+commits. It then returns both clip and track IDs in one replayable, undoable
+operation. A rejected second leg leaves the project and event stream unchanged;
+no partial clip or track is published.
+
 ## Atomic overwrite edit
 
 `edit.overwrite` is the fixed-time overwrite operation. It is deliberately not
@@ -517,9 +533,18 @@ Linux system picker. `preview_start` replaces and releases any prior source;
 `preview_frame` returns only the latest generation-bound memory BMP, capped at
 4 MiB before base64. Pause releases native capture but remembers the exact
 source, Resume advances generation, and Hide/Stop release frames and device
-ownership. No preview verb accepts a title, ordinal, coordinate, file, restore
-token, or browser-capture fallback. Permission, source loss, recursion, and
-unavailable states remain explicit and path-free.
+ownership. While a generation is active, Start, Status, and Frame status carry
+its opaque lowercase-32-hex `lease_nonce`. Pause, Resume, Hide, and Stop each require the current positive
+`expected_generation` and matching
+`expected_lease_nonce` as an exact pair; a stale generation or nonce is rejected without changing
+a newer or restarted-server preview. The nonce identifies only the current
+Cut-server owner, changes after that server restarts, and is neither authentication
+nor a native target or ticket. No preview verb accepts a title, ordinal,
+coordinate, file, restore token, or browser-capture fallback. Permission,
+source loss, recursion, and unavailable states remain explicit and path-free.
+An `unavailable_reason` appears only when the process cannot prove it released
+a prior native preview; it states the required process-restart recovery.
+Reopening Record does not clear that owner.
 
 The Recording UI's continuous mic/system meters are computed from the already
 admitted capture callbacks. They open no monitoring playback and no second
@@ -587,6 +612,16 @@ without calling it a failure after a fixed short poll; a truly stuck finalizer s
 returns an explicit timeout. On macOS, Core Audio collection is stopped at the video
 capture boundary before sparse-checkpoint stitch work, so `system.wav` contains real
 capture-period samples (plus measured leading padding), not a trimmed stitching tail.
+
+An unsuccessful `screen_record.stop` is not a completed-recording receipt: retain
+the same `capture_id`, do not issue `screen_record.start` for a replacement, and
+use the Stop error plus `screen_record.recovery_status` to resolve its state. The
+visible Record workspace keeps that capture while Stop is unresolved. In Raw mode,
+`raw_path` is optional; if an explicit path cannot be authorized, choose another
+output or omit it for Cut's default export folder, then retry Stop for the same
+capture. An acknowledged Stop releases capture ownership before downstream
+auto-edit/polish, so a later processing failure does not imply that a live capture
+persists.
 
 `screen_record.recovery_status{after?,limit?}` is the read-only, paginated recovery
 projection. It reports capture ids and receipt/loss facts, never cache paths or arbitrary

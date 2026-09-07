@@ -33,9 +33,9 @@ fn schema_classifies_every_registry_verb_and_requires_review_for_new_safe_capabi
     // The contained broker fails closed for newly registered verbs: a change
     // to this reviewed safe-capability budget requires an explicit policy
     // decision, while new schema verbs classified as deny need no stale count
-    // update. The current 305-verb registry therefore remains 103 safe / 202
+    // update. The current 306-verb registry therefore remains 104 safe / 202
     // denied without making the growth of the denied surface a magic number.
-    assert_eq!(allowed, 103, "reviewed safe capability budget");
+    assert_eq!(allowed, 104, "reviewed safe capability budget");
     assert_eq!(allowed + denied, registry.verbs.len());
     assert_eq!(denied, registry.verbs.len() - allowed);
 }

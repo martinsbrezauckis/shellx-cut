@@ -1,12 +1,12 @@
 // app/useSourceNavigationController.ts — app-shell owner of source reveals.
 
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import type { LayoutState } from '../layout/useLayout'
+import { useEffect, useRef, useState } from 'react'
 import {
   sourceNavigationEvent,
   sourceNavigationRequest,
   type SourceNavigationDestination,
 } from './sourceNavigation'
+import type { RequestLayout } from './useRecordingWorkspaceNavigation'
 
 export interface SourceNavigationState {
   assetId: string
@@ -19,7 +19,7 @@ export interface SourceNavigationState {
  * nonce makes a second reveal of the same asset observable to that surface.
  */
 export function useSourceNavigationController(
-  setLayout: Dispatch<SetStateAction<LayoutState>>,
+  setLayout: RequestLayout,
 ): SourceNavigationState | null {
   const [navigation, setNavigation] = useState<SourceNavigationState | null>(null)
   const sequence = useRef(0)
@@ -28,11 +28,12 @@ export function useSourceNavigationController(
     const onReveal = (event: Event) => {
       const request = sourceNavigationRequest((event as CustomEvent<unknown>).detail)
       if (!request) return
-      sequence.current += 1
-      setNavigation({ ...request, nonce: sequence.current })
-      setLayout((current) => request.destination === 'project'
+      const moved = setLayout((current) => request.destination === 'project'
         ? { ...current, workspaceMode: 'edit', leftTab: 'assets', leftCollapsed: false }
         : { ...current, workspaceMode: 'library' })
+      if (!moved) return
+      sequence.current += 1
+      setNavigation({ ...request, nonce: sequence.current })
     }
     document.addEventListener(sourceNavigationEvent, onReveal)
     return () => document.removeEventListener(sourceNavigationEvent, onReveal)

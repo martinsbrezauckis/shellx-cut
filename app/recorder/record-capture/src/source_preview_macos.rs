@@ -38,16 +38,18 @@ pub(crate) fn start(
     let mailbox_thread = mailbox.clone();
     let stop_thread = stop.clone();
     let join = thread::spawn(move || {
-        if let Err(error) = run(
+        let result = run(
             request,
             region,
             mailbox_thread.clone(),
             stop_thread,
             &started_tx,
-        ) {
+        );
+        if let Err(error) = &result {
             mailbox_thread.mark_unavailable();
-            let _ = started_tx.send(Err(error));
+            let _ = started_tx.send(Err(error.clone()));
         }
+        result
     });
     match started_rx.recv_timeout(SOURCE_PREVIEW_ADMISSION_TIMEOUT) {
         Ok(Ok(())) => Ok(NativeSourcePreviewSession::new(
@@ -57,7 +59,7 @@ pub(crate) fn start(
                 stop.store(true, Ordering::Release);
                 join.join().map_err(|_| {
                     capture_error("join ScreenCaptureKit preview", "worker panicked")
-                })?;
+                })??;
                 Ok(())
             },
         )),
@@ -96,8 +98,8 @@ fn run(
     ensure_not_stopped(&stop)?;
     let filter = match request.source {
         SourcePreviewSource::Monitor { monitor_id } => {
-            let display = content
-                .displays()
+            let displays = content.displays();
+            let display = displays
                 .iter()
                 .find(|display| {
                     crate::macos_monitor_target::monitor_id(display).as_deref() == Some(&monitor_id)
@@ -117,8 +119,8 @@ fn run(
             let id = crate::window_target::parse_macos_window_id(&window_id).ok_or_else(|| {
                 capture_error("resolve selected window", "selected window id is malformed")
             })?;
-            let window = content
-                .windows()
+            let windows = content.windows();
+            let window = windows
                 .iter()
                 .find(|window| window.window_id() == id)
                 .ok_or_else(|| {
@@ -148,7 +150,7 @@ fn run(
     let started = Instant::now();
     stream
         .add_output_handler(
-            move |sample, output_type| {
+            move |sample: screencapturekit::cm::CMSampleBuffer, output_type| {
                 if output_type != SCStreamOutputType::Screen {
                     return;
                 }

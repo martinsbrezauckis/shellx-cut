@@ -1,6 +1,6 @@
 //! Native macOS source selection and controller exclusion for one SCK stream.
 
-use super::{cap_err, recording_stream_config};
+use crate::macos::{cap_err, recording_stream_config};
 use crate::{
     macos_region_capture::prepare_region_capture_from_config, surface_coordinates, CaptureConfig,
 };
@@ -94,10 +94,10 @@ pub(super) fn prepare_capture_target(
             false,
         )
     } else {
-        let display = select_display(cfg, displays)?;
+        let display = select_display(cfg, &displays)?;
         let frame = display.frame();
         let (filter, controller_excluded) =
-            display_filter_with_controller_exclusion(display, applications);
+            display_filter_with_controller_exclusion(display, &applications);
         if !controller_excluded {
             if let Some(placement) = cfg.controller_placement.as_ref() {
                 placement.unavailable(

@@ -17,6 +17,9 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(test)]
+pub(super) mod transition_gate;
+
 const PACKAGE_PLAN_SCHEMA: &str = "shellx-cut/portable-package-plan/1";
 const PACKAGE_MANIFEST_SCHEMA: &str = "shellx-cut/portable-package/1";
 const B5_RECEIPT_SCHEMA: &str = "shellx-cut/media-relink-receipt/1";
@@ -227,6 +230,8 @@ pub(super) async fn project_package_create(
     args: Value,
 ) -> Result<VerbResult, CutError> {
     let args: CreateArgs = parse_args(args)?;
+    #[cfg(test)]
+    let transition_gate_name = args.name.clone();
     if !is_exact_sha256(&args.plan_hash) {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
@@ -234,6 +239,11 @@ pub(super) async fn project_package_create(
             "run project.package_plan and use its unchanged plan_hash",
         ));
     }
+    // Pin snapshot, durable admission, and worker registration to one project.
+    let _transition = state.project_transition.lock().await;
+    #[cfg(test)]
+    transition_gate::wait_for_package_project_transition_gate_after_pin(&transition_gate_name)
+        .await;
     let prepared = prepare(state, args.destination, args.name, args.b5_receipt).await?;
     let actual_plan_hash = hash_json(&prepared.plan)?;
     if actual_plan_hash != args.plan_hash {
@@ -255,7 +265,7 @@ pub(super) async fn project_package_create(
         ));
     }
 
-    let job = state.jobs.create(PACKAGE_JOB_KIND);
+    let job = state.jobs.create_durable(PACKAGE_JOB_KIND)?;
     let job_id = job.job_id.clone();
     let task_id = job_id.clone();
     let response_source_revision = prepared.source.project_revision.clone();
@@ -269,7 +279,7 @@ pub(super) async fn project_package_create(
         let job_state = task_state.clone();
         let publication_state = task_state.clone();
         let progress_job_id = task_id.clone();
-        let package_source_revision = prepared.source.project_revision.clone();
+        let package_source = prepared.source.clone();
         let worker = run_blocking_cancellable("project.package_create", move |cancel| {
             publish_package(prepared, &cancel, |progress, message| {
                 job_state
@@ -278,7 +288,7 @@ pub(super) async fn project_package_create(
             }, |stage, target| {
                 source_revision_then_publish(
                     &publication_state,
-                    &package_source_revision,
+                    &package_source,
                     &cancel,
                     stage,
                     target,
@@ -310,6 +320,11 @@ pub(super) async fn project_package_create(
             task_state.jobs.finish_with_warnings(&task_id, payload);
         }
     });
+    #[cfg(test)]
+    transition_gate::wait_for_package_project_transition_gate_after_admission(
+        &transition_gate_name,
+    )
+    .await;
     Ok(VerbResult::ok(json!({
         "job_id": job_id,
         "plan_hash": actual_plan_hash,
@@ -325,4 +340,6 @@ include!("project_package/source_io.rs");
 include!("project_package/publish.rs");
 include!("project_package/manifest.rs");
 include!("project_package/stage.rs");
+#[cfg(test)]
+mod admission_tests;
 include!("project_package/tests.rs");

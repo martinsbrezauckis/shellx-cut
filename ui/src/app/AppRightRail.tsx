@@ -15,6 +15,7 @@ import {
 import type { LayoutState, RightTab } from '../layout/useLayout'
 import PanelErrorBoundary from '../components/PanelErrorBoundary'
 import type { ReviewTab, ReviewTabRequest } from '../panels/Review'
+import { useAgentChatSession } from '../panels/AgentChat/useAgentChatSessions'
 
 const Inspector = lazy(() => import('../panels/Inspector'))
 const AgentChat = lazy(() => import('../panels/AgentChat'))
@@ -24,7 +25,6 @@ const MixerDrawer = lazy(() => import('../panels/Mixer'))
 // receipt/QC body out of the entry chunk until the user deliberately pins it.
 // This lets the real app root commit without parsing an inactive surface.
 const Review = lazy(() => import('../panels/Review'))
-
 interface AppRightRailProps {
   /** Keep event bridges mounted while a full workspace temporarily hides the rail. */
   hidden?: boolean
@@ -32,6 +32,8 @@ interface AppRightRailProps {
   setLayout: Dispatch<SetStateAction<LayoutState>>
   dragRail: (clientX: number, clientY: number) => void
   project: Project | null
+  /** App increments this before every confirmed project open/close. */
+  projectSession: number
   /** Ephemeral project.state revision; do not fold it into durable Project. */
   projectRevision?: string | null
   doctor: DoctorReport | null
@@ -98,6 +100,7 @@ export default function AppRightRail({
   setLayout,
   dragRail,
   project,
+  projectSession,
   projectRevision,
   doctor,
   ops,
@@ -114,6 +117,7 @@ export default function AppRightRail({
   const railOpen = !layout.railCollapsed
   const railPinned = layout.railPinned
   const [reviewTabRequest, setReviewTabRequest] = useState<ReviewTabRequest | null>(null)
+  const { session: agentChatSession, updateSession: updateAgentChatSession } = useAgentChatSession(project, projectSession)
 
   // ---- crash-safe tab mounting ---------------------------------------------
   // A right-tab body that previously took the WebView down (blocklisted by
@@ -329,7 +333,12 @@ export default function AppRightRail({
                       />
                     )}
                     {activeTab === 'chat' && (
-                      <AgentChat project={project} prefill={agentChatPrefill} />
+                      <AgentChat
+                        project={project}
+                        prefill={agentChatPrefill}
+                        session={agentChatSession}
+                        onSessionChange={updateAgentChatSession}
+                      />
                     )}
                     <PanelPaintConfirm tab={activeTab} />
                   </Suspense>

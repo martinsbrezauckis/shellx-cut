@@ -196,9 +196,16 @@ route to the same surface registry.
   offers both quick speed-ramp presets and a compact custom curve editor with
   ordered, millisecond-accurate source-time points from 0.25× to 4×; invalid
   or out-of-range curves stay unapplied with a concrete inline reason.
-- Imported picture and sound are linked by default. Moving or trimming either
-  half moves or trims its exact counterpart atomically; deliberate split edits
-  can opt out with `linked:false`.
+- Color: the selected visual clip's **Color** tab can tag its input as Rec.709,
+  Rec.2020, sRGB, or scene-linear; the project can set matching working and
+  output spaces. Cut converts those explicit tags through its lightweight
+  color-management path before grade/effects. This does not claim camera Log
+  interpretation or an end-to-end HDR mastering or delivery workflow.
+- A probed video with audio is inserted as one linked picture-and-sound action.
+  Cut validates both destinations (or creates both) and the shared source range
+  before committing either clip, so an invalid second leg leaves no partial
+  picture, sound, or track. Moving or trimming either half also changes its exact
+  counterpart atomically; deliberate split edits can opt out with `linked:false`.
 - Ripple trims are available from the toolbar and default Q/W
   bindings: Q removes from the playhead to the selected clip's start, W removes
   from the playhead to its end, and the remaining linked picture and sound close
@@ -642,6 +649,15 @@ route to the same surface registry.
   During capture, setup/readiness chrome collapses so the preview and live
   scene/timer controls remain primary. Background choice, raw-stream status,
   and focused hotkeys (`F9` record, `F12` marker) remain available.
+- **Back to Edit and Stop recovery** keep the active capture in Recording Studio.
+  Back to Edit stays unavailable during a countdown, pending Start, a live take,
+  finalization, or an unacknowledged Stop; the visible reason tells you whether
+  to cancel, wait, Stop, or Retry Stop. A failed Stop keeps that exact take and
+  exposes **Retry Stop (F9)** instead of starting another recording. In Raw
+  capture, choose another output file or clear a custom file to use the default
+  export folder before retrying Stop. Once Stop succeeds, later auto-edit or
+  polish failure is not a live capture, so returning to Edit or starting again
+  is safe.
 - Capture frame rate keeps the 30 FPS default, offers one-click 24/25/30/50/60
   choices, and accepts a validated custom 1–240 FPS value before recording.
   Each new capture also retains its exact reduced requested decimal and the v1

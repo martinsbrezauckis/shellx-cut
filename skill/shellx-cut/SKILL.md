@@ -9,8 +9,8 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 > **Engine v0.6.114 candidate.** v0.6.113 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **305 verbs across 34 domains** under the public verb contract.
-> **`reference.md` is the full 305-verb table —
+> the file): **306 verbs across 34 domains** under the public verb contract.
+> **`reference.md` is the full 306-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -203,10 +203,19 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   macOS, Doctor can advertise opaque camera choices for an explicit Auto-edit
 >   recording. The admitted camera is finalized as a separate editable take with
 >   shared-clock evidence; permission, busy-device, and no-frame failures never
->   fall back to another device. Recording Scenes freezes named Screen and
+>   fall back to another device. Preview Pause, Resume, Hide, and Stop each take
+>   the latest positive `generation` and matching opaque `lease_nonce` returned
+>   with that active lease by Start, Status, Frame, or a nonterminal Pause/Resume
+>   result. A stale generation or nonce
+>   is rejected without changing a newer or restarted-server preview; the nonce
+>   changes on Cut-server restart and is neither auth nor a native target/ticket.
+>   Recording Scenes freezes named Screen and
 >   Presenter PiP presets at Start; `screen_record.scene_activate` and
 >   `screen_record.scene_timer` durably
 >   save shared-clock transitions before acknowledging them.
+>   `unavailable_reason` appears only when Cut cannot prove it released a prior
+>   native preview; it requires restarting that process, not merely reopening
+>   Record.
 >   Doctor health stays strict: on Linux `start_allowed:true` means only the
 >   deliberate prompt-deferred XDG ScreenCast portal card may enter the
 >   user-initiated source picker; it does not make `ready` true, and missing,
@@ -245,6 +254,15 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   native identity. Its `audio_meters` read only the already-admitted mic/system
 >   streams; live, stale, device-lost, stopped, and unavailable are distinct, and
 >   status never opens a device or starts monitoring playback.
+>   After `screen_record.start` returns a `capture_id`, retain it. A
+>   non-successful `screen_record.stop` leaves that capture unresolved: do not
+>   call `screen_record.start` for a replacement or infer that it is safe to
+>   leave Record. Use the returned error and `screen_record.recovery_status`;
+>   when Retry Stop is available, retry the exact same `capture_id`. For Raw
+>   output, correct a rejected explicit `raw_path` with an authorized path or
+>   omit it for the default export folder before retrying that same capture.
+>   Only an acknowledged Stop releases capture ownership; a later
+>   `screen_record.polish` error is processing failure, not a live capture.
 >   Native preview is separately opt-in and process-local. First read
 >   `preview_capability`: `source_selection:"exact"` admits only an unchanged
 >   current Doctor monitor/window id, while `"portal"` admits only
@@ -348,7 +366,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   MatAnyone2 (SAM2 click-to-pick subject).
 > - **Advanced color** — the `grade` gallery (`grade.save`/`apply`/`list`),
 >   `edit.grade_stack` (layered grades), `edit.grade_window` (power window),
->   `project.color` / `edit.color_space` (working/output/input colour management).
+>   `project.color` / `edit.color_space` (Rec.709, Rec.2020, sRGB, or
+>   scene-linear working/output/input conversion). This is a lightweight
+>   four-space path, not camera Log interpretation or HDR mastering/delivery.
 > - **Multicam** — `edit.multicam_sync` (audio-align angles) + `edit.multicam_switch`
 >   (auto-cut the program to the active-speaker angle).
 
@@ -479,7 +499,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 305 tools, and same-engine
+the final proof of protocol negotiation, ping, all 306 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 
@@ -579,6 +599,13 @@ returns the full materialized timeline (assets, tracks, markers, checkpoints) pl
 path-free `project_identity:{schema:"shellx-cut/project-identity/1",origin_path_sha256,project_name}`;
 the canonical project path remains server-local. Drop a
 checkpoint before any editing pass: `project.checkpoint {name:"pre-edit"}`.
+
+An active native capture pins its owner project until native teardown releases its
+reservation. While the currently open project is that capture's owner,
+`project.create`, `project.open`, and `project.close` return `conflict`;
+`project.delete` may remove only a different closed project. An unbound native
+reservation fails closed for every project transition. Do not use a UI state change
+as proof that the capture has released ownership.
 
 In the desktop UI, Projects is the initial workspace. Dropping video, audio, or
 an image while no project is open creates a sensibly named project, imports the
@@ -721,16 +748,21 @@ Library item whose original moved, call `library.relink {id,path}` only with the
 same media bytes at the new path. A `conflict` means the file is different:
 preserve the old item and use `library.add` to create a new identity.
 
-**First import auto-places**: on an empty timeline the chain inserts the asset
-onto v1/a1t as real system-actor `edit.insert` ops — import and start editing.
-Later imports (b-roll) are NOT placed; add them with explicit `edit.insert`.
+**First import auto-places**: on an empty timeline the chain places a probed
+muxed video as one system-actor `edit.insert_linked` op on v1/a1t; audio-only,
+video-without-audio, and still placement retain `edit.insert`. Later imports
+(b-roll) are NOT placed; add them with the matching explicit insert verb.
 For human UI placement, Assets **Insert** and normal timeline drops target the
 base story timeline with ripple. Use an explicit overlay path only when the clip
 should sit above the base picture: Alt-drop/new overlay lane, drop on an
 existing overlay lane, or `edit.add_track {kind:"video"}` followed by
-`edit.insert {track:<overlay>, ripple:false}`. Linked audio for a placed video
-lands on an audio track; the video insert owns the base ripple so the linked
-audio is inserted into the opened gap without a second ripple.
+`edit.insert {track:<overlay>, ripple:false}`. For a probed muxed video,
+`edit.insert_linked` needs exactly one video strategy (`video_track` or
+`create_video_track:true`) and one audio strategy (`audio_track` or
+`create_audio_track:true`). It validates both legs and commits both clips and
+any requested tracks together; an error leaves no partial placement. Its shared
+`src_range_ms` keeps the source clocks aligned, and its single ripple opens time
+only once.
 
 **Overwrite is its own edit, never `edit.insert {ripple:false}`.** Use
 `edit.overwrite {asset, at_ms, video_track?, audio_track?, src_range_ms?}` to

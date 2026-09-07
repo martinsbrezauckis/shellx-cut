@@ -34,6 +34,11 @@ pub(crate) async fn screen_record_start(
         rationale: Option<String>,
     }
     let a: Args = parse_args(args)?;
+    // Project replacement and native-capture admission share one linearization
+    // order. Hold this before selecting the project directory and retain it
+    // through reservation/worker admission, so a switch cannot retarget a
+    // capture between snapshot and its native owner becoming visible.
+    let _project_transition = state.project_transition.lock().await;
     let duration_ms = a.duration_ms;
     let fps = a.fps.unwrap_or(30.0);
     validate_capture_settings(duration_ms, fps)?;
@@ -48,9 +53,6 @@ pub(crate) async fn screen_record_start(
     let (_project, _edl, dir, _at) = snapshot(state).await?;
     let recorder_doctor = doctor();
     start_readiness::ensure_start_ready(&recorder_doctor.cards)?;
-    // A recording claims the singleton native capture path only after an active
-    // preview has synchronously released its own native session and memory frame.
-    source_preview::release_for_recording()?;
     let monitor_target = monitor_start_admission::admit(
         a.monitor,
         a.monitor_id.as_deref(),
@@ -285,10 +287,17 @@ mod readiness_status_tests {
     #[tokio::test]
     async fn status_requires_a_delivered_frame_and_never_admits_a_terminal_capture() {
         let _capture_lock = super::capture_test_lock().lock().await;
+        let project_root = tempfile::tempdir().expect("test project root");
         let capture_id = format!("cap_readiness_{}", std::process::id());
         let control = CaptureSessionControl::new(None, true, true, false);
         let readiness = control.readiness();
-        let reservation = reserve_capture(capture_id.clone(), control.clone()).unwrap();
+        let reservation = super::capture_registry::reserve_capture_after_preview_release(
+            capture_id.clone(),
+            control.clone(),
+            Some(project_root.path().to_path_buf()),
+            || Ok(()),
+        )
+        .unwrap();
 
         let pending = readiness_status_handler(json!({"capture_id": capture_id}))
             .await
@@ -360,11 +369,18 @@ mod readiness_status_tests {
     #[tokio::test]
     async fn status_reports_only_an_armed_unexpected_source_close_as_source_loss() {
         let _capture_lock = super::capture_test_lock().lock().await;
+        let project_root = tempfile::tempdir().expect("test project root");
         let capture_id = format!("cap_source_loss_{}", std::process::id());
         let control = CaptureSessionControl::new(None, false, false, false);
         let source = control.source_lifecycle();
         let readiness = control.readiness();
-        let reservation = reserve_capture(capture_id.clone(), control).unwrap();
+        let reservation = super::capture_registry::reserve_capture_after_preview_release(
+            capture_id.clone(),
+            control,
+            Some(project_root.path().to_path_buf()),
+            || Ok(()),
+        )
+        .unwrap();
 
         source.arm_initial_selected_source("native selected-window close callback is armed.");
         readiness.mark_first_screen_frame_delivered();

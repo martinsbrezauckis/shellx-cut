@@ -949,9 +949,9 @@
       "group": "left",
       "title": "Add at playhead",
       "where": "Asset card",
-      "description": "Insert an asset at the current playhead on the base story timeline. Linked audio is placed with the video so preview and export stay audible.",
-      "requirement": "Requires an imported asset and an open project.",
-      "api": "edit.insert"
+      "description": "Insert an asset at the current playhead on the base story timeline. A probed video with audio is placed as one aligned picture-and-sound action, so it cannot leave only one half behind.",
+      "requirement": "Requires an imported asset and an open project. Muxed video needs both an admitted video and audio destination.",
+      "api": "edit.insert, edit.insert_linked"
     },
     {
       "id": "cut.left.generate",
@@ -1409,9 +1409,9 @@
       "group": "timeline",
       "title": "Base track and overlays",
       "where": "Timeline tracks",
-      "description": "Normal Insert and normal drops build the base story timeline and ripple later clips. Extra video tracks are overlays: use Alt-drag, a new overlay lane, or an existing overlay lane when the clip should appear on top.",
-      "requirement": "Requires an open project; overlay placement requires an overlay lane or Alt-drag.",
-      "api": "edit.insert, edit.add_track"
+      "description": "Normal Insert and normal drops build the base story timeline and ripple later clips. A probed video with audio is placed in one aligned picture-and-sound action; both destinations are checked or created together. Extra video tracks are overlays: use Alt-drag, a new overlay lane, or an existing overlay lane when the clip should appear on top.",
+      "requirement": "Requires an open project; overlay placement requires an overlay lane or Alt-drag. Muxed video needs both an admitted video and audio destination.",
+      "api": "edit.insert, edit.insert_linked, edit.add_track"
     },
     {
       "id": "cut.timeline.save_assets",
@@ -1529,9 +1529,9 @@
       "group": "inspector",
       "title": "Color tab",
       "where": "Inspector",
-      "description": "Adjust grade and color controls for the selected visual clip. Browse for a LUT with the native desktop file dialog; Cut shows the selected filename rather than exposing an editable absolute path.",
-      "requirement": "Requires a selected visual clip. LUT browsing requires the desktop app.",
-      "api": "edit.grade"
+      "description": "Adjust grade and color controls for the selected visual clip. Tag its input as Rec.709, Rec.2020, sRGB, or scene-linear so Cut can convert it into the project's working and output spaces before grade/effects. Browse for a LUT with the native desktop file dialog; Cut shows the selected filename rather than exposing an editable absolute path.",
+      "requirement": "Requires a selected visual clip. LUT browsing requires the desktop app. The four explicit tags are lightweight color management, not camera Log interpretation or an end-to-end HDR mastering or delivery workflow.",
+      "api": "edit.grade, edit.color_space, project.color"
     },
     {
       "id": "cut.inspector.audio",
@@ -1649,7 +1649,7 @@
       "group": "record",
       "title": "Studio preview",
       "where": "Focused Record workspace",
-      "description": "Record replaces editor chrome with a capture-focused layout. Choose screen and sound on the left, inspect the dominant composition in the centre, adjust scenes and style on the right, and keep Start/Stop visible. Capture setup provides 24/25/30/50/60 FPS presets with custom 1–240 FPS validation and remembers one selected microphone as an app-local preference. Start native preview explicitly to see real bounded pixels from the exact selected display/window, or a fresh Linux Portal choice; pause, hide, stop, permission, source-loss, recursion, and unavailable states are shown truthfully. Microphone and system-audio meters come from the admitted capture streams without monitoring playback or a second stream. A video-only 3–5 second rehearsal can be played immediately and discarded without creating project media. During a normal take, compact live controls expose the real Stop, Pause/Resume, marker, scene, timer, and meter state.",
+      "description": "Record replaces editor chrome with a capture-focused layout. Choose screen and sound on the left, inspect the dominant composition in the centre, adjust scenes and style on the right, and keep Start/Stop visible. Capture setup provides 24/25/30/50/60 FPS presets with custom 1–240 FPS validation and remembers one selected microphone as an app-local preference. Start native preview explicitly to see real bounded pixels from the exact selected display/window, or a fresh Linux Portal choice; pause, hide, stop, permission, source-loss, recursion, and unavailable states are shown truthfully. Preview controls bind to the current preview generation and opaque server-owner lease, so a late control cannot release a newer source; that lease changes when the Cut server restarts. If an unavailable state says a native release could not be confirmed, restart ShellX Cut; reopening Record cannot clear that owner. Microphone and system-audio meters come from the admitted capture streams without monitoring playback or a second stream. A video-only 3–5 second rehearsal can be played immediately and discarded without creating project media. During a normal take, compact live controls expose the real Stop, Pause/Resume, marker, scene, timer, and meter state. Back to Edit stays unavailable while a countdown, pending Start, live capture, finalization, or unacknowledged Stop owns the capture; follow the visible reason to cancel, wait, Stop, or Retry Stop. A successful Stop releases capture ownership before subsequent auto-edit or polish, so a later processing failure is safe to leave or start again from Record.",
       "requirement": "Requires the Record workspace and a supported native capture adapter. Linux preview always uses the system picker. Rehearsal is disposable and video-only; use the explicit audio checks and meters for sound. Unsupported preview or meter inputs stay labeled unavailable, and real capture still depends on OS permissions.",
       "api": "screen_record.preview_capability, screen_record.preview_start, screen_record.preview_status, screen_record.preview_frame, screen_record.preview_pause, screen_record.preview_resume, screen_record.preview_hide, screen_record.preview_stop, screen_record.rehearsal_start, screen_record.rehearsal_discard, screen_record.start, screen_record.stop"
     },
@@ -1769,7 +1769,7 @@
       "group": "record",
       "title": "Raw capture mode",
       "where": "Record workspace",
-      "description": "Raw capture saves the recording as captured without auto-edit or polish, then lets you add the saved file to the timeline manually.",
+      "description": "Raw capture saves the recording as captured without auto-edit or polish, then lets you add the saved file to the timeline manually. If an output authorization or Stop failure occurs before Stop is acknowledged, the same capture stays live and Stop becomes Retry Stop (F9). Choose another file or Clear a custom destination to use the default export folder, then retry Stop; do not begin a second take.",
       "requirement": "Requires FFmpeg and a writable output location.",
       "api": "screen_record.stop {mux_raw:true}, media.import"
     },
@@ -1799,9 +1799,9 @@
       "group": "workflow",
       "title": "Import and organize media",
       "where": "Assets tab and timeline",
-      "description": "Import a file, verify it in Assets, then add it at the playhead or drag it into the base timeline.",
+      "description": "Import a file, verify it in Assets, then add it at the playhead or drag it into the base timeline. Muxed video enters as one aligned picture-and-sound placement.",
       "requirement": "Requires readable media and FFmpeg.",
-      "api": "media.import, edit.insert"
+      "api": "media.import, edit.insert, edit.insert_linked"
     },
     {
       "id": "cut.workflow.base_overlay",
@@ -1809,9 +1809,9 @@
       "group": "workflow",
       "title": "Build the base timeline, then overlays",
       "where": "Assets tab and timeline",
-      "description": "Drop ordinary clips onto the base timeline first. Use Alt-drag or drop on an overlay lane for B-roll, picture-in-picture, titles, masks, or any video that should composite above the main story.",
-      "requirement": "Requires imported media; overlays need a video overlay lane.",
-      "api": "edit.insert, edit.add_track, edit.transform"
+      "description": "Drop ordinary clips onto the base timeline first. A muxed video validates its picture and sound destinations together. Use Alt-drag or drop on an overlay lane for B-roll, picture-in-picture, titles, masks, or any video that should composite above the main story.",
+      "requirement": "Requires imported media; overlays need a video overlay lane and muxed video needs an audio destination.",
+      "api": "edit.insert, edit.insert_linked, edit.add_track, edit.transform"
     },
     {
       "id": "cut.workflow.split_trim",
@@ -1899,7 +1899,7 @@
       "group": "workflow",
       "title": "Record, polish, export, and retry",
       "where": "Record workspace and status bar",
-      "description": "Open Record, verify the exact source with native preview, watch admitted input meters, optionally make and discard a short rehearsal, then start capture. Lost source, microphone, camera, or system audio is reported honestly; only finalized normal takes are retained. A qualifying failed default-output export shows one Retry after Cut rechecks durable lineage, project revision, source, EditPlan, capture-audio bytes, and output lease; the queued renderer receives private staged input copies instead of reopening mutable paths.",
+      "description": "Open Record, verify the exact source with native preview, watch admitted input meters, optionally make and discard a short rehearsal, then start capture. Lost source, microphone, camera, or system audio is reported honestly; only finalized normal takes are retained. A failed capture Stop is separate from an output-job Retry: it retains its exact capture, blocks leaving Record and a new take, and uses Retry Stop until its state is resolved. Once Stop is acknowledged, later polish or output errors no longer represent a live capture. A qualifying failed default-output export shows one Retry after Cut rechecks durable lineage, project revision, source, EditPlan, capture-audio bytes, and output lease; the queued renderer receives private staged input copies instead of reopening mutable paths.",
       "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Rehearsal is video-only and never becomes project media. Retry is available only for one engine-declared eligible failed Recording Studio export; cancellation, stale inputs, non-durable records, or consumed attempts are refused.",
       "api": "screen_record.preview_start, screen_record.rehearsal_start, screen_record.rehearsal_discard, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export, jobs.retry, jobs.status"
     },

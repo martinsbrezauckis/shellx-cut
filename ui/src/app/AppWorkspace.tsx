@@ -1,4 +1,4 @@
-import { Suspense, lazy, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { Suspense, lazy, type RefObject } from 'react'
 import type { OpRecord, Project, Transcript as TranscriptData } from '../lib/client'
 import type { DoctorReport } from '../lib/doctor'
 import { Icon } from '../icons'
@@ -7,6 +7,8 @@ import type { LayoutState } from '../layout/useLayout'
 import type { GenerateWorkspaceTab } from '../panels/GenerateTemplates'
 import type { SourceNavigationState } from './useSourceNavigationController'
 import type { StockImportCoordinator } from '../panels/Stock/importCoordinator'
+import type { RecordingWorkspaceAdmission } from '../panels/Record/recordingWorkspaceAdmission'
+import type { RequestLayout } from './useRecordingWorkspaceNavigation'
 import Preview from '../panels/Preview'
 import Timeline from '../panels/Timeline'
 
@@ -17,7 +19,7 @@ const LibraryWorkspace = lazy(() => import('../panels/Library/LibraryWorkspace')
 
 interface AppWorkspaceProps {
   layout: LayoutState
-  setLayout: Dispatch<SetStateAction<LayoutState>>
+  setLayout: RequestLayout
   sourceNavigation: SourceNavigationState | null
   mainRef: RefObject<HTMLDivElement | null>
   splitRef: RefObject<HTMLDivElement | null>
@@ -52,6 +54,8 @@ interface AppWorkspaceProps {
   onLibraryAddedToProject: () => void
   onRecordClipAdded: () => void
   onOpenOutputSettings: () => void
+  /** App-shell guard state reported by the mounted focused recorder. */
+  onRecordWorkspaceAdmission: (admission: RecordingWorkspaceAdmission) => void
   /** App-lifetime owner for an in-flight Find-media import across workspace remounts. */
   stockImportCoordinator: StockImportCoordinator
 }
@@ -101,6 +105,7 @@ export default function AppWorkspace({
   onLibraryAddedToProject,
   onRecordClipAdded,
   onOpenOutputSettings,
+  onRecordWorkspaceAdmission,
   stockImportCoordinator,
 }: AppWorkspaceProps) {
   const recordTimelineDeferred = layout.workspaceMode === 'record'
@@ -143,6 +148,7 @@ export default function AppWorkspace({
                 project={project}
                 onClipAdded={onRecordClipAdded}
                 onOpenOutputSettings={onOpenOutputSettings}
+                onWorkspaceAdmissionChange={onRecordWorkspaceAdmission}
               />
             </Suspense>
           </div>

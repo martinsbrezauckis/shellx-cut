@@ -5,10 +5,17 @@ mod plan;
 mod scan;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transition_gate;
 
 use super::project_workspace::path_free_project_identity;
 use super::*;
 use plan::{accepted_changes, build_plan, preview_result};
+#[cfg(test)]
+use transition_gate::{
+    wait_for_relink_project_transition_gate_after_commit,
+    wait_for_relink_project_transition_gate_after_pin,
+};
 
 const PREVIEW_SCHEMA: &str = "shellx-cut/media-relink-preview/1";
 const RECEIPT_SCHEMA: &str = "shellx-cut/media-relink-receipt/1";
@@ -28,6 +35,7 @@ struct OfflineAssetSnapshot {
 
 #[derive(Debug, Clone)]
 struct RelinkSnapshot {
+    project_dir: PathBuf,
     project_identity: Value,
     project_revision: String,
     root: PathBuf,
@@ -68,6 +76,7 @@ struct RelinkPlan {
 struct PreparedPlan {
     plan: RelinkPlan,
     plan_hash: String,
+    project_dir: PathBuf,
 }
 
 #[derive(serde::Deserialize)]
@@ -103,7 +112,13 @@ pub(super) async fn media_relink_apply(
         .map(str::to_owned);
     let args: ApplyArgs = parse_args(args)?;
     let expected_revision = required_request_revision(&actor)?;
-    let snapshot = snapshot(state, PathBuf::from(args.root)).await?;
+    // Preview/revalidation/commit must keep the same project owner. Local
+    // operation IDs repeat across projects, so a revision check alone cannot
+    // bind this grouped mutation to the project that was previewed.
+    let _transition = state.project_transition.lock().await;
+    #[cfg(test)]
+    wait_for_relink_project_transition_gate_after_pin(&args.root).await;
+    let snapshot = snapshot(state, PathBuf::from(args.root.clone())).await?;
     if snapshot.project_revision != expected_revision {
         return stale_preview(&expected_revision, &snapshot.project_revision);
     }
@@ -123,6 +138,7 @@ pub(super) async fn media_relink_apply(
     let (op, post_revision, warnings) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
+        ensure_prepared_source(store, &prepared)?;
         let actual = store.log.current_revision()?.unwrap_or_default();
         if actual != expected_revision {
             return stale_preview(&expected_revision, &actual);
@@ -140,6 +156,8 @@ pub(super) async fn media_relink_apply(
         let warnings = store.take_commit_warnings(std::slice::from_ref(&committed.op.op_id));
         (committed.op, post_revision, warnings)
     };
+    #[cfg(test)]
+    wait_for_relink_project_transition_gate_after_commit(&args.root).await;
     state.events.publish(Event::OpApplied { op: op.clone() });
     let rows = accepted
         .iter()
@@ -171,6 +189,23 @@ pub(super) async fn media_relink_apply(
         vec![op.op_id],
     )
     .with_warnings(warnings))
+}
+
+/// Bind the final grouped write to the project captured by the preview. A
+/// project-local operation ID can repeat in a copied project, so the revision
+/// guard is necessary but cannot establish source identity by itself.
+fn ensure_prepared_source(store: &ProjectStore, prepared: &PreparedPlan) -> Result<(), CutError> {
+    if store.dir != prepared.project_dir
+        || path_free_project_identity(store)? != prepared.plan.project_identity
+    {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "bulk relink open project changed before commit",
+            "the preview belongs to a different project; no selected assets were changed",
+        )
+        .with_suggested_action("refresh media.relink_preview and submit a new request_id"));
+    }
+    Ok(())
 }
 
 fn required_request_revision(actor: &Actor) -> Result<String, CutError> {
@@ -232,6 +267,7 @@ async fn snapshot(state: &AppState, root: PathBuf) -> Result<RelinkSnapshot, Cut
         .collect::<Vec<_>>();
     assets.sort_by(|left, right| left.asset_id.cmp(&right.asset_id));
     Ok(RelinkSnapshot {
+        project_dir: store.dir.clone(),
         project_identity: path_free_project_identity(store)?,
         project_revision: revision,
         root,

@@ -8,11 +8,15 @@ interface RecordingLiveControlsProps {
   sceneControl: ReactNode
   audioMeters: ReactNode
   captureSafety: ReactNode
+  /** Explicit recovery controls appear directly below transport while a Stop retains ownership. */
+  recoveryControls?: ReactNode
   pauseCapability: RecordingPauseCapability
   pauseEnabled: boolean
   pauseState: RecordingPauseState
   pauseMessage: string
   markerPending: boolean
+  /** The capture remains owned after an unacknowledged Stop; the next Stop retries it. */
+  stopRetry: boolean
   onMarker: () => void
   onPauseControl: () => void
   onStop: () => void
@@ -29,11 +33,13 @@ export function RecordingLiveControls({
   sceneControl,
   audioMeters,
   captureSafety,
+  recoveryControls,
   pauseCapability,
   pauseEnabled,
   pauseState,
   pauseMessage,
   markerPending,
+  stopRetry,
   onMarker,
   onPauseControl,
   onStop,
@@ -87,12 +93,14 @@ export function RecordingLiveControls({
             type="button"
             className="rec__stop"
             data-cut-action="record-stop"
+            data-cut-rec-stop-retry={stopRetry ? 'true' : undefined}
             onClick={onStop}
           >
-            ■ Stop (F9)
+            ■ {stopRetry ? 'Retry Stop' : 'Stop'} (F9)
           </button>
         </div>
       </div>
+      {recoveryControls && <div className="rec-live-controls__recovery">{recoveryControls}</div>}
       <div className="rec-live-controls__scenes" data-cut-rec-live-scenes>
         {sceneControl}
       </div>

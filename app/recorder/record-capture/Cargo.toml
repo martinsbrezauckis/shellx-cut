@@ -89,7 +89,8 @@ libc = "0.2"
 # windows-capture (WGC): per-window/display enumeration + SCStream + SCRecordingOutput
 # direct-to-file (feature macos_15_0). The supported macOS range provides these APIs.
 [target.'cfg(target_os = "macos")'.dependencies]
-screencapturekit = { version = "8", optional = true, features = ["macos_15_0"] }
+# 8.0.1 separates its private Swift bridge from apple-cf's CoreMediaBridge.
+screencapturekit = { version = "8.0.1", optional = true, features = ["macos_15_0"] }
 
 # Linux capture deps (ashpd = XDG portals, tokio = async runtime for the handshake).
 # enumflags2 must match ashpd's (0.7) for SourceType BitFlags type identity.

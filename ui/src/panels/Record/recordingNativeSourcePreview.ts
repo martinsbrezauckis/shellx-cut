@@ -120,13 +120,14 @@ export function recordingSourcePreviewPresentation(
   return {
     available: true,
     state: status.state,
-    detail: currentFrame ? 'Receiving a native source frame.' : stateDetail(status.state),
+    detail: currentFrame ? 'Receiving a native source frame.' : stateDetail(status),
     frameUrl: currentFrame ? `data:image/bmp;base64,${frame.base64}` : null,
   }
 }
 
-function stateDetail(state: ScreenRecordSourcePreviewStatus['state']): string {
-  switch (state) {
+function stateDetail(status: ScreenRecordSourcePreviewStatus): string {
+  if (status.state === 'unavailable' && status.unavailable_reason) return status.unavailable_reason
+  switch (status.state) {
     case 'idle': return 'Choose one current source to begin preview.'
     case 'starting': return 'Waiting for the native source to deliver a frame.'
     case 'ready': return 'Preview synchronization is pending.'

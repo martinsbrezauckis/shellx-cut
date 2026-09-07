@@ -5,12 +5,13 @@ import {
   overwriteSourceRange,
   overwriteSourceStill,
   placeLinkedAV,
+  resolvePlacementTargets,
   sourceOverwriteTrackTargets,
   STILL_OVERWRITE_DEFAULT_DURATION_MS,
   STILL_OVERWRITE_MAX_DURATION_MS,
   STILL_OVERWRITE_MIN_DURATION_MS,
 } from '../../lib/placement'
-import { laidToSharedEditorialPosition } from '../Timeline/layout'
+import { laidToLinkedPlacementPosition, laidToSharedEditorialPosition } from '../Timeline/layout'
 import { revealRegisteredSource } from '../../lib/tauri'
 import { requestSourceNavigation } from '../../app/sourceNavigation'
 import { Icon } from '../../icons'
@@ -150,26 +151,57 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
     setNote(null)
   }
 
+  const markedRangeReady = durationMs > 0 && outMs > inMs
+  const insertTargets = useMemo(
+    () => resolvePlacementTargets(project, { asset: asset.id, kind: asset.kind }),
+    [asset.id, asset.kind, project],
+  )
+  const insertPosition = useMemo(
+    () => laidToLinkedPlacementPosition(
+      project,
+      playheadMs,
+      [insertTargets.videoTrack, sourceHasAudio ? insertTargets.audioTrack : undefined],
+      asset.kind === 'video' && asset.hasAudio && (!insertTargets.videoTrack || !insertTargets.audioTrack),
+    ),
+    [asset.hasAudio, asset.kind, insertTargets.audioTrack, insertTargets.videoTrack, playheadMs, project, sourceHasAudio],
+  )
+  const insertState = busy
+    ? 'busy'
+    : !markedRangeReady
+      ? 'range-invalid'
+      : !insertPosition.ok
+        ? 'position-conflict'
+        : 'ready'
+  const insertDisabledReason = !markedRangeReady
+    ? 'Mark a source range before inserting'
+    : !insertPosition.ok
+      ? insertPosition.error
+      : operation === 'overwrite'
+        ? 'Overwrite is running'
+        : operation === 'insert'
+          ? 'Insert range is running'
+          : ''
+
   const insert = async () => {
     const sourceIn = Math.max(0, Math.round(inMs))
     const sourceOut = Math.min(durationMs, Math.round(outMs))
-    if (busy || sourceOut <= sourceIn) return
+    if (busy || sourceOut <= sourceIn || !insertPosition.ok) return
     setOperation('insert')
     setNote(null)
     try {
       const result = await placeLinkedAV({
         asset: asset.id,
         kind: asset.kind,
-        at_ms: Math.max(0, Math.round(playheadMs)),
+        at_ms: insertPosition.atMs,
         src_range_ms: [sourceIn, sourceOut],
         ripple: true,
         rationale: `insert source range ${sourceIn}-${sourceOut}ms from ${asset.id}`,
+        videoTrack: insertTargets.videoTrack,
+        audioTrack: insertTargets.audioTrack,
         project,
       })
       if (!result.ok) {
         setNote(`Insert failed: ${result.error ?? 'error'}`)
-      } else if (asset.kind === 'video' && asset.hasAudio && !result.audioLinked) {
-        setNote('Video inserted; linked audio could not be added')
       } else {
         setNote(`Inserted ${formatTime(sourceOut - sourceIn)} at ${formatTime(playheadMs)}`)
       }
@@ -180,7 +212,6 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
     }
   }
 
-  const markedRangeReady = durationMs > 0 && outMs > inMs
   const overwriteAudioTarget = isStill ? null : audioTarget
   const hasOverwriteTarget = !!videoTarget || !!overwriteAudioTarget
   const overwritePosition = useMemo(
@@ -593,7 +624,9 @@ export default function SourceMonitor({ asset, project, playheadMs, initialMs = 
               type="button"
               className="source-monitor__insert"
               data-cut-source-insert
-              disabled={busy || !markedRangeReady}
+              data-cut-source-insert-state={insertState}
+              disabled={insertState !== 'ready'}
+              title={insertDisabledReason || 'Insert the marked source range at the playhead'}
               onClick={() => void insert()}
             >
               <Icon name="plus" size={14} />

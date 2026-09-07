@@ -4,7 +4,7 @@ import './recordingSourcePreview.css'
 
 interface StudioPreviewProps {
   studio: StudioState
-  phase: 'idle' | 'countdown' | 'recording' | 'finalizing' | 'done' | 'error'
+  phase: 'idle' | 'countdown' | 'starting' | 'recording' | 'finalizing' | 'done' | 'error'
   elapsed: string
   sceneName: string
   sceneState: string
@@ -13,6 +13,11 @@ interface StudioPreviewProps {
 
 export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview }: StudioPreviewProps) {
   const preset = studioBackgroundPreset(studio.background)
+  const offlineFixture = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('mock') === '1'
+  const showsNativeFrame = Boolean(sourcePreview.frameUrl)
+  const sourceLabel = showsNativeFrame
+    ? offlineFixture ? 'Offline fixture · not captured' : 'Native source'
+    : 'Composition fallback · not source capture'
   return (
     <div
       className={`rec-studio-preview rec-studio-preview--${studio.background}`}
@@ -26,9 +31,18 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
         <span>Composition preview</span>
         <small>Controls stay outside the recorded frame</small>
       </div>
-      <div className="rec-studio-preview__screen" data-cut-rec-native-preview-state={sourcePreview.state}>
+      <div
+        className="rec-studio-preview__screen"
+        data-cut-rec-native-preview-state={sourcePreview.state}
+        data-cut-rec-native-preview-kind={showsNativeFrame ? (offlineFixture ? 'fixture' : 'native') : 'fallback'}
+      >
         {sourcePreview.frameUrl ? (
-          <img className="rec-studio-preview__native-frame" data-cut-rec-native-preview-frame src={sourcePreview.frameUrl} alt="Native selected-source preview" />
+          <img
+            className="rec-studio-preview__native-frame"
+            data-cut-rec-native-preview-frame
+            src={sourcePreview.frameUrl}
+            alt={offlineFixture ? 'Offline source preview fixture, not desktop capture' : 'Native selected-source preview'}
+          />
         ) : (
           <>
             <div className="rec-studio-preview__bar" />
@@ -39,7 +53,7 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
             </div>
           </>
         )}
-        <span className="rec-studio-preview__screen-label">{sourcePreview.frameUrl ? 'Native source' : 'Screen'}</span>
+        <span className="rec-studio-preview__screen-label">{sourceLabel}</span>
       </div>
       {studio.camera.enabled && (
         <div
@@ -58,7 +72,7 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
       )}
       <div className="rec-studio-preview__status" role="status" aria-live="polite">
         <span data-cut-rec-preview-phase={phase}>
-          {phase === 'recording' ? 'REC' : phase === 'countdown' ? 'Starting' : 'Ready'}
+          {phase === 'recording' ? 'REC' : phase === 'countdown' || phase === 'starting' ? 'Starting' : 'Ready'}
         </span>
         <span data-cut-rec-scene-preview={sceneState}>{sceneName}</span>
         <span>{elapsed}</span>

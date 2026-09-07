@@ -36,6 +36,9 @@ pub(super) async fn start_from_foreground_ticket(
     state: &AppState,
     request: PrivateWindowsRegionStart,
 ) -> Result<VerbResult, CutError> {
+    // Keep the project identity stable from private ticket consumption through
+    // ordinary capture reservation, matching the public start path.
+    let _project_transition = state.project_transition.lock().await;
     let (monitor_id, crop) = windows_region_bridge::consume_ticket(&request.ticket)?;
     validate_capture_settings(request.duration_ms, request.fps)?;
     let quality = record_capture::admit_capture_quality(request.quality).map_err(record_err)?;

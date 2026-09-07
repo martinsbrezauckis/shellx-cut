@@ -151,6 +151,30 @@ async fn estimate_only_verifies_rebuild_work_without_reserving_or_starting_a_job
 }
 
 #[tokio::test]
+async fn rebuild_refuses_non_durable_admission_before_reserving_cache_output() {
+    let (_root, state, _source, _hash) = state_with_image_asset().await;
+    let project_dir = state.project.read().await.as_ref().unwrap().dir.clone();
+    let jobs_dir = project_dir.join("jobs");
+    std::fs::remove_dir_all(&jobs_dir).unwrap();
+    std::fs::write(&jobs_dir, b"not a directory").unwrap();
+
+    let error = start_rebuild(&state, json!({"asset_ids": ["a1"]}))
+        .await
+        .expect_err("rebuild must refuse non-durable job admission");
+    assert_eq!(error.code, error_codes::IO);
+    assert!(
+        state.jobs.list().is_empty(),
+        "no rebuild worker may start in memory"
+    );
+    assert!(
+        !project_dir
+            .join(".shellx-cut-cache-ownership.json")
+            .exists(),
+        "failed admission must not reserve or retire cache output"
+    );
+}
+
+#[tokio::test]
 async fn source_revision_change_is_reported_without_reserving_or_starting_a_worker() {
     let (_root, state, source, _hash) = state_with_image_asset().await;
     std::fs::write(&source, b"source-v2").unwrap();

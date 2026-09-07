@@ -1,0 +1,99 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "edit",
+  "verbs": [
+    {
+      "name": "edit.insert_linked",
+      "domain": "edit",
+      "description": "Atomically insert a probed muxed-video source range as one video-track clip and one audio-track clip at the same EDITORIAL at_ms. This is the only linked A/V insert surface: it validates the source, both destination strategies, source range, track kinds, and the second insertion before a cloned Project is committed once. The two tracks must be stated independently: each leg names one existing typed destination OR asks to create one new typed destination, never both and never neither. If either leg cannot be applied, no clips, tracks, operation id, or op_applied event escape. A rendered/playhead coordinate must be converted through both target crossfade layouts first; if an existing target and a new identity-clock target disagree, the caller must refuse instead of choosing one. ripple shifts the video target and any non-linked timeline material exactly once; the paired audio insertion remains aligned without opening a second gap. The durable result is one replayable/undoable edit.insert_linked operation with lowered edit.add_track/edit.insert steps.",
+      "args": {
+        "type": "object",
+        "required": ["asset", "at_ms"],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Imported video asset with a probed audio stream. Audio-only, video-without-audio, and still-image placement use edit.insert instead."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Shared EDITORIAL insertion coordinate, not a rendered playhead coordinate after a crossfade."
+          },
+          "video_track": {
+            "type": "string",
+            "description": "Existing video destination; required unless create_video_track:true is supplied."
+          },
+          "audio_track": {
+            "type": "string",
+            "description": "Existing audio destination; required unless create_audio_track:true is supplied."
+          },
+          "create_video_track": {
+            "type": "boolean",
+            "description": "Create the video destination inside this transaction. It is mutually exclusive with video_track."
+          },
+          "create_audio_track": {
+            "type": "boolean",
+            "description": "Create the audio destination inside this transaction. It is mutually exclusive with audio_track."
+          },
+          "src_range_ms": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0},
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Optional [source_in_ms, source_out_ms) applied identically to both linked clips. Omit only for a fully probed timed source."
+          },
+          "ripple": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether the linked placement opens timeline time. The paired audio leg never performs a second independent ripple."
+          },
+          "rationale": {"type": "string"}
+        },
+        "allOf": [
+          {
+            "oneOf": [
+              {"required": ["video_track"]},
+              {"required": ["create_video_track"], "properties": {"create_video_track": {"const": true}}}
+            ]
+          },
+          {
+            "oneOf": [
+              {"required": ["audio_track"]},
+              {"required": ["create_audio_track"], "properties": {"create_audio_track": {"const": true}}}
+            ]
+          }
+        ]
+      },
+      "result": "{video_clip_id, audio_clip_id, video_track, audio_track, created_video_track, created_audio_track, at_ms, src_range_ms, ripple} — both linked clips and any requested tracks committed as one replayable edit.insert_linked op; an error leaves the project and event stream unchanged.",
+      "result_schema": {
+        "type": "object",
+        "required": ["video_clip_id", "audio_clip_id", "video_track", "audio_track", "created_video_track", "created_audio_track", "at_ms", "src_range_ms", "ripple"],
+        "properties": {
+          "video_clip_id": {"type": "string"},
+          "audio_clip_id": {"type": "string"},
+          "video_track": {"type": "string"},
+          "audio_track": {"type": "string"},
+          "created_video_track": {"type": "boolean"},
+          "created_audio_track": {"type": "boolean"},
+          "at_ms": {"type": "integer", "minimum": 0},
+          "src_range_ms": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+          "ripple": {"type": "boolean"}
+        }
+      },
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "edit_insert_linked",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

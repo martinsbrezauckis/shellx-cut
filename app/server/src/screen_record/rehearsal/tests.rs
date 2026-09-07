@@ -1,6 +1,6 @@
 //! Focused deterministic tests for rehearsal admission and temporary ownership.
 
-use super::{bounded_duration, owner, MAX_DURATION_MS, MIN_DURATION_MS};
+use super::{bounded_duration, owner, reserve_rehearsal_capture, MAX_DURATION_MS, MIN_DURATION_MS};
 use crate::screen_record::CaptureSessionControl;
 use cut_core::error_codes;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -60,6 +60,40 @@ fn only_regular_source_mp4_inside_the_owned_root_is_playable() {
             .code,
         error_codes::IO
     );
+}
+
+#[test]
+fn rejected_rehearsal_owner_keeps_preview_release_uninvoked() {
+    let _rehearsal_lock = super::rehearsal_test_lock().blocking_lock();
+    let _capture_lock = super::super::capture_registry::capture_test_lock().blocking_lock();
+    let _ = owner::discard(None);
+    let retained_handle = owner::install_test_playback();
+    owner::set_remove_hook_for_test(Some(refuse_expired_removal));
+
+    let mut released_preview = false;
+    let error = reserve_rehearsal_capture(
+        format!("cap_rehearsal_owner_rejection_{}", std::process::id()),
+        CaptureSessionControl::new(Some(MIN_DURATION_MS), false, false, false),
+        "rehearsal_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        || {
+            released_preview = true;
+            Ok(())
+        },
+    )
+    .expect_err("a locked ready rehearsal must reject before preview release");
+
+    owner::set_remove_hook_for_test(None);
+    assert_eq!(error.code, error_codes::IO);
+    assert!(
+        !released_preview,
+        "owner rejection must leave an existing preview intact"
+    );
+    assert!(
+        !super::super::capture_registry::has_active_capture(),
+        "a rejected rehearsal owner must release its provisional capture reservation"
+    );
+    assert!(owner::playback_media(&retained_handle).is_some());
+    assert!(owner::discard(Some(retained_handle)).unwrap().1);
 }
 
 #[tokio::test]

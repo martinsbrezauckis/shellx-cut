@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
 import {
   NO_RECORDING_PAUSE_CAPABILITY,
   recordingPauseAcknowledged,
   recordingPauseCapability,
+  RecordingPauseControlLifetime,
   type RecordingPauseCapability,
   type RecordingPauseState,
 } from './recordingPause'
@@ -15,11 +16,20 @@ export function useRecordingPause() {
   const [state, setState] = useState<RecordingPauseState>('idle')
   const [message, setMessage] = useState('Enable Pause & resume before your next recording.')
   const [captureId, setCaptureId] = useState<string | null>(null)
+  const controlLifetimeRef = useRef(new RecordingPauseControlLifetime())
+
+  useLayoutEffect(() => {
+    const lifetime = controlLifetimeRef.current
+    lifetime.mount()
+    return () => lifetime.unmount()
+  }, [])
 
   const setDoctorCapability = useCallback((value: unknown) => {
     const next = recordingPauseCapability(value)
     setCapability(next)
     if (!next.supported) {
+      controlLifetimeRef.current.clearCapture()
+      setCaptureId(null)
       setEnabled(false)
       setState('idle')
       setMessage(next.detail)
@@ -43,27 +53,43 @@ export function useRecordingPause() {
   const acknowledgeStart = useCallback((id: string, value: unknown) => {
     const admitted = !!value && typeof value === 'object' && (value as Record<string, unknown>).enabled === true
     if (!enabled || !admitted) {
+      controlLifetimeRef.current.clearCapture()
       setCaptureId(null)
       setState('idle')
       if (enabled) setMessage('The recorder did not acknowledge Pause & resume admission; live controls stay unavailable.')
       return
     }
+    controlLifetimeRef.current.replaceCapture(id)
     setCaptureId(id)
     setState('recording')
     setMessage('Recording. Pause only changes state after the recorder seals it.')
   }, [enabled])
 
   const clearCapture = useCallback(() => {
+    controlLifetimeRef.current.clearCapture()
     setCaptureId(null)
     setState('idle')
   }, [])
 
   const control = useCallback(async () => {
     if (!captureId || (state !== 'recording' && state !== 'paused')) return
+    const controlLease = controlLifetimeRef.current.begin(captureId)
+    if (!controlLease) return
     const action = state === 'paused' ? 'resume' : 'pause'
     setState(action === 'pause' ? 'pausing' : 'resuming')
     setMessage(action === 'pause' ? 'Waiting for the recorder to seal the pause…' : 'Waiting for the recorder to seal the resume…')
-    const response = await callVerb(`screen_record.${action}`, { capture_id: captureId })
+    let response
+    try {
+      response = await callVerb(`screen_record.${action}`, { capture_id: captureId })
+    } catch (error) {
+      if (!controlLifetimeRef.current.isCurrent(controlLease)) return
+      setState(action === 'pause' ? 'recording' : 'paused')
+      setMessage(error instanceof TypeError
+        ? 'Pause control failed: recorder unreachable.'
+        : 'Pause control failed before the recorder acknowledged it.')
+      return
+    }
+    if (!controlLifetimeRef.current.isCurrent(controlLease)) return
     const acknowledgement = response.ok ? recordingPauseAcknowledged(response.result, action) : null
     if (!acknowledgement) {
       setState(action === 'pause' ? 'recording' : 'paused')

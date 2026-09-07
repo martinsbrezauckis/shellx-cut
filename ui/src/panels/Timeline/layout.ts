@@ -579,6 +579,23 @@ export function laidToSharedEditorialPosition(
   }
 }
 
+/** Resolve one linked placement's editorial coordinate. An empty track has an
+ * identity laid/editorial clock, so pairing it with a crossfaded existing track
+ * has no exact shared at_ms unless that existing mapping is also identity. */
+export function laidToLinkedPlacementPosition(
+  project: Project,
+  laidMs: number,
+  existingTrackIds: Array<string | null | undefined>,
+  hasNewLinkedTarget: boolean,
+): SharedEditorialPosition {
+  const position = laidToSharedEditorialPosition(project, laidMs, existingTrackIds)
+  if (!position.ok || !hasNewLinkedTarget || position.atMs === Math.round(laidMs)) return position
+  return {
+    ok: false,
+    error: 'A new linked track uses an unshortened editorial clock while its existing target is inside an upstream crossfade. Move outside the overlap or align the tracks first.',
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Linked A/V resolution + linked split planning
 //

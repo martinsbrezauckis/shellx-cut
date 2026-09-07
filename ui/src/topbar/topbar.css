@@ -1012,6 +1012,11 @@
   box-shadow: 0 0 0 3px rgba(239, 68, 68, .14);
 }
 .tb-recording-back { white-space: nowrap; }
+.tb-recording-back-reason {
+  max-width: 300px;
+  color: var(--ink-2);
+  font: 600 var(--fs-ui-xs) / 1.25 var(--sans);
+}
 
 @media (max-width: 1279px) {
   .tb--recording .tb-brand { min-width: 190px; }

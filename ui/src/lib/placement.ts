@@ -67,8 +67,6 @@ export interface PlaceOptions {
   /** Timed-media source selection. The same range is applied to both halves of
    * a linked video/audio placement so their source clocks stay aligned. */
   src_range_ms?: [number, number]
-  /** Optional shared history identity for the linked A/V inserts. */
-  groupId?: string
   /** Explicit video track (overlay placement); default = base video track. */
   videoTrack?: string
   /** Explicit audio track for the linked audio; default = base audio track. */
@@ -76,6 +74,9 @@ export interface PlaceOptions {
   /** Overlay placement: route the linked audio to its OWN new audio track so a
    *  PiP's sound doesn't clobber the main dialog mix. Ignored if audioTrack set. */
   newAudioTrack?: boolean
+  /** Create an overlay video destination inside an atomic linked placement.
+   * Ignored for audio-only or still-image insertions. */
+  newVideoTrack?: boolean
   rationale?: string
   /** Pre-fetched project state (skip the round-trip); fetched if omitted. */
   project?: Project | null
@@ -111,6 +112,24 @@ export interface PlaceResult {
 export interface SourceOverwriteTrackTargets {
   video: string[]
   audio: string[]
+}
+
+/** Resolve the exact existing targets for a placement before converting a
+ * rendered (laid) timeline coordinate. A linked A/V placement must compare
+ * both destination clocks; defaulting later inside `placeLinkedAV` would make
+ * a Source Monitor or drop gesture choose one track's ambiguous crossfade. */
+export function resolvePlacementTargets(project: Project | null, opts: Pick<PlaceOptions, 'asset' | 'kind' | 'videoTrack' | 'audioTrack' | 'newVideoTrack' | 'newAudioTrack'>): {
+  videoTrack?: string
+  audioTrack?: string
+} {
+  if (opts.kind === 'audio') {
+    return { audioTrack: opts.audioTrack ?? firstTrackId(project, 'audio') ?? undefined }
+  }
+  const videoTrack = opts.videoTrack ?? (opts.newVideoTrack ? undefined : firstTrackId(project, 'video') ?? undefined)
+  const audioTrack = opts.kind === 'video' && assetHasAudio(project, opts.asset)
+    ? opts.audioTrack ?? (opts.newAudioTrack ? undefined : firstTrackId(project, 'audio') ?? undefined)
+    : undefined
+  return { videoTrack, audioTrack }
 }
 
 export function sourceOverwriteTrackTargets(project: Project | null): SourceOverwriteTrackTargets {
@@ -225,6 +244,9 @@ export function planTimelineAssetDrop(opts: {
   kind: string
   at_ms: number
   duration_ms?: number
+  /** Probe fact supplied by the current project snapshot. Only muxed video
+   * needs a second linked destination and therefore atomic track creation. */
+  hasAudio?: boolean
   target?: TimelineDropTarget | null
   overlay?: boolean
 }): PlacementPlan | null {
@@ -241,6 +263,17 @@ export function planTimelineAssetDrop(opts: {
 
   if (opts.overlay) {
     const createTrackKind = kind === 'audio' ? 'audio' : 'video'
+    if (kind === 'video' && opts.hasAudio) {
+      return {
+        asset: opts.asset,
+        kind,
+        at_ms: opts.at_ms,
+        ripple: false,
+        newVideoTrack: true,
+        newAudioTrack: true,
+        rationale: `place ${opts.asset} on new linked overlay tracks at ${fmtS(opts.at_ms)}s`,
+      }
+    }
     const plan: PlacementPlan = {
       asset: opts.asset,
       kind,
@@ -264,7 +297,7 @@ export function planTimelineAssetDrop(opts: {
         at_ms: opts.at_ms,
         ripple: false,
         videoTrack: target.id,
-        newAudioTrack: true,
+        newAudioTrack: kind === 'video' && opts.hasAudio,
         rationale: `place ${opts.asset} on overlay track ${target.id} at ${fmtS(opts.at_ms)}s`,
       }
       if (kind === 'image' && opts.duration_ms) plan.duration_ms = opts.duration_ms
@@ -298,8 +331,9 @@ async function addTrack(kind: 'video' | 'audio', rationale: string): Promise<str
  *   - kind 'video' without audio, or 'image' → video track only.
  *   - kind 'audio' → audio track only.
  *
- * Creates a base audio track if the project has none (or always, for overlays).
- * Verbs run sequentially so each reads the prior's committed state.
+ * Muxed video creates any missing destinations and both media clips through
+ * one engine transaction. Single-leg image and audio placement retain their
+ * existing direct edit.insert behavior.
  */
 export async function placeLinkedAV(opts: PlaceOptions): Promise<PlaceResult> {
   let project = opts.project ?? null
@@ -319,44 +353,66 @@ export async function placeLinkedAV(opts: PlaceOptions): Promise<PlaceResult> {
     return { ok: r.ok, videoOk: r.ok, audioLinked: false, audioTrack: track, error: errOf(r) }
   }
 
+  // Muxed video is a single engine transaction. It validates BOTH target legs
+  // (and creates either destination if requested) against one staged project;
+  // an audio-leg failure cannot leave a visible video clip or orphaned track.
+  if (opts.kind === 'video' && assetHasAudio(project, opts.asset)) {
+    const targets = resolvePlacementTargets(project, opts)
+    const createVideoTrack = opts.newVideoTrack || !targets.videoTrack
+    const createAudioTrack = opts.newAudioTrack || !targets.audioTrack
+    const r = await callVerb('edit.insert_linked', {
+      asset: opts.asset,
+      at_ms: opts.at_ms,
+      ...(targets.videoTrack ? { video_track: targets.videoTrack } : {}),
+      ...(targets.audioTrack ? { audio_track: targets.audioTrack } : {}),
+      ...(createVideoTrack ? { create_video_track: true } : {}),
+      ...(createAudioTrack ? { create_audio_track: true } : {}),
+      ...(opts.src_range_ms ? { src_range_ms: opts.src_range_ms } : {}),
+      ripple: opts.ripple ?? true,
+      rationale,
+    })
+    if (!r.ok) {
+      return {
+        ok: false,
+        videoOk: false,
+        audioLinked: false,
+        videoTrack: targets.videoTrack,
+        audioTrack: targets.audioTrack,
+        error: errOf(r),
+      }
+    }
+    const receipt = r.result
+    if (!receipt) {
+      return {
+        ok: false,
+        videoOk: false,
+        audioLinked: false,
+        videoTrack: targets.videoTrack,
+        audioTrack: targets.audioTrack,
+        error: 'The linked insertion committed without a receipt. Refresh the project before making another edit.',
+      }
+    }
+    return {
+      ok: true,
+      videoOk: true,
+      audioLinked: true,
+      videoTrack: receipt.video_track,
+      audioTrack: receipt.audio_track,
+    }
+  }
+
   // Video / image → the video track is the primary clip.
   const primaryRipple = opts.ripple ?? true
   const vTrack = opts.videoTrack ?? firstTrackId(project, 'video') ?? 'v1'
-  // A muxed placement is one user gesture even though it needs two engine
-  // inserts. Keep its video and audio halves in one undo-history step.
-  const linkedGroupId = opts.kind === 'video' && assetHasAudio(project, opts.asset)
-    ? (opts.groupId ?? `linked-av-${crypto.randomUUID()}`)
-    : undefined
   const vArgs: InsertArgs = {
     asset: opts.asset, track: vTrack, at_ms: opts.at_ms,
     src_range_ms: opts.src_range_ms, ripple: primaryRipple, rationale,
-    ...(linkedGroupId ? { group_id: linkedGroupId } : {}),
   }
   if (opts.kind === 'image' && opts.duration_ms) vArgs.duration_ms = opts.duration_ms
   const vr = await callVerb('edit.insert', vArgs)
   if (!vr.ok) return { ok: false, videoOk: false, audioLinked: false, videoTrack: vTrack, error: errOf(vr) }
 
-  // Linked audio — only for video that actually carries sound.
-  let audioLinked = false
-  let aTrack = opts.audioTrack
-  if (opts.kind === 'video' && assetHasAudio(project, opts.asset)) {
-    if (!aTrack) {
-      aTrack = opts.newAudioTrack
-        ? await addTrack('audio', 'overlay: linked audio on its own track')
-        : firstTrackId(project, 'audio') ?? (await addTrack('audio', 'linked audio for a placed clip'))
-    }
-    if (aTrack) {
-      const linkedAudioRipple = false
-      const ar = await callVerb('edit.insert', {
-        asset: opts.asset, track: aTrack, at_ms: opts.at_ms,
-        src_range_ms: opts.src_range_ms, ripple: linkedAudioRipple,
-        rationale: `linked audio: ${opts.asset} → ${aTrack}`,
-        ...(linkedGroupId ? { group_id: linkedGroupId } : {}),
-      })
-      audioLinked = ar.ok
-    }
-  }
-  return { ok: true, videoOk: true, audioLinked, videoTrack: vTrack, audioTrack: aTrack }
+  return { ok: true, videoOk: true, audioLinked: false, videoTrack: vTrack }
 }
 
 function errOf(r: VerbResult): string | undefined {

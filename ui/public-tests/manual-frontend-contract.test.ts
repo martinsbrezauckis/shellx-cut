@@ -40,10 +40,10 @@ async function verifySchemaReferenceParity(): Promise<void> {
   const schemaNames = schema.verbs.map((verb) => verb.name)
   const referenceNames = [...reference.matchAll(/^\| `([^`]+)`/gm)].map((match) => match[1])
 
-  assert.equal(schemaNames.length, 305, 'the public verb schema remains the deliberate 305-verb contract')
-  assert.equal(new Set(schemaNames).size, 305, 'schema verb names remain unique')
-  assert.equal(referenceNames.length, 305, 'the full agent reference remains a 305-verb table')
-  assert.equal(new Set(referenceNames).size, 305, 'agent-reference verb names remain unique')
+  assert.equal(schemaNames.length, 306, 'the public verb schema remains the deliberate 306-verb contract')
+  assert.equal(new Set(schemaNames).size, 306, 'schema verb names remain unique')
+  assert.equal(referenceNames.length, 306, 'the full agent reference remains a 306-verb table')
+  assert.equal(new Set(referenceNames).size, 306, 'agent-reference verb names remain unique')
   assert.deepEqual([...referenceNames].sort(), [...schemaNames].sort(), 'schema and full agent reference retain exact verb parity')
 }
 
@@ -182,7 +182,7 @@ await verifyEmbeddedMockIsReadOnly()
 console.log(JSON.stringify({
   result: 'PASS',
   indexedFeatureCount: MANUAL_FEATURES.length,
-  schemaReferenceVerbCount: 305,
+  schemaReferenceVerbCount: 306,
   ...targetCoverage,
   exactTargetCoverage: `${targetCoverage.exactTargetCount}/${MANUAL_FEATURES.length}`,
 }, null, 2))

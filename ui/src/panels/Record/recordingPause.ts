@@ -21,6 +21,53 @@ export interface RecordingPauseAcknowledgement {
   logical_media_time_ms: number
 }
 
+/** One live control response may update only the capture that issued it. */
+export interface RecordingPauseControlLease {
+  captureId: string
+  generation: number
+}
+
+/**
+ * Tracks capture replacement, request replacement, and unmount as one local
+ * lifetime. A delayed acknowledgement must prove its lease before React may
+ * expose it as the state of the current recording.
+ */
+export class RecordingPauseControlLifetime {
+  private captureId: string | null = null
+  private generation = 0
+  private mounted = true
+
+  mount(): void {
+    this.mounted = true
+  }
+
+  replaceCapture(captureId: string | null): void {
+    this.generation += 1
+    this.captureId = captureId
+  }
+
+  clearCapture(): void {
+    this.replaceCapture(null)
+  }
+
+  unmount(): void {
+    this.mounted = false
+    this.clearCapture()
+  }
+
+  begin(captureId: string): RecordingPauseControlLease | null {
+    if (!this.mounted || this.captureId !== captureId) return null
+    this.generation += 1
+    return { captureId, generation: this.generation }
+  }
+
+  isCurrent(lease: RecordingPauseControlLease): boolean {
+    return this.mounted
+      && this.captureId === lease.captureId
+      && this.generation === lease.generation
+  }
+}
+
 export function recordingPauseCapability(value: unknown): RecordingPauseCapability {
   if (!value || typeof value !== 'object') return NO_RECORDING_PAUSE_CAPABILITY
   const source = value as Record<string, unknown>

@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use record_core::{error_codes, EventTrack, Monitor as RMonitor, RecordError, Result, Settings};
 
 use windows_capture::{
+    capture::GraphicsCaptureApiHandler,
     monitor::Monitor as WcMonitor,
     settings::{
         ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -34,7 +35,7 @@ use crate::{
     region_geometry::NativePixelCrop,
     surface_coordinates,
     windows_wgc_run::{
-        WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher, WgcRunOwner,
+        WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher, WgcNativeControl, WgcRunOwner,
         WgcStartObservation, WgcStartedControl,
     },
     Capture, CaptureConfig, CaptureOutput, MonitorInfo, WindowInfo,

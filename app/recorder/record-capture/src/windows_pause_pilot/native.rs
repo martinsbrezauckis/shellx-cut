@@ -6,6 +6,7 @@
 //! event translator.
 
 use std::path::{Path, PathBuf};
+use std::sync::{atomic::AtomicBool, Arc};
 use std::time::{Duration, Instant};
 
 use record_core::{Result, Settings};
@@ -27,9 +28,9 @@ use super::{
 use crate::{
     checkpoint::Checkpoints,
     windows::{
-        cap_err, monitor_surface, observe_wgc_start, wgc_monitor_range, EncFlags, Handler,
-        LiveWgcControl, WindowsCheckpointPublisher,
+        cap_err, monitor_surface, observe_wgc_start, wgc_monitor_range, WindowsCheckpointPublisher,
     },
+    windows_wgc_handler::{EncFlags, Handler, LiveWgcControl},
     windows_wgc_run::{WgcAcceptedCapture, WgcControlFactory, WgcRunOwner, WgcStartedControl},
     CheckpointConfig,
 };
@@ -81,6 +82,12 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
             path: destination.display().to_string(),
             crop: None,
             readiness: None,
+            source_lifecycle: None,
+            // This private monitor-only pilot has no outer one-shot wait loop
+            // to wake on `on_closed`; retain a local handler stop flag to
+            // satisfy the shared WGC callback contract without inventing a
+            // public lifecycle projection.
+            stop: Arc::new(AtomicBool::new(false)),
         };
         let control = Handler::start_free_threaded(WcSettings::new(
             *monitor,
@@ -100,6 +107,7 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
                         .stop()
                         .map_err(|error| cap_err("finalize WGC checkpoint", error))
                 })),
+                source_lifecycle: None,
             },
             accepted,
         ))

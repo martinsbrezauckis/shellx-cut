@@ -17857,7 +17857,7 @@
           }
         }
       },
-      "result": "{action:'start',status:{state,recursion,has_frame,generation}}. state:'starting' means native admission only; ready requires a real delivered frame. status intentionally omits the selected identity and private region.",
+      "result": "{action:'start',status:{state,recursion,has_frame,generation,lease_nonce?:string}}. state:'starting' means native admission only; ready requires a real delivered frame. lease_nonce is an opaque 128-bit per-Cut-server owner identity, present exactly while generation is active; pair it with generation for later lifecycle controls. It is neither authentication nor a native target/ticket. status intentionally omits the selected identity and private region.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -17880,13 +17880,13 @@
     {
       "name": "screen_record.preview_status",
       "domain": "screen_record",
-      "description": "Read the current process-local native source-preview lifecycle. The owner polls only its already-admitted native mailbox; this never opens capture, starts a portal, reads a file, or returns the selected source. generation changes on every accepted Start/resume and lets callers reject stale frame responses.",
+      "description": "Read the current process-local native source-preview lifecycle. The owner polls only its already-admitted native mailbox; this never opens capture, starts a portal, reads a file, or returns the selected source. generation changes on every accepted Start/resume. lease_nonce is minted per Cut-server owner, changes after server restart, and must be paired with generation to reject delayed lifecycle controls.",
       "args": {
         "type": "object",
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{state:'idle'|'starting'|'ready'|'paused'|'hidden'|'permission_required'|'permission_denied'|'source_lost'|'unavailable'|'stopped',recursion:'none'|'detected'|'unavoidable',has_frame,generation|null}. ready is evidence of a retained real frame, never merely successful native startup.",
+      "result": "{state:'idle'|'starting'|'ready'|'paused'|'hidden'|'permission_required'|'permission_denied'|'source_lost'|'unavailable'|'stopped',recursion:'none'|'detected'|'unavoidable',has_frame,generation|null,lease_nonce?:string,unavailable_reason?:string}. lease_nonce is opaque lowercase 32-hex and present exactly while generation is active; pair it with generation for lifecycle controls. ready is evidence of a retained real frame, never merely successful native startup. unavailable_reason is present only when the process cannot prove a prior native preview release; it states the required process-restart recovery.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -17915,7 +17915,7 @@
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{status:{state,recursion,has_frame,generation},frame:null|{mime:'image/bmp',bytes:1..4194304,generation,captured_at_ms,base64}}. frame.generation is bound to the returned bytes; a source replacement cannot mix old pixels with a new generation.",
+      "result": "{status:{state,recursion,has_frame,generation,lease_nonce?:string},frame:null|{mime:'image/bmp',bytes:1..4194304,generation,captured_at_ms,base64}}. status.lease_nonce is paired with its active generation for lifecycle controls. frame.generation is bound to the returned bytes; a source replacement cannot mix old pixels with a new generation.",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -17938,13 +17938,28 @@
     {
       "name": "screen_record.preview_pause",
       "domain": "screen_record",
-      "description": "Pause a current native source preview and synchronously release its active native session and retained frame. resume reopens the exact remembered opaque source with a new generation. This does not pause a recording and has no filesystem or process side effect.",
+      "description": "Pause the current native source preview only when expected_generation and expected_lease_nonce identify its active process-local lease, then synchronously release its native session and retained frame. resume reopens the exact remembered opaque source with a new generation. A stale generation or nonce is rejected without changing a newer or restarted-server preview. This does not pause a recording and has no filesystem or process side effect.",
       "args": {
         "type": "object",
+        "required": [
+          "expected_generation",
+          "expected_lease_nonce"
+        ],
         "additionalProperties": false,
-        "properties": {}
+        "properties": {
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact active generation returned by preview_start, preview_status, or preview_frame."
+          },
+          "expected_lease_nonce": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$",
+            "description": "The exact opaque lease_nonce returned with that active generation. It changes after Cut-server restart and is not an auth token or native target."
+          }
+        }
       },
-      "result": "{action:'pause',status:{state,recursion,has_frame,generation}}. A no-op pause reports the truthful existing lifecycle state.",
+      "result": "{action:'pause',status:{state,recursion,has_frame,generation,lease_nonce?:string}}. While paused, lease_nonce remains paired with generation for the later resume, hide, or stop control. A no-op pause reports the truthful existing lifecycle state.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -17967,13 +17982,28 @@
     {
       "name": "screen_record.preview_resume",
       "domain": "screen_record",
-      "description": "Resume only a paused native source preview. A successful native re-open reports starting until a real callback frame arrives; it always advances generation before any frame can be accepted. This does not resume a recording and cannot recreate a released/hidden preview without a new preview_start.",
+      "description": "Resume only the paused native source preview identified by expected_generation and expected_lease_nonce. A successful native re-open reports starting until a real callback frame arrives; it always advances generation before any frame can be accepted. A stale generation or nonce is rejected without changing a newer or restarted-server preview. This does not resume a recording and cannot recreate a released/hidden preview without a new preview_start.",
       "args": {
         "type": "object",
+        "required": [
+          "expected_generation",
+          "expected_lease_nonce"
+        ],
         "additionalProperties": false,
-        "properties": {}
+        "properties": {
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact paused generation returned by preview_start or preview_status."
+          },
+          "expected_lease_nonce": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$",
+            "description": "The exact opaque lease_nonce returned with that active generation."
+          }
+        }
       },
-      "result": "{action:'resume',status:{state,recursion,has_frame,generation}}.",
+      "result": "{action:'resume',status:{state,recursion,has_frame,generation,lease_nonce?:string}}. The advanced generation carries the same active owner nonce for later lifecycle controls.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -17996,11 +18026,26 @@
     {
       "name": "screen_record.preview_hide",
       "domain": "screen_record",
-      "description": "Hide a native source preview. It is idempotent: it synchronously releases the native session and pixels if present, then reports hidden without auto-resuming capture. It does not alter a recording.",
+      "description": "Hide the native source preview only when expected_generation and expected_lease_nonce identify its active process-local lease. It synchronously releases the native session and pixels if present, then reports hidden without auto-resuming capture. A stale generation or nonce is rejected without changing a newer or restarted-server preview. It does not alter a recording.",
       "args": {
         "type": "object",
+        "required": [
+          "expected_generation",
+          "expected_lease_nonce"
+        ],
         "additionalProperties": false,
-        "properties": {}
+        "properties": {
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact active generation returned by preview_start, preview_status, or preview_frame."
+          },
+          "expected_lease_nonce": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$",
+            "description": "The exact opaque lease_nonce returned with that active generation."
+          }
+        }
       },
       "result": "{action:'hide',status:{state:'hidden',recursion,has_frame:false,generation|null}}.",
       "behavior": {
@@ -18025,11 +18070,26 @@
     {
       "name": "screen_record.preview_stop",
       "domain": "screen_record",
-      "description": "Stop a native source preview. It is idempotent and synchronously releases the native session, latest frame, remembered source, and private region before returning stopped. screen_record.start also performs this release before reserving ordinary recording capture devices.",
+      "description": "Stop the native source preview only when expected_generation and expected_lease_nonce identify its active process-local lease. It synchronously releases the native session, latest frame, remembered source, and private region before returning stopped. A stale generation or nonce is rejected without changing a newer or restarted-server preview. screen_record.start atomically reserves ordinary capture before its internal preview release.",
       "args": {
         "type": "object",
+        "required": [
+          "expected_generation",
+          "expected_lease_nonce"
+        ],
         "additionalProperties": false,
-        "properties": {}
+        "properties": {
+          "expected_generation": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact active generation returned by preview_start, preview_status, or preview_frame."
+          },
+          "expected_lease_nonce": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$",
+            "description": "The exact opaque lease_nonce returned with that active generation."
+          }
+        }
       },
       "result": "{action:'stop',status:{state:'stopped',recursion:'none',has_frame:false,generation:null}}.",
       "behavior": {
@@ -18144,6 +18204,172 @@
         "async_job": "none",
         "ui_exposure": "human",
         "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.insert_linked",
+      "domain": "edit",
+      "description": "Atomically insert a probed muxed-video source range as one video-track clip and one audio-track clip at the same EDITORIAL at_ms. This is the only linked A/V insert surface: it validates the source, both destination strategies, source range, track kinds, and the second insertion before a cloned Project is committed once. The two tracks must be stated independently: each leg names one existing typed destination OR asks to create one new typed destination, never both and never neither. If either leg cannot be applied, no clips, tracks, operation id, or op_applied event escape. A rendered/playhead coordinate must be converted through both target crossfade layouts first; if an existing target and a new identity-clock target disagree, the caller must refuse instead of choosing one. ripple shifts the video target and any non-linked timeline material exactly once; the paired audio insertion remains aligned without opening a second gap. The durable result is one replayable/undoable edit.insert_linked operation with lowered edit.add_track/edit.insert steps.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset",
+          "at_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Imported video asset with a probed audio stream. Audio-only, video-without-audio, and still-image placement use edit.insert instead."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Shared EDITORIAL insertion coordinate, not a rendered playhead coordinate after a crossfade."
+          },
+          "video_track": {
+            "type": "string",
+            "description": "Existing video destination; required unless create_video_track:true is supplied."
+          },
+          "audio_track": {
+            "type": "string",
+            "description": "Existing audio destination; required unless create_audio_track:true is supplied."
+          },
+          "create_video_track": {
+            "type": "boolean",
+            "description": "Create the video destination inside this transaction. It is mutually exclusive with video_track."
+          },
+          "create_audio_track": {
+            "type": "boolean",
+            "description": "Create the audio destination inside this transaction. It is mutually exclusive with audio_track."
+          },
+          "src_range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Optional [source_in_ms, source_out_ms) applied identically to both linked clips. Omit only for a fully probed timed source."
+          },
+          "ripple": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether the linked placement opens timeline time. The paired audio leg never performs a second independent ripple."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        },
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "required": [
+                  "video_track"
+                ]
+              },
+              {
+                "required": [
+                  "create_video_track"
+                ],
+                "properties": {
+                  "create_video_track": {
+                    "const": true
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "required": [
+                  "audio_track"
+                ]
+              },
+              {
+                "required": [
+                  "create_audio_track"
+                ],
+                "properties": {
+                  "create_audio_track": {
+                    "const": true
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "result": "{video_clip_id, audio_clip_id, video_track, audio_track, created_video_track, created_audio_track, at_ms, src_range_ms, ripple} — both linked clips and any requested tracks committed as one replayable edit.insert_linked op; an error leaves the project and event stream unchanged.",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "video_clip_id",
+          "audio_clip_id",
+          "video_track",
+          "audio_track",
+          "created_video_track",
+          "created_audio_track",
+          "at_ms",
+          "src_range_ms",
+          "ripple"
+        ],
+        "properties": {
+          "video_clip_id": {
+            "type": "string"
+          },
+          "audio_clip_id": {
+            "type": "string"
+          },
+          "video_track": {
+            "type": "string"
+          },
+          "audio_track": {
+            "type": "string"
+          },
+          "created_video_track": {
+            "type": "boolean"
+          },
+          "created_audio_track": {
+            "type": "boolean"
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "src_range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "ripple": {
+            "type": "boolean"
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_insert_linked",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
         "risk": "reversible",
         "facets": []
       }

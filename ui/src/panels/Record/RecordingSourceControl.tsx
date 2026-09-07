@@ -1,7 +1,12 @@
+import React from 'react'
 import {
   type RecordingSourceKind,
   type RegionPickerCapability,
 } from './regionPickerModel'
+
+// See RegionPickerOverlay: the source-contract renderer needs the classic JSX
+// factory binding although the product build uses the automatic runtime.
+void React
 
 export interface MonitorInfo {
   id?: string

@@ -14,15 +14,20 @@ import {
   recordingSourcePreviewTarget,
   type RecordingSourcePreviewPresentation,
 } from './recordingNativeSourcePreview'
-
-const SOURCE_PREVIEW_POLL_MS = 250
-const MAX_SOURCE_PREVIEW_READ_FAILURES = 3
-const INITIAL_STATUS: ScreenRecordSourcePreviewStatus = {
-  state: 'idle',
-  recursion: 'none',
-  has_frame: false,
-  generation: null,
-}
+import {
+  recordingSourcePreviewControlArgs,
+  recordingSourcePreviewGeneration,
+  recordingSourcePreviewLease,
+  recordingSourcePreviewLeaseNonce,
+} from './recordingSourcePreviewLease'
+import {
+  INITIAL_SOURCE_PREVIEW_STATUS,
+  isSourcePreviewPolling,
+  reconcileFailedSourcePreviewStart,
+  sourcePreviewError,
+  useRecordingSourcePreviewLifecycleAction,
+} from './recordingSourcePreviewLifecycle'
+import { useRecordingSourcePreviewPoller } from './useRecordingSourcePreviewPoller'
 
 interface SourcePreviewInput {
   sourceKind: RecordingSourceKind
@@ -31,36 +36,6 @@ interface SourcePreviewInput {
   windows: readonly WindowInfo[]
   windowTargetId: string | null
   recording: boolean
-}
-
-interface SourcePreviewPollSession {
-  epoch: number
-  sourceKey: string
-}
-
-const LIFECYCLE_VERBS = {
-  pause: 'screen_record.preview_pause',
-  resume: 'screen_record.preview_resume',
-  hide: 'screen_record.preview_hide',
-  stop: 'screen_record.preview_stop',
-} as const
-
-type LifecycleAction = keyof typeof LIFECYCLE_VERBS
-
-function isPollingState(status: ScreenRecordSourcePreviewStatus): boolean {
-  return status.state === 'starting' || status.state === 'ready'
-}
-
-function retainsSelectedSource(status: ScreenRecordSourcePreviewStatus): boolean {
-  return status.state === 'starting' || status.state === 'ready' || status.state === 'paused'
-}
-
-function previewError(error: unknown, fallback: string): string {
-  if (error instanceof TypeError) return `${fallback}: recorder unreachable.`
-  if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
-    return `${fallback}: ${(error as { message: string }).message}`
-  }
-  return fallback
 }
 
 /**
@@ -76,15 +51,15 @@ export function useRecordingSourcePreview({
   recording,
 }: SourcePreviewInput) {
   const [capability, setCapability] = useState<ScreenRecordSourcePreviewCapability | null>(null)
-  const [status, setStatus] = useState<ScreenRecordSourcePreviewStatus>(INITIAL_STATUS)
+  const [status, setStatus] = useState<ScreenRecordSourcePreviewStatus>(INITIAL_SOURCE_PREVIEW_STATUS)
   const [frame, setFrame] = useState<ScreenRecordSourcePreviewFrame | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [pollSession, setPollSession] = useState<SourcePreviewPollSession | null>(null)
   const mountedRef = useRef(false)
   const commandEpochRef = useRef(0)
-  const sessionEpochRef = useRef(0)
   const activeSourceKeyRef = useRef<string | null>(null)
+  const activeGenerationRef = useRef<number | null>(null)
+  const activeLeaseNonceRef = useRef<string | null>(null)
   const startingSourceKeyRef = useRef<string | null>(null)
   const recordingRef = useRef(recording)
   recordingRef.current = recording
@@ -96,19 +71,43 @@ export function useRecordingSourcePreview({
   const targetKey = target ? recordingSourcePreviewSelectionKey(target.source) : null
   const targetKeyRef = useRef<string | null>(targetKey)
   targetKeyRef.current = targetKey
+  const ownershipRefs = useMemo(() => ({
+    mounted: mountedRef,
+    commandEpoch: commandEpochRef,
+    activeSourceKey: activeSourceKeyRef,
+    activeGeneration: activeGenerationRef,
+    activeLeaseNonce: activeLeaseNonceRef,
+    startingSourceKey: startingSourceKeyRef,
+  }), [])
   // A new selector value or record admission hides an old frame in the render
   // before its release effect runs, so a prior source cannot flash as current.
   const visibleFrame = !recording && activeSourceKeyRef.current === targetKey ? frame : null
   const presentation: RecordingSourcePreviewPresentation = recordingSourcePreviewPresentation(capability, status, visibleFrame)
 
-  const invalidatePoll = useCallback(() => {
-    sessionEpochRef.current += 1
-    setPollSession(null)
+  const forgetReleasedSource = useCallback((nextStatus: ScreenRecordSourcePreviewStatus) => {
+    const lease = recordingSourcePreviewLease(activeSourceKeyRef.current, nextStatus)
+    activeSourceKeyRef.current = lease?.sourceKey ?? null
+    activeGenerationRef.current = lease?.generation ?? null
+    activeLeaseNonceRef.current = lease?.leaseNonce ?? null
   }, [])
 
-  const forgetReleasedSource = useCallback((nextStatus: ScreenRecordSourcePreviewStatus) => {
-    if (!retainsSelectedSource(nextStatus)) activeSourceKeyRef.current = null
-  }, [])
+  const { cancelPolling, invalidatePoll, startPolling } = useRecordingSourcePreviewPoller({
+    refs: ownershipRefs,
+    forgetReleasedSource,
+    setFrame,
+    setStatus,
+    setStatusError,
+  })
+  const runLifecycleAction = useRecordingSourcePreviewLifecycleAction({
+    refs: ownershipRefs,
+    forgetReleasedSource,
+    invalidatePoll,
+    startPolling,
+    setBusy,
+    setFrame,
+    setStatus,
+    setStatusError,
+  })
 
   useEffect(() => {
     mountedRef.current = true
@@ -117,135 +116,68 @@ export function useRecordingSourcePreview({
       if (stale || !mountedRef.current) return
       if (!response.ok || !response.result) {
         setCapability(recordingSourcePreviewCapability(undefined))
-        setStatusError(previewError(response.error, 'Native source-preview availability could not be read'))
+        setStatusError(sourcePreviewError(response.error, 'Native source-preview availability could not be read'))
         return
       }
       setCapability(recordingSourcePreviewCapability(response.result))
     }).catch((error) => {
       if (!stale && mountedRef.current) {
         setCapability(recordingSourcePreviewCapability(undefined))
-        setStatusError(previewError(error, 'Native source-preview availability could not be read'))
+        setStatusError(sourcePreviewError(error, 'Native source-preview availability could not be read'))
       }
     })
     return () => {
       stale = true
       mountedRef.current = false
       commandEpochRef.current += 1
-      sessionEpochRef.current += 1
+      cancelPolling()
       const hadPreview = activeSourceKeyRef.current !== null || startingSourceKeyRef.current !== null
+      const activeGeneration = activeGenerationRef.current
+      const activeLeaseNonce = activeLeaseNonceRef.current
       activeSourceKeyRef.current = null
+      activeGenerationRef.current = null
+      activeLeaseNonceRef.current = null
       startingSourceKeyRef.current = null
-      if (hadPreview) void callVerb('screen_record.preview_stop', {})
-    }
-  }, [invalidatePoll])
-
-  useEffect(() => {
-    if (!pollSession) return
-    let stale = false
-    let inFlight = false
-    let readFailures = 0
-    let timer: number | null = null
-    const current = () => !stale
-      && mountedRef.current
-      && sessionEpochRef.current === pollSession.epoch
-      && activeSourceKeyRef.current === pollSession.sourceKey
-    const stopPolling = () => {
-      stale = true
-      if (timer !== null) window.clearInterval(timer)
-    }
-    const abandonUnreadablePreview = () => {
-      activeSourceKeyRef.current = null
-      startingSourceKeyRef.current = null
-      invalidatePoll()
-      stopPolling()
-      // After repeated read failures this client cannot continue to claim an
-      // observed native lease, so it asks the process owner to release it.
-      void callVerb('screen_record.preview_stop', {})
-    }
-    const poll = async () => {
-      if (!current() || inFlight) return
-      inFlight = true
-      try {
-        const response = await callVerb('screen_record.preview_frame', {})
-        if (!current()) return
-        if (!response.ok || !response.result) {
-          readFailures += 1
-          setFrame(null)
-          setStatusError(previewError(response.error, 'Native source-preview status could not be read'))
-          if (readFailures >= MAX_SOURCE_PREVIEW_READ_FAILURES) {
-            abandonUnreadablePreview()
-          }
-          return
-        }
-        readFailures = 0
-        const snapshot = response.result
-        setStatus(snapshot.status)
-        setFrame(snapshot.frame)
-        setStatusError(null)
-        if (!isPollingState(snapshot.status)) {
-          forgetReleasedSource(snapshot.status)
-          invalidatePoll()
-          stopPolling()
-        }
-      } catch (error) {
-        if (current()) {
-          readFailures += 1
-          setFrame(null)
-          setStatusError(previewError(error, 'Native source-preview status could not be read'))
-          if (readFailures >= MAX_SOURCE_PREVIEW_READ_FAILURES) {
-            abandonUnreadablePreview()
-          }
-        }
-      } finally {
-        inFlight = false
+      const controlArgs = recordingSourcePreviewControlArgs(activeGeneration, activeLeaseNonce)
+      if (hadPreview && controlArgs) {
+        void callVerb('screen_record.preview_stop', controlArgs)
       }
     }
-    void poll()
-    timer = window.setInterval(() => { void poll() }, SOURCE_PREVIEW_POLL_MS)
-    return stopPolling
-  }, [forgetReleasedSource, invalidatePoll, pollSession])
-
-  const runLifecycleAction = useCallback(async (action: LifecycleAction) => {
-    const command = ++commandEpochRef.current
-    invalidatePoll()
-    setBusy(true)
-    setFrame(null)
-    setStatusError(null)
-    try {
-      const response = await callVerb(LIFECYCLE_VERBS[action], {})
-      if (!mountedRef.current || command !== commandEpochRef.current) return
-      if (!response.ok || !response.result) {
-        setStatusError(previewError(response.error, `Could not ${action} native source preview`))
-        return
-      }
-      const nextStatus = response.result.status
-      setStatus(nextStatus)
-      forgetReleasedSource(nextStatus)
-      if (action === 'resume' && isPollingState(nextStatus)) {
-        const sourceKey = activeSourceKeyRef.current
-        if (sourceKey) {
-          const epoch = ++sessionEpochRef.current
-          setPollSession({ epoch, sourceKey })
-        }
-      }
-    } catch (error) {
-      if (mountedRef.current && command === commandEpochRef.current) {
-        setStatusError(previewError(error, `Could not ${action} native source preview`))
-      }
-    } finally {
-      if (mountedRef.current && command === commandEpochRef.current) setBusy(false)
-    }
-  }, [forgetReleasedSource, invalidatePoll])
+  }, [cancelPolling])
 
   const stop = useCallback(() => {
     if (activeSourceKeyRef.current === null && startingSourceKeyRef.current === null) return
+    if (activeGenerationRef.current === null || activeLeaseNonceRef.current === null) {
+      // An in-flight start has no issued generation yet. Invalidate its local
+      // ownership; its successful stale response will release only the
+      // generation it returns, never a later preview.
+      commandEpochRef.current += 1
+      activeSourceKeyRef.current = null
+      activeGenerationRef.current = null
+      activeLeaseNonceRef.current = null
+      startingSourceKeyRef.current = null
+      invalidatePoll()
+      setFrame(null)
+      setBusy(false)
+      return
+    }
     return runLifecycleAction('stop')
-  }, [runLifecycleAction])
+  }, [invalidatePoll, runLifecycleAction])
 
   const hide = useCallback(() => {
     if (activeSourceKeyRef.current === null && startingSourceKeyRef.current === null) return
     return runLifecycleAction('hide')
   }, [runLifecycleAction])
+
+  const reconcileFailedStart = useCallback(
+    (command: number) => reconcileFailedSourcePreviewStart({
+      refs: ownershipRefs,
+      invalidatePoll,
+      setFrame,
+      setStatus,
+    }, command),
+    [invalidatePoll, ownershipRefs],
+  )
 
   const start = useCallback(async () => {
     if (recordingRef.current) {
@@ -269,31 +201,51 @@ export function useRecordingSourcePreview({
         || targetKeyRef.current !== targetKey
         || recordingRef.current
       if (staleStart) {
-        void callVerb('screen_record.preview_stop', {})
+        if (startingSourceKeyRef.current === targetKey) startingSourceKeyRef.current = null
+        const staleGeneration = response.ok && response.result
+          ? recordingSourcePreviewGeneration(response.result.status)
+          : null
+        const staleLeaseNonce = response.ok && response.result
+          ? recordingSourcePreviewLeaseNonce(response.result.status)
+          : null
+        const controlArgs = recordingSourcePreviewControlArgs(staleGeneration, staleLeaseNonce)
+        if (controlArgs) {
+          void callVerb('screen_record.preview_stop', controlArgs)
+        }
         return
       }
       if (!response.ok || !response.result) {
         startingSourceKeyRef.current = null
-        setStatusError(previewError(response.error, 'Could not start native source preview'))
+        setStatusError(sourcePreviewError(response.error, 'Could not start native source preview'))
+        await reconcileFailedStart(command)
         return
       }
       const nextStatus = response.result.status
+      const lease = recordingSourcePreviewLease(targetKey, nextStatus)
       startingSourceKeyRef.current = null
-      activeSourceKeyRef.current = targetKey
-      setStatus(nextStatus)
-      if (isPollingState(nextStatus)) {
-        const epoch = ++sessionEpochRef.current
-        setPollSession({ epoch, sourceKey: targetKey })
+      if (!isSourcePreviewPolling(nextStatus) || lease === null) {
+        activeSourceKeyRef.current = null
+        activeGenerationRef.current = null
+        activeLeaseNonceRef.current = null
+        setStatus(nextStatus)
+        setStatusError('Native source preview did not return an active lease.')
+        return
       }
+      activeSourceKeyRef.current = lease.sourceKey
+      activeGenerationRef.current = lease.generation
+      activeLeaseNonceRef.current = lease.leaseNonce
+      setStatus(nextStatus)
+      if (isSourcePreviewPolling(nextStatus)) startPolling(targetKey)
     } catch (error) {
       if (mountedRef.current && command === commandEpochRef.current) {
         startingSourceKeyRef.current = null
-        setStatusError(previewError(error, 'Could not start native source preview'))
+        setStatusError(sourcePreviewError(error, 'Could not start native source preview'))
+        await reconcileFailedStart(command)
       }
     } finally {
       if (mountedRef.current && command === commandEpochRef.current) setBusy(false)
     }
-  }, [capability, invalidatePoll, target, targetKey])
+  }, [capability, invalidatePoll, reconcileFailedStart, startPolling, target, targetKey])
 
   useEffect(() => {
     const owned = activeSourceKeyRef.current ?? startingSourceKeyRef.current

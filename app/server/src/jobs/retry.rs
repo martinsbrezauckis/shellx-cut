@@ -182,34 +182,7 @@ impl JobManager {
     /// is persisted before it becomes visible in the in-memory table.
     pub fn create_with_retry(&self, kind: &str, retry: Option<JobRetry>) -> JobRecord {
         let mut inner = self.lock_inner();
-        inner.next_seq += 1;
-        let now = cut_core::OpRecord::now_ts();
-        let mut rec = JobRecord {
-            job_id: format!("job_{:03}", inner.next_seq),
-            kind: kind.to_string(),
-            state: JobState::Queued,
-            completion: None,
-            outcome: None,
-            outcome_reason: None,
-            progress: 0.0,
-            message: None,
-            queue: None,
-            waiting_on: None,
-            retry,
-            created_ts: now.clone(),
-            updated_ts: now,
-            result: None,
-            error: None,
-            persistence_error: None,
-        };
-        if let Some(retry) = rec.retry.as_mut() {
-            retry.initialize_root(&rec.job_id);
-            if retry.descriptor.is_some() && !retry.descriptor_matches_kind(kind) {
-                retry.eligible = false;
-                retry.reason = Some("retry descriptor does not match this job owner".into());
-                retry.descriptor = None;
-            }
-        }
+        let mut rec = Self::next_queued_record(&mut inner, kind, retry);
         if let Some(dir) = inner.persist_dir.clone() {
             if let Err(error) = persist(&dir.join(format!("{}.json", rec.job_id)), &rec) {
                 tracing::error!(

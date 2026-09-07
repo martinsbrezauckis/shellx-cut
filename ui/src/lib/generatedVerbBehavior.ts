@@ -5498,6 +5498,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "agent_chat": "deny",
     "risk": "reversible",
     "facets": []
+  },
+  "edit.insert_linked": {
+    "mutation_class": "timeline",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "edit_insert_linked",
+    "project_state": "required",
+    "idempotency": "request_key",
+    "replayability": "replayable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "edit",
+    "risk": "reversible",
+    "facets": []
   }
 }
 export const VERB_NAMES = Object.freeze(Object.keys(VERB_BEHAVIOR))

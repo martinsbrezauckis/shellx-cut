@@ -41,6 +41,9 @@ pub(super) async fn start_from_foreground_ticket(
     state: &AppState,
     request: PrivateMacosRegionStart,
 ) -> Result<VerbResult, CutError> {
+    // Keep the project identity stable from private ticket consumption through
+    // ordinary capture reservation, matching the public start path.
+    let _project_transition = state.project_transition.lock().await;
     // The registry removes the ticket atomically before this revalidation.
     // Consume before settings/Doctor/snapshot work so no failure path leaves a
     // valid private admission available for a second request.

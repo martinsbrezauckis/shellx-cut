@@ -16,11 +16,9 @@ use windows_capture::{
 };
 
 use crate::{
-    region_geometry::NativePixelCrop, windows_wgc_run::WgcNativeControl, CaptureReadiness,
-    CaptureSourceLifecycle,
+    region_geometry::NativePixelCrop, windows::cap_err, windows_wgc_run::WgcNativeControl,
+    CaptureReadiness, CaptureSourceLifecycle,
 };
-
-use super::cap_err;
 
 pub(crate) struct LiveWgcControl {
     pub(crate) close: Option<Box<dyn FnOnce() -> Result<()> + Send>>,

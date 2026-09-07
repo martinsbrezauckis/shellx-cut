@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 const SUPPORTED_INPUT_KEYWORDS: &[&str] = &[
     "additionalProperties",
+    "allOf",
     "anyOf",
     "const",
     "default",
@@ -232,6 +233,7 @@ fn minimal_instance(schema: &Value) -> Value {
                 Some("^[a-f0-9]{64}$") => {
                     "0000000000000000000000000000000000000000000000000000000000000000"
                 }
+                Some("^[a-f0-9]{32}$") => "00000000000000000000000000000000",
                 Some("^a[0-9]+$") => "a0",
                 Some("^ev_[a-f0-9]{24}$") => "ev_000000000000000000000000",
                 Some("^idx_[a-f0-9]{24}$") => "idx_000000000000000000000000",
@@ -333,6 +335,11 @@ fn enforces_every_keyword_used_by_the_committed_registry() {
         (json!({"minLength":2}), json!("a"), "minLength"),
         (json!({"maxLength":1}), json!("ab"), "maxLength"),
         (json!({"pattern":"^a+$"}), json!("b"), "pattern"),
+        (
+            json!({"pattern":"^[a-f0-9]{32}$"}),
+            json!("not-a-preview-lease"),
+            "pattern",
+        ),
         (json!({"minItems":2}), json!([1]), "minItems"),
         (json!({"maxItems":1}), json!([1, 2]), "maxItems"),
         (json!({"uniqueItems":true}), json!([1, 1]), "uniqueItems"),

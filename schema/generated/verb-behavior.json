@@ -6475,6 +6475,27 @@
         "risk": "reversible",
         "facets": []
       }
+    },
+    {
+      "name": "edit.insert_linked",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_insert_linked",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
     }
   ]
 }

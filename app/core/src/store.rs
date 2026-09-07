@@ -2831,10 +2831,9 @@ pub fn apply_edit_verb(
 ///
 /// `pinned: None` ⇒ identical behavior to the legacy live path (positional).
 ///
-/// `pinned` is `&mut` because the QUEUE roles (markers, ripple range-edge
-/// splits) are consumed POSITIONALLY: when one op's effects feed several
-/// lowered steps (audio.add_music → many add_marker), each step pops the next
-/// recorded id. Single-allocation roles (split/insert/move/add_track) just read.
+/// `pinned` is `&mut` because QUEUE roles (clips, tracks, markers, and ripple
+/// range-edge splits) are consumed POSITIONALLY. When one op's effects feed
+/// several lowered steps, each step pops the recorded id for its own role.
 pub fn apply_edit_verb_pinned(
     project: &mut Project,
     verb: &str,
@@ -3138,11 +3137,11 @@ pub fn apply_edit_verb_pinned(
                 id: Option<String>,
             }
             let a: A = serde_json::from_value(args.clone())?;
-            // On replay, pin the recorded track id (effect `added_track`) so a
-            // skip-replay keeps an auto-allocated `vN`/`aNt` stable. The
-            // explicit `id` arg (if the live op supplied one) still wins via
-            // the recorded effect, which equals it.
-            let pin = pinned.as_ref().and_then(|p| p.added_track.clone());
+            // On replay, consume the next recorded track id (effect
+            // `added_track`) so lowered operations that add both linked A/V
+            // destinations preserve each id. An older single-track operation
+            // falls back to its legacy first-value pin.
+            let pin = pinned.as_mut().and_then(|p| p.next_added_track());
             edit::add_track(project, a.kind, pin.as_deref().or(a.id.as_deref()))
         }
         "edit.reorder_track" => {
@@ -4703,13 +4702,8 @@ pub fn apply_record(
             // Lowering escape hatch: higher-layer verbs record their core ops.
             // The lowered steps' allocations were flattened onto THIS op's
             // top-level effects (apply_lowered), so one PinnedIds drawn from the
-            // op's effects pins every step. NOTE the limitation this implies:
-            // pinning a multi-allocation lowered op is only id-stable when each
-            // role appears once (a transcript.cut_words lowers to a single
-            // ripple_delete — the common case). A lowered op that allocated
-            // MULTIPLE clips of the same role is NOT yet rebase-safe; the
-            // dependency gate + rebase_out's verify-replay catch that and refuse
-            // (rebase.rs), so it can never silently corrupt.
+            // op's effects pins every step. Repeated clip, track, marker, and
+            // ripple-split effects are consumed in lowered-step order.
             if let Some(lowered) = op.effects.iter().find_map(|e| e.detail.get("lowered")) {
                 let steps: Vec<InverseOp> = serde_json::from_value(lowered.clone())?;
                 // ONE shared PinnedIds across all steps: the queue roles

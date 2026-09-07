@@ -1,6 +1,0 @@
-# Private foreground-only macOS Region admission. It is not a Cut verb or a
-# public feature surface; runtime grants it only to the selected engine origin.
-[[permission]]
-identifier = "allow-macos-region-foreground"
-description = "Allows the selected local ShellX Cut engine UI to request one foreground-owned macOS Region picker admission."
-commands.allow = ["start_macos_region_capture"]

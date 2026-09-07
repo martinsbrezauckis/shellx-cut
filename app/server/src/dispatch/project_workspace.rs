@@ -203,6 +203,7 @@ pub(super) async fn project_create(
         }
     };
     let _transition = state.project_transition.lock().await;
+    crate::screen_record::refuse_project_transition_if_active(state, None).await?;
     let store = ProjectStore::create_with_actor(&parent, &a.name, a.settings, actor)?;
     let starter_asset_path = match a.starter {
         Some(starter) => match install_project_starter(&store, starter) {
@@ -250,6 +251,7 @@ pub(super) async fn project_open(state: &AppState, args: Value) -> Result<VerbRe
     }
     let a: Args = parse_args(args)?;
     let _transition = state.project_transition.lock().await;
+    crate::screen_record::refuse_project_transition_if_active(state, None).await?;
     let store = ProjectStore::open(Path::new(&a.path))?;
     let ops = store.log.read_all()?;
     super::edit_tools::validate_split_metadata_projection(&ops)?;
@@ -409,6 +411,7 @@ pub(super) async fn project_delete(state: &AppState, args: Value) -> Result<Verb
         )
         .with_suggested_action("project.delete only removes a project's own .cutproj directory"));
     }
+    crate::screen_record::refuse_project_transition_if_active(state, Some(&canon)).await?;
     // Guardrail: never delete the project that is currently open (stale in-memory
     // state + lost edits). The caller must switch/create another project first.
     let open_guard = state.project.write().await;
@@ -887,6 +890,7 @@ pub(super) async fn project_health(state: &AppState, args: Value) -> Result<Verb
 /// project.close{} — save + drop the open project.
 pub(super) async fn project_close(state: &AppState) -> Result<VerbResult, CutError> {
     let _transition = state.project_transition.lock().await;
+    crate::screen_record::refuse_project_transition_if_active(state, None).await?;
     let previous = {
         let mut project = state.project.write().await;
         if let Some(store) = project.as_ref() {

@@ -20,15 +20,20 @@ the screen recording owner's matching Stop action. A terminal camera prefix can
 therefore be sealed only as its own `CameraArtifact@1`, with measured shared-clock
 timing and an exact file SHA-256; a zero-frame terminal has no artifact.
 
-No native camera adapter is registered yet, and Cut must continue to report the
-camera surface as unavailable. The existing reviewed dependencies are screen
-capture paths only: Windows `windows-capture` is WGC/DXGI, macOS
-`screencapturekit` is ScreenCaptureKit, and Linux `ashpd`/PipeWire is the
-ScreenCast route. A camera capability requires a separately reviewed maintained
-Media Foundation, AVFoundation, or Camera-portal/V4L2 adapter respectively,
-including enumeration, permission/refusal, bounded first-frame, finalization,
-and recovery proof. It must not be exposed through a server verb or UI before
-that platform evidence exists.
+The v0.6.114 candidate source registers the reviewed Windows Media Foundation
+and macOS AVFoundation adapters behind that owner. They are deliberately not a
+generic camera API: the only product admission is the Recording Studio's
+explicit **Use camera** path, using an opaque Doctor choice and the matching
+screen-recording owner. Enumeration stays passive; the selected device can open
+only after that intent, and Start waits for a real first frame. Permission
+refusal, a busy or missing device, no-frame delivery, and device loss remain
+explicit outcomes; a zero-frame terminal publishes no camera artifact.
+
+Linux remains unavailable for camera capture. Its reviewed `ashpd`/PipeWire
+path is the ScreenCast route, not a Camera portal or V4L2 adapter. The Windows
+and macOS implementation is candidate-source behavior: native installed
+qualification remains separate, and unsupported hosts must not substitute a
+different device or a fallback capture path.
 
 ## Crash recovery contract
 

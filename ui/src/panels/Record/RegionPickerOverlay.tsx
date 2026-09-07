@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import React, { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
 import {
   fitRegionToDisplay,
@@ -8,6 +8,10 @@ import {
   type RegionPickerDisplay,
   type RegionRect,
 } from './regionPickerModel'
+
+// The retained source-contract renderer compiles TSX with the classic factory;
+// Vite's automatic runtime still tree-shakes this binding from the product build.
+void React
 
 interface Point { x: number; y: number }
 

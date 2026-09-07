@@ -8,6 +8,9 @@ use super::*;
 mod linked_move;
 use linked_move::resolve_linked_media;
 
+mod linked_insert;
+pub(super) use linked_insert::edit_insert_linked;
+
 mod timeline;
 pub(super) use timeline::{
     captions_set_range, captions_set_text, edit_crossfade, edit_cut_to_beat, edit_detach_audio,

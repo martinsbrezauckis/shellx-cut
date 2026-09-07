@@ -206,6 +206,9 @@ pub(crate) use capture_files::{
 };
 #[cfg(test)]
 pub(crate) use capture_registry::capture_test_lock;
+pub(crate) use capture_registry::refuse_project_transition_if_active;
+#[cfg(test)]
+pub(crate) use capture_registry::reserve_project_transition_test_capture;
 pub use capture_registry::stop_capture;
 use capture_registry::{capture_sessions, reserve_capture};
 use capture_session_control::CaptureSessionControl;
@@ -580,7 +583,12 @@ where
         source_lifecycle: Some(control.source_lifecycle()),
     };
     let system_audio_lease = system_audio_capture::reserve(system_audio)?;
-    let reservation = reserve_capture(capture_id.clone(), control.clone())?;
+    let reservation = capture_registry::reserve_capture_after_preview_release(
+        capture_id.clone(),
+        control.clone(),
+        Some(project_dir.clone()),
+        source_preview::release_for_recording,
+    )?;
     if let Err(error) = control.observe_backend_start(clock) {
         let _ = control.terminalize();
         return Err(CutError::new(

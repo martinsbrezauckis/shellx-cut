@@ -315,8 +315,10 @@ impl BlockStats {
     fn from_s16le_bytes(bytes: &[u8]) -> Self {
         Self::from_normalized(
             bytes
-                .chunks_exact(2)
-                .map(|sample| i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0),
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|sample| i16::from_le_bytes(*sample) as f32 / 32768.0),
         )
     }
 

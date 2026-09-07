@@ -101,6 +101,15 @@
 .rec-rehearsal__status,
 .rec-rehearsal__boundary { margin: 0; color: var(--ink-3, #aab1bd); font: var(--fs-ui-xs, 11px)/1.4 var(--sans); }
 .rec-rehearsal__boundary { color: var(--ink-4, #6b7280); }
+.rec-rehearsal__details { margin: 0; color: var(--ink-4, #6b7280); }
+.rec-rehearsal__details > summary {
+  width: max-content;
+  max-width: 100%;
+  color: var(--ink-3, #aab1bd);
+  cursor: pointer;
+  font: 650 var(--fs-ui-xs, 11px)/1.2 var(--sans);
+}
+.rec-rehearsal__details > p { margin-top: 6px; }
 .rec-rehearsal__playback {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1095,8 +1104,10 @@
 }
 .rec[data-cut-record-phase="recording"] .rec-studio-preview,
 .rec[data-cut-record-phase="finalizing"] .rec-studio-preview { min-height: 520px; }
-.rec[data-cut-record-phase="recording"] .rec-studio-controls > [data-cut-studio-camera-status],
-.rec[data-cut-record-phase="recording"] .rec-studio-controls > [data-cut-rec-composition-controls] {
+/* Device admission stays fixed while a capture is active, but its already
+   admitted camera can still move, resize, or change shape. Keep that compact
+   composition disclosure visible so the durable live controls are reachable. */
+.rec[data-cut-record-phase="recording"] .rec-studio-controls > [data-cut-studio-camera-status] {
   display: none;
 }
 
@@ -1145,4 +1156,48 @@
   .rec-region-picker__display select { width: 100%; }
   .rec-region-picker__footer { justify-content: stretch; margin-top: 0; }
   .rec-region-picker__footer button { flex: 1 1 0; min-height: 44px; }
+}
+
+/* A raw-output authorization failure keeps the native capture owned and the
+   setup column intentionally hidden. Surface only its existing output controls
+   beside the live transport so the user can choose a valid destination before
+   the explicit Retry Stop action. */
+.rec-live-controls__recovery { scroll-margin-top: 72px; }
+.rec__stop-recovery {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid rgba(245, 196, 81, .42);
+  border-radius: 10px;
+  background: rgba(245, 196, 81, .08);
+}
+.rec__stop-recovery .rec__field--output { gap: 8px; }
+.rec__stop-recovery .rec__output-row { align-items: center; }
+.rec__stop-recovery [data-cut-rec-output-recovery-note] { margin: 0; color: #f5c451; }
+
+/* The live surface can grow taller than the scrollport (scenes, meters, and
+   raw-output recovery). Keep the action row itself sticky; never pin the whole
+   support stack, which can push Retry Stop underneath the Record heading. */
+.rec[data-cut-record-phase="recording"] .rec__transport {
+  display: block;
+  align-self: stretch;
+  position: static;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.rec[data-cut-record-phase="recording"] .rec-live-controls__transport {
+  position: sticky;
+  top: 8px;
+  bottom: 8px;
+  z-index: 9;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 -12px 34px rgba(0,0,0,.18);
+  backdrop-filter: blur(12px);
 }

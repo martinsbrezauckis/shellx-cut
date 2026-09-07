@@ -171,9 +171,12 @@ export function RecordingRehearsal({
       <p className="rec-rehearsal__boundary" data-cut-rec-rehearsal-disposable>
         This is a disposable test take: it does not create a project, recording, recovery item, or timeline media.
       </p>
-      <p className="rec-rehearsal__boundary" data-cut-rec-rehearsal-audio-boundary>
-        Playback verifies the selected picture source. Microphone and system-audio checks remain separate, so this take never claims audio that it did not capture.
-      </p>
+      <details className="rec-rehearsal__details" data-cut-rec-rehearsal-details>
+        <summary data-cut-action="record-rehearsal-details-toggle">What rehearsal checks</summary>
+        <p className="rec-rehearsal__boundary" data-cut-rec-rehearsal-audio-boundary>
+          Playback verifies the selected picture source. Microphone and system-audio checks remain separate, so this take never claims audio that it did not capture.
+        </p>
+      </details>
       {state.kind === 'ready' && (
         <div className="rec-rehearsal__playback" data-cut-rec-rehearsal-playback>
           <video

@@ -76,12 +76,6 @@ export function RecordingPauseControl({
           Uses one exact display at a whole-number frame rate. Scenes, camera, keystrokes, Window capture, and Quality are unavailable for this recording.
         </p>
       )}
-      {recording && (
-        <div className="rec-pause__live" data-cut-rec-pause-state={state}>
-          <PauseResumeButton state={state} compact={false} onControl={onControl} />
-          <p className="rec__source-note" data-cut-rec-pause-status role="status">{message}</p>
-        </div>
-      )}
     </div>
   )
 }

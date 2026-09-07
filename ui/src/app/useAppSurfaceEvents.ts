@@ -1,14 +1,14 @@
 import { useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
-import type { LayoutState } from '../layout/useLayout'
 import type { GenerateWorkspaceTab } from '../panels/GenerateTemplates'
 import { isSettingsCategoryId, type SettingsCategoryId } from '../panels/Environment/settingsModel'
 import type { AppDrawer } from './AppDrawerStack'
 import type { AgentChatPrefill, ChatEvidenceAttachment } from '../lib/evidenceAttachments'
 import { normalizeGenerateTab } from './model'
 import { uiSurface } from './uiSurfaceRegistry'
+import type { RequestLayout } from './useRecordingWorkspaceNavigation'
 
 interface AppSurfaceEventsArgs {
-  setLayout: Dispatch<SetStateAction<LayoutState>>
+  setLayout: RequestLayout
   setCommentsOpen: Dispatch<SetStateAction<boolean>>
   setFocusComment: Dispatch<SetStateAction<{ id: string; n: number } | null>>
   setActiveDrawer: Dispatch<SetStateAction<AppDrawer | null>>
@@ -42,14 +42,15 @@ export function useAppSurfaceEvents({
     const entry = uiSurface(id)
     const action = entry?.action
     if (!entry || !action) return false
-    const showEditor = () => {
+    const showEditor = (): boolean => {
+      if (!setLayout((layout) => ({ ...layout, workspaceMode: 'edit' }))) return false
       setWizardOpen(false)
       setEnvOpen(false)
-      setLayout((layout) => ({ ...layout, workspaceMode: 'edit' }))
+      return true
     }
     switch (action.kind) {
       case 'focus':
-        showEditor()
+        if (!showEditor()) return false
         window.requestAnimationFrame(() => {
           const element = document.querySelector<HTMLElement>(entry.selector)
           element?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -57,11 +58,11 @@ export function useAppSurfaceEvents({
         })
         return true
       case 'left':
-        showEditor()
+        if (!showEditor()) return false
         setLayout((layout) => ({ ...layout, workspaceMode: 'edit', leftTab: action.tab, leftCollapsed: false }))
         return true
       case 'find':
-        showEditor()
+        if (!showEditor()) return false
         setLayout((layout) => ({
           ...layout,
           workspaceMode: 'edit',
@@ -71,17 +72,17 @@ export function useAppSurfaceEvents({
         }))
         return true
       case 'generate':
-        showEditor()
+        if (!showEditor()) return false
         setGenerateTab(action.tab)
         setLayout((layout) => ({ ...layout, workspaceMode: 'edit', leftTab: 'generate', leftCollapsed: false }))
         return true
       case 'workspace':
+        if (!setLayout((layout) => ({ ...layout, workspaceMode: action.workspace }))) return false
         setWizardOpen(false)
         setEnvOpen(false)
-        setLayout((layout) => ({ ...layout, workspaceMode: action.workspace }))
         return true
       case 'right':
-        showEditor()
+        if (!showEditor()) return false
         setLayout((layout) => ({
           ...layout,
           workspaceMode: 'edit',
@@ -90,7 +91,7 @@ export function useAppSurfaceEvents({
         }))
         return true
       case 'review':
-        showEditor()
+        if (!showEditor()) return false
         setLayout((layout) => ({
           ...layout,
           workspaceMode: 'edit',
@@ -110,12 +111,12 @@ export function useAppSurfaceEvents({
           setEnvOpen(false)
           setWizardOpen(true)
         } else {
-          showEditor()
+          if (!showEditor()) return false
           setCommentsOpen(true)
         }
         return true
       case 'drawer':
-        showEditor()
+        if (!showEditor()) return false
         setActiveDrawer(action.drawer)
         return true
     }

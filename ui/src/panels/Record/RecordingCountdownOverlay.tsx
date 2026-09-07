@@ -1,15 +1,18 @@
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
+import { matchesFixedAction } from '../../lib/keymap'
 
 interface RecordingCountdownOverlayProps {
   remaining: number
   onCancel: () => void
+  /** F9 shares Record's stamped transport path with native and document events. */
+  onToggle: () => void
 }
 
 /**
  * This is setup only: no capture id, backend reservation, or elapsed recording
  * time exists while it is visible.
  */
-export function RecordingCountdownOverlay({ remaining, onCancel }: RecordingCountdownOverlayProps) {
+export function RecordingCountdownOverlay({ remaining, onCancel, onToggle }: RecordingCountdownOverlayProps) {
   const overlay = useBlockingOverlay<HTMLElement>(onCancel)
 
   return (
@@ -25,7 +28,17 @@ export function RecordingCountdownOverlay({ remaining, onCancel }: RecordingCoun
         aria-labelledby="cut-rec-countdown-title"
         aria-describedby="cut-rec-countdown-description"
         tabIndex={-1}
-        onKeyDown={overlay.onDialogKeyDown}
+        onKeyDown={(event) => {
+          // F9 is a recorder transport action, not an editor shortcut. The
+          // countdown owns it as cancellation before a capture exists.
+          if (matchesFixedAction(event.nativeEvent, 'recording.toggle')) {
+            event.preventDefault()
+            event.stopPropagation()
+            onToggle()
+            return
+          }
+          overlay.onDialogKeyDown(event)
+        }}
       >
         <p className="rec-countdown__label">Get ready</p>
         <strong id="cut-rec-countdown-title" className="rec-countdown__number" data-cut-rec-countdown-remaining={remaining}>

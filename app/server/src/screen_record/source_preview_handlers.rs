@@ -21,6 +21,13 @@ struct StartArgs {
 #[serde(deny_unknown_fields)]
 struct EmptyArgs {}
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpectedLeaseArgs {
+    expected_generation: u64,
+    expected_lease_nonce: String,
+}
+
 pub(crate) fn capability_handler(args: Value) -> Result<VerbResult, CutError> {
     let _: EmptyArgs = parse_args(args)?;
     Ok(VerbResult::ok(json!(source_preview::capability())))
@@ -37,51 +44,111 @@ pub(crate) fn start_handler(args: Value) -> Result<VerbResult, CutError> {
 
 pub(crate) fn status_handler(args: Value) -> Result<VerbResult, CutError> {
     let _: EmptyArgs = parse_args(args)?;
-    let (status, _) = source_preview::snapshot()?;
-    Ok(VerbResult::ok(status_value(status)))
+    let snapshot = source_preview::snapshot()?;
+    Ok(VerbResult::ok(status_value(
+        snapshot.status,
+        snapshot.unavailable_reason,
+        snapshot.lease_nonce.as_deref(),
+    )))
 }
 
 pub(crate) fn frame_handler(args: Value) -> Result<VerbResult, CutError> {
     let _: EmptyArgs = parse_args(args)?;
-    let (status, frame) = source_preview::snapshot()?;
+    let snapshot = source_preview::snapshot()?;
     Ok(VerbResult::ok(json!({
-        "status": status_value(status.clone()),
-        "frame": frame_value(status, frame)?,
+        "status": status_value(snapshot.status.clone(), snapshot.unavailable_reason, snapshot.lease_nonce.as_deref()),
+        "frame": frame_value(snapshot.status, snapshot.frame)?,
     })))
 }
 
 pub(crate) fn pause_handler(args: Value) -> Result<VerbResult, CutError> {
-    let _: EmptyArgs = parse_args(args)?;
-    Ok(action_result("pause", source_preview::pause()?))
+    let (generation, nonce) = expected_lease(args)?;
+    Ok(action_result(
+        "pause",
+        source_preview::pause(generation, nonce)?,
+    ))
 }
 
 pub(crate) fn resume_handler(args: Value) -> Result<VerbResult, CutError> {
-    let _: EmptyArgs = parse_args(args)?;
-    Ok(action_result("resume", source_preview::resume()?))
+    let (generation, nonce) = expected_lease(args)?;
+    Ok(action_result(
+        "resume",
+        source_preview::resume(generation, nonce)?,
+    ))
 }
 
 pub(crate) fn hide_handler(args: Value) -> Result<VerbResult, CutError> {
-    let _: EmptyArgs = parse_args(args)?;
-    Ok(action_result("hide", source_preview::hide()?))
+    let (generation, nonce) = expected_lease(args)?;
+    Ok(action_result(
+        "hide",
+        source_preview::hide(generation, nonce)?,
+    ))
 }
 
 pub(crate) fn stop_handler(args: Value) -> Result<VerbResult, CutError> {
-    let _: EmptyArgs = parse_args(args)?;
-    Ok(action_result("stop", source_preview::stop()?))
+    let (generation, nonce) = expected_lease(args)?;
+    Ok(action_result(
+        "stop",
+        source_preview::stop(generation, nonce)?,
+    ))
 }
 
-fn action_result(action: &str, status: SourcePreviewStatus) -> VerbResult {
-    VerbResult::ok(json!({ "action": action, "status": status_value(status) }))
+fn expected_lease(args: Value) -> Result<(u64, String), CutError> {
+    let args: ExpectedLeaseArgs = parse_args(args)?;
+    if args.expected_generation == 0 {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "expected_generation must be a positive native preview generation",
+            "generation zero is never issued by the preview lifecycle",
+        ));
+    }
+    if args.expected_lease_nonce.len() != 32
+        || !args
+            .expected_lease_nonce
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "expected_lease_nonce must be the opaque 128-bit preview lease nonce",
+            "use the exact lease_nonce returned by preview_start, preview_status, or preview_frame",
+        ));
+    }
+    Ok((args.expected_generation, args.expected_lease_nonce))
+}
+
+fn action_result(action: &str, result: source_preview::PreviewAction) -> VerbResult {
+    VerbResult::ok(
+        json!({ "action": action, "status": status_value(result.status, None, result.lease_nonce.as_deref()) }),
+    )
 }
 
 /// Public projection deliberately omits source identities and all private regions.
-fn status_value(status: SourcePreviewStatus) -> Value {
-    json!({
+fn status_value(
+    status: SourcePreviewStatus,
+    unavailable_reason: Option<&str>,
+    lease_nonce: Option<&str>,
+) -> Value {
+    let mut value = json!({
         "state": status.state,
         "recursion": status.recursion,
         "has_frame": status.has_frame,
         "generation": status.generation,
-    })
+    });
+    if matches!(
+        status.state,
+        record_capture::source_preview::SourcePreviewState::Unavailable
+    ) {
+        if let Some(reason) = unavailable_reason {
+            value["unavailable_reason"] = Value::String(reason.into());
+        }
+    }
+    if status.generation.is_some() {
+        if let Some(lease_nonce) = lease_nonce {
+            value["lease_nonce"] = Value::String(lease_nonce.into());
+        }
+    }
+    value
 }
 
 fn frame_value(
@@ -137,10 +204,25 @@ mod tests {
         }
     }
 
+    fn unavailable_status() -> SourcePreviewStatus {
+        SourcePreviewStatus {
+            state: SourcePreviewState::Unavailable,
+            recursion: SourcePreviewRecursion::None,
+            request: None,
+            generation: None,
+            has_frame: false,
+        }
+    }
+
     #[test]
     fn public_status_omits_the_private_source_identity() {
-        let value = status_value(status(Some(3)));
+        let value = status_value(
+            status(Some(3)),
+            None,
+            Some("00112233445566778899aabbccddeeff"),
+        );
         assert_eq!(value["generation"], 3);
+        assert_eq!(value["lease_nonce"], "00112233445566778899aabbccddeeff");
         assert!(value.get("request").is_none());
         assert!(value.get("monitor_id").is_none());
     }
@@ -167,6 +249,30 @@ mod tests {
     fn non_bmp_mailbox_bytes_cannot_cross_the_public_preview_boundary() {
         let frame = SourcePreviewFrame::new(42, vec![1, 2]).unwrap();
         let error = frame_value(status(Some(9)), Some(frame)).unwrap_err();
+        assert_eq!(error.code, error_codes::INVALID_ARGS);
+    }
+
+    #[test]
+    fn unresolved_release_reason_is_exposed_only_with_the_terminal_status() {
+        let value = status_value(unavailable_status(), Some("restart ShellX Cut"), None);
+        assert_eq!(value["unavailable_reason"], "restart ShellX Cut");
+        assert!(status_value(
+            status(Some(3)),
+            Some("restart ShellX Cut"),
+            Some("00112233445566778899aabbccddeeff")
+        )
+        .get("unavailable_reason")
+        .is_none());
+    }
+
+    #[test]
+    fn lifecycle_nonce_must_match_the_lowercase_schema_contract() {
+        let error = expected_lease(json!({
+            "expected_generation": 1,
+            "expected_lease_nonce": "00112233445566778899AABBCCDDEEFF",
+        }))
+        .unwrap_err();
+
         assert_eq!(error.code, error_codes::INVALID_ARGS);
     }
 }

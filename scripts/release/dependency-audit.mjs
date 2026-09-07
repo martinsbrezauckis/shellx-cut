@@ -4,6 +4,8 @@ import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { macosScreenCaptureKitBridgeContract } from './screencapturekit-bridge-contract.mjs'
+
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
 
@@ -360,6 +362,12 @@ export function runDependencyAudit({
   npmToolingException = NPM_TOOLING_EXCEPTION,
 } = {}) {
   const failures = []
+
+  const bridgeContract = macosScreenCaptureKitBridgeContract({ repo })
+  failures.push(...bridgeContract.failures.map((detail) => ({
+    label: 'macOS ScreenCaptureKit bridge',
+    detail,
+  })))
 
   for (const check of dependencyAuditPlan(repo, platform)) {
     let acceptedNpmNonzero = false

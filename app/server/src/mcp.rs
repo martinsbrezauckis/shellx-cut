@@ -213,7 +213,7 @@ fn trim_schema_descriptions(v: &Value, max: usize) -> Value {
 }
 
 /// The registry injects these two shared controls into every verb input schema
-/// before validation. Their descriptions are identical 305 times over in a
+/// before validation. Their descriptions repeat across every entry in a
 /// full MCP list, while JSON Schema treats `description` as an annotation. Keep
 /// every machine-readable control constraint and compact only that duplicate
 /// prose; the complete annotation remains in the canonical verb registry.

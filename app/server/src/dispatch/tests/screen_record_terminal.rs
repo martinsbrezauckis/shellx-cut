@@ -333,6 +333,92 @@ async fn fake_successful_portal_still_publishes_checkpoint_and_project() {
     assert!(!capture_dir.join("capture.terminal.json").exists());
 }
 
+/// A client can lose the first Stop response after the worker has closed its
+/// process-local reservation. The retained capture root is then the authority:
+/// a repeated same-id Stop must re-read its finalized artifacts rather than
+/// treating the absent in-memory control as an unknown recording.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_reads_completed_artifacts_after_worker_releases_same_capture_id() {
+    let _capture_lock = crate::screen_record::capture_test_lock().lock().await;
+    let temp = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let project_dir = temp.path().join("stop_after_worker_release.cutproj");
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name": "stop_after_worker_release", "dir": project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+
+    let capture_id = "cap-stop-after-worker-release";
+    let (capture_dir, project_path) = create_capture(&project_dir, capture_id);
+    crate::screen_record::start_capture_with_test_backend(
+        capture_id.into(),
+        None,
+        30.0,
+        false,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        project_dir,
+        capture_dir.clone(),
+        project_path.clone(),
+        capture_dir.join("record.log"),
+        || Ok(Box::new(FakeSuccessfulPortal)),
+    )
+    .unwrap();
+    wait_for(&project_path).await;
+    wait_for_capture_release(capture_id).await;
+    assert!(
+        !crate::screen_record::stop_capture(capture_id),
+        "the retry deliberately has no in-memory native owner to signal"
+    );
+
+    // This successful response stands in for a server-side completion whose
+    // response could not be delivered to the client. The next request must not
+    // depend on the already-released in-memory control.
+    let first = dispatch(
+        &state,
+        "screen_record.stop",
+        json!({"capture_id": capture_id, "autoedit": false}),
+        test_actor(),
+    )
+    .await;
+    assert!(first.ok, "{:?}", first.error);
+
+    let retried = dispatch(
+        &state,
+        "screen_record.stop",
+        json!({"capture_id": capture_id, "autoedit": false}),
+        test_actor(),
+    )
+    .await;
+    assert!(retried.ok, "{:?}", retried.error);
+    let result = retried
+        .result
+        .as_ref()
+        .expect("Stop returns artifact receipt");
+    assert_eq!(result["capture_id"], capture_id);
+    assert_eq!(
+        result["source"],
+        capture_dir
+            .join("source.mp4")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    assert!(
+        capture_dir.join("events.json").is_file(),
+        "same-id recovery writes the normal stop event artifact"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn private_preprojection_uses_normal_recovery_without_replacing_its_project() {
     let _capture_lock = crate::screen_record::capture_test_lock().lock().await;

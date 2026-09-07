@@ -33,6 +33,7 @@
   "overrides": {
     "@puppeteer/browsers": "3.0.4",
     "@wdio/native-utils": "2.5.0",
+    "browserslist": "4.28.7",
     "deepmerge-ts": "8.0.1",
     "js-yaml": "4.3.1",
     "postcss": "8.5.24",

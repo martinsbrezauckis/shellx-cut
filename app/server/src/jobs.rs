@@ -4,6 +4,7 @@
 //! observable across crashes. Callers are dispatch plus jobs.status/list/cancel.
 
 mod dependency;
+mod durable_admission;
 mod locking;
 #[cfg(test)]
 mod locking_tests;
@@ -764,6 +765,25 @@ mod tests {
         );
         let live = mgr.get(&created.job_id).unwrap();
         assert_eq!(live.persistence_error, created.persistence_error);
+    }
+
+    #[test]
+    fn create_durable_refuses_persistence_failure_without_an_in_memory_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = JobManager::new(EventBus::new());
+        mgr.attach_project(dir.path()).unwrap();
+        let jobs_path = dir.path().join("jobs");
+        std::fs::remove_dir_all(&jobs_path).unwrap();
+        std::fs::write(&jobs_path, b"not a directory").unwrap();
+
+        let error = mgr
+            .create_durable("portable_package")
+            .expect_err("durable admission must refuse an unwritable job store");
+        assert_eq!(error.code, cut_core::error_codes::IO);
+        assert!(
+            mgr.list().is_empty(),
+            "a rejected job must not become visible"
+        );
     }
 
     #[test]

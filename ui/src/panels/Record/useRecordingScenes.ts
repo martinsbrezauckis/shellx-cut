@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { callVerb } from '../../lib/client'
 import {
   NO_RECORDING_SCENE_CAPABILITY,
@@ -7,6 +7,7 @@ import {
   recordingSceneCapability,
   recordingSceneTimerAcknowledged,
   recordingSceneStartConfig,
+  RecordingSceneControlLifetime,
   type RecordingSceneTimer,
   type RecordingSceneCapability,
   type RecordingSceneTimerAction,
@@ -90,6 +91,18 @@ export function useRecordingScenes({
     state: 'unavailable',
     message: 'Open a project to check recording recovery.',
   })
+  const controlLifetimeRef = useRef(new RecordingSceneControlLifetime())
+
+  useLayoutEffect(() => {
+    const lifetime = controlLifetimeRef.current
+    lifetime.mount()
+    return () => lifetime.unmount()
+  }, [])
+
+  useLayoutEffect(() => {
+    if (recording && captureId) controlLifetimeRef.current.replaceCapture(captureId)
+    else controlLifetimeRef.current.clearCapture()
+  }, [captureId, recording])
 
   const selectedScene = recordingSceneById(selectedSceneId)
   const startConfig = useMemo(
@@ -109,6 +122,7 @@ export function useRecordingScenes({
         : { state: 'draft', message: `${next.detail} Your selection is a local preview only.` }
     })
     if (recording && !next.supported) {
+      controlLifetimeRef.current.clearCapture()
       setTimerStatus({ state: 'unavailable', message: 'Live timer controls are unavailable because this recorder has not advertised the scene API.' })
     }
   }, [recording])
@@ -148,6 +162,8 @@ export function useRecordingScenes({
       setStatus({ state: 'unavailable', message: capability.detail })
       return
     }
+    const controlLease = controlLifetimeRef.current.begin(captureId, 'scene')
+    if (!controlLease) return
     setStatus({ state: 'switching', message: `Switching to ${scene.name}…` })
     try {
       const response = await callVerb('screen_record.scene_activate', {
@@ -155,6 +171,7 @@ export function useRecordingScenes({
         scene_id: scene.id,
         preset_revision: scene.preset_revision,
       })
+      if (!controlLifetimeRef.current.isCurrent(controlLease)) return
       if (!response.ok) {
         setStatus({ state: 'error', message: `Scene switch was not saved: ${response.error?.message ?? 'unknown error'}` })
         return
@@ -167,6 +184,7 @@ export function useRecordingScenes({
       onPreviewScene(scene.id)
       setStatus({ state: 'saved', message: `${scene.name} is live and saved with this recording.` })
     } catch {
+      if (!controlLifetimeRef.current.isCurrent(controlLease)) return
       setStatus({ state: 'error', message: 'Scene switch did not reach the recorder. The preview was not changed.' })
     }
   }, [capability, captureId, onPreviewScene, recording])
@@ -208,9 +226,12 @@ export function useRecordingScenes({
       setTimerStatus({ state: 'unavailable', message: 'Live timer controls are unavailable for this recording.' })
       return
     }
+    const controlLease = controlLifetimeRef.current.begin(captureId, 'timer')
+    if (!controlLease) return
     setTimerStatus({ state: 'switching', message: `Asking the recorder to ${action} the timer…` })
     try {
       const response = await callVerb('screen_record.scene_timer', { capture_id: captureId, action })
+      if (!controlLifetimeRef.current.isCurrent(controlLease)) return
       if (!response.ok) {
         setTimerStatus({ state: 'error', message: `Timer change was not confirmed: ${response.error?.message ?? 'unknown error'}` })
         return
@@ -223,6 +244,7 @@ export function useRecordingScenes({
       const nextState = timerResult.state
       setTimerStatus({ state: nextState, message: timerMessageAfter(action, nextState) })
     } catch {
+      if (!controlLifetimeRef.current.isCurrent(controlLease)) return
       setTimerStatus({ state: 'error', message: 'Timer change did not reach the recorder. Its state was not changed here.' })
     }
   }, [capability.supported, captureId, recording])

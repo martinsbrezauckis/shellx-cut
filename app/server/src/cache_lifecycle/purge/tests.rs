@@ -51,6 +51,54 @@ async fn successful_close_invalidates_an_unconsumed_cache_purge_plan() {
 }
 
 #[tokio::test]
+async fn purge_refuses_non_durable_admission_without_consuming_its_plan() {
+    let (_root, state) = state_with_project().await;
+    let (project_dir, output) = {
+        let project = state.project.read().await;
+        let store = project.as_ref().unwrap();
+        let output = store.proxies_dir().join("a1.mp4");
+        std::fs::write(&output, b"proxy").unwrap();
+        (store.dir.clone(), output)
+    };
+    std::fs::File::options()
+        .write(true)
+        .open(&output)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    crate::cache_lifecycle::record_generated(
+        &project_dir,
+        CacheKind::Proxies,
+        "a1",
+        OsStr::new("a1.mp4"),
+    )
+    .unwrap();
+    let preview = preview(&state).await.unwrap();
+    let plan_id = preview.result.as_ref().unwrap()["plan_id"].clone();
+    assert_eq!(preview.result.as_ref().unwrap()["purgeable"]["files"], 1);
+    let jobs_dir = project_dir.join("jobs");
+    std::fs::remove_dir_all(&jobs_dir).unwrap();
+    std::fs::write(&jobs_dir, b"not a directory").unwrap();
+
+    let error = start_purge(&state, json!({"plan_id": plan_id, "confirm": true}))
+        .await
+        .expect_err("purge must refuse non-durable job admission");
+    assert_eq!(error.code, error_codes::IO);
+    assert!(
+        state.cache_purge_plan.lock().await.is_some(),
+        "a rejected admission must retain the one-use deletion plan"
+    );
+    assert!(
+        output.exists(),
+        "a rejected purge must not delete cache output"
+    );
+    assert!(
+        state.jobs.list().is_empty(),
+        "no purge worker may start in memory"
+    );
+}
+
+#[tokio::test]
 async fn post_delete_failure_carries_a_strict_partial_reconciliation() {
     let (_root, state) = state_with_project().await;
     let (project_dir, output) = {

@@ -140,13 +140,11 @@ impl SourcePreviewMailbox {
         self.mark_terminal(SourcePreviewMailboxTerminal::Unavailable);
     }
 
-    #[cfg_attr(
-        all(target_os = "linux", not(feature = "source-preview-test-support")),
-        allow(
-            dead_code,
-            reason = "only the macOS adapter currently exposes an explicit native permission denial"
-        )
-    )]
+    #[cfg(any(
+        test,
+        feature = "source-preview-test-support",
+        all(target_os = "macos", feature = "capture-macos")
+    ))]
     pub(crate) fn mark_permission_denied(&self) {
         self.mark_terminal(SourcePreviewMailboxTerminal::PermissionDenied);
     }
@@ -276,6 +274,16 @@ pub mod test_support {
 
         pub fn session(&self, generation: u64) -> NativeSourcePreviewSession {
             NativeSourcePreviewSession::new(generation, self.mailbox.clone(), || Ok(()))
+        }
+
+        pub fn failing_stop_session(&self, generation: u64) -> NativeSourcePreviewSession {
+            NativeSourcePreviewSession::new(generation, self.mailbox.clone(), || {
+                Err(RecordError::new(
+                    error_codes::CAPTURE,
+                    "stop native source preview",
+                    "test native close failure",
+                ))
+            })
         }
 
         pub fn publish_bgra(

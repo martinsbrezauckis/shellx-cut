@@ -67,12 +67,11 @@ pub(crate) async fn start_purge(state: &AppState, args: Value) -> Result<VerbRes
     // Register the worker before project replacement may start. Otherwise a
     // switch can drain the old table between plan consumption and spawn.
     let _transition = state.project_transition.lock().await;
-    let plan = {
+    let (plan, job) = {
         let mut stored = state.cache_purge_plan.lock().await;
-        match stored.take() {
-            Some(plan) if plan.plan_id == args.plan_id => plan,
-            Some(plan) => {
-                *stored = Some(plan);
+        match stored.as_ref() {
+            Some(plan) if plan.plan_id == args.plan_id => {}
+            Some(_) => {
                 return Err(cache_error(
                     "cache purge plan is not current",
                     "preview the cache again and confirm the returned plan",
@@ -84,9 +83,15 @@ pub(crate) async fn start_purge(state: &AppState, args: Value) -> Result<VerbRes
                     "preview the cache again before confirming deletion",
                 ))
             }
-        }
+        };
+        // The plan stays intact until its queued record is durable. A storage
+        // failure therefore cannot consume a confirmed deletion request.
+        let job = state.jobs.create_durable("cache_purge")?;
+        let plan = stored
+            .take()
+            .expect("validated cache purge plan remains held by this transition");
+        (plan, job)
     };
-    let job = state.jobs.create("cache_purge");
     let job_id = job.job_id.clone();
     let job_state = state.clone();
     let jid = job_id.clone();

@@ -1400,6 +1400,10 @@ export interface ScreenRecordSourcePreviewStatus {
   recursion: 'none' | 'detected' | 'unavoidable'
   has_frame: boolean
   generation: number | null
+  /** Opaque Cut-server owner nonce, present exactly while generation is active. */
+  lease_nonce?: string
+  /** Present only when the process-global owner cannot prove a native release. */
+  unavailable_reason?: string
 }
 
 /** Bounded BMP bytes, emitted from memory only for the returned generation. */
@@ -1457,6 +1461,20 @@ export interface OverwriteResult {
   duration_ms: number
   linked_av: boolean
   tracks: OverwriteTrackResult[]
+}
+
+/** Receipt for one atomic muxed-video insertion. Both clips and any required
+ * destination tracks commit together, or the project remains unchanged. */
+export interface InsertLinkedResult {
+  video_clip_id: string
+  audio_clip_id: string
+  video_track: string
+  audio_track: string
+  created_video_track: boolean
+  created_audio_track: boolean
+  at_ms: number
+  src_range_ms: [number, number]
+  ripple: boolean
 }
 
 /** Typed result payloads where the shape is pinned by the contract. */
@@ -1646,6 +1664,7 @@ export interface VerbResults {
   'recipe.list': { recipes: RecipeSummary[] }
   'recipe.describe': RecipeManifest
   'recipe.run': RecipeDryRun | RecipeRunHandle
+  'edit.insert_linked': InsertLinkedResult
   'edit.overwrite': OverwriteResult
   // edit.cut_to_beat: cuts = resulting cut positions (split) or the new boundary
   // positions (snap); moves present only in snap mode. beats_used = cuts made.

@@ -416,9 +416,10 @@ pub fn rebase_unreproducible(target_op_id: &str, cause: &CutError) -> CutError {
 /// MANY allocating primitive steps (one edit.add_marker per beat → m1, m2, …).
 /// So the marker pin is a QUEUE consumed IN ORDER across the lowered steps, not
 /// a single value. Same for ripple range-edge split clips (one per track). The
-/// Direct edit ops allocate added/split clips once, but an atomic Motion import
-/// lowers several insert steps into one op. The clip roles therefore also keep
-/// ordered queues while retaining their first-value fields for legacy callers.
+/// Direct edit ops allocate added/split clips once, but atomic lowered work
+/// (including linked A/V insertions) can allocate several clips and tracks in
+/// one op. Those roles therefore keep ordered queues while retaining their
+/// first-value fields for legacy callers.
 ///
 /// Because the queue roles are consumed positionally, the replay caller passes
 /// `&mut PinnedIds` and each allocating step POPS the next id. The live path
@@ -444,8 +445,13 @@ pub struct PinnedIds {
     pub ripple_split_clips: Vec<String>,
     /// Read cursor into `ripple_split_clips`.
     ripple_cursor: usize,
-    /// edit.add_track id (effect `added_track`). One per op.
+    /// First edit.add_track id (effect `added_track`), retained for legacy
+    /// single-track callers.
     pub added_track: Option<String>,
+    /// All add-track ids in lowered-step order. A linked A/V insertion can
+    /// allocate both a video and an audio track in one durable operation.
+    pub added_tracks: Vec<String>,
+    added_track_cursor: usize,
     /// edit.add_marker ids (effect `added_marker.id`) — ALL of them IN ORDER (a
     /// lowered audio.add_music records one per beat). Consumed via
     /// `next_marker` (positional).
@@ -478,6 +484,7 @@ impl PinnedIds {
             }
             if let Some(t) = eff_str(e, "added_track") {
                 p.added_track.get_or_insert_with(|| t.to_string());
+                p.added_tracks.push(t.to_string());
             }
             if let Some(m) = e
                 .detail
@@ -508,6 +515,20 @@ impl PinnedIds {
         let id = self.added_clips.get(self.added_clip_cursor).cloned();
         if id.is_some() {
             self.added_clip_cursor += 1;
+        }
+        id
+    }
+
+    /// Pop the next recorded add-track id. Older single-track records only
+    /// populate `added_track`, so preserve that fallback for replay
+    /// compatibility.
+    pub fn next_added_track(&mut self) -> Option<String> {
+        if self.added_tracks.is_empty() {
+            return self.added_track.clone();
+        }
+        let id = self.added_tracks.get(self.added_track_cursor).cloned();
+        if id.is_some() {
+            self.added_track_cursor += 1;
         }
         id
     }
@@ -543,6 +564,7 @@ impl PinnedIds {
             && self.split_clips.is_empty()
             && self.ripple_split_clips.is_empty()
             && self.added_track.is_none()
+            && self.added_tracks.is_empty()
             && self.added_markers.is_empty()
     }
 }
@@ -742,6 +764,7 @@ mod tests {
             fx(json!({"right":"c3"})),
             fx(json!({"added_clip":"c5","split_clip":"c6"})),
             fx(json!({"added_track":"v2","kind":"video"})),
+            fx(json!({"added_track":"a2t","kind":"audio"})),
             fx(json!({"added_marker":{"id":"m4","at_ms":0,"label":"x"}})),
         ];
         let mut p = PinnedIds::from_effects(&effects);
@@ -749,6 +772,13 @@ mod tests {
         assert_eq!(p.added_clip.as_deref(), Some("c5"));
         assert_eq!(p.split_clip.as_deref(), Some("c6"));
         assert_eq!(p.added_track.as_deref(), Some("v2"));
+        assert_eq!(p.next_added_track().as_deref(), Some("v2"));
+        assert_eq!(p.next_added_track().as_deref(), Some("a2t"));
+        assert_eq!(
+            p.next_added_track(),
+            None,
+            "track queue is exhausted after both linked legs"
+        );
         assert_eq!(p.next_marker().as_deref(), Some("m4"));
         assert_eq!(
             p.next_marker(),

@@ -30,10 +30,10 @@
 // Callers: App.tsx (rightTab === 'chat'). Deps: lib/client (callVerb + types),
 // lib/doctor (chat-agent state), lib/chatAgentPref (persisted choice).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { callVerb } from '../../lib/client'
 import type { Project, VerbResults } from '../../lib/client'
-import type { AgentChatPrefill, ChatEvidenceAttachment } from '../../lib/evidenceAttachments'
+import type { AgentChatPrefill } from '../../lib/evidenceAttachments'
 import { evidenceAttachmentIdentity } from '../../lib/evidenceAttachments'
 import {
   fetchDoctor,
@@ -52,48 +52,56 @@ import { chatAttachmentOptions, toggleChatAttachment } from './attachmentModel'
 import { AGENT_PROMPT_CATEGORIES, AGENT_PROMPT_LIBRARY, AGENT_QUICK_PROMPTS } from './promptLibrary'
 import { markReviewOps } from '../Review/reviewMarkers'
 import { useEvidenceAttachments } from './useEvidenceAttachments'
+import {
+  boundedAgentChatTurns,
+  patchAgentChatTurn,
+  type AgentChatSession,
+  type AgentChatTurn,
+} from './session'
 import './chat.css'
 
 type ChatResult = VerbResults['agent.chat']
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
-
-interface Turn {
-  role: 'user' | 'agent'
-  text: string
-  ok?: boolean
-  agent?: string | null
-  actions?: Array<{ op_id: string; verb: string }>
-  cost?: number | null
-  /** Error-transparency fields (ok:false path) — the machine category + the
-   *  agent's OWN final words, rendered inline so a failure is never swallowed. */
-  errorKind?: string | null
-  agentMessage?: string | null
-  attachments?: Array<{ id: string; label: string }>
-  evidence?: ChatEvidenceAttachment[]
-  request?: string
-  requestAttachments?: Array<{ id: string; label: string }>
-  requestEvidence?: ChatEvidenceAttachment[]
-  projectName?: string
-  plan?: ChatResult['plan']
-  review?: ChatResult['review']
-  reviewState?: 'pending' | 'accepted' | 'reverted' | 'retry'
-  reviewBusy?: boolean
-  reviewError?: string | null
-}
+const newTurnId = () => `chat-${crypto.randomUUID()}`
 
 export interface AgentChatProps {
   /** The open project supplies only registered asset IDs to the attachment picker. */
   project: Project | null
   /** Prompt handed off while the chat tab was opening; nonce makes repeats apply. */
   prefill?: AgentChatPrefill | null
+  /** Bounded, project-keyed right-rail state. It remains in memory only. */
+  session: AgentChatSession
+  /** The parent binds this updater to the project session that mounted this tab. */
+  onSessionChange: (update: (current: AgentChatSession) => AgentChatSession) => void
 }
 
-export default function AgentChat({ project, prefill }: AgentChatProps) {
-  const [log, setLog] = useState<Turn[]>([])
-  const [input, setInput] = useState('')
-  const [attachments, setAttachments] = useState<string[]>([])
+export default function AgentChat({ project, prefill, session, onSessionChange }: AgentChatProps) {
+  const { log, input, attachments, busy } = session
+  const setLog = useCallback((update: SetStateAction<AgentChatTurn[]>) => {
+    onSessionChange((current) => {
+      const next = typeof update === 'function' ? update(current.log) : update
+      return { ...current, log: boundedAgentChatTurns(next) }
+    })
+  }, [onSessionChange])
+  const setInput = useCallback((update: SetStateAction<string>) => {
+    onSessionChange((current) => ({
+      ...current,
+      input: typeof update === 'function' ? update(current.input) : update,
+    }))
+  }, [onSessionChange])
+  const setAttachments = useCallback((update: SetStateAction<string[]>) => {
+    onSessionChange((current) => ({
+      ...current,
+      attachments: typeof update === 'function' ? update(current.attachments) : update,
+    }))
+  }, [onSessionChange])
+  const setBusy = useCallback((update: SetStateAction<boolean>) => {
+    onSessionChange((current) => ({
+      ...current,
+      busy: typeof update === 'function' ? update(current.busy) : update,
+    }))
+  }, [onSessionChange])
   const evidenceAttachments = useEvidenceAttachments(prefill)
-  const [busy, setBusy] = useState(false)
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -104,7 +112,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
   useEffect(() => {
     const registered = new Set(attachmentOptions.map((option) => option.id))
     setAttachments((selected) => selected.filter((id) => registered.has(id)))
-  }, [attachmentOptions])
+  }, [attachmentOptions, setAttachments])
 
   // --- Agent selection ------------------------------------------------------
   // The chosen backend (persisted; default claude). `options` is the per-agent
@@ -206,7 +214,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
     }
     document.addEventListener('cut:agent-chat-prompt', onPrompt)
     return () => document.removeEventListener('cut:agent-chat-prompt', onPrompt)
-  }, [])
+  }, [setInput])
 
   // App-level handoff for prompts emitted while the lazy chat bundle is still
   // loading. Event listeners cannot catch events fired before mount; this prop
@@ -215,7 +223,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
     if (!prefill?.prompt.trim()) return
     setInput(prefill.prompt)
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }, [prefill?.nonce, prefill?.prompt])
+  }, [prefill?.nonce, prefill?.prompt, setInput])
 
   const send = useCallback(async () => {
     const message = input.trim()
@@ -230,7 +238,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
     setInput('')
     setAttachments([])
     evidenceAttachments.clear()
-    setLog((l) => [...l, { role: 'user', text: message, attachments: turnAttachments, evidence: turnEvidence }])
+    setLog((l) => [...l, { id: newTurnId(), role: 'user', text: message, attachments: turnAttachments, evidence: turnEvidence }])
     setBusy(true)
     try {
       // Pass the selected provider. The backend rejects a provider without an
@@ -247,6 +255,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
         setLog((l) => [
           ...l,
           {
+            id: newTurnId(),
             role: 'agent',
             text: res.reply,
             ok: true,
@@ -269,6 +278,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
         setLog((l) => [
           ...l,
           {
+            id: newTurnId(),
             role: 'agent',
             text: reason,
             ok: false,
@@ -288,29 +298,29 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
       } else {
         // Transport / dispatch error (not the agent's honest ok:false).
         const msg = !r.ok && r.error ? r.error.message : 'the chat request failed'
-        setLog((l) => [...l, { role: 'agent', text: msg, ok: false }])
+        setLog((l) => [...l, { id: newTurnId(), role: 'agent', text: msg, ok: false }])
       }
     } catch (e) {
-      setLog((l) => [...l, { role: 'agent', text: errorText(e), ok: false }])
+      setLog((l) => [...l, { id: newTurnId(), role: 'agent', text: errorText(e), ok: false }])
     } finally {
       setBusy(false)
     }
-  }, [input, busy, agent, attachments, attachmentOptions, evidenceAttachments, project?.name])
+  }, [input, busy, agent, attachments, attachmentOptions, evidenceAttachments, project?.name, setAttachments, setBusy, setInput, setLog])
 
-  const patchTurn = useCallback((index: number, patch: Partial<Turn>) => {
-    setLog((current) => current.map((turn, candidate) => candidate === index ? { ...turn, ...patch } : turn))
-  }, [])
+  const patchTurn = useCallback((turnId: string, patch: Partial<AgentChatTurn>) => {
+    setLog((current) => patchAgentChatTurn(current, turnId, patch))
+  }, [setLog])
 
-  const acceptTurn = useCallback((index: number, turn: Turn) => {
+  const acceptTurn = useCallback((turnId: string, turn: AgentChatTurn) => {
     if (!turn.projectName || turn.projectName !== project?.name || !turn.actions?.length) return
     markReviewOps(turn.projectName, turn.actions.map((action) => action.op_id), 'accepted')
-    patchTurn(index, { reviewState: 'accepted', reviewError: null })
+    patchTurn(turnId, { reviewState: 'accepted', reviewError: null })
   }, [patchTurn, project?.name])
 
-  const revertTurn = useCallback(async (index: number, turn: Turn): Promise<boolean> => {
+  const revertTurn = useCallback(async (turnId: string, turn: AgentChatTurn): Promise<boolean> => {
     const review = turn.review
     if (!review || !review.revert_safe || !review.tip || !turn.projectName || turn.projectName !== project?.name) return false
-    patchTurn(index, { reviewBusy: true, reviewError: null })
+    patchTurn(turnId, { reviewBusy: true, reviewError: null })
     try {
       const result = await callVerb('project.revert', {
         to: review.baseline,
@@ -318,7 +328,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
         rationale: `revert Agent Chat turn ${review.turn_id}`,
       })
       if (!result.ok) {
-        patchTurn(index, {
+        patchTurn(turnId, {
           reviewBusy: false,
           reviewError: result.error?.message ?? 'could not revert this turn',
         })
@@ -327,29 +337,29 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
       if (turn.actions?.length) {
         markReviewOps(turn.projectName, turn.actions.map((action) => action.op_id), 'rejected')
       }
-      patchTurn(index, { reviewBusy: false, reviewState: 'reverted', reviewError: null })
+      patchTurn(turnId, { reviewBusy: false, reviewState: 'reverted', reviewError: null })
       return true
     } catch (error) {
-      patchTurn(index, { reviewBusy: false, reviewError: errorText(error) })
+      patchTurn(turnId, { reviewBusy: false, reviewError: errorText(error) })
       return false
     }
   }, [patchTurn, project?.name])
 
-  const retryTurn = useCallback(async (index: number, turn: Turn) => {
+  const retryTurn = useCallback(async (turnId: string, turn: AgentChatTurn) => {
     if (!turn.request) return
     if (turn.reviewState !== 'reverted') {
-      const reverted = await revertTurn(index, turn)
+      const reverted = await revertTurn(turnId, turn)
       if (!reverted) return
     }
     const registered = new Set(attachmentOptions.map((option) => option.id))
     setInput(turn.request)
     setAttachments((turn.requestAttachments ?? []).map((attachment) => attachment.id).filter((id) => registered.has(id)))
     evidenceAttachments.restore(turn.requestEvidence ?? [])
-    patchTurn(index, { reviewState: 'retry', reviewError: null })
+    patchTurn(turnId, { reviewState: 'retry', reviewError: null })
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }, [attachmentOptions, evidenceAttachments, patchTurn, revertTurn])
+  }, [attachmentOptions, evidenceAttachments, patchTurn, revertTurn, setAttachments, setInput])
 
-  const inspectDiff = useCallback((turn: Turn) => {
+  const inspectDiff = useCallback((turn: AgentChatTurn) => {
     const review = turn.review
     if (!review?.baseline || !review.tip) return
     document.dispatchEvent(new CustomEvent('cut:open-review-tab', {
@@ -378,7 +388,7 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
     setInput(prompt)
     setPromptLibraryOpen(false)
     inputRef.current?.focus()
-  }, [hasProject, busy])
+  }, [hasProject, busy, setInput])
 
   // The current agent's row (for the trigger's badge). `agentsLoaded` gates the
   // badge so it stays neutral until the first scan resolves.
@@ -461,9 +471,9 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
             </p>
           </div>
         )}
-        {log.map((t, i) => (
+        {log.map((t) => (
           <div
-            key={i}
+            key={t.id}
             className={`chat__turn chat__turn--${t.role} ${t.ok === false ? 'chat__turn--failed' : ''}`}
             data-cut-chat-turn={t.role}
             data-cut-chat-error={t.role === 'agent' && t.ok === false ? (t.errorKind ?? 'error') : undefined}
@@ -519,13 +529,13 @@ export default function AgentChat({ project, prefill }: AgentChatProps) {
                   <button type="button" data-cut-chat-diff onClick={() => inspectDiff(t)} disabled={!t.review.tip} title="Inspect this turn in Review Diff">
                     <Icon name="diff" size={14} /> Diff
                   </button>
-                  <button type="button" data-cut-chat-accept onClick={() => acceptTurn(i, t)} disabled={t.reviewBusy || t.reviewState === 'accepted'} title="Accept these op-log changes">
+                  <button type="button" data-cut-chat-accept onClick={() => acceptTurn(t.id, t)} disabled={t.reviewBusy || t.reviewState === 'accepted'} title="Accept these op-log changes">
                     <Icon name="check" size={14} /> Accept
                   </button>
-                  <button type="button" data-cut-chat-revert onClick={() => void revertTurn(i, t)} disabled={t.reviewBusy || !t.review.revert_safe || t.reviewState === 'reverted' || t.reviewState === 'retry'} title="Revert the complete turn to its history baseline">
+                  <button type="button" data-cut-chat-revert onClick={() => void revertTurn(t.id, t)} disabled={t.reviewBusy || !t.review.revert_safe || t.reviewState === 'reverted' || t.reviewState === 'retry'} title="Revert the complete turn to its history baseline">
                     <Icon name="undo" size={14} /> Revert
                   </button>
-                  <button type="button" data-cut-chat-retry onClick={() => void retryTurn(i, t)} disabled={t.reviewBusy || !t.review.revert_safe || !t.request} title="Revert this turn and put its request back in the composer">
+                  <button type="button" data-cut-chat-retry onClick={() => void retryTurn(t.id, t)} disabled={t.reviewBusy || !t.review.revert_safe || !t.request} title="Revert this turn and put its request back in the composer">
                     <Icon name="redo" size={14} /> Try again
                   </button>
                 </div>

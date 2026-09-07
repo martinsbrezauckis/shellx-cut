@@ -1,10 +1,10 @@
 import { useEffect, type Dispatch, type SetStateAction } from 'react'
-import type { LayoutState } from '../layout/useLayout'
 import { shouldIgnoreGlobalShortcut } from '../lib/dom'
 import { matchesFixedAction } from '../lib/keymap'
+import type { RequestLayout } from './useRecordingWorkspaceNavigation'
 
 interface AppKeyboardControllerArgs {
-  setLayout: Dispatch<SetStateAction<LayoutState>>
+  setLayout: RequestLayout
   setCommentsOpen: Dispatch<SetStateAction<boolean>>
   onUndo: () => void
   onRedo: () => void
@@ -20,10 +20,10 @@ export function useAppKeyboardController({ setLayout, setCommentsOpen, onUndo, o
         setLayout((l) => ({ ...l, workspaceMode: 'edit', railCollapsed: !l.railCollapsed }))
       } else if (matchesFixedAction(e, 'comments.toggle')) {
         e.preventDefault()
-        setLayout((l) => ({ ...l, workspaceMode: 'edit' }))
+        if (!setLayout((l) => ({ ...l, workspaceMode: 'edit' }))) return
         setCommentsOpen((v) => !v)
       } else if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'r' || e.key === 'R')) {
-        setLayout((l) => ({ ...l, workspaceMode: 'edit', railCollapsed: false, railPinned: true }))
+        if (!setLayout((l) => ({ ...l, workspaceMode: 'edit', railCollapsed: false, railPinned: true }))) return
         setTimeout(() => document.querySelector<HTMLElement>('[data-cut-panel="review"]')?.focus(), 0)
       }
     }

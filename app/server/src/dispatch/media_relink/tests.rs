@@ -1,8 +1,9 @@
 use super::metadata::MetadataAssessment;
-use super::plan::{accepted_changes, metadata_for_source_identity, preview_result};
+use super::plan::{accepted_changes, build_plan, metadata_for_source_identity, preview_result};
 use super::scan::full_sha256;
 #[cfg(unix)]
 use super::scan::scan_folder;
+use super::transition_gate::{install_relink_project_transition_gate, RelinkProjectTransitionGate};
 use super::*;
 use cut_core::store::is_exact_sha256;
 use std::fs;
@@ -13,6 +14,14 @@ fn actor() -> Actor {
         name: "bulk-relink-test".into(),
         via: "test".into(),
         request: None,
+    }
+}
+
+struct RelinkTransitionGateReset;
+
+impl Drop for RelinkTransitionGateReset {
+    fn drop(&mut self) {
+        install_relink_project_transition_gate(None);
     }
 }
 
@@ -89,6 +98,7 @@ fn metadata_review_preview_exposes_only_safe_fact_labels() {
     let preview = preview_result(&PreparedPlan {
         plan: review,
         plan_hash: "sha256:preview".into(),
+        project_dir: std::path::PathBuf::from("/safe-project"),
     });
     assert_eq!(preview["assets"][0]["disposition"], "metadata_review");
     assert!(preview["assets"][0].get("candidate").is_none());
@@ -240,4 +250,219 @@ async fn request_guarded_apply_writes_one_receipt_and_reopens_without_jobs() {
     let reopened = ProjectStore::open(&dir).unwrap();
     assert_eq!(reopened.log.read_all().unwrap().len(), op_count);
     assert_eq!(reopened.project.assets["a1"].path, canonical_candidate);
+}
+
+#[tokio::test]
+async fn prepared_source_guard_refuses_copied_same_revision_project() {
+    let root = tempfile::tempdir().unwrap();
+    let recovery = root.path().join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let a_path = root.path().join("a.cutproj");
+    let b_path = root.path().join("b.cutproj");
+    let state = AppState::new();
+
+    for (name, path) in [("a", &a_path), ("b", &b_path)] {
+        let created = crate::dispatch::dispatch(
+            &state,
+            "project.create",
+            json!({"name": name, "dir": path}),
+            actor(),
+        )
+        .await;
+        assert!(created.ok, "{name} create failed: {:?}", created.error);
+    }
+    let a = ProjectStore::open(&a_path).unwrap();
+    let b = ProjectStore::open(&b_path).unwrap();
+    assert_eq!(
+        a.log.current_revision().unwrap(),
+        b.log.current_revision().unwrap(),
+        "fixture requires copied projects with the same local revision"
+    );
+
+    let prepared = build_plan(snapshot(&state, recovery).await.unwrap()).unwrap();
+    let error = ensure_prepared_source(&a, &prepared).unwrap_err();
+    assert_eq!(error.code, error_codes::CONFLICT);
+    assert!(error.message.contains("project changed"));
+}
+
+#[tokio::test]
+async fn relink_apply_pins_a_project_through_commit_before_project_open() {
+    let root = tempfile::tempdir().unwrap();
+    let recovery = root.path().join("recovery");
+    fs::create_dir(&recovery).unwrap();
+    let candidate = recovery.join("restored.bin");
+    fs::write(&candidate, b"same revision relink fixture").unwrap();
+    let candidate_path = candidate
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let expected_hash = full_sha256(&candidate).unwrap();
+    let missing_path = root
+        .path()
+        .join("offline.bin")
+        .to_string_lossy()
+        .into_owned();
+    let a_path = root.path().join("a.cutproj");
+    let b_path = root.path().join("b.cutproj");
+    let state = AppState::new();
+
+    for (name, path) in [("a", &a_path), ("b", &b_path)] {
+        let created = crate::dispatch::dispatch(
+            &state,
+            "project.create",
+            json!({"name": name, "dir": path}),
+            actor(),
+        )
+        .await;
+        assert!(created.ok, "{name} create failed: {:?}", created.error);
+        let mut guard = state.project.write().await;
+        guard
+            .as_mut()
+            .unwrap()
+            .record_import(
+                Some("a1".into()),
+                cut_core::Asset {
+                    path: missing_path.clone(),
+                    hash: expected_hash.clone(),
+                    probe: None,
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                actor(),
+                None,
+            )
+            .unwrap();
+    }
+    let a_revision = ProjectStore::open(&a_path)
+        .unwrap()
+        .log
+        .current_revision()
+        .unwrap();
+    let b_revision = ProjectStore::open(&b_path)
+        .unwrap()
+        .log
+        .current_revision()
+        .unwrap();
+    assert_eq!(
+        a_revision, b_revision,
+        "fixture requires colliding local revisions"
+    );
+    assert!(
+        crate::dispatch::dispatch(&state, "project.open", json!({"path": a_path}), actor(),)
+            .await
+            .ok
+    );
+    let preview = crate::dispatch::dispatch(
+        &state,
+        "media.relink_preview",
+        json!({"root": recovery}),
+        actor(),
+    )
+    .await;
+    assert!(preview.ok, "A preview failed: {:?}", preview.error);
+    let preview = preview.result.unwrap();
+    assert_eq!(preview["project_revision"], a_revision.unwrap());
+    assert_eq!(preview["assets"][0]["disposition"], "eligible_exact_hash");
+
+    let recovery_text = recovery.to_string_lossy().into_owned();
+    let gate = RelinkProjectTransitionGate::new(recovery_text.clone());
+    install_relink_project_transition_gate(Some(gate.clone()));
+    let _gate_reset = RelinkTransitionGateReset;
+    let project_pinned = gate.project_pinned.notified();
+    let relink_committed = gate.relink_committed.notified();
+    let apply_state = state.clone();
+    let plan_hash = preview["plan_hash"].clone();
+    let expected_revision = preview["project_revision"].clone();
+    let apply = tokio::spawn(async move {
+        crate::dispatch::dispatch(
+            &apply_state,
+            "media.relink_apply",
+            json!({
+                "root": recovery_text,
+                "plan_hash": plan_hash,
+                "accept": ["a1"],
+                "request_id": "held-a-relink-request",
+                "expected_revision": expected_revision,
+            }),
+            actor(),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), project_pinned)
+        .await
+        .expect("relink did not pin project A before timeout");
+    assert!(
+        state.project_transition.try_lock().is_err(),
+        "B5 must own project-transition before snapshotting A"
+    );
+
+    let open_started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let open_started_in_task = open_started.clone();
+    let open_state = state.clone();
+    let open = tokio::spawn(async move {
+        open_started_in_task.notify_one();
+        crate::dispatch::dispatch(
+            &open_state,
+            "project.open",
+            json!({"path": b_path}),
+            actor(),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), open_started.notified())
+        .await
+        .expect("project.open(B) task did not start");
+    tokio::task::yield_now().await;
+    assert!(
+        !open.is_finished(),
+        "project.open(B) must wait while B5 owns project A"
+    );
+    assert_eq!(
+        state.project.read().await.as_ref().unwrap().project.name,
+        "a"
+    );
+
+    gate.continue_after_pin.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), relink_committed)
+        .await
+        .expect("B5 did not commit A before timeout");
+    assert_eq!(
+        state.project.read().await.as_ref().unwrap().project.assets["a1"].path,
+        candidate_path,
+        "the held relink must commit only to A"
+    );
+    assert!(
+        !open.is_finished(),
+        "B must wait until A's grouped relink returns"
+    );
+
+    gate.continue_after_commit.notify_one();
+    let applied = tokio::time::timeout(std::time::Duration::from_secs(2), apply)
+        .await
+        .expect("B5 request did not return")
+        .expect("B5 task panicked");
+    assert!(applied.ok, "A B5 apply failed: {:?}", applied.error);
+    let opened_b = tokio::time::timeout(std::time::Duration::from_secs(2), open)
+        .await
+        .expect("project.open(B) did not return")
+        .expect("project.open(B) task panicked");
+    assert!(opened_b.ok, "B open failed: {:?}", opened_b.error);
+    let b = state.project.read().await;
+    let b = b.as_ref().unwrap();
+    assert_eq!(b.project.name, "b");
+    assert_eq!(
+        b.project.assets["a1"].path, missing_path,
+        "B must not receive A's relinked path"
+    );
+    assert!(
+        b.log
+            .read_all()
+            .unwrap()
+            .iter()
+            .all(|op| op.verb != "media.relink_apply"),
+        "B must not receive A's relink operation or identity"
+    );
 }

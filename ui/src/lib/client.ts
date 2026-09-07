@@ -113,7 +113,7 @@ export interface VerbResult<T = unknown> {
 export const UI_OPEN_PANELS = UI_OPEN_SURFACE_IDS
 export type UiOpenPanel = (typeof UI_OPEN_PANELS)[number]
 
-// Verb args map — one entry per verb in schema/verbs.json (305 verbs, 34 domains).
+// Verb args map — one entry per verb in schema/verbs.json.
 // Keys ARE the wire names; keep in sync with the registry. Later additions
 // edit.crop, edit.crossfade, edit.move_marker, audio.add_music,
 // captions.set_range + ripple flags on edit.ripple_delete (lift) / edit.move.
@@ -441,6 +441,9 @@ export interface VerbArgs {
   // omitted = resolved from the target track (base → true for AV sync,
   // overlay/extra → false, overlays float).
   'edit.insert': { asset: string; track: string; at_ms: number; src_range_ms?: [number, number]; duration_ms?: number; ripple?: boolean; rationale?: string; group_id?: string }
+  // Muxed video is one atomic editor operation. Exactly one target strategy is
+  // required for EACH leg: an existing *_track or create_*_track:true.
+  'edit.insert_linked': { asset: string; at_ms: number; video_track?: string; audio_track?: string; create_video_track?: boolean; create_audio_track?: boolean; src_range_ms?: [number, number]; ripple?: boolean; rationale?: string }
   // TRUE OVERWRITE: unlike edit.insert {ripple:false}, this replaces a fixed
   // source-duration interval and never shifts downstream timing. Choose either
   // destination or both for one atomic linked A/V edit. Source Monitor marks
@@ -710,10 +713,10 @@ export interface VerbArgs {
   'screen_record.preview_start': { source: RecordingSourcePreviewSelection }
   'screen_record.preview_status': Record<string, never>
   'screen_record.preview_frame': Record<string, never>
-  'screen_record.preview_pause': Record<string, never>
-  'screen_record.preview_resume': Record<string, never>
-  'screen_record.preview_hide': Record<string, never>
-  'screen_record.preview_stop': Record<string, never>
+  'screen_record.preview_pause': { expected_generation: number; expected_lease_nonce: string }
+  'screen_record.preview_resume': { expected_generation: number; expected_lease_nonce: string }
+  'screen_record.preview_hide': { expected_generation: number; expected_lease_nonce: string }
+  'screen_record.preview_stop': { expected_generation: number; expected_lease_nonce: string }
   // Live duration-bounded capture. `start` launches an in-process
   // recorder thread and returns a capture_id; `stop` polls for the
   // finalized project.json then surfaces the events track (+ optional autoedit).

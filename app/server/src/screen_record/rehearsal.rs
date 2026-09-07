@@ -5,8 +5,8 @@
 //! project, recovery, RecordingProject, Studio, or timeline code.
 
 use super::{
-    align_ffmpeg_env, doctor, monitor_start_admission, record_err, reserve_capture,
-    start_readiness, CaptureSessionControl,
+    align_ffmpeg_env, doctor, monitor_start_admission, record_err, start_readiness,
+    CaptureSessionControl,
 };
 use crate::dispatch::parse_args;
 use cut_core::{error_codes, CutError, VerbResult};
@@ -68,15 +68,16 @@ pub(crate) async fn start(args: Value) -> Result<VerbResult, CutError> {
         args.window.is_some(),
         &recorder_doctor.monitors,
     )?;
-    // Use the same owner-side release as ordinary recording. The public preview
-    // Stop remains a human lifecycle action; this closes direct API races.
-    super::source_preview::release_for_recording()?;
-
     let root = owner::owned_root()?;
     let handle = owner::mint_handle()?;
     let capture_id = super::new_capture_id();
     let control = CaptureSessionControl::new(Some(duration_ms), false, false, false);
-    owner::begin_take(handle.clone(), control.clone())?;
+    let reservation = reserve_rehearsal_capture(
+        capture_id.clone(),
+        control.clone(),
+        &handle,
+        super::source_preview::release_for_recording,
+    )?;
 
     let output_dir = root.path().to_path_buf();
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -91,7 +92,6 @@ pub(crate) async fn start(args: Value) -> Result<VerbResult, CutError> {
             move || {
                 let _owner_guard = owner::RunningTakeGuard::new(worker_handle.clone());
                 let capture_result = capture_once(
-                    capture_id,
                     duration_ms,
                     fps,
                     target.legacy_index,
@@ -99,6 +99,7 @@ pub(crate) async fn start(args: Value) -> Result<VerbResult, CutError> {
                     args.window,
                     output_dir,
                     control,
+                    reservation,
                 );
                 let result = owner::finish_take(&worker_handle, root, capture_result);
                 let _ = sender.send(result);
@@ -129,8 +130,36 @@ pub(crate) async fn start(args: Value) -> Result<VerbResult, CutError> {
     })))
 }
 
-fn capture_once(
+/// Admit the rehearsal owner while the capture handoff reservation is held,
+/// before releasing any preview. A rejected owner transition (for example, a
+/// locked prior rehearsal root) therefore leaves an existing preview intact.
+/// If preview teardown itself fails after the owner transition, clear the
+/// provisional Running state before the reservation drops.
+fn reserve_rehearsal_capture<F>(
     capture_id: String,
+    control: CaptureSessionControl,
+    handle: &str,
+    release_preview: F,
+) -> Result<super::capture_registry::CaptureReservation, CutError>
+where
+    F: FnOnce() -> Result<(), CutError>,
+{
+    super::capture_registry::reserve_capture_after_preview_release(
+        capture_id,
+        control.clone(),
+        None,
+        || {
+            owner::begin_take(handle.to_owned(), control)?;
+            if let Err(error) = release_preview() {
+                owner::abandon_take(handle);
+                return Err(error);
+            }
+            Ok(())
+        },
+    )
+}
+
+fn capture_once(
     duration_ms: u64,
     fps: f64,
     monitor: Option<u32>,
@@ -138,9 +167,9 @@ fn capture_once(
     window: Option<String>,
     out_dir: PathBuf,
     control: CaptureSessionControl,
+    reservation: super::capture_registry::CaptureReservation,
 ) -> Result<String, CutError> {
     align_ffmpeg_env();
-    let reservation = reserve_capture(capture_id, control.clone())?;
     let _terminal_guard = control.terminal_guard();
     if !control.claim_native_launch() {
         return Err(CutError::new(

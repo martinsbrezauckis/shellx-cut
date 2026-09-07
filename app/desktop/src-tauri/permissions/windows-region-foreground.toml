@@ -1,7 +1,0 @@
-# Private foreground-only Windows Region admission. It is not a Cut verb or a
-# public feature surface; runtime grants it only to this shell's selected
-# spawned-engine origin, never to an adopted or bootstrap capability.
-[[permission]]
-identifier = "allow-windows-region-foreground"
-description = "Allows the selected local ShellX Cut engine UI to request one exact-main-HWND Windows Region picker admission."
-commands.allow = ["start_windows_region_capture"]

@@ -84,6 +84,58 @@ export interface RecordingSceneTimerResult {
   }
 }
 
+/** One live scene or timer response may update only its issuing capture. */
+export interface RecordingSceneControlLease {
+  captureId: string
+  captureGeneration: number
+  operation: 'scene' | 'timer'
+  operationGeneration: number
+}
+
+/** Invalidates delayed live-scene responses on capture replacement or unmount. */
+export class RecordingSceneControlLifetime {
+  private captureId: string | null = null
+  private captureGeneration = 0
+  private sceneGeneration = 0
+  private timerGeneration = 0
+  private mounted = true
+
+  mount(): void {
+    this.mounted = true
+  }
+
+  replaceCapture(captureId: string | null): void {
+    this.captureGeneration += 1
+    this.captureId = captureId
+  }
+
+  clearCapture(): void {
+    this.replaceCapture(null)
+  }
+
+  unmount(): void {
+    this.mounted = false
+    this.clearCapture()
+  }
+
+  begin(captureId: string, operation: 'scene' | 'timer'): RecordingSceneControlLease | null {
+    if (!this.mounted || this.captureId !== captureId) return null
+    const operationGeneration = operation === 'scene'
+      ? ++this.sceneGeneration
+      : ++this.timerGeneration
+    return { captureId, captureGeneration: this.captureGeneration, operation, operationGeneration }
+  }
+
+  isCurrent(lease: RecordingSceneControlLease): boolean {
+    return this.mounted
+      && this.captureId === lease.captureId
+      && this.captureGeneration === lease.captureGeneration
+      && (lease.operation === 'scene'
+        ? this.sceneGeneration === lease.operationGeneration
+        : this.timerGeneration === lease.operationGeneration)
+  }
+}
+
 export interface RecordingSceneCapability {
   supported: boolean
   catalog_revision: number | null

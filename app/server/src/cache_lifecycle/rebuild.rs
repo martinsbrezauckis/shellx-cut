@@ -254,19 +254,6 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
             "estimate": estimate,
         })));
     }
-    for plan in &plans {
-        for (kind, action) in &plan.outputs {
-            if *action == OutputAction::Generate {
-                reserve_rebuild_output(
-                    &project_dir,
-                    *kind,
-                    &plan.asset.asset_id,
-                    &plan.asset.hash,
-                )?;
-            }
-        }
-    }
-
     if plans.is_empty() {
         return Ok(VerbResult::ok(json!({
             "schema": "shellx-cut/cache-rebuild/1",
@@ -278,8 +265,26 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
         })));
     }
 
-    let job = state.jobs.create("cache_rebuild");
+    // Reserve/replacement can retire an old cache output, so admit a durable
+    // job before the first such mutation. A failed job-store write returns
+    // before any ledger or output changes.
+    let job = state.jobs.create_durable("cache_rebuild")?;
     let job_id = job.job_id.clone();
+    for plan in &plans {
+        for (kind, action) in &plan.outputs {
+            if *action == OutputAction::Generate {
+                if let Err(error) = reserve_rebuild_output(
+                    &project_dir,
+                    *kind,
+                    &plan.asset.asset_id,
+                    &plan.asset.hash,
+                ) {
+                    state.jobs.fail(&job_id, error.clone());
+                    return Err(error);
+                }
+            }
+        }
+    }
     let active_assets = plans
         .iter()
         .map(|plan| plan.asset.asset_id.clone())

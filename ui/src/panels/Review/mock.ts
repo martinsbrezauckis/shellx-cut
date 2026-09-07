@@ -12,6 +12,7 @@
 import type { OpRecord, Project, RenderReceipt, Transcript } from '../../lib/client'
 import { MANUAL_READ_ONLY_VERBS } from '../../manual/readOnlyVerbs.generated'
 import { handleCacheLifecycleMock } from './cacheLifecycleMock'
+import { createMockRecordingLifecycle } from './recordingMockLifecycle'
 
 const MOCK_PARAMS = typeof location !== 'undefined'
   ? new URLSearchParams(location.search)
@@ -30,6 +31,8 @@ const MOCK_LIBRARY_TOTAL = Math.max(0, Number.parseInt(MOCK_PARAMS.get('mockLibr
 // `offline` keeps its EDL but reports the source absent from media.check.
 const MOCK_CHAPTER_SCENARIO = MOCK_PARAMS.get('mockChapterScenario') ?? 'single'
 const MOCK_CACHE_REBUILD_LARGE = MOCK_PARAMS.has('mockCacheRebuildLarge')
+/** Exercises the client boundary that rejects an `ok` start without a capture. */
+const MOCK_RECORD_START_MODE = MOCK_PARAMS.get('mockRecordStart') ?? 'valid'
 // NOTE: install() is invoked at the BOTTOM of this module — class declarations
 // (FakeWS) are not hoisted, so installation must follow them.
 const isObject = (v: unknown): v is object => v !== null && typeof v === 'object'
@@ -66,6 +69,12 @@ const MANUAL_DEMO_IMAGE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="12
 </svg>`
 const MANUAL_DEMO_IMAGE_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(MANUAL_DEMO_IMAGE_SVG)}`
 
+// A clearly labelled self-owned visual substitute for ordinary editor image
+// routes. It prevents the offline mock from leaking browser-owned image loads
+// to Vite's cutd proxy, without representing project media or a desktop frame.
+const MOCK_MEDIA_FIXTURE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="ShellX Cut offline media fixture"><rect width="1280" height="720" fill="#101823"/><rect x="64" y="64" width="1152" height="592" rx="22" fill="#182b3d" stroke="#4d82c4" stroke-width="2"/><path d="M120 500 L360 370 L565 464 L790 318 L1110 424" fill="none" stroke="#72b7ff" stroke-width="12"/><circle cx="790" cy="318" r="16" fill="#f2c14e"/><text x="120" y="570" fill="#d9ebff" font-family="system-ui,sans-serif" font-size="30" font-weight="600">Offline media fixture</text><text x="120" y="610" fill="#a9c9ed" font-family="system-ui,sans-serif" font-size="21">Mock browser visual only — not project media or a desktop capture.</text></svg>`
+const MOCK_MEDIA_FIXTURE_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(MOCK_MEDIA_FIXTURE_SVG)}`
+
 function isManualDemoImageRoute(url: string): boolean {
   const base = typeof location === 'undefined' ? 'http://localhost' : location.origin
   const path = new URL(url, base).pathname
@@ -82,6 +91,16 @@ function manualDemoImageResponse(): Response {
   })
 }
 
+function mockMediaImageResponse(): Response {
+  return new Response(MOCK_MEDIA_FIXTURE_SVG, {
+    status: 200,
+    headers: {
+      'content-type': 'image/svg+xml; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  })
+}
+
 /**
  * fetch interception covers callers that request the image themselves. Native
  * <img> loading bypasses window.fetch, so route the narrow manual image family
@@ -89,8 +108,9 @@ function manualDemoImageResponse(): Response {
  * project source images is changed. The embedded fixture classifies its visual
  * sources as stills, so this route never substitutes a fake playable video.
  */
-function installManualDemoImageRouting(): void {
+function installMockMediaRouting(recordingMediaUrl: (url: string) => string | null): void {
   if (typeof HTMLImageElement === 'undefined') return
+  const imageFixtureUrl = MOCK_EMBEDDED_MANUAL_READ_ONLY ? MANUAL_DEMO_IMAGE_URL : MOCK_MEDIA_FIXTURE_URL
   const descriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')
   if (!descriptor?.get || !descriptor.set) return
   Object.defineProperty(HTMLImageElement.prototype, 'src', {
@@ -98,7 +118,7 @@ function installManualDemoImageRouting(): void {
     enumerable: descriptor.enumerable ?? true,
     get: descriptor.get,
     set(value: string) {
-      descriptor.set?.call(this, typeof value === 'string' && isManualDemoImageRoute(value) ? MANUAL_DEMO_IMAGE_URL : value)
+      descriptor.set?.call(this, typeof value === 'string' && isManualDemoImageRoute(value) ? imageFixtureUrl : value)
     },
   })
   // React may use setAttribute rather than the property setter for an image
@@ -109,8 +129,30 @@ function installManualDemoImageRouting(): void {
     configurable: true,
     value(this: HTMLImageElement, name: string, value: string) {
       const routed = name.toLowerCase() === 'src' && isManualDemoImageRoute(value)
-        ? MANUAL_DEMO_IMAGE_URL
+        ? imageFixtureUrl
         : value
+      return setAttribute.call(this, name, routed)
+    },
+  })
+  if (typeof HTMLMediaElement === 'undefined') return
+  const mediaDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src')
+  if (!mediaDescriptor?.get || !mediaDescriptor.set) return
+  Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+    configurable: true,
+    enumerable: mediaDescriptor.enumerable ?? true,
+    get: mediaDescriptor.get,
+    set(value: string) {
+      const routed = typeof value === 'string' ? recordingMediaUrl(value) ?? value : value
+      mediaDescriptor.set?.call(this, routed)
+    },
+  })
+  // React may also assign media through the attribute path. Keep the offline
+  // substitute scoped to self-owned mock media routes before native loading
+  // begins, so a video element never falls through to Vite's absent cutd proxy.
+  Object.defineProperty(HTMLMediaElement.prototype, 'setAttribute', {
+    configurable: true,
+    value(this: HTMLMediaElement, name: string, value: string) {
+      const routed = name.toLowerCase() === 'src' ? recordingMediaUrl(value) ?? value : value
       return setAttribute.call(this, name, routed)
     },
   })
@@ -235,6 +277,7 @@ let chatTurnSeq = 0
 let mockTranscriptIgnores: Array<{ asset: string; word_range: [number, number] }> = []
 let mockMuteRanges: Array<[number, number]> = []
 const mockJobs = new Map<string, unknown>()
+const recordingMock = createMockRecordingLifecycle({ startMode: MOCK_RECORD_START_MODE, jobs: mockJobs })
 const nextOpId = () => `op_${String(++opSeq).padStart(6, '0')}`
 
 function op(partial: Omit<OpRecord, 'op_id' | 'ts' | 'status'> & { ts?: string }): OpRecord {
@@ -434,6 +477,8 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
   }
   const cacheLifecycle = handleCacheLifecycleMock(name, args)
   if (cacheLifecycle) return cacheLifecycle
+  const recording = recordingMock.handle(name, args)
+  if (recording.handled) return recording.value
   switch (name) {
     case 'project.state':
       {
@@ -635,19 +680,6 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
               }]
               : [],
           essential_ok: true,
-        },
-      }
-    case 'screen_record.doctor':
-      return {
-        ok: true,
-        result: {
-          ready: true,
-          cards: [{ name: 'screen', status: 'ok', detail: 'Mock screen capture is ready.' }],
-          quality: {
-            supported: true,
-            output_sizes: ['source', '1080p', '720p'],
-            profiles: ['standard', 'high'],
-          },
         },
       }
     case 'screen_record.system_audio_probe':
@@ -1063,7 +1095,9 @@ function install(): void {
   const realFetch = window.fetch.bind(window)
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-    if (MOCK_EMBEDDED_MANUAL_READ_ONLY && isManualDemoImageRoute(url)) return manualDemoImageResponse()
+    if (isManualDemoImageRoute(url)) {
+      return MOCK_EMBEDDED_MANUAL_READ_ONLY ? manualDemoImageResponse() : mockMediaImageResponse()
+    }
     const m = /\/api\/verb\/([a-z_.]+)/.exec(url)
     if (!m) return realFetch(input, init)
     const args = parseArgs(init?.body)
@@ -1072,13 +1106,14 @@ function install(): void {
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
   }
   Object.defineProperty(window, 'WebSocket', { configurable: true, value: FakeWS })
-  if (MOCK_EMBEDDED_MANUAL_READ_ONLY) installManualDemoImageRouting()
+  installMockMediaRouting(recordingMock.mediaUrl)
   // Offline hook: emulate a server push (e.g. a
   // ui_command relay) and inspect what the client sent back (acks).
   Object.defineProperty(window, '__cutMock', { configurable: true, value: {
     push: (ev: unknown) => liveSocket?.push(ev),
     sent: () => FakeWS.sent,
     calls: () => verbCalls,
+    recording: () => recordingMock.snapshot(),
   } })
   console.info('[shellx-cut] review offline demo active (?mock=1) — no cutd needed')
 }

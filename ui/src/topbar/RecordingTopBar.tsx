@@ -7,6 +7,8 @@ interface RecordingTopBarProps {
   doctor: DoctorReport | null
   manualOpen: boolean
   onBackToEdit: () => void
+  backDisabled?: boolean
+  backReason?: string | null
   onOpenSetup: () => void
   onOpenManual: () => void
 }
@@ -18,6 +20,8 @@ export default function RecordingTopBar({
   doctor,
   manualOpen,
   onBackToEdit,
+  backDisabled = false,
+  backReason = null,
   onOpenSetup,
   onOpenManual,
 }: RecordingTopBarProps) {
@@ -52,11 +56,20 @@ export default function RecordingTopBar({
         className="tb-btn tb-btn--secondary tb-recording-back"
         data-cut-action="record-back-edit"
         data-cut-record-back-edit
+        data-cut-record-back-blocked={backDisabled || undefined}
+        disabled={backDisabled}
+        aria-describedby={backDisabled && backReason ? 'cut-record-back-reason' : undefined}
+        title={backDisabled && backReason ? backReason : 'Return to Edit'}
         onClick={onBackToEdit}
       >
         <Icon name="collapseLeft" size={14} />
         Back to Edit
       </button>
+      {backDisabled && backReason && (
+        <span id="cut-record-back-reason" className="tb-recording-back-reason" data-cut-record-back-reason role="status">
+          {backReason}
+        </span>
+      )}
       <button
         type="button"
         className="tb-btn tb-btn--secondary tb-nav"

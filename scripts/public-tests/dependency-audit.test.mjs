@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
   dependencyAuditPlan,
@@ -10,6 +11,25 @@ import {
   RUST_WARNING_EXCEPTIONS,
   runDependencyAudit,
 } from '../release/dependency-audit.mjs'
+import {
+  evaluateMacosScreenCaptureKitBridgeContract,
+  macosScreenCaptureKitBridgeContract,
+} from '../release/screencapturekit-bridge-contract.mjs'
+
+const ROOT = fileURLToPath(new URL('../..', import.meta.url))
+
+const SCREEN_CAPTURE_KIT_MANIFEST = [
+  '[target.\'cfg(target_os = "macos")\'.dependencies]',
+  'screencapturekit = { version = "8.0.1", optional = true, features = ["macos_15_0"] }',
+].join('\n')
+
+const SCREEN_CAPTURE_KIT_LOCK = [
+  'version = 4',
+  '',
+  '[[package]]',
+  'name = "screencapturekit"',
+  'version = "8.0.1"',
+].join('\n')
 
 const cleanReport = JSON.stringify({
   vulnerabilities: { found: false, count: 0, list: [] },
@@ -133,6 +153,32 @@ test('WDIO tooling resolves the recursion-bounded deepmerge-ts security release'
   assert.match(locked?.resolved || '', /deepmerge-ts-8[.]0[.]1[.]tgz$/)
 })
 
+test('macOS ScreenCaptureKit bridge contract retains the fixed resolved release', () => {
+  const result = macosScreenCaptureKitBridgeContract({ repo: ROOT })
+  assert.deepEqual(result.failures, [])
+  assert.equal(result.resolved.length, 1)
+})
+
+test('macOS ScreenCaptureKit bridge contract rejects a broad declaration and vulnerable lock', () => {
+  const vulnerableLock = SCREEN_CAPTURE_KIT_LOCK.replace('8.0.1', '8.0.0')
+  const result = evaluateMacosScreenCaptureKitBridgeContract({
+    manifestText: SCREEN_CAPTURE_KIT_MANIFEST.replace('8.0.1', '8'),
+    lockText: vulnerableLock,
+  })
+  assert.equal(result.resolved[0], '8.0.0')
+  assert.equal(result.failures.length, 2)
+  assert.match(result.failures.join('\n'), /minimum of 8\.0\.1/)
+  assert.match(result.failures.join('\n'), /require 8\.0\.1 or newer in major 8/)
+})
+
+test('macOS ScreenCaptureKit bridge contract accepts a later compatible patch', () => {
+  const result = evaluateMacosScreenCaptureKitBridgeContract({
+    manifestText: SCREEN_CAPTURE_KIT_MANIFEST.replaceAll('8.0.1', '8.0.2'),
+    lockText: SCREEN_CAPTURE_KIT_LOCK.replaceAll('8.0.1', '8.0.2'),
+  })
+  assert.deepEqual(result, { failures: [], resolved: ['8.0.2'] })
+})
+
 test('checked-in warning policy is exact, owned, and expiry-bound', () => {
   const policies = Object.values(RUST_WARNING_EXCEPTIONS).flat()
   assert.equal(policies.length, 19)
@@ -176,6 +222,23 @@ test('dependency audit runs every check and fails when any process fails', () =>
     ['ignore', 'pipe', 'pipe'],
     ['ignore', 'pipe', 'pipe'],
   ])
+})
+
+test('dependency audit admits the current ScreenCaptureKit bridge contract', () => {
+  const logger = { log() {}, error() {} }
+  const runner = (command) => ({
+    status: 0,
+    stdout: command === 'cargo' ? cleanReport : cleanNpmReport,
+    stderr: '',
+  })
+  assert.equal(runDependencyAudit({
+    repo: ROOT,
+    runner,
+    platform: 'linux',
+    logger,
+    rustWarningExceptions: { workspace: [], desktop: [] },
+    npmToolingException: null,
+  }), 0)
 })
 
 test('npm production audit is zero-tolerance', () => {

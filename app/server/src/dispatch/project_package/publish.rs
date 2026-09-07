@@ -120,7 +120,7 @@ fn publish_package(
 }
 fn source_revision_then_publish(
     state: &AppState,
-    expected_revision: &str,
+    expected_source: &PackageSourceSnapshot,
     cancel: &crate::jobs::JobCancellation,
     stage: &Path,
     target: &Path,
@@ -137,9 +137,12 @@ fn source_revision_then_publish(
         )
     })?;
     let actual = store.log.current_revision()?;
-    if actual.as_deref() == Some(expected_revision) {
+    let same_source = store.dir == expected_source.project_dir
+        && path_free_project_identity(store)? == expected_source.project_identity;
+    if same_source && actual.as_deref() == Some(expected_source.project_revision.as_str()) {
         // Keep the read guard through no-replace publication. A source edit
-        // cannot slip between the revision check and the destination commit.
+        // or project replacement cannot slip between the source check and the
+        // destination commit.
         publish_new_directory(stage, target)
     } else {
         Err(CutError::new(

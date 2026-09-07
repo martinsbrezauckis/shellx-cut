@@ -309,4 +309,5 @@ pub enum DispatchTarget {
     ScreenRecordPreviewStop,
     ScreenRecordRehearsalStart,
     ScreenRecordRehearsalDiscard,
+    EditInsertLinked,
 }

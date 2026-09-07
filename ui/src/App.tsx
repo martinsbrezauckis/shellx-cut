@@ -48,6 +48,7 @@ import AppRightRail from './app/AppRightRail'
 import AppWorkspace from './app/AppWorkspace'
 import { useAppImportEvents } from './app/useAppImportEvents'
 import { useAppLayoutController } from './app/useAppLayoutController'
+import { useRecordingWorkspaceNavigation } from './app/useRecordingWorkspaceNavigation'
 import { useSourceNavigationController } from './app/useSourceNavigationController'
 import { useAppClipboardController } from './app/useAppClipboardController'
 import { useAppKeyboardController } from './app/useAppKeyboardController'
@@ -148,24 +149,24 @@ export default function App() {
   // Color/Audio launchers that used to open the Grade/Mixer drawers. A plain closure
   // (like toggleLeftTab) so it can reference setLayout declared just below.
   const openRightTab = (t: 'properties' | 'color' | 'audio' | 'chat') =>
-    setLayout((l) => ({ ...l, workspaceMode: 'edit', rightTab: t, railCollapsed: false }))
+    requestLayout((l) => ({ ...l, workspaceMode: 'edit', rightTab: t, railCollapsed: false }))
   // A topbar launcher TOGGLES its drawer — clicking the active one closes it:
   // "second click closes it"). Distinct drawers replace each other (one slot).
   const toggleDrawer = (d: AppDrawer) => {
-    setLayout((l) => l.workspaceMode === 'library' ? { ...l, workspaceMode: 'edit' } : l)
+    requestLayout((l) => l.workspaceMode === 'library' ? { ...l, workspaceMode: 'edit' } : l)
     setActiveDrawer((cur) => (cur === d ? null : d))
   }
   // Projects remains a left-sidebar destination. Library has its own workspace;
   // opening either from another mode returns the editor shell to a coherent
   // state instead of leaving a hidden rail selection behind it.
   const toggleProjects = () =>
-    setLayout((l) =>
+    requestLayout((l) =>
       l.workspaceMode === 'edit' && l.leftTab === 'projects' && !l.leftCollapsed
         ? { ...l, leftCollapsed: true }
         : { ...l, workspaceMode: 'edit', leftTab: 'projects', leftCollapsed: false },
     )
   const toggleLibraryWorkspace = () =>
-    setLayout((l) => ({
+    requestLayout((l) => ({
       ...l,
       workspaceMode: l.workspaceMode === 'library' ? 'edit' : 'library',
     }))
@@ -192,9 +193,11 @@ export default function App() {
     return d
   }, [])
 
-  const { layout, setLayout, middleRef, mainRef, splitRef, txWidth, dragSplit, dragTimeline, dragRail } =
+  const { layout, setLayout: setRawLayout, middleRef, mainRef, splitRef, txWidth, dragSplit, dragTimeline, dragRail } =
     useAppLayoutController(selectedClipIds)
-  const sourceNavigation = useSourceNavigationController(setLayout)
+  const { admission: recordingWorkspaceAdmission, reportAdmission: reportRecordingWorkspaceAdmission, requestLayout } =
+    useRecordingWorkspaceNavigation(layout, setRawLayout)
+  const sourceNavigation = useSourceNavigationController(requestLayout)
   const { clipboardHasContent, clipboardKind, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard } = useAppClipboardController({
     project,
     playheadMs,
@@ -202,7 +205,7 @@ export default function App() {
     setSelectedClipIds,
   })
   const openUiSurface = useAppSurfaceEvents({
-    setLayout,
+    setLayout: requestLayout,
     setCommentsOpen,
     setFocusComment,
     setActiveDrawer,
@@ -272,6 +275,9 @@ export default function App() {
   const initialHistoryLoaded = useRef(false)
   const historyLoadGeneration = useRef(0)
   const fullHistoryLoad = useRef<Promise<boolean> | null>(null)
+  // A confirmed project change still happened at the backend. While Record
+  // owns a capture, defer only the UI/provider reset that would unmount it.
+  const deferredProjectChange = useRef(false)
   const syncRunner = useRef<(request: RevisionSyncRequest) => Promise<RevisionSyncOutcome<SyncedProject | null | undefined>>>(
     async (request) => ({ value: undefined, generation: request.generation }),
   )
@@ -310,14 +316,14 @@ export default function App() {
     setActiveDrawer(null)
     clearClipboard()
     if (showProjects) {
-      setLayout((current) => ({
+      requestLayout((current) => ({
         ...current,
         workspaceMode: 'edit',
         leftTab: 'projects',
         leftCollapsed: false,
       }))
     }
-  }, [clearClipboard, setLayout, stockImportCoordinator])
+  }, [clearClipboard, requestLayout, stockImportCoordinator])
 
   /** Follow one page at a time and merge only when this same project remains
    * current. Cold loads may transfer full history once; reconnects call this
@@ -372,6 +378,10 @@ export default function App() {
     if (!response || response.mode === 'no_project') {
       const nextProject = projectAfterUnavailableSync(projectRef.current, response)
       if (response?.mode === 'no_project') {
+        if (layout.workspaceMode === 'record' && recordingWorkspaceAdmission.blocked) {
+          deferredProjectChange.current = true
+          return finish(nextProject)
+        }
         resetProjectScopedUi(true)
         projectRef.current = null
         setProject(null)
@@ -405,7 +415,7 @@ export default function App() {
     setOps((existing) => mergeProjectOps(existing, response.delta.ops))
     scheduleReconciliation.current(deltaSinceSnapshot.current)
     return finish(next)
-  }, [loadHistoryAfter, resetProjectScopedUi])
+  }, [layout.workspaceMode, loadHistoryAfter, recordingWorkspaceAdmission.blocked, resetProjectScopedUi])
 
   syncRunner.current = runProjectSync
   const syncProject = useCallback((forceSnapshot = false, advertisedPrevious?: string, targetRevision?: string): Promise<SyncedProject | null | undefined> => (
@@ -440,7 +450,7 @@ export default function App() {
   const resync = useCallback(async () => {
     const activeProject = await syncProject()
     if (shouldReturnToProjectsAfterResync(activeProject)) {
-      setLayout((current) => (
+      requestLayout((current) => (
         current.workspaceMode === 'edit'
         && current.leftTab === 'projects'
         && !current.leftCollapsed
@@ -475,7 +485,7 @@ export default function App() {
       wizardAutoShown.current = true
       setWizardOpen(true)
     }
-  }, [loadFullHistory, refreshDoctor, setLayout, syncProject])
+  }, [loadFullHistory, refreshDoctor, requestLayout, syncProject])
 
   useUiCommandController({
     stateRef: uiStateRef,
@@ -500,7 +510,7 @@ export default function App() {
       })
   }, [syncProject])
 
-  useAppImportEvents({ project, onChanged: resync, setLayout })
+  useAppImportEvents({ project, onChanged: resync, setLayout: requestLayout })
 
   // Project SWITCH (New / Open) — a hard reset of all accumulated cross-project
   // state, then a fresh pull. op_ids restart per project (every project's first
@@ -510,19 +520,23 @@ export default function App() {
   // feed, and stale receipts/selection/playhead persisted (the "New project →
   // strange left sidebar" bug). REPLACE here, never merge.
   const onProjectSwitched = useCallback(async () => {
+    if (layout.workspaceMode === 'record' && recordingWorkspaceAdmission.blocked) {
+      deferredProjectChange.current = true
+      return
+    }
     // Invalidate in-flight snapshots and paged history before awaiting the
     // forced state pull; op ids restart at op_000001 across projects.
     resetProjectScopedUi()
     const nextProject = await syncProject(true)
     if (nextProject) {
-      setLayout((l) => ({
+      requestLayout((l) => ({
         ...l,
         leftTab: preferredProjectLeftTab(nextProject),
         leftCollapsed: false,
         workspaceMode: 'edit',
       }))
     } else {
-      setLayout((l) => ({
+      requestLayout((l) => ({
         ...l,
         leftTab: 'projects',
         leftCollapsed: false,
@@ -530,7 +544,12 @@ export default function App() {
       }))
     }
     if (nextProject) initialHistoryLoaded.current = await loadFullHistory()
-  }, [loadFullHistory, resetProjectScopedUi, setLayout, syncProject])
+  }, [layout.workspaceMode, loadFullHistory, recordingWorkspaceAdmission.blocked, resetProjectScopedUi, requestLayout, syncProject])
+  useEffect(() => {
+    if (recordingWorkspaceAdmission.blocked || !deferredProjectChange.current) return
+    deferredProjectChange.current = false
+    void onProjectSwitched()
+  }, [onProjectSwitched, recordingWorkspaceAdmission.blocked])
 
   const onSequenceChanged = useCallback(() => {
     setSelectedClipIds([])
@@ -655,7 +674,7 @@ export default function App() {
     enqueueHistoryNav('project.redo')
   }, [enqueueHistoryNav])
 
-  useAppKeyboardController({ setLayout, setCommentsOpen, onUndo, onRedo })
+  useAppKeyboardController({ setLayout: requestLayout, setCommentsOpen, onUndo, onRedo })
 
   // grid: 54px top bar / 1fr middle / 40px status bar. Middle = left
   // column (transcript|preview split over timeline) + full-height review
@@ -674,7 +693,9 @@ export default function App() {
           projectName={project?.name ?? null}
           doctor={doctor}
           manualOpen={!embeddedManualFrontend && localManual.open}
-          onBackToEdit={() => setLayout((current) => ({ ...current, workspaceMode: 'edit' }))}
+          onBackToEdit={() => { requestLayout((current) => ({ ...current, workspaceMode: 'edit' })) }}
+          backDisabled={recordingWorkspaceAdmission.blocked}
+          backReason={recordingWorkspaceAdmission.reason}
           onOpenSetup={() => {
             setWizardOpen(false)
             setEnvCategory('general')
@@ -698,7 +719,7 @@ export default function App() {
         onOpenMask={() => toggleDrawer('mask')}
         onOpenTitle={() => toggleDrawer('title')}
         onToggleComments={() => {
-          setLayout((l) => ({ ...l, workspaceMode: 'edit' }))
+          if (!requestLayout((l) => ({ ...l, workspaceMode: 'edit' }))) return
           setCommentsOpen((v) => !v)
         }}
         commentsOpen={commentsOpen}
@@ -707,7 +728,7 @@ export default function App() {
         onSequenceChanged={onSequenceChanged}
         playheadMs={playheadMs}
         mode={layout.workspaceMode}
-        onMode={(m) => setLayout((l) => ({ ...l, workspaceMode: m }))}
+        onMode={(m) => { requestLayout((l) => ({ ...l, workspaceMode: m })) }}
         doctor={doctor}
         onOpenSetup={() => {
           // Same handler as the status-bar env chip: never both env surfaces at once.
@@ -730,7 +751,8 @@ export default function App() {
       >
         <AppWorkspace
           layout={layout}
-          setLayout={setLayout}
+          setLayout={requestLayout}
+          onRecordWorkspaceAdmission={reportRecordingWorkspaceAdmission}
           sourceNavigation={sourceNavigation}
           mainRef={mainRef}
           splitRef={splitRef}
@@ -775,9 +797,10 @@ export default function App() {
         <AppRightRail
           hidden={layout.workspaceMode !== 'edit'}
           layout={layout}
-          setLayout={setLayout}
+          setLayout={requestLayout}
           dragRail={dragRail}
           project={project}
+          projectSession={projectSession}
           projectRevision={project?.project_revision ?? null}
           doctor={doctor}
           ops={ops}
@@ -854,12 +877,12 @@ export default function App() {
             hasProject={project != null}
             projectSession={projectSession}
             onOpenAssets={() => {
+              if (!requestLayout((current) => ({ ...current, workspaceMode: 'edit', leftTab: 'assets', leftCollapsed: false }))) return
               setEnvOpen(false)
-              setLayout((current) => ({ ...current, workspaceMode: 'edit', leftTab: 'assets', leftCollapsed: false }))
             }}
             onOpenRecording={() => {
+              if (!requestLayout((current) => ({ ...current, workspaceMode: 'record' }))) return
               setEnvOpen(false)
-              setLayout((current) => ({ ...current, workspaceMode: 'record' }))
             }}
           />
         </Suspense>

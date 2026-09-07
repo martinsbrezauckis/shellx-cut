@@ -84,7 +84,11 @@ pub(super) fn build_plan(snapshot: RelinkSnapshot) -> Result<PreparedPlan, CutEr
         assets: rows,
     };
     let plan_hash = hash_json(&plan)?;
-    Ok(PreparedPlan { plan, plan_hash })
+    Ok(PreparedPlan {
+        plan,
+        plan_hash,
+        project_dir: snapshot.project_dir,
+    })
 }
 
 /// Retain safe metadata diagnostics for identities that lack a complete hash.
