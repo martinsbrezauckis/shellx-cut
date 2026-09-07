@@ -1,0 +1,119 @@
+{
+  "schema": "shellx-cut/published-test-inventory@1",
+  "version": "0.6.114",
+  "contract": {
+    "node_test_count": 10,
+    "ui_library_test_count": 33
+  },
+  "prerequisites": [
+    {
+      "id": "python",
+      "environment": "CUTD_ADAPTER_PYTHON",
+      "candidates": ["python3", "python"],
+      "probe": ["-c", "import sys; print(sys.executable)"]
+    },
+    {
+      "id": "ffmpeg",
+      "candidates": ["ffmpeg"],
+      "probe": ["-version"]
+    },
+    {
+      "id": "ffprobe",
+      "candidates": ["ffprobe"],
+      "probe": ["-version"]
+    }
+  ],
+  "tests": [
+    {
+      "path": "scripts/public-tests/cross-host-media.test.mjs",
+      "resources": ["scripts/public-tests/cross-host-media.test.mjs", "scripts/lib/cross-host-media.mjs"],
+      "requires": []
+    },
+    {
+      "path": "scripts/public-tests/dependency-audit.test.mjs",
+      "resources": ["scripts/public-tests/dependency-audit.test.mjs", "scripts/release/dependency-audit.mjs", "scripts/release/screencapturekit-bridge-contract.mjs", "ui/package.json", "ui/package-lock.json", "app/recorder/record-capture/Cargo.toml", "app/Cargo.lock"],
+      "requires": []
+    },
+    {
+      "path": "scripts/public-tests/fit-to-fill-fixture.test.mjs",
+      "resources": ["scripts/public-tests/fit-to-fill-fixture.test.mjs", "ui/public-tests/lib/fitToFillFixture.mjs"],
+      "requires": []
+    },
+    {
+      "path": "scripts/public-tests/grok-judge-tool-policy.test.mjs",
+      "resources": ["scripts/public-tests/grok-judge-tool-policy.test.mjs", "app/perception/py/judge/judge.py", "app/perception/py/judge/adapters/ladder_judge.py", "app/perception/py/judge/adapters/cli_judge.py", "app/perception/py/judge/adapters/diagnostics.py", "app/perception/py/judge/adapters/codex_judge.py", "app/perception/py/judge/adapters/antigravity_judge.py", "app/perception/py/judge/adapters/grok_judge.py", "app/perception/py/judge/adapters/grok_tool_policy.py"],
+      "requires": ["python"]
+    },
+    {
+      "path": "scripts/public-tests/judge-adapter.test.mjs",
+      "resources": ["scripts/public-tests/judge-adapter.test.mjs", "scripts/public-tests/judge-adapter-validation.py", "scripts/public-tests/restricted-claude-adapter-validation.py", "app/perception/py/judge/judge.py", "app/perception/py/judge/adapters/ladder_judge.py", "app/perception/py/judge/adapters/cli_judge.py", "app/perception/py/judge/adapters/restricted_claude.py", "app/perception/py/judge/adapters/restricted_claude_windows.py", "app/perception/py/judge/adapters/diagnostics.py", "app/perception/py/judge/adapters/codex_judge.py", "app/perception/py/judge/adapters/antigravity_judge.py", "app/perception/py/judge/adapters/grok_judge.py", "app/perception/py/judge/adapters/grok_tool_policy.py", "app/desktop/src-tauri/tauri.conf.json"],
+      "requires": ["python", "ffmpeg", "ffprobe"]
+    },
+    {
+      "path": "scripts/public-tests/judge-provider-admission.test.mjs",
+      "resources": ["scripts/public-tests/judge-provider-admission.test.mjs", "app/perception/py/judge/judge.py", "app/perception/py/judge/adapters/ladder_judge.py", "app/perception/py/judge/adapters/cli_judge.py", "app/perception/py/judge/adapters/restricted_claude.py", "app/perception/py/judge/adapters/restricted_claude_windows.py", "app/perception/py/judge/adapters/diagnostics.py", "app/perception/py/judge/adapters/codex_judge.py", "app/perception/py/judge/adapters/antigravity_judge.py", "app/perception/py/judge/adapters/grok_judge.py", "app/perception/py/judge/adapters/grok_tool_policy.py"],
+      "requires": ["python"]
+    },
+    {
+      "path": "scripts/public-tests/manual-publication-package.test.mjs",
+      "resources": ["scripts/public-tests/manual-publication-package.test.mjs", "scripts/public/cut-manual-publication-lib.mjs", "scripts/public/stage-cut-manual.mjs", "ui/public-tests/lib/sealedPlaywrightChromium.mjs", "ui/package.json", "ui/package-lock.json", "ui/index.html", "ui/manual.html", "ui/vite.config.ts", "ui/tsconfig.json", "ui/src/main.tsx", "ui/src/manual/ManualShell.tsx", "ui/src/manual/useManualFrontendBridge.ts", "ui/src/panels/Review/mock.ts", "docs/public/site/manual/cut/index.html", "docs/public/site/manual/manual.js", "docs/public/site/manual/manual.css", "docs/public/site/manual/assets/cut/cut-main-editor-current.png", "docs/public/site/manual/assets/cut/cut-recording-studio-current.png"],
+      "requires": []
+    },
+    {
+      "path": "scripts/public-tests/published-test-inventory.test.mjs",
+      "resources": ["scripts/public-tests/published-test-inventory.test.mjs", "scripts/public-tests/published-inventory.json", "scripts/lib/published-test-inventory.mjs"],
+      "requires": []
+    },
+    {
+      "path": "scripts/public-tests/safe-data.test.mjs",
+      "resources": ["scripts/public-tests/safe-data.test.mjs", "scripts/lib/safe-data.mjs"],
+      "requires": []
+    },
+    {
+      "path": "scripts/public-tests/third-party-notice.test.mjs",
+      "resources": ["scripts/public-tests/third-party-notice.test.mjs", "NOTICE", "app/desktop/src-tauri/tauri.conf.json", "app/desktop/src-tauri/src/tools.rs", "app/server/src/fetch.rs", "app/perception/py/blaze_face_short_range.tflite", "app/perception/py/face_detection_yunet_2023mar.onnx"],
+      "requires": []
+    }
+  ],
+  "ui_library_tests": {
+    "root": "ui/public-tests",
+    "runner": "ui/public-tests/lib/runLibraryTests.mjs",
+    "discovery": "ui/public-tests/lib/libraryTestDiscovery.mjs",
+    "exclusions": "ui/public-tests/library-test-exclusions.json",
+    "tests": [
+      "active-job-presentation.test.ts",
+      "agent-chat-session.test.ts",
+      "asset-uses.test.ts",
+      "base-video-track-regression.test.ts",
+      "capture-error-contract.test.ts",
+      "clip-context-menu.test.ts",
+      "context-menu-reverse-match-frame.test.ts",
+      "feature-surface-contract.test.ts",
+      "generate-rich-motion.test.ts",
+      "grade-drawer.test.ts",
+      "health-recovery.test.ts",
+      "keymap-profile.test.ts",
+      "linked-insert-placement.test.ts",
+      "manual-frontend-contract.test.ts",
+      "media-time.test.ts",
+      "motion-effects.test.ts",
+      "motion-terminology-contract.test.ts",
+      "op-group-model.test.ts",
+      "panel-persist-guard.test.ts",
+      "project-sync.test.ts",
+      "receipt-rerun-control.test.ts",
+      "record-pause-lifetime.test.ts",
+      "record-scene-lifetime.test.ts",
+      "recording-workspace-admission.test.ts",
+      "source-navigation.test.ts",
+      "source-overwrite-targets.test.ts",
+      "speed-ramp-editor.test.ts",
+      "stock-import-coordinator.test.ts",
+      "stock-provider-catalog.test.ts",
+      "stt-model-feedback.test.ts",
+      "theme-toggle-sync.test.ts",
+      "ui-command-background-ack.test.ts",
+      "volume-automation.test.ts"
+    ]
+  }
+}

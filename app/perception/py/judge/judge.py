@@ -243,6 +243,10 @@ def extract_frames(render: str, out_dir: str, fps: float,
     Caps at max_frames (drops the tail, recorded by caller in the envelope).
     """
     os.makedirs(out_dir, exist_ok=True)
+    # A caller may reuse its bundle across reviews. Never enumerate or
+    # overwrite that shared directory: ffmpeg writes one fresh run directory
+    # and the manifest is derived only from that run's output.
+    run_dir = tempfile.mkdtemp(prefix="sample_", dir=out_dir)
     cmd = [configured_media_tool("ffmpeg"), "-hide_banner", "-y"]
     if start_ms is not None:
         cmd += ["-ss", f"{start_ms / 1000:.3f}"]
@@ -250,12 +254,12 @@ def extract_frames(render: str, out_dir: str, fps: float,
     if start_ms is not None and end_ms is not None:
         cmd += ["-t", f"{(end_ms - start_ms) / 1000:.3f}"]
     cmd += ["-vf", f"fps={fps},scale={width}:-2", "-q:v", "4",
-            os.path.join(out_dir, "f_%05d.jpg")]
+            os.path.join(run_dir, "f_%05d.jpg")]
     run(cmd)
-    files = sorted(f for f in os.listdir(out_dir) if f.endswith(".jpg"))
+    files = sorted(f for f in os.listdir(run_dir) if f.endswith(".jpg"))
     base = start_ms or 0
     manifest = [
-        {"path": os.path.join(out_dir, f), "at_ms": int(base + i * 1000.0 / fps)}
+        {"path": os.path.join(run_dir, f), "at_ms": int(base + i * 1000.0 / fps)}
         for i, f in enumerate(files)
     ]
     return manifest[:max_frames]

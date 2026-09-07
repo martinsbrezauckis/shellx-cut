@@ -589,7 +589,7 @@ mod judge_adapter_contract_tests {
     }
 }
 
-fn judge_cli_path() -> Option<std::ffi::OsString> {
+pub(super) fn judge_cli_path() -> Option<std::ffi::OsString> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
@@ -982,7 +982,7 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
     // access ladder runs, and maps to ladder_judge.py's --provider:
     //   None | "cli" | "auto" -> "auto"  : walk the ladder
     //                                       claude->codex->antigravity->grok,
-    //                                       first detected CLI wins; none -> skip.
+    //                                       first judge_ready CLI wins; none -> honest skip.
     //   "claude" | "codex" | "antigravity" | "grok" : force that rung (honest
     //                                       not_run if its CLI is absent — never
     //                                       falls through).
@@ -1029,9 +1029,10 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
         let pcept = receipts.join(format!("{}.output.perception.json", receipt.render_id));
         let perception_arg = pcept.is_file().then_some(pcept);
         let intent = judge_intent(store, &receipts, &receipt);
-        // Bundle = the CLI judge's whole working world (frames + envelope).
-        // PROJECT-local, never /tmp: sandboxed CLIs may deny temp-root reads.
-        // Kept for audit.
+        // Bundle retains the sampled frames and envelope for audit. Providers
+        // stage their own execution root when required (for example Claude's
+        // restricted copied-frame root); keep this caller-owned directory
+        // project-local, never /tmp.
         let bundle_dir = store.dir.join(".scratch/judge").join(&receipt.render_id);
         (
             receipts,
@@ -1127,7 +1128,7 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
                     &jid,
                     CutError::new(error_codes::JOB_FAILED, "judge adapter failed", cause)
                         .with_suggested_action(
-                            "receipt.judge.not_run_reason has the full reason; check `claude` CLI login + python3, then re-run verify.judge",
+                            "receipt.judge.not_run_reason has the full reason; check the selected provider's admission and the Python adapter runtime, then re-run verify.judge",
                         ),
                 );
             }

@@ -555,6 +555,11 @@ Runtime knobs (env vars on the `cutd` process — not verb args). Sensible
 defaults; you rarely set these, but know they exist when a render is slow, a
 box is small, or you need byte-reproducible output. Inspect resolved tooling
 (ffmpeg path, perception tier, HW-encode, disk) any time with `system.doctor`.
+For a `judge.*` card, `details.found` only means its CLI resolved:
+`details.judge_ready` is the separate no-model render-review admission result,
+and `availability_reason` explains a false result. A missing or malformed
+admission stays `status:"unknown"`; do not infer it from `found` or version.
+`details.chat` remains the independent Agent Chat capability/session state.
 
 | Env var | Default | Effect |
 |---|---|---|
@@ -1085,14 +1090,18 @@ the source RenderReceipt, or infer source/caption/word-cut/current-timeline fact
 | `duration_matches_edl` | Output duration == EDL math | Mismatch = engine/render bug, report it, don't ship |
 
 `verify.judge {render_id?, backend?}` is the perceptual visual review — a JOB
-(returns `{job_id}`). The bundled access ladder uses the first working
-subscription CLI in the order Claude → Codex → Antigravity → Grok; a named
-backend forces that rung. In auto mode, a present rung that fails an
-infrastructure check is recorded and the next detected rung is tried. With no
-usable CLI or adapter Python runtime, the job completes with
-`{status: "not_run", reason}` — that means *not reviewed*, never *passed*.
-Report it as "judge: not_run" with the recorded reason. Treating a not_run
-result as a pass is fabricating evidence.
+(returns `{job_id}`). Its backend union remains Claude → Codex → Antigravity →
+Grok, but detection is not admission. In v0.6.114, only Claude with restricted
+Read capability at version 2.1.248 or later plus a safe copied-frame workspace,
+and Grok at version 1.0.21 or later with its no-model-tools policy, are
+`judge_ready`. Codex and Antigravity may be found but an explicit render-judge
+request returns `{status:"not_run", reason:"render judge unavailable until
+restricted tool/file access is verified"}` before review work; this does not
+alter Agent Chat or generation availability. Auto keeps that configured order,
+skips unready rungs, and may continue after an attempted ready-rung
+infrastructure error. A named backend never falls back. `not_run` means *not
+reviewed*, never *passed*; report its recorded reason and never fabricate
+evidence. Admission does not prove a live provider turn or native behavior.
 
 ### 6. Export
 

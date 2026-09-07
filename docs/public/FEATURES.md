@@ -608,12 +608,17 @@ route to the same surface registry.
   revalidates its receipt/hash/profile, never re-renders, and writes a separate
   immutable verification receipt without replacing the original evidence.
 - `verify.judge` ships with its access-ladder adapter instead of requiring a
-  hidden external script. It samples the rendered output and drives the first
-  working local subscription CLI in the order Claude, Codex, Antigravity, then
-  Grok; a detected rung that fails infrastructure checks falls through in auto
-  mode, while a named backend forces one rung. Settings reports the CLI and
-  adapter runtime independently, and an absent CLI/Python runtime records
-  `not_run` rather than fabricating a review.
+  hidden external script. It samples rendered frames for an optional visual
+  review. Its accepted backend IDs remain Claude, Codex, Antigravity, and Grok,
+  while v0.6.114 admits only Claude with restricted Read capability (version
+  2.1.248 or later) plus a safe copied-frame workspace, or Grok with version
+  1.0.21 or later and its no-model-tools policy. Codex and Antigravity can be
+  detected but return honest `not_run` before review work until restricted
+  tool/file access is verified; this does not change their Agent Chat or
+  generation availability. Auto skips unready rungs in its configured order;
+  an attempted ready-rung infrastructure error may continue to the next ready
+  rung, while a named backend never falls back. Provider admission alone is not
+  a model-turn or native qualification claim.
 - Project brand kits: Review → QC stores validated font, palette, caption
   position/size, and delivery-aspect constraints in the project operation log.
   Brand verification reads the saved kit by default, and social bundles enforce
@@ -811,7 +816,9 @@ route to the same surface registry.
 ## Environment And Setup
 
 - `system.doctor` reports compact cards for ffmpeg, perception, dubbing,
-  diarization, judge CLIs, and disk health.
+  diarization, judge CLIs, and disk health. A detected judge CLI is not a
+  render-review claim: its card shows the separate admission result and reason;
+  Agent Chat has its own readiness check.
 - Installable tools and model runtimes are shown as user-outcome cards with a
   status, primary action, and advanced details for paths or diagnostics.
 - First-run setup leads with a plain three-step path: video tools first, add

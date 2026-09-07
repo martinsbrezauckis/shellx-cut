@@ -109,32 +109,45 @@ filter strips measurement-class numbers and unsupported audio assertions,
 normalizes timestamps, validates enums and confidence, and preserves both the
 raw review and a report of filtering decisions for audit.
 
-## Provider ladder
+## Provider admission and ladder
 
-Auto mode tries detected CLIs in this order:
+The request union remains stable: `claude`, `codex`, `antigravity` (`agy`), and
+`grok` are accepted backend IDs. Detection (`found`) is separate from render
+judge admission (`judge_ready`). In v0.6.114, the only eligible render-review
+rungs are:
 
-1. Claude Code (`claude`)
-2. Codex (`codex`)
-3. Antigravity (`agy`)
-4. Grok Build (`grok`)
+| Backend | Admission requirement |
+|---|---|
+| Claude Code (`claude`) | Version 2.1.248 or later, restricted Read capability, and a platform-safe copied-frame workspace. Each review uses a fresh copied-frame working directory. |
+| Grok Build (`grok`) | Version 1.0.21 or later with the verified no-model-tools policy. |
+| Codex (`codex`) | Deferred until restricted tool and file access are verified. A detected installation may still report `found:true`, but is not `judge_ready`. |
+| Antigravity (`agy`) | Deferred until restricted tool and file access are verified. A detected installation may still report `found:true`, but is not `judge_ready`. |
 
-A named backend forces exactly that rung. Cut verifies the returned
-`backend.provider` (and the ladder's `selected` rung when present); a mismatch
-fails the job instead of silently substituting a different provider.
+For Codex and Antigravity, an explicit render-judge request returns
+`status:"not_run"` with `render judge unavailable until restricted tool/file
+access is verified` before render probing, perception resolution, frame
+extraction, prompt construction, or a model subprocess. This is a render-judge
+admission limit only; it does not remove those providers from Agent Chat or
+other product features.
 
-In auto mode only, an infrastructure-class failure steps down to the next
-detected rung. This includes a present Claude CLI whose frame-Read preflight
-fails: the render is still offered to Codex, Antigravity, then Grok instead of
-ending as `not_run`. The final envelope records every attempted rung. A real
-`completed` verdict—including `fail`—is terminal and never triggers provider
-fallback.
+Auto retains its configured order—Claude, Codex, Antigravity, then Grok—but
+skips every unready rung. After a ready rung is actually attempted, an
+infrastructure-class error may continue to the next ready rung. A completed
+review, including `fail`, is terminal. A named backend always selects only that
+rung and never falls back. The receipt records the selected, skipped, and
+attempted ladder state.
+
+Admission does not prove a provider account, model turn, or native platform
+behavior. `not_run` remains unreviewed rather than a passing review.
 
 ## Runtime and overrides
 
 The adapter is installed under the perception resource payload and discovered
 beside `instruments.py`. It is stdlib-only but needs a usable Python
 interpreter plus ffmpeg/ffprobe for frame sampling. Settings > AI & Services
-reports the CLI and adapter runtime separately.
+reports CLI discovery separately from bounded render-review admission; an
+unready card names its reason. Agent Chat uses its own capability and session
+readiness, so it is not implied by the render-judge card.
 
 `CUTD_JUDGE_ADAPTER` may override the bundled ladder for testing or advanced
 operation. The override is authoritative: a missing override path does not

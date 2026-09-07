@@ -141,7 +141,13 @@ const boundedSources = [
   "ui/src/lib/ops.ts",
   "ui/src/panels/Assets/SourceWaveform.tsx",
   "app/server/src/screen_record/doctor_projection.rs",
+  "app/server/src/doctor/judge_admission.rs",
   "app/perception/py/judge/adapters/diagnostics.py",
+  "app/perception/py/judge/adapters/grok_tool_policy.py",
+  "app/perception/py/judge/adapters/restricted_claude.py",
+  "app/perception/py/judge/adapters/restricted_claude_windows.py",
+  "scripts/check-published-test-inventory.mjs",
+  "scripts/lib/published-test-inventory.mjs",
   "app/recorder/record-capture/src/system_audio_timing.rs",
   "app/recorder/record-capture/src/system_audio_probe.rs",
   "app/recorder/record-capture/src/doctor_portal.rs",
@@ -495,6 +501,10 @@ for (const file of boundedSources) {
 }
 
 const boundedTests = [
+  "scripts/public-tests/grok-judge-tool-policy.test.mjs",
+  "scripts/public-tests/judge-provider-admission.test.mjs",
+  "scripts/public-tests/published-test-inventory.test.mjs",
+  "scripts/public-tests/restricted-claude-windows-validation.py",
   "app/recorder/record-capture/src/macos_pause_pilot/tests.rs",
   "app/server/src/screen_record/pause_session_owner_tests.rs",
   "app/server/src/screen_record/windows_pause_evidence_tests.rs",
@@ -539,6 +549,7 @@ const boundedTests = [
   "scripts/private-tests/release-gate-effect-contract.test.mjs",
   "scripts/public-tests/judge-adapter.test.mjs",
   "scripts/public-tests/judge-adapter-validation.py",
+  "scripts/public-tests/restricted-claude-adapter-validation.py",
   "scripts/private-tests/update-check-disclosure-contract.test.mjs",
   "scripts/public-tests/updater-manifest.test.mjs",
   "scripts/public-tests/tauri-updater-signing-contract.test.mjs",

@@ -199,7 +199,7 @@ conversion path, not camera Log interpretation or HDR mastering/delivery.
 | **recipe** | **list · describe · run** | declarative pipeline MANIFESTS — named, gated WORKFLOWS over the existing verbs (built-ins in `schema/recipes.json`: a guided first edit; preview-first **Edit for clarity** with intensity; podcast/talking-head/screen-demo/phone cleanup; social bundle; privacy mask; captions; YouTube and TikTok export). list/describe are pure reads; **run is a PURE ORCHESTRATOR** (like autopilot.run/audio.cleanup_voice): no op of its own, ONE auto-checkpoint (one-step revert), dispatches each stage through the normal verb path, polls sub-jobs, evaluates a per-stage gate (receipt checks and/or render-free state facts), and STOPS + reports on the first failed verb or gate. policy:dry_run returns the resolved PLAN without dispatching (pre-render-gate seam) |
 | **screen_record** | doctor · **microphone_selection · system_audio_probe** · start · **status · pause · resume** · stop · **recovery_status · studio_event · scene_activate · scene_timer** · autoedit · polish · export | Recording Studio uses System Default by default; on Windows/macOS a human can select current opaque microphone and camera choices while native identities remain private. Camera is explicit, Auto-edit-only, and recorded as a separate editable take with shared-clock metadata rather than baked into the screen source. Named Screen and Presenter PiP scenes can switch during capture, with one elapsed/countdown timer whose saved transitions use that same recording clock. Compatible macOS display recordings can pause and resume through the durable native owner. `screen_record.status` is a short-lived, process-local read: readiness follows a real native screen frame; selected-source loss is reported only when an armed exact-source close beats a Cut-owned close; controller placement returns only a confirmed exclusion/hide, refusal, or unavailable conclusion; and mic/system meters observe only already-admitted streams. Missing permission, no first frame, stale or lost audio, and device loss remain explicit rather than falling back or guessing. A failed Stop retains its capture: Recording Studio does not start another take or return to Edit while that Stop remains unresolved. In Raw mode, a rejected explicit output selection can be changed or cleared to use the default export folder before retrying Stop. Acknowledged Stop releases capture ownership, so a later auto-edit or polish error is not a live capture. |
 | **voiceover** | start · tick · stop · cancel · observe_playhead | Timeline-track voiceover remains disabled unless the current Record Doctor admits native capture. The server binds one current unlocked audio track and playhead/In–Out range to a retry identity, then issues a memory-only per-tab owner claim for every tick, Stop, Cancel, and correlated Preview Out. An exact active A retry wins over later ordinary revision changes; a different B remains refused while A is active, and only `voiceover_start_retry_rejected` lets the UI discard its non-secret retry identity. It counts in, correlates exact request/fingerprint/epoch playback, and only places a sealed WAV as one asset-plus-clip operation (one Undo). Direct monitoring is off; Cancel and unplaceable outcomes add no edit. |
-| **verify** | checks · **rerun** · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); **rerun rechecks the exact immutable rendered bytes from a selected receipt, re-fencing and re-hashing the output before and after its owned sidecar/probe, then writes a separate verification receipt without re-rendering or replacing the source receipt; it intentionally excludes source-, caption-, word-cut-, and current-timeline checks**; judge = pluggable watch+listen reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only QC receipts |
+| **verify** | checks · **rerun** · judge · pregate · pacing · captions · delivery · brand | checks = deterministic instrument battery (post-render); **rerun rechecks the exact immutable rendered bytes from a selected receipt, re-fencing and re-hashing the output before and after its owned sidecar/probe, then writes a separate verification receipt without re-rendering or replacing the source receipt; it intentionally excludes source-, caption-, word-cut-, and current-timeline checks**; judge = optional visual reviewer (job; normalized approve/reject/advisory outcome); **pregate = PRE-render predictive gate — flags likely render problems from the EDL + cached perception facts WITHOUT spending a render**; pacing/captions/delivery/brand = read-only QC receipts |
 | **export** | xml (fcpxml/premiere/resolve) · srt · vtt · chapters · transcript · frame · range · **audio** · **gif** · **publish** | file-writing paths are FENCED (the output-fencing contract); users can set a default export folder or use per-export Save As, default-name collisions auto-suffix, and confirmed Save As targets can replace existing export media/sidecar files; frame/range extract a still / a timeline window AS reusable assets; **audio = timeline mix as mp3/m4a/wav/flac/opus; publish = one-click platform export (youtube/tiktok/reels/x/…) using platform geometry and bitrate presets through render.final** |
 | **import** | otio | hash-bound OTIO preflight and one-operation timeline replacement; the desktop UI owns the native picker/confirmation while agents pass an explicit path |
 | **inspect** | media · range | path-light, cited inspection over the current project and its exact MediaEvidenceIndex; resolves opaque evidence hits to current source ranges and timeline occurrences, and refuses stale, foreign-project, or changed evidence instead of summarizing old prompt context |
@@ -299,16 +299,21 @@ metadata): same input + EDL ⇒ same output hash.
    black/frozen, border, edge-silence, and receipt-duration checks under one
    cancellable job, then writes a separate immutable verification receipt. It
    never re-renders or substitutes the current timeline for historic evidence.
-8. `verify.judge` adds the perceptual layer: the bundled access ladder drives
-   the user's subscription CLI — Claude → Codex → Antigravity → Grok — as a
-   subprocess that reviews sampled frames with deterministic instrument facts
-   (LUFS, silences, word timings) as the measured ground truth — a VISUAL judge
-   (`listened:false`), not yet a true audio-model listen. Never fakes a pass:
-   an auto-selected CLI that fails infrastructure checks falls through to the
-   next rung; no usable CLI/runtime ⇒ structured `not_run`. An explicit
-   `CUTD_JUDGE_ADAPTER` remains available as an operator/test override; ordinary
-   installed users do not configure it. The agent never claims success without
-   the receipt.
+8. `verify.judge` adds an optional visual-review layer over sampled frames and
+   deterministic instrument facts (LUFS, silences, and word timings remain the
+   measured ground truth; `listened:false`). It accepts Claude, Codex,
+   Antigravity, and Grok backend IDs, but v0.6.114 admits only Claude with a
+   restricted Read-capable version (at least 2.1.248) and a safe copied-frame
+   workspace, or Grok with version 1.0.21 or later and its no-model-tools
+   policy. Codex and Antigravity may be detected as installed yet return the
+   honest `not_run` reason `render judge unavailable until restricted tool/file
+   access is verified`; this affects only render judging, not Agent Chat or
+   generation. Auto keeps the configured Claude → Codex → Antigravity → Grok
+   order while skipping unready rungs; an attempted ready-rung infrastructure
+   error may continue to the next ready rung. A named backend never falls back.
+   `not_run` is unreviewed, never a pass. An explicit `CUTD_JUDGE_ADAPTER`
+   remains an operator/test override. Provider admission is not a claim of a
+   live model turn or native qualification.
 
 ## Repo map
 

@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -44,15 +43,6 @@ LADDER: list[tuple[str, str]] = [
     ("grok", "grok_judge.py"),
 ]
 
-# Per-provider CLI binary name (for the explicit-override which() check). Kept
-# beside LADDER so a new rung adds its binary in one place.
-PROVIDER_BIN: dict[str, str] = {
-    "claude": "claude",
-    "codex": "codex",
-    "antigravity": "agy",   # NB: binary is `agy`, not `antigravity`
-    "grok": "grok",
-}
-
 VALID_PROVIDERS = {p for p, _ in LADDER}
 
 
@@ -74,7 +64,15 @@ def detect_ladder() -> dict:
         "antigravity": antigravity_judge.detect(),
         "grok": grok_judge.detect(),
     }
-    auto = next((p for p, _ in LADDER if rungs[p].get("found")), None)
+    # Presence and admission are distinct. Claude has a restricted-Read gate;
+    # every other rung must affirmatively declare its own judge-ready boundary.
+    # A future adapter without that declaration remains unavailable by default.
+    for provider, entry in rungs.items():
+        admitted = (bool(entry.get("restricted_read_capable"))
+                    if provider == "claude"
+                    else bool(entry.get("judge_ready", False)))
+        entry["judge_ready"] = bool(entry.get("found")) and admitted
+    auto = next((p for p, _ in LADDER if rungs[p].get("judge_ready")), None)
     return {
         "order": [p for p, _ in LADDER],
         "rungs": [rungs[p] for p, _ in LADDER],
@@ -91,8 +89,16 @@ def skip_reason_block(ladder: dict) -> str:
     parts = []
     for rung in ladder["rungs"]:
         prov = rung.get("provider")
-        if rung.get("found"):
+        if rung.get("found") and rung.get("judge_ready"):
             parts.append(f"{prov}: found (but not selected)")
+        elif rung.get("found"):
+            parts.append(
+                f"{prov}: found but unavailable "
+                f"({rung.get('availability_reason')
+                    or rung.get('restricted_read_reason')
+                    or 'unsupported capability'})")
+        elif rung.get("availability_reason"):
+            parts.append(f"{prov}: unavailable ({rung['availability_reason']})")
         else:
             parts.append(f"{prov}: CLI not on PATH")
     return (
@@ -234,7 +240,7 @@ def run_auto_with_stepdown(ladder: dict, passthrough: list[str],
     """
     # Detected rungs IN LADDER ORDER. detect_ladder()["rungs"] is already in
     # LADDER order, each entry carrying its provider + found flag.
-    detected = [r["provider"] for r in ladder["rungs"] if r.get("found")]
+    detected = [r["provider"] for r in ladder["rungs"] if r.get("judge_ready")]
     attempted: list[dict] = []
     last_rc = 0
     for idx, provider in enumerate(detected):
@@ -365,10 +371,6 @@ def main() -> int:
         # run; substituting another would lie about which judge ran). the judge-status contract:
         # step-down is an AUTO-mode-only behavior, by contract.
         selected = known.provider
-        if not shutil.which(PROVIDER_BIN[selected]):
-            # The CLI is absent; still run the adapter so the not_run envelope
-            # is uniform — but record that the OVERRIDE forced an absent rung.
-            pass
         rc, _env = run_adapter(selected, passthrough)
         return rc
 

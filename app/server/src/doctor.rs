@@ -21,12 +21,11 @@
 //!     env → beside-exe → app-data → PATH) so the doctor and the engine agree
 //!     on ONE ffmpeg. The `tools-doctor.json` file the desktop shell writes
 //!     becomes a CACHE of this verb's ffmpeg result, never a parallel truth.
-//!   - Judge rungs are detected in Rust (cheap `which` + informational
-//!     `--version`; Agent Chat providers also need a required-help capability
-//!     probe) and the bundled adapter + Python runtime are checked without a
-//!     model call. A CLI can therefore remain visible for agent chat while its
-//!     render-review card honestly reports degraded until the adapter runtime
-//!     is usable.
+//!   - Judge binary resolution/version display stays in Rust (and Agent Chat
+//!     keeps its separate required-help capability probe). Render-judge
+//!     admission comes from one bounded bundled-adapter `detect` call with no
+//!     model invocation. A CLI can therefore remain visible for agent chat while
+//!     its render-review card honestly reports unready or unverified.
 //!   - The perception python probe has a SHORT timeout and is best-effort; it
 //!     never blocks the verb loop (the verb is a fast cached read; `refresh`
 //!     re-probes).
@@ -42,6 +41,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
+mod judge_admission;
 mod service_cards;
 
 /// Card schema version (bumped only on a breaking shape change).
@@ -762,9 +762,9 @@ fn is_python_identifier(part: &str) -> bool {
 
 /// One judge rung: (card id suffix, binary on PATH, version flag).
 /// Mirrors the bundled adapter provider order. Kept in Rust
-/// deliberately: the doctor must work with no Python present. If the adapter
-/// contract gains a provider, add it here too; this is an explicit product
-/// contract rather than runtime discovery.
+/// deliberately: the card set remains visible when the adapter runtime is
+/// absent. Provider readiness itself comes from the adapter's affirmative
+/// detect protocol. If the adapter contract gains a provider, add it here too.
 const JUDGE_RUNGS: &[(&str, &str, &str)] = &[
     ("claude", "claude", "--version"),
     ("codex", "codex", "--version"),
@@ -1000,26 +1000,25 @@ fn chat_agent_block(
     })
 }
 
-/// Build one card per judge rung. `found` ⇒ ok; absent ⇒ missing (informational
-/// for the ladder — ANY ok rung means a judge exists). Resolution reuses the SAME
-/// agent-CLI ladder the chat path uses (`gen::resolve_agent`: process PATH first,
-/// then the explicit install dirs incl. grok's off-PATH ~/.grok/bin / a
-/// Finder-stripped-PATH .app's Homebrew dirs) so the doctor reports an off-PATH grok
-/// as present — and its informational version/help probes run the RESOLVED path,
-/// so they work even when the binary is not on PATH. Mirrors ladder_judge.py's
-/// PROVIDER_BIN map.
+/// Build one card per judge rung. Installation and render-judge admission are
+/// deliberately separate: a CLI may remain usable for Agent Chat while its
+/// adapter reports it unready for verify.judge. Binary resolution reuses the
+/// agent CLI ladder; the single adapter detect probe receives the same augmented
+/// PATH a real judge invocation does, including off-PATH installs.
 fn judge_card(
     provider: &'static str,
     bin: &'static str,
     vflag: &'static str,
     adapter: Option<&Path>,
     adapter_python: Option<&Path>,
+    admissions: &judge_admission::JudgeAdmissions,
 ) -> Card {
-    let review_ready = adapter.is_some() && adapter_python.is_some();
-    // `bin` is the binary stem; for grok it equals "grok", which keys the
+    let adapter_runtime_ready = adapter.is_some() && adapter_python.is_some();
+    // bin is the binary stem; for grok it equals "grok", which keys the
     // grok-only ~/.grok/bin rung inside the resolver.
     let resolved = crate::gen::resolve_agent(bin);
     let found = resolved.is_some();
+    let admission = judge_admission::resolve(provider, found, adapter_runtime_ready, admissions);
     // Version is display-only. Never let an informational banner consume the
     // capability scan's budget or decide whether the provider is admitted.
     let version = resolved
@@ -1036,19 +1035,12 @@ fn judge_card(
         })
         .map(|output| crate::chat::broker::verify_agent_capability_probe(provider, &output).is_ok())
         .unwrap_or(false);
-    let status = if !found {
-        CardStatus::Missing
-    } else if review_ready {
-        CardStatus::Ok
-    } else {
-        CardStatus::Degraded
-    };
     let hint = if !found {
         Some(format!(
-            "{provider} CLI (`{bin}`) not found on PATH or in the standard \
+            "{provider} CLI ({bin}) not found on PATH or in the standard \
                      install dirs. Install + log in to enable verify.judge via your \
                      {provider} subscription (no API key — the CLI drives the review). \
-                     Any one judge rung is enough."
+                     Any one admitted judge rung is enough."
         ))
     } else if adapter.is_none() {
         Some(
@@ -1065,14 +1057,23 @@ fn judge_card(
                      still use the CLI in the meantime."
                 .into(),
         )
-    } else {
+    } else if admission.judge_ready {
         None
+    } else {
+        Some(format!(
+            "This CLI is installed, but render-judge admission is unavailable: {}. \
+             Agent Chat remains a separate capability; Re-scan after correcting the issue.",
+            admission
+                .availability_reason
+                .as_deref()
+                .unwrap_or("the adapter did not affirmatively report readiness")
+        ))
     };
     let chat = chat_agent_block(provider, found, resolved.as_deref(), capability_verified);
     Card {
         id: format!("judge.{provider}"),
         kind: "judge".into(),
-        status,
+        status: admission.status,
         source: Some(if found {
             CardSource::Path
         } else {
@@ -1083,14 +1084,21 @@ fn judge_card(
         details: json!({
             "provider": provider,
             "binary": bin,
+            // Installed presence is intentionally independent from whether this
+            // provider is admitted to read copied frames as a render judge.
             "found": found,
-            "review_ready": found && review_ready,
+            // Kept as a compatibility alias for consumers that used the old
+            // field. It now has the truthful admission meaning.
+            "review_ready": admission.judge_ready,
+            "judge_ready": admission.judge_ready,
+            "availability_reason": admission.availability_reason,
+            "adapter_runtime_ready": adapter_runtime_ready,
             "adapter": adapter.map(|p| p.display().to_string()),
             "adapter_python": adapter_python.map(|p| p.display().to_string()),
             // Where it resolved (e.g. ~/.grok/bin/grok) — null when absent.
             // Lets the UI/agent (and the agent-dropdown) see the path.
             "resolved": resolved.as_ref().map(|p| p.display().to_string()),
-            "role": "render judge (verify.judge) — drives the user's own coding-agent CLI as a vision reviewer; NO API key, NO model call during detection",
+            "role": "render judge (verify.judge) — drives the user's own coding-agent CLI as a vision reviewer; NO API key, NO model call during admission detection",
             // The agent-chat dropdown state (3-level: absent / present-but-
             // unauthenticated / ready) + the security-posture badge — folded
             // here for the chat agents (claude/codex/grok); null for the
@@ -1105,6 +1113,15 @@ fn judge_cards() -> Vec<Card> {
     let adapter_python = crate::dispatch::configured_adapter_python().filter(|python| {
         version_line(python.as_os_str(), &["--version"], Duration::from_secs(8)).is_some()
     });
+    // The adapter owns provider-specific eligibility; invoke its cheap detect
+    // protocol only once, before the per-card display/chat probes fan out.
+    let judge_cli_path = crate::dispatch::configured_judge_cli_path();
+    let admissions = match (adapter.as_deref(), adapter_python.as_deref()) {
+        (Some(adapter), Some(python)) => {
+            judge_admission::probe(adapter, python, judge_cli_path.as_deref())
+        }
+        _ => judge_admission::JudgeAdmissions::Unverified,
+    };
     std::thread::scope(|scope| {
         let probes: Vec<_> = JUDGE_RUNGS
             .iter()
@@ -1116,6 +1133,7 @@ fn judge_cards() -> Vec<Card> {
                         vflag,
                         adapter.as_deref(),
                         adapter_python.as_deref(),
+                        &admissions,
                     )
                 })
             })

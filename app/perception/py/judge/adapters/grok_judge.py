@@ -32,6 +32,7 @@ _ADAPTERS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ADAPTERS_DIR)
 import cli_judge  # noqa: E402
 import codex_judge  # noqa: E402  (_extract_json — one shared implementation)
+import grok_tool_policy  # noqa: E402  (version-gated no-tool invocation)
 
 ADAPTER_NAME = "cli"                 # same adapter CLASS as claude/codex/agy (CLI judge)
 DEFAULT_PROVIDER = "grok"
@@ -43,13 +44,6 @@ DEFAULT_WINDOW_FPS = cli_judge.DEFAULT_WINDOW_FPS
 DEFAULT_MAX_FRAMES = cli_judge.DEFAULT_MAX_FRAMES
 DEFAULT_FRAME_WIDTH = cli_judge.DEFAULT_FRAME_WIDTH
 DEFAULT_TIMEOUT_S = cli_judge.DEFAULT_TIMEOUT_S
-
-# Tool grok must NOT attempt: its native vision MCP tool, which is rejected in
-# the stdio-standalone subprocess (no shellX HTTP MCP transport). Disabling it
-# routes grok straight to reading the inline --prompt-json image block (which
-# works), avoiding an unsupported tool round-trip.
-_DISALLOWED_TOOLS = "vision_describe"
-
 
 # ---------------------------------------------------------------------------
 # Explicit in-prompt schema — grok has NO model-side schema enforcement
@@ -109,42 +103,32 @@ EXPLICIT_SCHEMA_BLOCK = _build_schema_block()
 
 
 def detect() -> dict:
-    """Is the `grok` CLI present? `found` gates the ladder.
+    """Detect a Grok CLI that can enforce this adapter's no-tool policy.
 
-    Records found + version. `logged_in` is a BEST-EFFORT, read-only signal:
-    grok caches credentials under ~/.grok/ after `grok login`, so we report
-    whether that dir holds any credential-looking file — WITHOUT reading or
-    echoing token material. It is left None when we cannot tell; the invoke path
-    decides honestly (a failed/empty turn becomes status error). `logged_in` is
-    advisory only; `found` is what the ladder selects on. Detection stays cheap
-    and side-effect free.
+    Capability admission uses only ``--version`` and ``--help``. It never
+    starts a model turn and never looks at provider-owned auth or config files.
+    A present but policy-incomplete wrapper is not an auto-ladder candidate:
+    the adapter must not substitute a broader invocation just to keep Grok
+    available.
     """
     path = shutil.which("grok")
-    entry: dict = {"provider": "grok", "binary": "grok",
-                   "found": bool(path), "path": path,
-                   "adapter": "implemented (vision)"}
-    if path:
-        try:
-            cp = subprocess.run([path, "--version"], capture_output=True,
-                                text=True, encoding="utf-8", timeout=15)
-            entry["version"] = cp.stdout.strip() or cp.stderr.strip()
-        except (subprocess.TimeoutExpired, OSError) as e:
-            entry["version_error"] = str(e)
-        # Best-effort, READ-ONLY login signal — never echo token material. grok
-        # caches creds under ~/.grok/ after `grok login`; presence of a
-        # credential-named file is a weak "logged in" hint. We do NOT open or
-        # parse it (no secrets in output). None => unknown; invoke decides.
-        grok_dir = os.path.expanduser("~/.grok")
-        try:
-            if os.path.isdir(grok_dir):
-                names = os.listdir(grok_dir)
-                entry["logged_in"] = any(
-                    "cred" in n or "auth" in n or "token" in n or "session" in n
-                    for n in names) or None
-            else:
-                entry["logged_in"] = None
-        except OSError:
-            entry["logged_in"] = None
+    cli, reason = grok_tool_policy.resolve_grok_tool_policy("grok")
+    entry: dict = {
+        "provider": "grok",
+        "binary": "grok",
+        # Presence is factual; policy admission is separate so detection never
+        # claims a present but unqualified CLI is absent.
+        "found": bool(path),
+        "judge_ready": cli is not None,
+        "path": cli["path"] if cli is not None else path,
+        "adapter": "implemented (vision, no-tool policy)",
+        "logged_in": None,
+    }
+    if cli is not None:
+        entry["version"] = cli["version"]
+        entry["tool_policy"] = grok_tool_policy.policy_metadata(cli)
+    elif path:
+        entry["availability_reason"] = reason
     return entry
 
 
@@ -239,7 +223,8 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
     triple shape as cli_judge.invoke_claude / codex_judge.invoke_codex /
     antigravity_judge.invoke_antigravity, so the envelope assembly is shared.
 
-    Non-interactive Grok Build argv contract:
+    Non-interactive Grok Build argv contract, admitted first by
+    grok_tool_policy.resolve_grok_tool_policy:
       --prompt-file <path>     single-turn; reads the prompt from a FILE and
                                auto-detects a JSON array of ACP content blocks
                                ([text, image*]). We use the FILE channel (not the
@@ -248,21 +233,27 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
       --output-format json     ONE machine object on stdout {text, stopReason,
                                sessionId, requestId, thought}; verdict is in .text.
       --no-memory              throwaway call; never read/write session memory.
-      --disable-web-search     no web tools (judge reasons from frames + facts).
-      --disallowed-tools vision_describe   skip grok's native vision MCP tool,
-                               which is rejected in stdio-standalone (no shellX
-                               HTTP MCP transport) — routes grok straight to the
-                               inline image block. The frame is STILL seen.
+      --tools read_file,grep,list_dir then removes that complete non-empty
+                               allowlist with --disallowed-tools. This leaves no
+                               built-in tool without relying on an undocumented
+                               empty --tools list.
+      --deny MCPTool            denies every model-originated MCP invocation;
+                               this is separate from any configured server's
+                               own discovery/startup lifecycle.
+      --no-subagents, --disable-web-search, --sandbox read-only,
+      --permission-mode dontAsk remain defense in depth for the judge process.
       --model <id>             OPTIONAL model id (omitted by default -> account
                                default, which is vision-capable).
     There is NO reliable single-turn --system-prompt channel we use here; like
     codex/agy/gemini, the system rules are PREPENDED to the user prompt (clearly
     delimited) inside the text content block, so all rungs share one prompt path.
     """
-    path = shutil.which(grok_bin)
-    if not path:
-        return None, {"available": False}, (
-            f"grok CLI not found ({grok_bin!r}) — honest not_run")
+    cli, policy_reason = grok_tool_policy.resolve_grok_tool_policy(grok_bin)
+    if cli is None:
+        return None, {
+            "available": False,
+            "tool_policy": {"admitted": False, "reason": policy_reason},
+        }, policy_reason
 
     # Fold the system rules into the prompt (single-turn, one prompt path across
     # all rungs), then carry it + the frames as ACP content blocks.
@@ -282,22 +273,11 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
         with open(prompt_file, "w") as f:
             json.dump(blocks, f)
     except OSError as e:
-        return None, {"available": True}, (
+        return None, {"available": True,
+                      "tool_policy": grok_tool_policy.policy_metadata(cli)}, (
             f"grok adapter could not write the prompt-file {prompt_file}: {e}")
 
-    cmd = [
-        path,
-        "--prompt-file", prompt_file,        # JSON content blocks from a FILE (ARG_MAX-safe)
-        "--output-format", "json",
-        "--no-memory",                       # throwaway; never touch session memory
-        "--disable-web-search",              # judge reasons from frames + facts only
-        "--disallowed-tools", _DISALLOWED_TOOLS,  # skip the rejected native vision MCP tool
-        "--cwd", cwd_abs,                    # subprocess root = clean bundle (avoids
-                                             # grok's recursive watcher hitting /tmp
-                                             # permission-denied noise)
-    ]
-    if model:
-        cmd += ["--model", model]            # model id, e.g. "grok-build"
+    cmd = grok_tool_policy.grok_judge_argv(cli, prompt_file, cwd_abs, model)
 
     try:
         cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", cwd=cwd_abs,
@@ -313,6 +293,7 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
         "schema_enforced": False,            # grok has no --output-schema flag
         "image_bytes": image_bytes,
         "frames_attached": len(frame_paths),
+        "tool_policy": grok_tool_policy.policy_metadata(cli),
     }
 
     # Non-zero exit is an honest error (a hard auth/login failure surfaces here).

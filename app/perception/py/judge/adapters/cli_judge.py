@@ -25,6 +25,7 @@ _JUDGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _JUDGE_DIR)
 import judge  # noqa: E402
 from diagnostics import failed_preflight_reason, process_failure_detail  # noqa: E402
+import restricted_claude  # noqa: E402
 
 ADAPTER_NAME = "cli"
 DEFAULT_PROVIDER = "claude"          # codex / gemini adapters slot in later
@@ -436,55 +437,48 @@ def build_cli_prompts(mode: str, perception: dict, duration_s: float,
 
 
 def detect_providers() -> dict:
-    """Detect the Claude CLI without a model call."""
-    path = shutil.which("claude")
+    """Detect Claude and whether it can enforce restricted file reads."""
+    cli, reason = restricted_claude.resolve_restricted_claude("claude")
+    path = cli["path"] if cli else shutil.which("claude")
     entry: dict = {
         "binary": "claude",
         "found": bool(path),
         "path": path,
         "adapter": "implemented",
+        "restricted_read_capable": cli is not None,
     }
-    if path:
-        try:
-            cp = subprocess.run(
-                [path, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=15
-            )
-            entry["version"] = cp.stdout.strip() or cp.stderr.strip()
-        except (subprocess.TimeoutExpired, OSError) as e:
-            entry["version_error"] = str(e)
+    if cli:
+        entry["version"] = cli["version"]
+    elif reason:
+        entry["restricted_read_reason"] = reason
     return {"claude": entry}
 
 
-def preflight_read_probe(claude_bin: str, model: str, bundle: str,
+def preflight_read_probe(claude_cli: dict, model: str, bundle: str,
                          frame_relpath: str, timeout_s: int = 120
                          ) -> tuple[bool, str]:
-    """One cheap CLI call proving the Read tool can see a frame (the CLI frame-read probe).
+    """One cheap restricted-Read probe proving a frame is visible.
 
     Same flag set, cwd and relative-path shape the full review will use —
     that is the point: it fails the way the review would fail, for one
     frame's cost instead of twenty. Returns (ok, reason). The caller treats
-    a missing binary as "skip the probe" (invoke_claude owns that not_run).
+    a missing or unsupported CLI as "skip the probe" (invoke_claude owns that
+    not_run outcome).
     """
-    path = shutil.which(claude_bin)
-    if not path:
-        return False, f"claude CLI not found ({claude_bin!r})"
     prompt = (
         f"Use the Read tool to read the file {frame_relpath} (an image). "
         "If the Read succeeds, reply with exactly READ_OK and nothing else. "
         "If the Read fails, reply with READ_FAIL: followed by the exact "
         "error message you received.")
-    cmd = [
-        path, "--safe-mode", "-p",
-        "--output-format", "json",
-        "--model", model,
-        "--tools", "Read",
-        "--no-session-persistence",
-    ]
+    cmd = restricted_claude.restricted_claude_argv(
+        claude_cli, model, json_schema=None)
     try:
         cp = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                             cwd=bundle, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return False, f"probe exceeded {timeout_s}s timeout"
+    except OSError as exc:
+        return False, f"probe could not launch restricted Claude: {exc}"
     if cp.returncode != 0:
         return False, (
             f"probe CLI exit {cp.returncode}: "
@@ -500,58 +494,69 @@ def preflight_read_probe(claude_bin: str, model: str, bundle: str,
             "probe returned an error envelope: "
             f"{process_failure_detail(cp.stdout, cp.stderr, 300)}")
     result = str(env.get("result") or "")
-    if "READ_OK" in result:
+    if result.strip() == "READ_OK":
         return True, "probe read one frame successfully"
     return False, f"probe could not read the frame: {result[:400]}"
 
 
 def invoke_claude(claude_bin: str, sys_p: str, user_p: str, model: str,
-                  cwd: str, timeout_s: int) -> tuple[dict | None, dict, str | None]:
+                  cwd: str, timeout_s: int, claude_cli: dict | None = None
+                  ) -> tuple[dict | None, dict, str | None]:
     """Run one judge review through the claude CLI.
 
     Returns (review|None, cli_meta, not_run_or_error_reason|None).
     review None + reason => caller decides not_run vs error from cli_meta.
 
     Non-interactive Claude argv contract:
-      --safe-mode            clean judge context (no CLAUDE.md/skills/hooks),
-                             subscription OAuth intact
-      --tools Read           the judge may ONLY read files (the frames)
+      --safe-mode + --strict-mcp-config
+                             clean context with configured MCP disabled while
+                             preserving subscription OAuth and managed policy
+      --restricted + --tools Read
+                             the documented file-tool boundary: Read is
+                             confined to this fresh frame-only cwd
       --json-schema          CLI-side structured-output enforcement; verdict
                              arrives in envelope.structured_output
       --no-session-persistence  judge calls never pollute resumable history
     Prompt goes via stdin (long prompts; argv stays clean).
     """
-    path = shutil.which(claude_bin)
-    if not path:
-        return None, {"available": False}, (
-            f"claude CLI not found ({claude_bin!r}) — honest not_run")
-    cmd = [
-        path, "--safe-mode", "-p",
-        "--output-format", "json",
-        "--json-schema", json.dumps(judge.REVIEW_SCHEMA),
-        "--model", model,
-        "--tools", "Read",
-        "--system-prompt", sys_p,
-        "--no-session-persistence",
-    ]
+    if claude_cli is None:
+        claude_cli, capability_reason = restricted_claude.resolve_restricted_claude(
+            claude_bin)
+        if claude_cli is None:
+            return None, {"available": False, "restricted_read_capable": False}, capability_reason
+    cmd = restricted_claude.restricted_claude_argv(
+        claude_cli, model, json_schema=json.dumps(judge.REVIEW_SCHEMA))
+    cmd += ["--system-prompt", sys_p]
     try:
         cp = subprocess.run(cmd, input=user_p, capture_output=True, text=True, encoding="utf-8",
                             cwd=cwd, timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        return None, {"available": True, "timed_out": True}, (
+        return None, {"available": True, "timed_out": True,
+                      "restricted_read_capable": True,
+                      "claude_version": claude_cli["version"]}, (
             f"claude CLI exceeded {timeout_s}s timeout")
+    except OSError as exc:
+        return None, {"available": True, "launch_error": True,
+                      "restricted_read_capable": True,
+                      "claude_version": claude_cli["version"]}, (
+            f"could not launch restricted Claude: {exc}")
     if cp.returncode != 0:
-        return None, {"available": True, "exit_code": cp.returncode}, (
+        return None, {"available": True, "exit_code": cp.returncode,
+                      "restricted_read_capable": True,
+                      "claude_version": claude_cli["version"]}, (
             f"claude CLI exit {cp.returncode}: "
             f"{process_failure_detail(cp.stdout, cp.stderr, 800)}")
     try:
         env = json.loads(cp.stdout)
     except json.JSONDecodeError:
-        return None, {"available": True}, (
+        return None, {"available": True, "restricted_read_capable": True,
+                      "claude_version": claude_cli["version"]}, (
             "claude CLI emitted non-JSON: "
             f"{process_failure_detail(cp.stdout, cp.stderr, 400)}")
     meta = {
         "available": True,
+        "restricted_read_capable": True,
+        "claude_version": claude_cli["version"],
         "envelope_type": env.get("type"),
         "is_error": env.get("is_error"),
         "duration_ms": env.get("duration_ms"),
@@ -637,29 +642,43 @@ def main() -> int:
     duration_s = judge.probe_duration_s(args.render)
     duration_ms = int(duration_s * 1000)
 
-    # Bundle = the CLI subprocess's whole world: cwd containing only frames
-    # (+ generated perception). Created BEFORE perception resolution because
-    # sidecar-generated reports land inside it. Anchored under the CALLER's
-    # cwd, not /tmp, so sandboxed CLIs can read the frames through one
-    # project-local bundle convention.
-    bundle = args.bundle_dir or tempfile.mkdtemp(prefix="cli_judge_", dir=os.getcwd())
-    os.makedirs(bundle, exist_ok=True)
+    # Staging holds pipeline artifacts (including generated perception facts).
+    # It is never Claude's cwd: after frame extraction, a separate private
+    # execution root receives only validated frame copies.
+    owned_staging_bundle = args.bundle_dir is None
+    staging_bundle = args.bundle_dir or tempfile.mkdtemp(
+        prefix="cli_judge_", dir=os.getcwd())
+    # `tempfile` may return a conventional macOS alias such as `/tmp` or
+    # `/var/folders`.  This is our freshly created 0700 directory, so bind it
+    # to that platform's canonical spelling before the strict no-follow copy
+    # helper traverses every parent. Caller-provided bundle paths stay literal.
+    if owned_staging_bundle:
+        staging_bundle = os.path.realpath(staging_bundle)
+    cleanup_bundles = [] if args.bundle_dir else [staging_bundle]
+
+    def abort_staging(message: str) -> int:
+        print(message, file=sys.stderr)
+        for owned in cleanup_bundles:
+            shutil.rmtree(owned, ignore_errors=True)
+        return 2
+
+    if os.path.lexists(staging_bundle) and os.path.islink(staging_bundle):
+        return abort_staging("--bundle-dir must not be a symlink")
+    os.makedirs(staging_bundle, exist_ok=True)
 
     # Perception facts for THE RENDER (the coordinate-space guard): resolve, then refuse any
     # coordinate-space mismatch loudly before frames are extracted or a provider request is sent.
     try:
         perception, perception_source, warnings = resolve_perception(
-            args.render, args.perception, bundle)
+            args.render, args.perception, staging_bundle)
     except (ValueError, RuntimeError, OSError) as e:
-        print(f"perception resolution failed: {e}", file=sys.stderr)
-        return 2
+        return abort_staging(f"perception resolution failed: {e}")
     try:
         judge.sanity_check_perception(perception, duration_ms)
     except ValueError as e:
-        print(f"perception sanity check FAILED "
-              f"(source: {perception_source['mode']} "
-              f"{perception_source['path']}): {e}", file=sys.stderr)
-        return 2
+        return abort_staging(
+            f"perception sanity check FAILED (source: {perception_source['mode']} "
+            f"{perception_source['path']}): {e}")
 
     window: tuple[int, int] | None = None
     if args.mode == "window":
@@ -685,51 +704,73 @@ def main() -> int:
             f"(±{int(1000.0 / fps_eff / 2)} ms visual granularity); brief "
             "glitches between samples are unobservable at this rate")
 
-    frames_dir = os.path.join(bundle, "frames")
-    frames = judge.extract_frames(
-        args.render, frames_dir, fps_eff,
-        start_ms=window[0] if window else None,
-        end_ms=window[1] if window else None,
-        max_frames=args.max_frames, width=args.width)
+    frames_dir = os.path.join(staging_bundle, "frames")
+    if os.path.lexists(frames_dir) and os.path.islink(frames_dir):
+        return abort_staging("bundle frames directory must not be a symlink")
+    try:
+        frames = judge.extract_frames(
+            args.render, frames_dir, fps_eff,
+            start_ms=window[0] if window else None,
+            end_ms=window[1] if window else None,
+            max_frames=args.max_frames, width=args.width)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return abort_staging(f"frame extraction failed: {exc}")
     # Manifest paths must be relative to the bundle (the subprocess cwd).
     for m in frames:
-        m["path"] = os.path.relpath(m["path"], bundle)
+        m["path"] = os.path.relpath(m["path"], staging_bundle)
 
-    # Bundles WE created (cleaned at the end unless kept). A caller-supplied
-    # --bundle-dir is the caller's to keep; retry bundles are always ours.
-    cleanup_bundles = [] if args.bundle_dir else [bundle]
-
-    # Pre-flight Read probe (the CLI frame-read probe — see module docstring): prove the CLI
-    # can Read ONE frame with the exact flags/cwd/relative path the review
-    # will use, retry once in a fresh bundle, give up honestly otherwise —
-    # all BEFORE sending the complete multi-frame review. Skipped when the binary is
-    # missing (invoke_claude owns that not_run path).
-    preflight: dict | None = None
+    # The staging bundle is local pipeline state, not Claude's readable root.
+    # A caller-supplied --bundle-dir remains caller-owned; a fresh execution
+    # bundle below is always ours and contains only validated copied frames.
+    bundle = staging_bundle
+    claude_cli, capability_reason = restricted_claude.resolve_restricted_claude(
+        args.claude_bin)
+    preparation_meta: dict | None = None
     skip_reason: str | None = None
+    if claude_cli is not None:
+        try:
+            bundle = restricted_claude.create_frame_only_bundle(
+                staging_bundle, [m["path"] for m in frames])
+            cleanup_bundles.append(bundle)
+        except (OSError, ValueError) as exc:
+            skip_reason = f"could not prepare restricted Claude frame bundle: {exc}"
+            preparation_meta = {
+                "available": True,
+                "restricted_read_capable": True,
+                "claude_version": claude_cli["version"],
+                "restricted_bundle_error": True,
+            }
+
+    # Pre-flight Read probe: prove the restricted CLI can read one copied frame
+    # with the exact cwd/relative path used by the review.  A failed probe
+    # retries in another fresh frame-only bundle before giving up honestly.
+    preflight: dict | None = None
     probe_timeout = min(120, args.timeout)
-    if frames and shutil.which(args.claude_bin):
+    if frames and claude_cli is not None and skip_reason is None:
         ok1, why1 = preflight_read_probe(
-            args.claude_bin, args.cli_model, bundle, frames[0]["path"],
+            claude_cli, args.cli_model, bundle, frames[0]["path"],
             probe_timeout)
         attempts = [{"bundle": bundle, "ok": ok1, "reason": why1}]
         if not ok1:
             print(f"[cli_judge] pre-flight Read probe failed ({why1}) — "
                   "retrying once in a fresh bundle dir", file=sys.stderr)
-            retry_bundle = tempfile.mkdtemp(
-                prefix="cli_judge_retry_",
-                dir=os.path.dirname(os.path.abspath(bundle)),
-            )
-            cleanup_bundles.append(retry_bundle)
-            shutil.copytree(os.path.join(bundle, "frames"),
-                            os.path.join(retry_bundle, "frames"))
-            ok2, why2 = preflight_read_probe(
-                args.claude_bin, args.cli_model, retry_bundle,
-                frames[0]["path"], probe_timeout)
-            attempts.append({"bundle": retry_bundle, "ok": ok2, "reason": why2})
-            if ok2:
-                bundle = retry_bundle  # review where Reads provably work
-            else:
+            try:
+                retry_bundle = restricted_claude.create_frame_only_bundle(
+                    bundle, [m["path"] for m in frames])
+            except (OSError, ValueError) as exc:
+                why2 = f"could not prepare restricted retry bundle: {exc}"
+                attempts.append({"bundle": None, "ok": False, "reason": why2})
                 skip_reason = failed_preflight_reason(why1, why2)
+            else:
+                cleanup_bundles.append(retry_bundle)
+                ok2, why2 = preflight_read_probe(
+                    claude_cli, args.cli_model, retry_bundle,
+                    frames[0]["path"], probe_timeout)
+                attempts.append({"bundle": retry_bundle, "ok": ok2, "reason": why2})
+                if ok2:
+                    bundle = retry_bundle  # review where Reads provably work
+                else:
+                    skip_reason = failed_preflight_reason(why1, why2)
         preflight = {"attempts": attempts}
 
     prev_cwd = os.getcwd()
@@ -742,12 +783,22 @@ def main() -> int:
         os.chdir(prev_cwd)
 
     if skip_reason is not None:
+        review_raw, cli_meta, reason = None, (
+            preparation_meta or {
+                "available": True,
+                "preflight_failed": True,
+                "restricted_read_capable": True,
+                "claude_version": claude_cli["version"],
+            }), skip_reason
+    elif claude_cli is None:
         review_raw, cli_meta, reason = None, {
-            "available": True, "preflight_failed": True}, skip_reason
+            "available": False,
+            "restricted_read_capable": False,
+        }, capability_reason
     else:
         review_raw, cli_meta, reason = invoke_claude(
             args.claude_bin, sys_p, user_p, args.cli_model, bundle,
-            args.timeout)
+            args.timeout, claude_cli)
 
     # error_class distinguishes INFRASTRUCTURE failures (adapter crash, CLI
     # absent at run-time, blocked file reads — the environment failed) from any
@@ -828,16 +879,20 @@ def main() -> int:
         # (no frames, or binary missing — invoke owns that not_run).
         "preflight": preflight,
         "prompt_chars": {"system": len(sys_p), "user": len(user_p)},
-        "bundle_dir": bundle if args.keep_bundle else None,
+        # The staging directory may carry generated perception facts. The
+        # process only Read-accesses execution_bundle_dir, which has frames.
+        "bundle_dir": staging_bundle if args.keep_bundle else None,
+        "execution_bundle_dir": bundle if args.keep_bundle else None,
     }
     text = json.dumps(envelope, indent=2)
     if args.out:
         with open(args.out, "w") as f:
             f.write(text + "\n")
     print(text)
-    kept_bundle = os.path.abspath(bundle) if args.keep_bundle else None
+    kept_bundles = ({os.path.abspath(staging_bundle), os.path.abspath(bundle)}
+                    if args.keep_bundle else set())
     for b in cleanup_bundles:
-        if kept_bundle and os.path.abspath(b) == kept_bundle:
+        if os.path.abspath(b) in kept_bundles:
             continue
         shutil.rmtree(b, ignore_errors=True)
     return 0

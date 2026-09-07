@@ -1317,6 +1317,13 @@ pub(crate) fn configured_judge_adapter() -> Option<PathBuf> {
     verify_handlers::find_judge_adapter()
 }
 
+/// The exact PATH augmentation used for every ladder adapter invocation.
+/// Doctor passes it to the adapter's no-model detect protocol so off-PATH
+/// installs resolve identically for admission and actual review.
+pub(crate) fn configured_judge_cli_path() -> Option<std::ffi::OsString> {
+    verify_handlers::judge_cli_path()
+}
+
 mod export_formats;
 use export_formats::{
     export_ass, export_chapters, export_edl, export_error, export_otio, export_srt,

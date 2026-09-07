@@ -29,6 +29,21 @@ export interface DoctorCard {
   details: Record<string, unknown>
 }
 
+/**
+ * The Environment card's visible status. Judge cards intentionally require the
+ * provider admission result in addition to ordinary doctor-card discovery:
+ * `found` means the CLI was located, whereas `judge_ready` admits it to
+ * `verify.judge`. An older or interrupted Doctor response without that explicit
+ * admission field remains neutral rather than presenting an installed CLI as a
+ * ready render reviewer. `details.chat` is deliberately not read here; Agent
+ * Chat has its own provider-capability and session checks below.
+ */
+export function environmentCardStatus(card: DoctorCard): CardStatus {
+  if (card.kind !== 'judge' || card.details?.judge_ready === true) return card.status
+  if (card.status === 'missing' || card.status === 'unknown') return card.status
+  return card.details?.judge_ready === false ? 'degraded' : 'unknown'
+}
+
 /** The full env report — cached server-side, refreshable, WS-pushed on change. */
 export interface DoctorReport {
   schema: string

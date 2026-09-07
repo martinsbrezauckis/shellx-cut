@@ -6,6 +6,7 @@ import {
   hasFetchAction,
   hasMatteSetupAction,
   hasSetupAction,
+  environmentCardStatus,
   setupMatte,
   setupPerception,
   type DoctorCard,
@@ -17,19 +18,20 @@ import { useEnvironmentSetupJob } from './useEnvironmentSetupJob'
 
 /** Status -> display token (label + color class). Fixed family semantics. */
 function statusChip(card: DoctorCard): { label: string; cls: string } {
+  const status = environmentCardStatus(card)
   if (card.id === 'gpu-encode') {
-    return card.status === 'ok' && card.details?.hardware_available === true
+    return status === 'ok' && card.details?.hardware_available === true
       ? { label: 'Ready', cls: 'env-st--ok' }
       : card.details?.hardware_available === true
         ? { label: 'Needs attention', cls: 'env-st--degraded' }
         : { label: 'Ready', cls: 'env-st--ok' }
   }
-  if (card.status === 'unknown') {
+  if (status === 'unknown') {
     return card.kind === 'service'
       ? { label: 'Optional', cls: 'env-st--unknown' }
       : { label: 'Check again', cls: 'env-st--unknown' }
   }
-  switch (card.status) {
+  switch (status) {
     case 'ok':
       return { label: 'Ready', cls: 'env-st--ok' }
     case 'degraded':
@@ -53,17 +55,29 @@ function compactFact(card: DoctorCard): string | null {
 }
 
 function compactHint(card: DoctorCard): string | null {
+  const status = environmentCardStatus(card)
+  if (card.kind === 'judge') {
+    if (card.details?.judge_ready === false) {
+      const reason = typeof card.details?.availability_reason === 'string'
+        ? card.details.availability_reason
+        : 'Render-review admission is unavailable for this CLI.'
+      return `${reason} Agent Chat is checked separately.`
+    }
+    if (card.details?.judge_ready !== true && status !== 'missing') {
+      return 'Could not verify render-review admission. Re-scan to check again; Agent Chat is checked separately.'
+    }
+  }
   if (card.id === 'gpu-encode') {
-    if (card.status === 'ok' && card.details?.hardware_available === true) return null
+    if (status === 'ok' && card.details?.hardware_available === true) return null
     if (card.details?.hardware_available === true) return 'Re-scan or choose a working video tool if faster exports are not available.'
     return 'Software export works. Add GPU support only if you need faster renders.'
   }
-  if (card.status === 'ok' || card.status === 'unknown') return null
+  if (status === 'ok' || status === 'unknown') return null
   if (card.id === 'ffmpeg') return 'Install video processing so imports, previews, and exports work.'
   if (card.id === 'perception') return 'Install captions when you need transcripts, word edits, silence cleanup, or search.'
   if (card.id === 'matte') return 'Install the standard cutout model for on-device background removal.'
   if (card.id === 'matte_premium') return 'Install only for cleaner edges and subject picking on supported NVIDIA machines.'
-  if (card.status === 'degraded') return 'Re-scan or set this up again if the feature does not work.'
+  if (status === 'degraded') return 'Re-scan or set this up again if the feature does not work.'
   return 'Set this up only if you need this feature.'
 }
 
@@ -118,6 +132,7 @@ export default function EnvCardRow({
   onChanged: () => void
 }) {
   const { title, role } = cardLabel(card)
+  const presentationStatus = environmentCardStatus(card)
   const chip = statusChip(card)
   const gpuSoftwareOnly = card.id === 'gpu-encode' && card.details?.hardware_available !== true
   const { job, runJob } = useEnvironmentSetupJob(onChanged)
@@ -162,11 +177,11 @@ export default function EnvCardRow({
 
   return (
     <div
-      className={`env-row env-row--${gpuSoftwareOnly ? 'unknown' : card.status}`}
+      className={`env-row env-row--${gpuSoftwareOnly ? 'unknown' : presentationStatus}`}
       data-cut-env-card={card.id}
-      data-cut-env-status={card.status}
+      data-cut-env-status={presentationStatus}
     >
-      <span className={`env-st ${chip.cls}`} data-cut-env-statuschip={card.status}>
+      <span className={`env-st ${chip.cls}`} data-cut-env-statuschip={presentationStatus}>
         {chip.label}
       </span>
 
@@ -219,7 +234,7 @@ export default function EnvCardRow({
             {card.id === 'matte_premium' ? 'Install premium' : 'Install (~14 MB)'}
           </button>
         )}
-        {!job.busy && card.kind !== 'service' && card.status === 'unknown' && (
+        {!job.busy && card.kind !== 'service' && presentationStatus === 'unknown' && (
           <button
             className="env-btn env-btn--sm"
             data-cut-env-rescan={card.id}

@@ -820,8 +820,9 @@ export interface VerbArgs {
   'verify.rerun': { render_id: string }
   // backend selects a rung of the judge access ladder. "auto" (default; "cli"
   // is a backward-compatible alias) walks claude→codex→antigravity→grok and
-  // runs the first detected subscription CLI; a named rung forces it (honest
-  // not_run if its CLI is absent). The rung set mirrors shellX's providers.
+  // runs the first subscription CLI with judge_ready=true; a named rung forces
+  // it (honest not_run if absent or unready, with no fallback). The rung set
+  // mirrors ShellX's providers.
   'verify.judge': { render_id?: string; backend?: 'auto' | 'cli' | 'claude' | 'codex' | 'antigravity' | 'grok' }
   // Read-only QC receipts (no render needed): visual pacing, caption QC vs
   // timed-text standards, verbal pacing (WPM/fillers), brand conformance.
