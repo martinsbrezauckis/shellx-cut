@@ -185,6 +185,41 @@ fn reconstructed_navigation_survives_a_materialized_snapshot() {
 }
 
 #[test]
+fn replay_metrics_belong_to_the_calling_test_thread() {
+    reset_test_replay_metrics();
+    let child_metrics = std::thread::spawn(|| {
+        let temp = tempfile::tempdir().unwrap();
+        let ops = marker_log(1);
+        let journal = journal(&ops);
+        rebuild(temp.path(), &journal, ops.len()).unwrap();
+        test_replay_metrics()
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+        child_metrics,
+        TestReplayMetrics {
+            rebuilds: 1,
+            replayed_ops: 2,
+        }
+    );
+    assert_eq!(test_replay_metrics(), TestReplayMetrics::default());
+
+    let temp = tempfile::tempdir().unwrap();
+    let ops = marker_log(1);
+    let journal = journal(&ops);
+    rebuild(temp.path(), &journal, ops.len()).unwrap();
+    assert_eq!(
+        test_replay_metrics(),
+        TestReplayMetrics {
+            rebuilds: 1,
+            replayed_ops: 2,
+        }
+    );
+}
+
+#[test]
 fn post_open_hundred_thousand_operation_undo_and_redo_use_only_indexed_history() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("history.cutproj");

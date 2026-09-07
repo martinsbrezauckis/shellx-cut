@@ -28,8 +28,17 @@ const EXCLUDED_FILES = new Set([
   'ui/tsconfig.tsbuildinfo',
 ])
 
+// Source identities must agree across OS locale settings. JavaScript's
+// localeCompare uses the host locale; relational string comparison is a stable
+// UTF-16 code-unit order and does not normalize or fold distinct names.
+export function compareSourcePath(left, right) {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
+}
+
 function entries(root, dir, out) {
-  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => compareSourcePath(a.name, b.name))) {
     const path = join(dir, entry.name)
     const relativePath = relative(root, path).replaceAll('\\', '/')
     if ((entry.isDirectory() || entry.isSymbolicLink())
@@ -63,7 +72,7 @@ export function sourceContentManifest(repoRoot) {
   assertPortableSourcePaths(files.map((file) => file.relative))
   const rows = []
   let bytes = 0
-  for (const file of files.sort((a, b) => a.relative.localeCompare(b.relative))) {
+  for (const file of files.sort((a, b) => compareSourcePath(a.relative, b.relative))) {
     const stat = lstatSync(file.path)
     if (stat.isSymbolicLink()) {
       const target = readlinkSync(file.path)

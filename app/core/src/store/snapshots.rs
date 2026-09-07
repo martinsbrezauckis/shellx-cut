@@ -9,7 +9,7 @@ use crate::ops::JournalView;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 const SNAPSHOT_SCHEMA: &str = "shellx-cut/history-snapshot/1";
 pub(super) const SNAPSHOT_INTERVAL: usize = 4_096;
@@ -40,21 +40,24 @@ pub(super) struct TestReplayMetrics {
 }
 
 #[cfg(test)]
-static TEST_REBUILDS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(test)]
-static TEST_REPLAYED_OPS: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    // The lib test harness runs independent projects concurrently. These are
+    // instrumentation for the caller's replay only, not process-wide counters.
+    static TEST_REBUILDS: Cell<usize> = const { Cell::new(0) };
+    static TEST_REPLAYED_OPS: Cell<usize> = const { Cell::new(0) };
+}
 
 #[cfg(test)]
 pub(super) fn reset_test_replay_metrics() {
-    TEST_REBUILDS.store(0, Ordering::Relaxed);
-    TEST_REPLAYED_OPS.store(0, Ordering::Relaxed);
+    TEST_REBUILDS.with(|metric| metric.set(0));
+    TEST_REPLAYED_OPS.with(|metric| metric.set(0));
 }
 
 #[cfg(test)]
 pub(super) fn test_replay_metrics() -> TestReplayMetrics {
     TestReplayMetrics {
-        rebuilds: TEST_REBUILDS.load(Ordering::Relaxed),
-        replayed_ops: TEST_REPLAYED_OPS.load(Ordering::Relaxed),
+        rebuilds: TEST_REBUILDS.with(Cell::get),
+        replayed_ops: TEST_REPLAYED_OPS.with(Cell::get),
     }
 }
 
@@ -93,8 +96,8 @@ pub(super) fn rebuild(
     };
     #[cfg(test)]
     {
-        TEST_REBUILDS.fetch_add(1, Ordering::Relaxed);
-        TEST_REPLAYED_OPS.fetch_add(stats.replayed_ops, Ordering::Relaxed);
+        TEST_REBUILDS.with(|metric| metric.set(metric.get().wrapping_add(1)));
+        TEST_REPLAYED_OPS.with(|metric| metric.set(metric.get().wrapping_add(stats.replayed_ops)));
     }
     Ok((project, stats))
 }
