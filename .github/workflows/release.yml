@@ -66,6 +66,33 @@ jobs:
           cargo build --release --manifest-path app/Cargo.toml -p server --bin cutd
           node scripts/release/stage-tauri-cutd.mjs
 
+      - name: Admit Git-for-Windows Bash for the Windows Tauri signing hook
+        # The checked-in Windows signCommand is intentionally a Bash hook. On
+        # Windows, resolve Git Bash from its installation metadata rather than
+        # accepting the WindowsApps Bash alias or assuming a fixed path.
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitKey = 'HKLM:\SOFTWARE\GitForWindows'
+          if (-not (Test-Path -LiteralPath $gitKey)) {
+            throw 'Git-for-Windows installation metadata is unavailable'
+          }
+          $installPath = [string](Get-ItemProperty -LiteralPath $gitKey).InstallPath
+          if ([string]::IsNullOrWhiteSpace($installPath)) {
+            throw 'Git-for-Windows installation metadata has no InstallPath'
+          }
+          $gitRoot = [System.IO.Path]::GetFullPath($installPath).TrimEnd('\')
+          $bash = Join-Path $gitRoot 'bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $bash -PathType Leaf)) {
+            throw "Git-for-Windows Bash is unavailable: $bash"
+          }
+          $version = @(& $bash --noprofile --norc --version)
+          if ($LASTEXITCODE -ne 0 -or $version.Count -eq 0 -or $version[0] -notmatch '^GNU bash, version ') {
+            throw 'Git-for-Windows Bash did not pass the non-interactive version probe'
+          }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value (Split-Path -Parent $bash)
+
       - name: Build unsigned bundles (tauri)
         # Pin the CLI instead of resolving @latest at run time. Smoke builds
         # skip updater artifacts, so no signing material is required.
