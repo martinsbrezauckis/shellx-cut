@@ -14,6 +14,8 @@ import {
 export interface UiDomState {
   activeReviewTab: 'ops' | 'receipts' | 'qc' | 'scopes' | 'diff' | null
   dialogs: string[]
+  /** Exact About version only when the visible text matches its DOM attribute. */
+  aboutVersion: string | null
 }
 
 export interface UiObservableState {
@@ -23,6 +25,8 @@ export interface UiObservableState {
   left: { collapsed: boolean; active_tab: LayoutState['leftTab']; find_surface: LayoutState['findSurface']; generate_tab: GenerateWorkspaceTab }
   right: { collapsed: boolean; pinned: boolean; active_tab: LayoutState['rightTab'] }
   review: { active_tab: UiDomState['activeReviewTab'] }
+  /** Additive v2 field for the About version visibly committed by the UI. */
+  about: { displayed_version: UiDomState['aboutVersion'] }
   overlays: {
     wizard: boolean
     settings: SettingsCategoryId | null
@@ -120,6 +124,7 @@ export function createUiObservableState(source: UiStateSource): UiObservableStat
       active_tab: source.layout.rightTab,
     },
     review: { active_tab: source.dom.activeReviewTab },
+    about: { displayed_version: source.dom.aboutVersion },
     overlays: {
       wizard: source.wizardOpen,
       settings: source.envOpen ? source.envCategory : null,
@@ -142,8 +147,20 @@ export function createUiObservableState(source: UiStateSource): UiObservableStat
   }
 }
 
-export function readUiDomState(): UiDomState {
-  const activeReview = document.querySelector<HTMLElement>('[data-cut-review-tab][aria-selected="true"]')
+type UiDomDocument = Pick<Document, 'querySelector'>
+
+/** Read the version from the badge's rendered text, rejecting the doctor fallback or an attribute mismatch. */
+export function readRenderedAboutVersion(documentRef: UiDomDocument = document): string | null {
+  const about = documentRef.querySelector<HTMLElement>('[data-cut-about]')
+  const version = documentRef.querySelector<HTMLElement>('[data-cut-about-version]')
+  if (!about || !version) return null
+  const displayed = version.textContent?.trim().replace(/^v/, '').trim()
+  const declared = about.dataset.cutAppVersion?.trim()
+  return displayed && displayed !== '—' && (!declared || declared === displayed) ? displayed : null
+}
+
+export function readUiDomState(documentRef: UiDomDocument = document): UiDomState {
+  const activeReview = documentRef.querySelector<HTMLElement>('[data-cut-review-tab][aria-selected="true"]')
     ?.dataset.cutReviewTab
   const activeReviewTab = activeReview === 'ops'
     || activeReview === 'receipts'
@@ -153,7 +170,7 @@ export function readUiDomState(): UiDomState {
     ? activeReview
     : null
   const dialogs = UI_SURFACES
-    .filter((entry) => !('action' in entry) && document.querySelector(entry.selector))
+    .filter((entry) => !('action' in entry) && documentRef.querySelector(entry.selector))
     .map((entry) => entry.id)
-  return { activeReviewTab, dialogs }
+  return { activeReviewTab, dialogs, aboutVersion: readRenderedAboutVersion(documentRef) }
 }

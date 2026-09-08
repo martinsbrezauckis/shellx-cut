@@ -28,11 +28,19 @@ interface UiStatePublisherArgs {
   project: Project | null
 }
 
-const EMPTY_DOM: UiDomState = { activeReviewTab: null, dialogs: [] }
+const EMPTY_DOM: UiDomState = { activeReviewTab: null, dialogs: [], aboutVersion: null }
 
 /** Publish a path-safe, revisioned state snapshot after each React commit.
  * A small DOM observer adds self-owned dialogs and the Review tab without
  * duplicating their local state in App. */
+export const UI_DOM_MUTATION_OBSERVER_OPTIONS: MutationObserverInit = {
+  subtree: true,
+  childList: true,
+  characterData: true,
+  attributes: true,
+  attributeFilter: ['aria-selected', 'data-cut-app-version'],
+}
+
 export function useUiStatePublisher(args: UiStatePublisherArgs) {
   const revision = useRef(0)
   const [dom, setDom] = useState<UiDomState>(EMPTY_DOM)
@@ -61,12 +69,7 @@ export function useUiStatePublisher(args: UiStatePublisherArgs) {
     }
     refresh()
     const observer = new MutationObserver(schedule)
-    observer.observe(document.body, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ['aria-selected'],
-    })
+    observer.observe(document.body, UI_DOM_MUTATION_OBSERVER_OPTIONS)
     return () => observer.disconnect()
   }, [])
 

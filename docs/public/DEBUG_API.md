@@ -408,7 +408,10 @@ stable selectors and an explicit agent-control alternative.
 `ui.state {}` returns `shellx-cut/ui-state/2`: active workspace, left/right and
 Review tabs, overlays/dialogs, open/available/agent-openable surface ids,
 playhead, selection, export range, state revision, and path-safe project
-identity. The server adds `connected:true` and `ui_clients`; after the last UI
+identity. While Settings > About is open, its optional
+`about.displayed_version` is the exact version whose visible text has committed;
+it is `null` while the doctor report is pending and absent on older connected UI
+clients. The server adds `connected:true` and `ui_clients`; after the last UI
 socket disconnects it returns `no_ui_client` instead of stale state.
 
 ## Linked A/V timeline edits

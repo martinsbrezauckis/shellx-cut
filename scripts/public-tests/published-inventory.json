@@ -3,7 +3,7 @@
   "version": "0.6.114",
   "contract": {
     "node_test_count": 10,
-    "ui_library_test_count": 33
+    "ui_library_test_count": 34
   },
   "prerequisites": [
     {
@@ -81,6 +81,7 @@
     "discovery": "ui/public-tests/lib/libraryTestDiscovery.mjs",
     "exclusions": "ui/public-tests/library-test-exclusions.json",
     "tests": [
+      "about-version-state.test.ts",
       "active-job-presentation.test.ts",
       "agent-chat-session.test.ts",
       "asset-uses.test.ts",

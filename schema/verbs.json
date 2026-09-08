@@ -15485,13 +15485,13 @@
     {
       "name": "ui.state",
       "domain": "ui",
-      "description": "Revisioned, path-safe state from the connected UI: active workspace and left/right/review tabs, overlays/dialogs, available and agent-openable surface ids, playhead, selection, export range, and safe project identity. Errors no_ui_client after the last UI socket disconnects.",
+      "description": "Revisioned, path-safe state from the connected UI: active workspace and left/right/review tabs, overlays/dialogs, available and agent-openable surface ids, playhead, selection, export range, safe project identity, and the currently rendered About version when its visible text has committed. Errors no_ui_client after the last UI socket disconnects.",
       "args": {
         "type": "object",
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right, review, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
+      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right, review, about?:{displayed_version:string|null}, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {

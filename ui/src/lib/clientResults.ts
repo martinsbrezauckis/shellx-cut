@@ -33,6 +33,8 @@ export interface UiStateResult {
   playhead_ms: number
   selected_clip_ids: string[]
   open_surface_ids: string[]
+  /** Present on current clients while Settings > About is open; null until doctor text commits. */
+  about?: { displayed_version: string | null }
   project: { open: boolean; name?: string; active_sequence?: string }
 }
 
