@@ -181,7 +181,7 @@ test('macOS ScreenCaptureKit bridge contract accepts a later compatible patch', 
 
 test('checked-in warning policy is exact, owned, and expiry-bound', () => {
   const policies = Object.values(RUST_WARNING_EXCEPTIONS).flat()
-  assert.equal(policies.length, 19)
+  assert.equal(policies.length, 9)
   assert.equal(new Set(policies.map((policy) => (
     `${policy.advisoryId}:${policy.package}@${policy.version}`
   ))).size, policies.length)
@@ -192,6 +192,24 @@ test('checked-in warning policy is exact, owned, and expiry-bound', () => {
     assert.ok(policy.reason)
   }
   assert.equal(NPM_TOOLING_EXCEPTION, null)
+})
+
+test('desktop warning policy omits withdrawn gtk3-rs unmaintained advisories', () => {
+  const withdrawn = new Set([
+    'RUSTSEC-2024-0411', 'RUSTSEC-2024-0412', 'RUSTSEC-2024-0413',
+    'RUSTSEC-2024-0414', 'RUSTSEC-2024-0415', 'RUSTSEC-2024-0416',
+    'RUSTSEC-2024-0417', 'RUSTSEC-2024-0418', 'RUSTSEC-2024-0419',
+    'RUSTSEC-2024-0420',
+  ])
+  assert.equal(RUST_WARNING_EXCEPTIONS.desktop.some(({ advisoryId }) => withdrawn.has(advisoryId)), false)
+  const result = evaluateRustAudit({
+    label: 'Rust desktop',
+    stdout: warningReport('RUSTSEC-2024-0413', 'atk', '0.18.2'),
+    exceptions: RUST_WARNING_EXCEPTIONS.desktop,
+    now: new Date('2026-09-08T12:00:00Z'),
+  })
+  assert.match(result.failures.join('\n'), /unexpected cargo-audit warning RUSTSEC-2024-0413:atk@0\.18\.2/)
+  assert.equal(result.accepted.some(({ package: packageName }) => packageName === 'atk'), false)
 })
 
 test('dependency audit runs every check and fails when any process fails', () => {

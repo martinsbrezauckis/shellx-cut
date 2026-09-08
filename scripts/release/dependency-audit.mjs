@@ -21,7 +21,6 @@ const exception = (advisoryId, packageName, version, reason) => Object.freeze({
   reason,
 })
 
-const GTK_REASON = 'Tauri 2 still inherits the GTK3 stack for its Linux webview.'
 const UNIC_REASON = 'Tauri 2 urlpattern still inherits the archived UNIC crates.'
 
 /**
@@ -47,16 +46,6 @@ export const RUST_WARNING_EXCEPTIONS = Object.freeze({
     ),
   ]),
   desktop: Object.freeze([
-    exception('RUSTSEC-2024-0413', 'atk', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0416', 'atk-sys', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0412', 'gdk', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0418', 'gdk-sys', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0411', 'gdkwayland-sys', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0417', 'gdkx11', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0414', 'gdkx11-sys', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0415', 'gtk', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0420', 'gtk-sys', '0.18.2', GTK_REASON),
-    exception('RUSTSEC-2024-0419', 'gtk3-macros', '0.18.2', GTK_REASON),
     exception(
       'RUSTSEC-2024-0370',
       'proc-macro-error',
