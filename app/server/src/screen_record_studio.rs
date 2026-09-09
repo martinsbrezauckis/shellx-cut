@@ -263,11 +263,11 @@ pub(crate) fn apply_studio_events_to_plan(
         .unwrap_or(0.22);
     let base_shape = studio_timeline
         .iter()
-        .find_map(|(_, _, key)| key.shape.clone())
+        .find_map(|(_, _, key)| key.shape)
         .or_else(|| {
             plan.webcam
                 .as_ref()
-                .and_then(|wc| wc.timeline.iter().find_map(|key| key.shape.clone()))
+                .and_then(|wc| wc.timeline.iter().find_map(|key| key.shape))
         })
         .or_else(|| plan.webcam.as_ref().map(|wc| wc.shape))
         .unwrap_or(record_core::WebcamShape::Circle);

@@ -125,10 +125,12 @@ function AdvancedDetails({ card, rows }: { card: DoctorCard; rows: Array<[string
 export default function EnvCardRow({
   card,
   os,
+  arch,
   onChanged,
 }: {
   card: DoctorCard
   os: string
+  arch: string
   onChanged: () => void
 }) {
   const { title, role } = cardLabel(card)
@@ -200,7 +202,7 @@ export default function EnvCardRow({
           busy={job.busy}
           onOpenSetup={openServiceSetup}
         />
-        {!job.busy && hasFetchAction(card, os) && (
+        {!job.busy && hasFetchAction(card, os, arch) && (
           <button
             className="env-btn env-btn--primary env-btn--sm"
             data-cut-env-download={card.id}

@@ -69,8 +69,10 @@ v0.6.113 remains the latest published release.
 - Recording Studio adds separate **Display** and **Window** choices, a
   cancellable 3- or 5-second countdown, **Screen** and **Presenter** scenes with
   an elapsed or countdown timer, and camera recording as a separate editable
-  track on supported Windows and macOS builds. Supported macOS builds also
-  offer durable **Pause & resume** for compatible display recordings.
+  track when Doctor lists a current device on Windows or macOS. With no connected
+  camera or unavailable discovery, Camera stays disabled while screen recording
+  remains available. Supported macOS builds also offer durable **Pause & resume**
+  for compatible display recordings.
 - Timeline Voiceover records into an unlocked audio track after a visible
   count-in, follows the playhead or selected In-Out range, supports Stop and
   Cancel, and places the sealed take as one Undoable edit.
@@ -721,12 +723,14 @@ route to the same surface registry.
   remained and lets the UI discard its non-secret retry identity. Cancel, zero
   samples, and an unusable terminal add no edit.
 - Recording Studio can explicitly add one current Windows/macOS camera in
-  Auto-edit mode. Doctor exposes only opaque, expiring choices with safe labels;
-  Start revalidates the chosen device, waits for a real first frame, and refuses
-  missing permission, a busy device, or no-frame delivery without substituting
-  another camera. The finalized camera remains a separate editable take bound to
-  the screen capture clock, with position, size, visibility, and shape retained
-  as replayable Studio events.
+  Auto-edit mode when Doctor lists a device. No connected camera or unavailable
+  discovery leaves Camera disabled while normal screen recording stays available.
+  Doctor exposes only opaque, expiring choices with safe labels; Start revalidates
+  the chosen device, waits for a real first frame, and refuses missing permission,
+  a busy device, or no-frame delivery without substituting another camera. The
+  finalized camera remains a separate editable take bound to the screen capture
+  clock, with position, size, visibility, and shape retained as replayable Studio
+  events.
 - Recording Scenes provides a compact named scene strip for **Screen** and
   **Presenter PiP** layouts. The initial scene catalog is frozen and saved
   before Start acknowledges it; live scene switches and the one capture-wide
@@ -850,8 +854,9 @@ route to the same surface registry.
 - First-run setup leads with a plain three-step path: video tools first, add
   media next, and CLI agents only when Generate/chat workflows are needed.
 - When FFmpeg is confirmed missing, the Preview monitor shows a direct setup
-  notice with Install FFmpeg, Guide, and Re-check actions; Install opens
-  Settings and highlights the Video processing card.
+  notice that opens the Video processing card. On Windows/Linux x86_64, that card
+  offers a consented Install action for Cut's verified BtbN runtime; macOS directs
+  the user to a compatible local build or binary selection instead.
 - The Render/Export area also shows the same plain FFmpeg setup actions and
   guards video-like render/export choices before they fall through to raw
   engine errors.

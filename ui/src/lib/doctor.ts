@@ -252,17 +252,18 @@ export function shouldAutoPopWizard(report: DoctorReport | null): boolean {
 }
 
 /** Does this card have a one-click fix action in the UI? Only the ffmpeg tool
- *  card maps to system.fetch_tool, and ONLY on platforms with a BtbN build
- *  (Windows + Linux). macOS has no in-app fetch — there the card's hint guides
- *  the user to Homebrew, so we DON'T render a dead Install button. readiness tri-state: only on
+ *  card maps to system.fetch_tool, and ONLY where its BtbN payload exists
+ *  (Windows/Linux x86_64). Other platforms use the Doctor-provided local-install
+ *  guidance, so we never render a dead Install button. readiness tri-state: only on
  *  a CONFIRMED missing/degraded card — NOT on 'unknown' (an unverified probe must
  *  not push a confident "Install" for a binary that's probably present; the
  *  neutral Re-scan affordance handles it instead). */
-export function hasFetchAction(card: DoctorCard, os: string): boolean {
+export function hasFetchAction(card: DoctorCard, os: string, arch: string): boolean {
   return (
     card.id === 'ffmpeg' &&
     (card.status === 'missing' || card.status === 'degraded') &&
-    os !== 'macos'
+    (os === 'windows' || os === 'linux') &&
+    arch === 'x86_64'
   )
 }
 

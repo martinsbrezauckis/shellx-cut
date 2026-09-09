@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { sourceContentManifest } from './source-content-manifest.mjs'
+import { isUpdaterBaselineVersion } from './updater-test-version.mjs'
 
 export const UI_DIST_IDENTITY_SCHEMA = 'shellx-cut/ui-dist-identity@1'
 export const UI_DIST_IDENTITY_GUARD = 'BUILD-UI-IDENTITY-01'
@@ -26,7 +27,12 @@ function digest(path, label) {
 function packageVersion(root) {
   try {
     const value = JSON.parse(readFileSync(join(root, 'ui/package.json'), 'utf8')).version
-    if (typeof value !== 'string' || !/^\d+\.\d+\.\d+$/.test(value)) identityError('ui/package.json version must be an exact major.minor.patch version')
+    const requestedBaseline = process.env.SHELLX_CUT_UPDATER_BASELINE_VERSION || ''
+    const ordinary = typeof value === 'string' && /^\d+\.\d+\.\d+$/.test(value)
+    const preparedBaseline = value === requestedBaseline && isUpdaterBaselineVersion(value)
+    if (!ordinary && !preparedBaseline) {
+      identityError('ui/package.json version must be an exact major.minor.patch version, or the explicitly requested maintained updater-test baseline')
+    }
     return value
   } catch (error) {
     if (error.message.startsWith(`${UI_DIST_IDENTITY_GUARD}:`)) throw error

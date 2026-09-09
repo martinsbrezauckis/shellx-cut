@@ -372,7 +372,7 @@
             </article>
             <article class="manual-card">
               <h3>Camera stays editable</h3>
-              <p>In Auto-edit mode, turn Camera on, choose one current Windows/macOS device, and set its position, size, and shape. Cut keeps the finalized camera as a separate editable take instead of baking it into the screen source.</p>
+              <p>In Auto-edit mode, turn Camera on when Doctor lists a current Windows/macOS device, then set its position, size, and shape. With no connected camera or unavailable discovery, Camera stays disabled while screen recording remains available. Cut keeps the finalized camera as a separate editable take instead of baking it into the screen source.</p>
             </article>
             <article class="manual-card">
               <h3>Switch named scenes while recording</h3>
@@ -419,8 +419,9 @@
                 Required for clip probe, proxy media, screen recording, preview
                 media, and final export. A fresh PC often needs FFmpeg installed
                 before Cut can work like a video editor. If it is missing,
-                Preview points directly to the Video processing setup card.
-                On macOS, install Homebrew's complete build with
+                Preview points directly to the Video processing setup card. On
+                Windows and Linux x86_64, choose Install there to consent to
+                Cut's separate verified runtime. On macOS, install Homebrew's complete build with
                 <code>brew install ffmpeg-full</code>; Cut detects its keg-only
                 path after restart. The regular Homebrew formula omits filters
                 used by captions, stabilization, and managed color.

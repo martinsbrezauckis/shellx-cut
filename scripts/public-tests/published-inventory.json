@@ -3,7 +3,7 @@
   "version": "0.6.114",
   "contract": {
     "node_test_count": 11,
-    "ui_library_test_count": 37
+    "ui_library_test_count": 38
   },
   "prerequisites": [
     {
@@ -97,6 +97,7 @@
       "clip-context-menu.test.ts",
       "context-menu-reverse-match-frame.test.ts",
       "feature-surface-contract.test.ts",
+      "ffmpeg-fetch-platform.test.ts",
       "generate-rich-motion.test.ts",
       "grade-drawer.test.ts",
       "health-recovery.test.ts",

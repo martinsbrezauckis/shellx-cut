@@ -816,12 +816,18 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onW
     recordingPause.acknowledgeStart(res.captureId, res.pause)
     recordStartedAtRef.current = Date.now()
     reportWorkspaceAdmission('recording')
-    if (!recordingPause.enabled && studio.camera.enabled && !rawCapture) {
-      await emitStudioEvent({ source: 'camera', kind: 'visibility', visible: true })
-      await emitStudioEvent({
-        source: 'camera', kind: 'transform', x: studio.camera.x, y: studio.camera.y,
-        size: studio.camera.size, shape: studio.camera.shape,
-      })
+    if (!recordingPause.enabled && !rawCapture) {
+      if (studio.camera.enabled) {
+        await emitStudioEvent({ source: 'camera', kind: 'visibility', visible: true })
+        await emitStudioEvent({
+          source: 'camera', kind: 'transform', x: studio.camera.x, y: studio.camera.y,
+          size: studio.camera.size, shape: studio.camera.shape,
+        })
+      }
+      // The picker may have been selected before captureRef existed, when its
+      // live handler correctly emits nothing. Persist that accepted initial
+      // Auto-edit backdrop after Start so polish receives one Studio journal.
+      await emitStudioEvent({ source: 'background', kind: 'style', background: studio.background })
     }
     setPhase('recording')
     setElapsed(0)

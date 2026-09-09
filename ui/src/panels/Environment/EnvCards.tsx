@@ -14,11 +14,13 @@ function CardGroup({
   label,
   cards,
   os,
+  arch,
   onChanged,
 }: {
   label: string
   cards: DoctorCard[]
   os: string
+  arch: string
   onChanged: () => void
 }) {
   if (cards.length === 0) return null
@@ -26,7 +28,7 @@ function CardGroup({
     <section className="env-group" data-cut-env-group={label.toLowerCase()}>
       <h3 className="env-group-title">{label}</h3>
       {cards.map((c) => (
-        <EnvCardRow key={c.id} card={c} os={os} onChanged={onChanged} />
+        <EnvCardRow key={c.id} card={c} os={os} arch={arch} onChanged={onChanged} />
       ))}
     </section>
   )
@@ -50,12 +52,12 @@ export default function EnvCards({
 
   return (
     <div className="env-cards" data-cut-env-cards data-cut-env-essential-ok={report.essential_ok} data-cut-env-scanned-at={report.scanned_at}>
-      {visible.has('tools') && <CardGroup label="Video processing" cards={g.tools} os={report.os} onChanged={onChanged} />}
-      {visible.has('perception') && <CardGroup label="Captions and transcription" cards={g.perception} os={report.os} onChanged={onChanged} />}
-      {visible.has('matte') && <CardGroup label="Background removal" cards={g.matte} os={report.os} onChanged={onChanged} />}
-      {visible.has('services') && <CardGroup label="Voice & speaker services" cards={g.services} os={report.os} onChanged={onChanged} />}
-      {visible.has('judges') && <CardGroup label="Delivery review" cards={g.judges} os={report.os} onChanged={onChanged} />}
-      {visible.has('disk') && <CardGroup label="Storage" cards={g.disk} os={report.os} onChanged={onChanged} />}
+      {visible.has('tools') && <CardGroup label="Video processing" cards={g.tools} os={report.os} arch={report.arch} onChanged={onChanged} />}
+      {visible.has('perception') && <CardGroup label="Captions and transcription" cards={g.perception} os={report.os} arch={report.arch} onChanged={onChanged} />}
+      {visible.has('matte') && <CardGroup label="Background removal" cards={g.matte} os={report.os} arch={report.arch} onChanged={onChanged} />}
+      {visible.has('services') && <CardGroup label="Voice & speaker services" cards={g.services} os={report.os} arch={report.arch} onChanged={onChanged} />}
+      {visible.has('judges') && <CardGroup label="Delivery review" cards={g.judges} os={report.os} arch={report.arch} onChanged={onChanged} />}
+      {visible.has('disk') && <CardGroup label="Storage" cards={g.disk} os={report.os} arch={report.arch} onChanged={onChanged} />}
       {showMeta && (
         <div className="env-meta" data-cut-env-meta>
           {report.os}/{report.arch} · cut {report.app_version} · {report.addr ?? 'local'} · scanned{' '}

@@ -10,7 +10,7 @@
       "title": "Why FFmpeg is required",
       "where": "First-run setup and Settings",
       "description": "FFmpeg powers probing, preview media, proxies, screen recording, and final renders. If it is missing, Preview shows a setup notice that opens the Video processing card.",
-      "requirement": "Install FFmpeg and make it visible on PATH, or set the binary path in Cut.",
+      "requirement": "On Windows/Linux x86_64, use the consented Install action for Cut's verified runtime. On macOS, install a compatible local build such as ffmpeg-full, then restart Cut; you can also set a binary path in Cut.",
       "api": "system.doctor, system.set_ffmpeg, system.fetch_tool"
     },
     {
@@ -1710,7 +1710,7 @@
       "title": "Camera take",
       "where": "Record workspace",
       "description": "Turn Camera on in Auto-edit mode and choose one current device. Cut records it as a separate editable take instead of baking it into the screen source.",
-      "requirement": "Available on a supported Windows or macOS build after the OS admits the selected camera and a real first frame arrives. Raw mode keeps Camera off.",
+      "requirement": "In Auto-edit, Camera is available on Windows/macOS when Doctor lists a current device. No connected camera or unavailable discovery leaves Camera disabled while screen recording stays available. Start still requires the OS to admit the selected camera and deliver a real first frame. Linux currently shows Camera unavailable. Raw mode keeps Camera off.",
       "api": "screen_record.doctor camera, screen_record.start {camera_id}"
     },
     {
@@ -1779,7 +1779,7 @@
       "group": "record",
       "title": "Recording hotkeys",
       "where": "Record workspace",
-      "description": "F9 starts or stops recording while Cut is focused, and F12 drops a marker. On GNOME Wayland, Enable global F9 creates Cut's one owned shortcut; it is global only after Cut observes its forwarded callback.",
+      "description": "While Cut is focused, F9 follows the same Start/Stop admission checks, and F12 drops a marker. On GNOME Wayland, Enable global F9 creates Cut's one owned shortcut; it is global only after Cut observes its forwarded callback.",
       "requirement": "Focused F9 remains available when a global route is disabled or unavailable. The Record shortcut status names the actual reason.",
       "api": "screen_record.start, screen_record.stop, screen_record.studio_event"
     },
