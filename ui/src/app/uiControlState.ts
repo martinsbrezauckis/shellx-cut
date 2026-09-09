@@ -16,6 +16,8 @@ export interface UiDomState {
   dialogs: string[]
   /** Exact About version only when the visible text matches its DOM attribute. */
   aboutVersion: string | null
+  /** Build-stamped source identity from the generated document element. */
+  uiSourceContentManifestSha256: string | null
 }
 
 export interface UiObservableState {
@@ -27,6 +29,8 @@ export interface UiObservableState {
   review: { active_tab: UiDomState['activeReviewTab'] }
   /** Additive v2 field for the About version visibly committed by the UI. */
   about: { displayed_version: UiDomState['aboutVersion'] }
+  /** Additive debug evidence for the packaged UI bundle rendered by this client. */
+  runtime: { ui_source_content_manifest_sha256: UiDomState['uiSourceContentManifestSha256'] }
   overlays: {
     wizard: boolean
     settings: SettingsCategoryId | null
@@ -125,6 +129,7 @@ export function createUiObservableState(source: UiStateSource): UiObservableStat
     },
     review: { active_tab: source.dom.activeReviewTab },
     about: { displayed_version: source.dom.aboutVersion },
+    runtime: { ui_source_content_manifest_sha256: source.dom.uiSourceContentManifestSha256 },
     overlays: {
       wizard: source.wizardOpen,
       settings: source.envOpen ? source.envCategory : null,
@@ -147,7 +152,9 @@ export function createUiObservableState(source: UiStateSource): UiObservableStat
   }
 }
 
-type UiDomDocument = Pick<Document, 'querySelector'>
+type UiDomDocument = Pick<Document, 'querySelector'> & {
+  documentElement?: Pick<HTMLElement, 'dataset'> | null
+}
 
 /** Read the version from the badge's rendered text, rejecting the doctor fallback or an attribute mismatch. */
 export function readRenderedAboutVersion(documentRef: UiDomDocument = document): string | null {
@@ -157,6 +164,12 @@ export function readRenderedAboutVersion(documentRef: UiDomDocument = document):
   const displayed = version.textContent?.trim().replace(/^v/, '').trim()
   const declared = about.dataset.cutAppVersion?.trim()
   return displayed && displayed !== '—' && (!declared || declared === displayed) ? displayed : null
+}
+
+/** Read only the generated document marker, never an API or build-time fallback. */
+export function readRenderedUiSourceContentManifest(documentRef: UiDomDocument = document): string | null {
+  const value = documentRef.documentElement?.dataset.cutUiSourceContentManifestSha256?.trim()
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null
 }
 
 export function readUiDomState(documentRef: UiDomDocument = document): UiDomState {
@@ -172,5 +185,10 @@ export function readUiDomState(documentRef: UiDomDocument = document): UiDomStat
   const dialogs = UI_SURFACES
     .filter((entry) => !('action' in entry) && documentRef.querySelector(entry.selector))
     .map((entry) => entry.id)
-  return { activeReviewTab, dialogs, aboutVersion: readRenderedAboutVersion(documentRef) }
+  return {
+    activeReviewTab,
+    dialogs,
+    aboutVersion: readRenderedAboutVersion(documentRef),
+    uiSourceContentManifestSha256: readRenderedUiSourceContentManifest(documentRef),
+  }
 }

@@ -1,12 +1,18 @@
 import ThemeToggle from '../components/ThemeToggle'
 import { envHealthLevel, type DoctorReport } from '../lib/doctor'
+import type { Project } from '../lib/client'
 import { BrandMark, Icon } from '../icons'
+import type { WorkspaceMode } from '../layout/useLayout'
+import { WorkspaceModeTabs } from './WorkspaceModeTabs'
+import SequenceSwitcher from './SequenceSwitcher'
 
 interface RecordingTopBarProps {
-  projectName: string | null
+  project: Project | null
+  onProjectChanged?: () => void
+  onSequenceChanged?: () => void
   doctor: DoctorReport | null
   manualOpen: boolean
-  onBackToEdit: () => void
+  onMode: (mode: WorkspaceMode) => void
   backDisabled?: boolean
   backReason?: string | null
   onOpenSetup: () => void
@@ -16,10 +22,12 @@ interface RecordingTopBarProps {
 /** Focused chrome for Recording Studio. Editing and export tools deliberately
  * stay out of this mode because they cannot affect an active capture. */
 export default function RecordingTopBar({
-  projectName,
+  project,
+  onProjectChanged,
+  onSequenceChanged,
   doctor,
   manualOpen,
-  onBackToEdit,
+  onMode,
   backDisabled = false,
   backReason = null,
   onOpenSetup,
@@ -39,32 +47,28 @@ export default function RecordingTopBar({
         <span className="tb-title">
           <span className="tb-wordmark">ShellX CUT</span>
           <span className="tb-proj" data-cut-project>
-            · {projectName ? `${projectName}.cutproj` : 'new recording'}
+            · {project ? `${project.name}.cutproj` : 'new recording'}
           </span>
         </span>
       </div>
 
-      <span className="tb-recording-mode" data-cut-recording-mode-active>
-        <span aria-hidden="true" />
-        Recording Studio
-      </span>
+      {project && (
+        <SequenceSwitcher
+          project={project}
+          onProjectChanged={onProjectChanged}
+          onSequenceChanged={onSequenceChanged}
+          disabled={backDisabled}
+        />
+      )}
+
+      <WorkspaceModeTabs
+        mode="record"
+        onMode={onMode}
+        recordingExitAdmission={{ blocked: backDisabled, reason: backReason }}
+      />
 
       <span className="tb-spacer" />
 
-      <button
-        type="button"
-        className="tb-btn tb-btn--secondary tb-recording-back"
-        data-cut-action="record-back-edit"
-        data-cut-record-back-edit
-        data-cut-record-back-blocked={backDisabled || undefined}
-        disabled={backDisabled}
-        aria-describedby={backDisabled && backReason ? 'cut-record-back-reason' : undefined}
-        title={backDisabled && backReason ? backReason : 'Return to Edit'}
-        onClick={onBackToEdit}
-      >
-        <Icon name="collapseLeft" size={14} />
-        Back to Edit
-      </button>
       {backDisabled && backReason && (
         <span id="cut-record-back-reason" className="tb-recording-back-reason" data-cut-record-back-reason role="status">
           {backReason}

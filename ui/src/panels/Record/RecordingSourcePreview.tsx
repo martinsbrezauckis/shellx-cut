@@ -42,10 +42,12 @@ export function RecordingSourcePreview({
       {statusError && <p className="rec-source-preview__error" data-cut-record-source-preview-error role="status">{statusError}</p>}
       <div className="rec-source-preview__actions" aria-label="Source preview controls">
         <button type="button" data-cut-action="record-source-preview" onClick={onStart} disabled={!canStart}>{startLabel}</button>
-        <button type="button" data-cut-action="record-source-preview-pause" onClick={onPause} disabled={!active || busy}>Pause</button>
-        <button type="button" data-cut-action="record-source-preview-resume" onClick={onResume} disabled={!paused || busy}>Resume</button>
-        <button type="button" data-cut-action="record-source-preview-hide" onClick={onHide} disabled={!ownsPreview || busy}>Hide</button>
-        <button type="button" data-cut-action="record-source-preview-stop" onClick={onStop} disabled={!ownsPreview || busy}>Stop</button>
+        {active && <button type="button" data-cut-action="record-source-preview-pause" onClick={onPause} disabled={busy}>Pause</button>}
+        {paused && <button type="button" data-cut-action="record-source-preview-resume" onClick={onResume} disabled={busy}>Resume</button>}
+        {ownsPreview && <>
+          <button type="button" data-cut-action="record-source-preview-hide" onClick={onHide} disabled={busy}>Hide</button>
+          <button type="button" data-cut-action="record-source-preview-stop" onClick={onStop} disabled={busy}>Stop</button>
+        </>}
       </div>
     </section>
   )

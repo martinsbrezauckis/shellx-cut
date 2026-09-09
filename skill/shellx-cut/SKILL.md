@@ -51,12 +51,17 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   reversible op.
 >   `attachments` can carry up to eight registered project asset IDs as references;
 >   the server validates them against the open project and exposes no arbitrary
->   source-path input. Each launched turn returns `plan` plus a `review` artifact
->   with its pre-turn baseline, post-turn tip, computed diff, and a `revert_safe`
->   verdict. Agent ops carry a unique per-turn actor. Concurrent human/system ops
->   are listed separately and disable whole-turn revert. The UI uses those exact
->   refs for Preview, Diff, shared Accept markers, tip-guarded atomic Revert, and
->   retry-prefill, so later edits make a stale revert refuse instead of rolling back.
+>   source-path input. An optional `shellx-cut/chat-timeline-target/1` names an
+>   immutable project identity/revision and exact clips/range or point; Cut
+>   revalidates it before launch and returns it with the turn rather than using a
+>   later UI selection. Each launched turn applies its validated result directly
+>   and returns `plan` plus a `review` artifact with its pre-turn baseline,
+>   post-turn tip, computed diff, and a `revert_safe` verdict. Agent ops carry a
+>   unique per-turn actor. Concurrent human/system ops are listed separately and
+>   disable whole-turn revert. The UI uses those refs for Preview, Diff,
+>   tip-guarded **Step back**, and **Ask replacement**; there is no Draft, Accept,
+>   or editor approval stage. A stale or deleted retained target refuses visibly
+>   instead of applying to a replacement selection.
 >   The Agent Chat prompt library offers eight curated Polish, Repurpose, Speech,
 >   and Review requests mapped only to existing verbs/recipes. Choosing one merely
 >   pre-fills the editable composer; it never launches a CLI turn by itself.
@@ -143,8 +148,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   package/motion identity matches. Use `motion.link.refresh` to render a new
 >   immutable project-owned artifact and atomically replace the same Cut clip;
 >   receipt/digest/source races fail without disturbing the last good render.
->   `motion.link.edit` opens that same identity in ShellX Motion through
->   its `--motion-package` host intake and trusted `--motion-cut-return-request`
+>   `motion.link.edit` returns that current verified source revision and opens
+>   the same identity in ShellX Motion through its `--motion-package` host intake
+>   and trusted `--motion-cut-return-request`
 >   handback; `SHELLX_CANVAS_BIN` is a backward-compatible executable override if
 >   needed. Never invent or expose either
 >   filesystem path in an agent response.
@@ -235,6 +241,32 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   Display and Window targets at the first level and does not expose Region
 >   until a real native picker can succeed; agents must not infer a crop or
 >   unavailable Region capability from that UI.
+>   **Visible Record workspace.** Enter through the shared
+>   `[data-cut-mode="record"]` tab. The same-position Edit tab is the one
+>   `[data-cut-action="record-back-edit"]` control; when it has
+>   `data-cut-record-back-blocked="true"`, do not force a workspace change—read
+>   `[data-cut-record-back-reason]` and resolve the active capture first. Start
+>   with `[data-cut-rec-readiness]`; expand
+>   `[data-cut-action="record-readiness-details-toggle"]` only when the
+>   individual checks matter. Use `[data-cut-action="record-source-refresh"]`
+>   after changing a source or capture setup, then wait for the fresh result:
+>   Refresh makes Start unavailable while its result is unknown, and a prior
+>   positive outcome is not reusable. In Auto-edit mode, the Actions button
+>   (`[data-cut-action="record-composition-menu"]`) and real right-click or
+>   <kbd>Shift</kbd>+<kbd>F10</kbd> on `[data-cut-studio-preview]` expose the
+>   same guarded composition setup; the camera preview
+>   (`[data-cut-action="record-camera-menu"]`) exposes its own placement and
+>   shape choices. These are UI access paths, not a second capture or
+>   `studio_event` route. Do not infer a native source, permission, or first
+>   frame from a composition fallback, a fixture, or a menu being visible.
+>   F9 always follows the same Start/Stop admission path while Cut is focused.
+>   Read `[data-cut-rec-global-hotkey-state]` and
+>   `[data-cut-rec-global-hotkey-scope]` before claiming global behavior. On
+>   GNOME Wayland, `[data-cut-action="record-global-f9-enable"]` only configures
+>   Cut's owned custom shortcut; `configured` remains focused-only until Cut
+>   observes its forwarded callback as `observed`/`global`. Disabled or
+>   unavailable capability keeps focused F9 and exposes its reason. Never infer
+>   global operation from the control being present.
 >   Output quality is capability-gated in the same way. Read
 >   `screen_record.doctor.quality`; only when `supported:true` may an agent pass
 >   one advertised Source/1080p/720p plus Standard/High pair in
@@ -1030,25 +1062,26 @@ was said*, use a transcript verb so the word-boundary guarantee holds.
   added/removed/moved, `duration_delta_ms`, `tracks_touched`) and confirm it
   matches what you intended to do. A diff you can't explain means stop and
   inspect `project.ops {since}`.
-- **Acting on human review notes (the `comment` loop).** A reviewer
-  leaves timecoded notes with `comment.add {at_ms, text, end_ms?}`; list the
-  open ones with `comment.list {status:"open"}`. New comments may carry
+- **Acting on human review notes.** A reviewer leaves timecoded notes with
+  `comment.add {at_ms, text, end_ms?}`; list open ones with
+  `comment.list {status:"open"}`. New comments may carry
   `anchor:{track_id,clip_id,offset_ms}`; resolve that against current
-  `project.state` if content was rippled, and treat a missing clip as a stale
-  note rather than seeking blindly. For each, `comment.draft {comment_id}` asks
-  the drafting agent to PROPOSE a concrete editor-verb change set (stored on the
-  comment, not yet applied), then `comment.apply {comment_id}` executes it as
-  real ops — wrapped in an auto-checkpoint so the whole change reverts in one
-  step (`project.revert {to: <returned checkpoint>}`) and returns the `diff` for
-  the reviewer. `comment.resolve {comment_id, status}` closes the loop
-  (`addressed`/`dismissed`). Comment ops are review metadata, not timeline edits
-  — outside the undo stack. For an external handoff, render the current cut and
-  run `comment.export {}` to create an offline HTML reviewer beside a verified
-  render copy. Import the reviewer's downloaded JSON with
-  `comment.import {path}`; Cut verifies its render hash/source op and appends the
-  entire feedback batch atomically. Later comment/preset/name metadata does not
-  stale unchanged rendered bytes; a later render-affecting edit is rejected by
-  default and requires `allow_stale:true` plus a recorded `rationale`.
+  `project.state` if content was rippled, and treat a missing clip as stale
+  rather than seeking blindly. In the editor, **Make changes** routes the note
+  and `shellx-cut/chat-timeline-target/1` through ordinary `agent.chat`; the
+  result applies directly as reversible project operations, with guarded
+  **Step back** and **Ask replacement** for recovery. Do not use
+  `comment.draft` or `comment.apply` to emulate an editor Draft/Accept stage:
+  they are agent-only compatibility and diagnostic endpoints. `comment.resolve
+  {comment_id, status}` closes the note (`addressed`/`dismissed`). Comment ops
+  are review metadata, not timeline edits — outside the undo stack. For an
+  external handoff, render the current cut and run `comment.export {}` to create
+  an offline HTML reviewer beside a verified render copy. Import the reviewer's
+  downloaded JSON with `comment.import {path}`; Cut verifies its render
+  hash/source op and appends the entire feedback batch atomically. Later
+  comment/preset/name metadata does not stale unchanged rendered bytes; a later
+  render-affecting edit is rejected by default and requires `allow_stale:true`
+  plus a recorded `rationale`.
 
 ### 5. Render + receipts (the doctrine)
 

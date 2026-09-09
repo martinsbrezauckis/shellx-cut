@@ -12,6 +12,7 @@ mod outcome;
 mod persistence;
 mod process;
 mod queue;
+mod render_queue_cancel;
 mod retry;
 mod runtime;
 
@@ -423,6 +424,11 @@ impl JobManager {
     #[cfg(test)]
     fn active_task_count_for_tests(&self) -> usize {
         self.lock_inner().tasks.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_active_task_for_tests(&self, job_id: &str) -> bool {
+        self.lock_inner().tasks.contains_key(job_id)
     }
 }
 #[cfg(test)]

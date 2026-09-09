@@ -38,6 +38,18 @@ export function useRecordingCountdown({
   const tickRef = useRef<number | null>(null)
   const guardRef = useRef(new RecordingCountdownGuard())
   const handedOffRef = useRef(false)
+  // A Doctor result or project change can land while the visible countdown is
+  // running. The timer itself belongs to the render that began it, so read the
+  // latest admission and Start callbacks at zero rather than letting that old
+  // closure create a capture with stale setup or project state.
+  const validateRef = useRef(validate)
+  const onInvalidRef = useRef(onInvalid)
+  const onStartingRef = useRef(onStarting)
+  const onStartRef = useRef(onStart)
+  validateRef.current = validate
+  onInvalidRef.current = onInvalid
+  onStartingRef.current = onStarting
+  onStartRef.current = onStart
   // State commits after an event handler returns. These refs close the window
   // where a second click/F9 could otherwise submit another Start before the
   // first request has changed the visible phase.
@@ -52,15 +64,15 @@ export function useRecordingCountdown({
   const beginStart = useCallback(async () => {
     if (startingRef.current) return
     startingRef.current = true
-    onStarting()
+    onStartingRef.current()
     setStarting(true)
     try {
-      await onStart()
+      await onStartRef.current()
     } finally {
       startingRef.current = false
       setStarting(false)
     }
-  }, [onStart, onStarting])
+  }, [])
 
   const cancel = useCallback(() => {
     if (!activeRef.current || handedOffRef.current) return
@@ -75,9 +87,9 @@ export function useRecordingCountdown({
 
   const requestStart = useCallback(() => {
     if (activeRef.current || handedOffRef.current || startingRef.current) return
-    const error = validate()
+    const error = validateRef.current()
     if (error) {
-      onInvalid(error)
+      onInvalidRef.current(error)
       return
     }
     onPrepare()
@@ -106,6 +118,12 @@ export function useRecordingCountdown({
         handedOffRef.current = true
         activeRef.current = false
         setActive(false)
+        const handoffError = validateRef.current()
+        if (handoffError) {
+          handedOffRef.current = false
+          onInvalidRef.current(handoffError)
+          return
+        }
         void beginStart().finally(() => {
           handedOffRef.current = false
         })
@@ -113,7 +131,7 @@ export function useRecordingCountdown({
     }
     tick()
     tickRef.current = window.setInterval(tick, 100)
-  }, [beginStart, clearTick, onCountdownStart, onInvalid, onPrepare, seconds, validate])
+  }, [beginStart, clearTick, onCountdownStart, onPrepare, seconds])
 
   useEffect(() => () => {
     guardRef.current.cancel()

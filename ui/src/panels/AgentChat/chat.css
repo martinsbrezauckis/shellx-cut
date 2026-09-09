@@ -322,12 +322,12 @@
   font-size: var(--fs-ui-xs);
   white-space: nowrap;
 }
-.chat__review-state--accepted {
+.chat__review-state--applied {
   color: var(--green);
   border-color: color-mix(in srgb, var(--green) 45%, var(--hairline));
 }
 .chat__review-state--reverted,
-.chat__review-state--retry {
+.chat__review-state--replacement {
   color: var(--ink-2);
 }
 .chat__review-plan {
@@ -732,4 +732,44 @@
   background: var(--surface-3);
   color: var(--ink-4);
   cursor: not-allowed;
+}
+
+.chat__target {
+  margin-top: 6px;
+  color: var(--ink-3);
+  font: var(--fs-mono-xs) / 1.4 var(--mono);
+}
+.chat__target--composer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+}
+.chat__target--composer button {
+  border: 0;
+  color: var(--ink-3);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.chat__target-error {
+  margin: 6px 0;
+  color: var(--receipt-fail);
+  font-size: var(--fs-ui-xs);
+  line-height: 1.4;
+}
+.chat__history {
+  padding: 5px 8px 0;
+  color: var(--ink-4);
+  background: var(--surface);
+  font-size: var(--fs-ui-xs);
+  line-height: 1.35;
+}
+.chat__history--unavailable,
+.chat__history--invalid {
+  color: var(--amber);
 }

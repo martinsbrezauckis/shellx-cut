@@ -46,9 +46,11 @@ Antigravity keeps the user's normal settings and login while
 Cut starts a new disposable project containing one Cut-only MCP plugin. Its
 headless approval mode is bounded by that empty sandbox and Cut's filtered
 server-side verb policy. Cut does not copy or rewrite provider login files. Each route can inspect the
-open project and make reversible in-project edits. Review every resulting edit,
-especially when selecting a local CLI that retains its own native tools and
-integrations.
+open project and make reversible in-project edits. Timeline **Ask agent** and
+Comment **Make changes** carry an immutable target; a validated result applies
+directly. Use **Step back** only while its guarded whole-turn revert remains
+safe, or **Ask replacement** to re-resolve the retained target. There is no
+Draft, Accept, or editor approval stage.
 
 ## Quickstart
 
@@ -203,8 +205,8 @@ conversion path, not camera Log interpretation or HDR mastering/delivery.
 | **export** | xml (fcpxml/premiere/resolve) · srt · vtt · chapters · transcript · frame · range · **audio** · **gif** · **publish** | file-writing paths are FENCED (the output-fencing contract); users can set a default export folder or use per-export Save As, default-name collisions auto-suffix, and confirmed Save As targets can replace existing export media/sidecar files; frame/range extract a still / a timeline window AS reusable assets; **audio = timeline mix as mp3/m4a/wav/flac/opus; publish = one-click platform export (youtube/tiktok/reels/x/…) using platform geometry and bitrate presets through render.final** |
 | **import** | otio | hash-bound OTIO preflight and one-operation timeline replacement; the desktop UI owns the native picker/confirmation while agents pass an explicit path |
 | **inspect** | media · range | path-light, cited inspection over the current project and its exact MediaEvidenceIndex; resolves opaque evidence hits to current source ranges and timeline occurrences, and refuses stale, foreign-project, or changed evidence instead of summarizing old prompt context |
-| **comment** | add · list · draft · apply · resolve | review-to-change loop: timecoded notes → agent drafts verb changes → apply (auto-checkpointed) |
-| **agent** | chat | launch the user's configured subscription CLI against the same MCP-backed live project and return a bounded review/revert handoff |
+| **comment** | add · list · draft · apply · resolve | editor **Make changes** routes a timecoded note and immutable target through Agent Chat; `draft`/`apply` remain compatibility/debug APIs, never an editor approval flow |
+| **agent** | chat | launch the user's configured subscription CLI against the same MCP-backed live project; direct validated results retain a bounded turn receipt with guarded **Step back** and **Ask replacement** |
 | **ui** | state · screenshot · open · playhead · select · highlight | ui.screenshot is a verification PRIMITIVE — agent sees the app from anywhere; open/playhead/select/highlight return `ok:true` only after the exact UI client commits observable state; no-op/unavailable/disconnected requests fail explicitly; one shared registry covers human and agent surface routes |
 | **debug** | screenshot | compatibility screenshot primitive for external harnesses; normal agents should prefer `ui.screenshot` |
 | **plugins** | list · enable · call | agent-only scoped-dispatch fence over the same registry; `plugins.list`, `plugins.enable`, and `plugins.call` expose built-in Openverse-assets and matte-runtime capabilities without creating a parallel API |

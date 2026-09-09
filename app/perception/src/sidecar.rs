@@ -13,7 +13,7 @@
 use crate::types::{PerceptionReport, Transcript, PERCEPTION_SCHEMA};
 use cut_core::{error_codes, CutError};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +39,23 @@ fn parse_progress(line: &str) -> Option<(f32, &str)> {
     let frac: f32 = it.next()?.trim().parse().ok()?;
     let label = it.next().unwrap_or("").trim();
     Some((frac.clamp(0.0, 1.0), label))
+}
+
+/// Formats normal exit codes and, on Unix, the numeric terminating signal.
+/// `ExitStatus::code()` is None for a signalled child, which used to erase the
+/// only useful evidence in sidecar failures such as a native Python abort.
+fn describe_exit_status(status: &ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("signal {signal}");
+        }
+    }
+    "unknown termination".to_string()
 }
 
 /// Which instruments to run — media.transcribe runs Words only; media.
@@ -759,8 +776,8 @@ fn spawn_sidecar_streaming(
         return Err(CutError::new(
             error_codes::SIDECAR,
             format!(
-                "perception sidecar failed (exit {:?})",
-                output.status.code()
+                "perception sidecar failed ({})",
+                describe_exit_status(&output.status)
             ),
             cause,
         ));
@@ -901,6 +918,29 @@ pub fn load_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_exit_status_keeps_a_normal_numeric_code() {
+        let status = Command::new("sh")
+            .args(["-c", "exit 23"])
+            .status()
+            .expect("sh must start for status formatting");
+        assert_eq!(describe_exit_status(&status), "exit 23");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_exit_status_keeps_the_unix_signal_number() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let status = Command::new("sh")
+            .args(["-c", "kill -TERM $$"])
+            .status()
+            .expect("sh must start for signal status formatting");
+        let signal = status.signal().expect("child must terminate by signal");
+        assert_eq!(describe_exit_status(&status), format!("signal {signal}"));
+    }
 
     #[test]
     fn late_analysis_never_recreates_a_deleted_project() {

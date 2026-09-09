@@ -13,13 +13,15 @@ workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 
 v0.6.113 remains the latest published release.
 
-- Recording Studio now uses a focused capture workspace: the selected source
-  and composition own the main plane, capture setup and scene controls have
-  distinct side rails, editor-only chrome is absent, and the recording
-  transport remains visible. Its live status is process-local evidence, not a
-  timer or file-growth guess: it distinguishes an armed exact-source close from
-  an ordinary Cut-owned stop and discloses only a safe controller-placement
-  conclusion, never a native window, process, or source identity.
+- Recording Studio keeps the shared **Edit | Record** switch in the editor
+  header while giving capture a focused workspace. Capture readiness, source
+  selection, and rehearsal lead the flow; its technical checks stay under
+  Details, and the reserved recording transport does not cover the scrollable
+  setup. Editor-only chrome stays out of Record. Its live status is
+  process-local evidence, not a timer or file-growth guess: it distinguishes an
+  armed exact-source close from an ordinary Cut-owned stop and discloses only a
+  safe controller-placement conclusion, never a native window, process, or
+  source identity.
 - An explicit native source preview can show the exact current display or
   window on Windows and macOS, or a fresh user-chosen Portal source on Linux.
   Frames stay bounded in memory; permission, source loss, recursion, pause,
@@ -417,11 +419,18 @@ route to the same surface registry.
 - Agent chat: a CLI agent can operate the live project through cutd's MCP verb
   surface, producing normal reversible edit operations. A turn can attach up to
   eight registered project assets as references; cutd validates their IDs and
-  keeps source paths behind `project.state`. Each launched turn records a stable
-  pre-edit history baseline, uniquely attributes its ops, computes the exact
-  Review diff, and exposes Preview, Diff, Accept, Revert, and safe retry controls.
-  Concurrent human/system edits are reported separately and disable whole-turn
-  revert rather than risking rollback of someone else's work. A categorized
+  keeps source paths behind `project.state`. Timeline **Ask agent** and Comment
+  **Make changes** attach an immutable project identity/revision plus the exact
+  range, clips, or point. Cut validates that target again before launch and
+  returns it with the turn rather than substituting a later selection. A turn
+  applies its validated result directly and records a stable pre-edit baseline,
+  tip, and exact diff. **Step back** is available only while the guarded whole-
+  turn revert is safe; **Ask replacement** re-resolves the retained target and
+  visibly refuses a deleted or stale one. Concurrent human/system edits disable
+  Step back rather than risking rollback of someone else's work. There is no
+  Draft, Accept, or editor review gate. A bounded local-device history keeps
+  validated requests, targets, replies, actions, and revisions for each exact
+  project identity, and marks interrupted turns honestly. A categorized
   prompt library pre-fills eight common Polish, Repurpose, Speech, and Review
   outcomes without sending or spending an agent turn until the user presses Send.
   Agent Chat launches the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses
@@ -436,10 +445,8 @@ route to the same surface registry.
   normal settings and login while Cut creates a new disposable sandboxed project
   containing one Cut-only MCP plugin. Headless approval is bounded by that empty
   workspace and Cut's filtered server-side verb policy; the resolved CLI's full
-  launch contract is verified before each turn on every supported platform. Each route can inspect
-  the open project and apply reversible in-project edits. Review every resulting
-  edit, especially when using a local CLI that retains its own native tools and
-  integrations.
+  launch contract is verified before each turn on every supported platform. Each
+  route can inspect the open project and apply reversible in-project edits.
 
 ## Generate
 
@@ -632,12 +639,15 @@ route to the same surface registry.
   `cut.export.preflight`. The default banner names user-facing issues such as
   black ending, black/frozen footage, silent export, tiny clips, and black
   borders; raw pregate detail stays under Details.
-- Review loop: clip-anchored comments, draft suggested verb changes, apply
-  drafted changes under an auto-checkpoint, resolve review comments, export an
-  offline render-bound review page, and atomically import its timecoded feedback.
-  Adjacent edits from one durable compound action appear in the OPS feed as one
-  collapsible, human-labelled unit; expanding it keeps every individual edit and
-  its existing review or undo action available.
+- Review loop: clip-anchored comments can route their text and immutable target
+  through Agent Chat with **Make changes**; Chat applies its normal direct,
+  reversible edit receipt, and **Step back** remains the guarded recovery path.
+  Comments can still be resolved, exported as an offline render-bound review
+  page, and imported atomically with timecoded feedback. Legacy
+  `comment.draft`/`comment.apply` remain agent-only compatibility and diagnostic
+  APIs, never an editor approval flow. Adjacent edits from one durable compound
+  action appear in the OPS feed as one collapsible, human-labelled unit; expanding
+  it keeps every individual edit and its existing review or undo action available.
 - Export: NLE XML, OTIO, EDL, SRT, VTT, chapters, transcript, frame, range,
   audio, GIF, and platform publish presets. Desktop OTIO import is opened from
   Assets, runs a read-only track/media preflight, confirms a source hash, then
@@ -646,14 +656,30 @@ route to the same surface registry.
 
 ## Recording
 
-- Recording Studio replaces editor-only chrome with a focused workspace: a
-  compact Screen & sound rail, a dominant composition preview, a Scene & style
-  rail, and a sticky Start/Stop transport. The editor timeline, creative/export
-  toolbar, selected-clip Tools rail, and review comments stay out of Record;
-  timing, output, quality, and polish choices remain available under Advanced.
-  During capture, setup/readiness chrome collapses so the preview and live
-  scene/timer controls remain primary. Background choice, raw-stream status,
-  and focused hotkeys (`F9` record, `F12` marker) remain available.
+- Recording Studio keeps the editor header's **Edit | Record** switch in its
+  usual position, while the active capture uses a focused workspace: compact
+  readiness and Screen & sound setup, a composition preview, Scene & style,
+  and a reserved Start/Stop transport footer. The editor timeline,
+  creative/export toolbar, selected-clip Tools rail, and review comments stay
+  out of Record; timing, output, quality, and polish choices remain available
+  under Advanced. During capture, setup/readiness chrome collapses so the
+  preview and live scene/timer controls remain primary. Background choice,
+  raw-stream status, and focused hotkeys (`F9` record, `F12` marker) remain
+  available. Focused F9 uses the same Start/Stop admission checks. On GNOME
+  Wayland, **Enable global F9** configures Cut's one owned shortcut, but it
+  becomes global only after Cut observes its forwarded callback; disabled or unavailable states
+  retain focused F9 and show the reason.
+- **Readiness and source refresh** put the current capture outcome before the
+  source controls; open Details to inspect individual checks. Use **Refresh
+  sources** after a display, window, or device change. While it rechecks the
+  current setup, Start stays unavailable; an unknown result is not ready to
+  record.
+- **Composition actions** keep controls outside the recorded frame. In
+  Auto-edit, use **Actions**, right-click the composition preview, or press
+  <kbd>Shift</kbd>+<kbd>F10</kbd> for the same guarded setup; the camera preview
+  has its own menu for placement and shape. Raw capture and an active capture
+  keep unavailable changes unavailable rather than creating another capture
+  path.
 - **Back to Edit and Stop recovery** keep the active capture in Recording Studio.
   Back to Edit stays unavailable during a countdown, pending Start, a live take,
   finalization, or an unacknowledged Stop; the visible reason tells you whether

@@ -1449,13 +1449,50 @@ def _load_detector(quality: str, device: str):
     return predict, name
 
 
-def _load_face_detector():
-    """MediaPipe Tasks FaceDetector (Apache-2.0) for FACE-AWARE framing — frames the
-    face eye-line for close subjects (subject-tracking 'follows the face'), not the body
-    centre. GRACEFUL: returns None if mediapipe or the model is unavailable, so the
-    instrument degrades to body+saliency framing. The short-range model is tuned for
-    CLOSE / talking-head faces; distant faces simply aren't found → body fallback.
-    Model: $SHELLX_CUT_FACE_MODEL, else blaze_face_short_range.tflite beside this file."""
+_FACE_BACKEND_MEDIAPIPE = "mediapipe-blaze-face"
+_FACE_BACKEND_YUNET = "opencv-yunet"
+_FACE_BACKEND_UNAVAILABLE = "unavailable"
+
+
+def _yunet_model_path() -> Path:
+    """The signed payload's bundled YuNet model; it never downloads at runtime."""
+    return Path(__file__).parent / "face_detection_yunet_2023mar.onnx"
+
+
+def _load_yunet_face_detector():
+    """OpenCV YuNet face detector used for macOS's in-process face enhancement.
+
+    MediaPipe's native Tasks graph aborts the Python process on affected macOS
+    runtimes, so catching its Python exception cannot make the Director path safe.
+    YuNet is already bundled for face redaction and uses the same OpenCV dependency
+    from the locked perception environment. Return None only with an explicit
+    body/saliency fallback, never an optimistic face-aware claim.
+    """
+    model = _yunet_model_path()
+    if not model.is_file():
+        log("subject: macOS YuNet model unavailable; body/saliency framing only")
+        return None
+    try:
+        import cv2
+        factory = getattr(cv2, "FaceDetectorYN", None)
+        if factory is None:
+            raise RuntimeError("opencv lacks FaceDetectorYN")
+        # YuNet's input size is updated for each decoded frame before detect().
+        detector = factory.create(str(model), "", (320, 320), 0.4, 0.3, 5000)
+        log(f"subject: face-aware framing ON ({_FACE_BACKEND_YUNET}, {model.name})")
+        return (_FACE_BACKEND_YUNET, detector, cv2)
+    except Exception as exc:
+        log(f"subject: macOS YuNet unavailable ({exc}); body/saliency framing only")
+        return None
+
+
+def _load_mediapipe_face_detector():
+    """MediaPipe Tasks FaceDetector for non-macOS FACE-AWARE framing.
+
+    The short-range model is tuned for CLOSE / talking-head faces; distant faces
+    simply are not found and the existing body/saliency fallback remains in effect.
+    Model: $SHELLX_CUT_FACE_MODEL, else blaze_face_short_range.tflite beside this file.
+    """
     model = os.environ.get("SHELLX_CUT_FACE_MODEL", "").strip()
     if not model:
         here = Path(__file__).parent / "blaze_face_short_range.tflite"
@@ -1470,18 +1507,55 @@ def _load_face_detector():
         det = FaceDetector.create_from_options(FaceDetectorOptions(
             base_options=BaseOptions(model_asset_path=model),
             min_detection_confidence=0.4))
-        log(f"subject: face-aware framing ON ({Path(model).name})")
-        return (det, mp)
+        log(f"subject: face-aware framing ON ({_FACE_BACKEND_MEDIAPIPE}, {Path(model).name})")
+        return (_FACE_BACKEND_MEDIAPIPE, det, mp)
     except Exception as exc:
         log(f"subject: face detector unavailable ({exc}); body/saliency framing")
         return None
+
+
+def _load_face_detector():
+    """Select the native-safe face enhancement for the current platform.
+
+    macOS deliberately does not import MediaPipe here: a native graph abort cannot
+    be caught in Python. Other hosts retain the established MediaPipe path.
+    """
+    if sys.platform == "darwin":
+        return _load_yunet_face_detector()
+    return _load_mediapipe_face_detector()
+
+
+def _face_backend(face) -> str:
+    return face[0] if face is not None else _FACE_BACKEND_UNAVAILABLE
 
 
 def _detect_faces(face, frame_bgr):
     """Face boxes in the frame as (cx, cy, x1, y1, x2, y2) px. [] if no detector/none."""
     if face is None:
         return []
-    det, mp = face
+    backend, det, runtime = face
+    if backend == _FACE_BACKEND_YUNET:
+        try:
+            h, w = frame_bgr.shape[:2]
+            if w <= 0 or h <= 0:
+                return []
+            det.setInputSize((int(w), int(h)))
+            _, detections = det.detect(frame_bgr)
+        except Exception:
+            return []
+        out = []
+        if detections is None:
+            return out
+        for row in detections:
+            x, y = finite_number(row[0]), finite_number(row[1])
+            bw, bh = finite_number(row[2]), finite_number(row[3])
+            if bw <= 0 or bh <= 0:
+                continue
+            out.append((x + bw / 2.0, y + bh / 2.0, x, y, x + bw, y + bh))
+        return out
+    if backend != _FACE_BACKEND_MEDIAPIPE:
+        return []
+    mp = runtime
     import cv2
     try:
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -1651,6 +1725,7 @@ def instrument_subject(media_path: str, preset: str = "talking_head", director=N
     predict, model_name = _load_detector(quality, device)
     face = _load_face_detector()  # None → body/saliency framing (graceful)
     face_aware = face is not None
+    face_backend = _face_backend(face)
     log(f"subject: {model_name} on {device_label}, classes={classes}, {frame_w}x{frame_h}")
     ranker = _SubjectRanker()
     import math
@@ -1879,6 +1954,7 @@ def instrument_subject(media_path: str, preset: str = "talking_head", director=N
         # Receipt honesty: was face/eye-line framing available, or did we fall
         # back to body/saliency centers?
         "face_aware": face_aware,
+        "face_backend": face_backend,
         # Scenes whose subject the director model decided.
         "directed_scenes": sorted(directed_scenes),
     }
@@ -1936,6 +2012,8 @@ def build_contact_sheet(media_path: str, preset: str = "talking_head", out_dir=N
 
     predict, model_name = _load_detector(quality, device)
     face = _load_face_detector()
+    face_aware = face is not None
+    face_backend = _face_backend(face)
     log(f"contact_sheet: {model_name} on {device_label}, {len(spans)} scenes, {frame_w}x{frame_h}")
 
     def _detect_on(frame):
@@ -2024,6 +2102,7 @@ def build_contact_sheet(media_path: str, preset: str = "talking_head", out_dir=N
         "contact_sheet": sheet_path,
         "fps": finite_number(fps), "frame_width": frame_w, "frame_height": frame_h,
         "preset": preset, "detector": model_name, "device": device_label,
+        "face_aware": face_aware, "face_backend": face_backend,
         "scene_count": len(scenes_json), "scenes": scenes_json,
     }
 
@@ -2078,6 +2157,8 @@ def build_qc_sheet(media_path: str, preset: str = "talking_head", out_dir=None) 
 
     predict, model_name = _load_detector(quality, device)
     face = _load_face_detector()
+    face_aware = face is not None
+    face_backend = _face_backend(face)
     log(f"qc_sheet: {model_name} on {device_label}, {len(spans)} scenes, {frame_w}x{frame_h}")
 
     tiles = []
@@ -2153,6 +2234,7 @@ def build_qc_sheet(media_path: str, preset: str = "talking_head", out_dir=None) 
         "qc_sheet": sheet_path,
         "fps": finite_number(fps), "frame_width": frame_w, "frame_height": frame_h,
         "detector": model_name, "device": device_label,
+        "face_aware": face_aware, "face_backend": face_backend,
         "scene_count": len(scenes_json), "review_count": review_count,
         "scenes": scenes_json,
     }

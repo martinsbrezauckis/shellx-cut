@@ -1657,6 +1657,19 @@ printf '{"ok":true,"output":{"path":"%s","sha256":"%s"},"receiptPath":"%s","rece
     )
     .await;
     assert!(editing.ok, "ShellX Motion launch failed: {editing:?}");
+    let editing_result = editing.result.as_ref().expect("editing result");
+    assert_eq!(
+        editing_result["schema"],
+        json!("shellx-cut/motion-link-edit@1")
+    );
+    assert_eq!(
+        editing_result["sourceRevision"],
+        clip["motion_link"]["sourceRevision"]
+    );
+    assert_eq!(
+        editing_result["returnChannel"],
+        json!({"state":"pending", "pathPrivate":true})
+    );
     let launch_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < launch_deadline {
         if canvas_args.is_file() {

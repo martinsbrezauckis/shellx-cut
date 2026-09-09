@@ -48,9 +48,6 @@ export function timeAgo(ts: string): string {
 // Op-log classification
 // ---------------------------------------------------------------------------
 
-/** Local review verdicts (accepted is UI-only; rejected also derives from ops). */
-export type Reviewed = Record<string, 'accepted' | 'rejected'>
-
 /** A transcript word range removed by an op (cut_words / remove_fillers run). */
 export interface CutSpan {
   opId: string

@@ -1,5 +1,6 @@
 import type { ChatEvidenceAttachment } from '../../lib/evidenceAttachments'
-import type { VerbResults } from '../../lib/client'
+import type { ProjectIdentity, VerbResults } from '../../lib/client'
+import type { ChatTimelineTarget } from '../../lib/chatTimelineTarget'
 
 type ChatResult = VerbResults['agent.chat']
 
@@ -22,27 +23,34 @@ export interface AgentChatTurn {
   requestAttachments?: Array<{ id: string; label: string }>
   requestEvidence?: ChatEvidenceAttachment[]
   projectName?: string
+  projectIdentity?: ProjectIdentity
+  /** Target returned with the executed request/result receipt. */
+  target?: ChatTimelineTarget
+  /** Immutable request target, retained so replacement can re-resolve it. */
+  requestTarget?: ChatTimelineTarget
   plan?: ChatResult['plan']
   review?: ChatResult['review']
-  reviewState?: 'pending' | 'accepted' | 'reverted' | 'retry'
+  reviewState?: 'reverted' | 'replacement'
   reviewBusy?: boolean
   reviewError?: string | null
 }
 
-/** Right-rail tabs mount independently. Keep the bounded, project-keyed state
- * above the tab so review/revert receipts survive a tab switch without making a
- * project-persistent chat journal. */
+/** Right-rail tabs mount independently. Keep their active, project-keyed state
+ * above the tab; `history.ts` separately persists validated completed context
+ * on this device so a reload can reconstruct the conversation safely. */
 export interface AgentChatSession {
   log: AgentChatTurn[]
   input: string
   attachments: string[]
+  /** Target waiting in the existing composer; it is never inferred at Send. */
+  target: ChatTimelineTarget | null
   busy: boolean
 }
 
 export const MAX_AGENT_CHAT_TURNS = 40
 
 export function emptyAgentChatSession(): AgentChatSession {
-  return { log: [], input: '', attachments: [], busy: false }
+  return { log: [], input: '', attachments: [], target: null, busy: false }
 }
 
 export function boundedAgentChatTurns(turns: AgentChatTurn[]): AgentChatTurn[] {

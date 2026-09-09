@@ -79,7 +79,7 @@ export function CameraControl({
           type="checkbox"
           data-cut-rec-camera-toggle
           checked={enabled && !rawCapture}
-          disabled={disabled || !canEnable}
+          disabled={disabled || rawCapture || (!enabled && !canEnable)}
           onChange={(event) => onEnabled(event.target.checked)}
         />
       </label>

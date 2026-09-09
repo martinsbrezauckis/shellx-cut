@@ -26,6 +26,7 @@ import type {
 } from './clientModel'
 import { UI_OPEN_SURFACE_IDS } from '../app/uiSurfaceRegistry'
 import type { VerbResults } from './clientResults'
+import type { ChatTimelineTarget } from './chatTimelineTarget'
 import type {
   InspectMediaArgs,
   InspectRangeArgs,
@@ -776,7 +777,7 @@ export interface VerbArgs {
     rationale?: string
   }
   'assets.generated_list': { kind?: 'image' | 'video'; limit?: number }
-  'agent.chat': { message: string; attachments?: string[]; evidence_ids?: string[]; evidence_index_id?: string; agent?: 'claude' | 'codex' | 'grok' | 'antigravity'; model?: string; timeout_ms?: number }
+  'agent.chat': { message: string; attachments?: string[]; evidence_ids?: string[]; evidence_index_id?: string; target?: ChatTimelineTarget; agent?: 'claude' | 'codex' | 'grok' | 'antigravity'; model?: string; timeout_ms?: number }
   'plugins.list': Record<string, never>
   'plugins.enable': { name: string; enabled?: boolean; rationale?: string }
   'plugins.call': { plugin: string; verb: string; args?: Record<string, unknown>; rationale?: string }

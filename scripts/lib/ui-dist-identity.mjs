@@ -7,6 +7,9 @@ import { sourceContentManifest } from './source-content-manifest.mjs'
 export const UI_DIST_IDENTITY_SCHEMA = 'shellx-cut/ui-dist-identity@1'
 export const UI_DIST_IDENTITY_GUARD = 'BUILD-UI-IDENTITY-01'
 export const UI_DIST_IDENTITY_FILE = '.shellx-cut-ui-identity.json'
+export const UI_DIST_SOURCE_CONTENT_ATTRIBUTE = 'data-cut-ui-source-content-manifest-sha256'
+
+const SHA256 = /^[a-f0-9]{64}$/
 
 function identityError(message) {
   throw new Error(`${UI_DIST_IDENTITY_GUARD}: ${message}`)
@@ -55,13 +58,46 @@ export function currentUiDistIdentity({ repoRoot } = {}) {
 export function writeUiDistIdentity({ repoRoot, distPath } = {}) {
   const root = resolve(repoRoot || '.')
   const dist = resolve(distPath || join(root, 'ui/dist'))
-  if (!existsSync(join(dist, 'index.html'))) {
+  const indexPath = join(dist, 'index.html')
+  if (!existsSync(indexPath)) {
     identityError(`ui/dist is missing index.html at ${dist}; run npm --prefix ui run build before writing identity`)
   }
   const identity = currentUiDistIdentity({ repoRoot: root })
+  stampUiDistIndexIdentity(indexPath, identity.source.content_manifest.sha256)
   mkdirSync(dist, { recursive: true })
   writeFileSync(join(dist, UI_DIST_IDENTITY_FILE), `${JSON.stringify(identity, null, 2)}\n`)
   return identity
+}
+
+function stampUiDistIndexIdentity(indexPath, sourceContentManifestSha256) {
+  if (!SHA256.test(sourceContentManifestSha256)) {
+    identityError('ui/dist index identity requires a source-content manifest sha256')
+  }
+  let html
+  try {
+    html = readFileSync(indexPath, 'utf8')
+  } catch (error) {
+    identityError(`cannot read ui/dist index ${indexPath}: ${error.message}`)
+  }
+  const openingHtml = /<html\b[^>]*>/i.exec(html)
+  if (!openingHtml) identityError(`ui/dist index ${indexPath} has no opening html element`)
+  const marker = new RegExp(`\\s${UI_DIST_SOURCE_CONTENT_ATTRIBUTE}=(?:"[^"]*"|'[^']*'|[^\\s>]+)`, 'i')
+  const stamped = `${openingHtml[0].replace(marker, '').slice(0, -1)} ${UI_DIST_SOURCE_CONTENT_ATTRIBUTE}="${sourceContentManifestSha256}">`
+  writeFileSync(indexPath, `${html.slice(0, openingHtml.index)}${stamped}${html.slice(openingHtml.index + openingHtml[0].length)}`)
+}
+
+function readUiDistIndexIdentity(indexPath) {
+  let html
+  try {
+    html = readFileSync(indexPath, 'utf8')
+  } catch (error) {
+    identityError(`cannot read ui/dist index ${indexPath}: ${error.message}`)
+  }
+  const value = new RegExp(`\\s${UI_DIST_SOURCE_CONTENT_ATTRIBUTE}="([^"]*)"`, 'i').exec(html)?.[1]
+  if (!SHA256.test(value || '')) {
+    identityError(`ui/dist index is missing a valid ${UI_DIST_SOURCE_CONTENT_ATTRIBUTE}; rebuild with npm --prefix ui run build`)
+  }
+  return value
 }
 
 function readIdentity(path) {
@@ -94,5 +130,6 @@ export function checkUiDistIdentity({ repoRoot, distPath } = {}) {
   same('source-content manifest files', built.source?.content_manifest?.files, current.source.content_manifest.files)
   same('source-content manifest bytes', built.source?.content_manifest?.bytes, current.source.content_manifest.bytes)
   same('source-content manifest sha256', built.source?.content_manifest?.sha256, current.source.content_manifest.sha256)
+  same('ui/dist index source-content manifest sha256', readUiDistIndexIdentity(join(dist, 'index.html')), current.source.content_manifest.sha256)
   return current
 }

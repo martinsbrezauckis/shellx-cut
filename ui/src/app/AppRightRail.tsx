@@ -43,7 +43,6 @@ interface AppRightRailProps {
   playheadMs: number
   onSeek: (atMs: number) => void
   agentChatPrefill: AgentChatPrefill | null
-  onReject: (opId: string) => void
   onUndo: () => void
   onRedo: () => void
 }
@@ -109,7 +108,6 @@ export default function AppRightRail({
   playheadMs,
   onSeek,
   agentChatPrefill,
-  onReject,
   onUndo,
   onRedo,
 }: AppRightRailProps) {
@@ -117,7 +115,11 @@ export default function AppRightRail({
   const railOpen = !layout.railCollapsed
   const railPinned = layout.railPinned
   const [reviewTabRequest, setReviewTabRequest] = useState<ReviewTabRequest | null>(null)
-  const { session: agentChatSession, updateSession: updateAgentChatSession } = useAgentChatSession(project, projectSession)
+  const {
+    session: agentChatSession,
+    updateSession: updateAgentChatSession,
+    historyStatus: agentChatHistoryStatus,
+  } = useAgentChatSession(project, projectSession)
 
   // ---- crash-safe tab mounting ---------------------------------------------
   // A right-tab body that previously took the WebView down (blocklisted by
@@ -338,6 +340,7 @@ export default function AppRightRail({
                         prefill={agentChatPrefill}
                         session={agentChatSession}
                         onSessionChange={updateAgentChatSession}
+                        historyStatus={agentChatHistoryStatus}
                       />
                     )}
                     <PanelPaintConfirm tab={activeTab} />
@@ -354,7 +357,6 @@ export default function AppRightRail({
               playheadMs={playheadMs}
               ops={ops}
               receipts={receipts}
-              onReject={onReject}
               onUndo={onUndo}
               onRedo={onRedo}
               reviewTabRequest={reviewTabRequest}

@@ -35,6 +35,8 @@ import { callVerb } from '../../lib/client'
 import type { Project, VerbResults } from '../../lib/client'
 import type { AgentChatPrefill } from '../../lib/evidenceAttachments'
 import { evidenceAttachmentIdentity } from '../../lib/evidenceAttachments'
+import { rebaseChatTimelineTarget, type ChatTimelineTarget } from '../../lib/chatTimelineTarget'
+import type { AgentChatHistoryStatus } from './history'
 import {
   fetchDoctor,
   chatAgentsFrom,
@@ -50,7 +52,6 @@ import AssetAttachmentStrip from './AssetAttachmentStrip'
 import EvidenceAttachmentStrip from './EvidenceAttachmentStrip'
 import { chatAttachmentOptions, toggleChatAttachment } from './attachmentModel'
 import { AGENT_PROMPT_CATEGORIES, AGENT_PROMPT_LIBRARY, AGENT_QUICK_PROMPTS } from './promptLibrary'
-import { markReviewOps } from '../Review/reviewMarkers'
 import { useEvidenceAttachments } from './useEvidenceAttachments'
 import {
   boundedAgentChatTurns,
@@ -73,10 +74,12 @@ export interface AgentChatProps {
   session: AgentChatSession
   /** The parent binds this updater to the project session that mounted this tab. */
   onSessionChange: (update: (current: AgentChatSession) => AgentChatSession) => void
+  /** Bounded Chat history is local to this device and project identity. */
+  historyStatus: AgentChatHistoryStatus
 }
 
-export default function AgentChat({ project, prefill, session, onSessionChange }: AgentChatProps) {
-  const { log, input, attachments, busy } = session
+export default function AgentChat({ project, prefill, session, onSessionChange, historyStatus }: AgentChatProps) {
+  const { log, input, attachments, target, busy } = session
   const setLog = useCallback((update: SetStateAction<AgentChatTurn[]>) => {
     onSessionChange((current) => {
       const next = typeof update === 'function' ? update(current.log) : update
@@ -95,6 +98,12 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
       attachments: typeof update === 'function' ? update(current.attachments) : update,
     }))
   }, [onSessionChange])
+  const setTarget = useCallback((update: SetStateAction<ChatTimelineTarget | null>) => {
+    onSessionChange((current) => ({
+      ...current,
+      target: typeof update === 'function' ? update(current.target) : update,
+    }))
+  }, [onSessionChange])
   const setBusy = useCallback((update: SetStateAction<boolean>) => {
     onSessionChange((current) => ({
       ...current,
@@ -103,6 +112,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
   }, [onSessionChange])
   const evidenceAttachments = useEvidenceAttachments(prefill)
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
+  const [targetError, setTargetError] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const promptLibraryRef = useRef<HTMLDivElement>(null)
@@ -201,44 +211,75 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
   }, [log, busy])
 
-  // External surfaces can open Agent Chat with a prepared request. This mirrors
-  // suggestion chips: prefill only, never auto-send or spend an agent turn.
+  // External surfaces can attach a target and prefill the existing composer.
   useEffect(() => {
     const onPrompt = (e: Event) => {
       if (!(e instanceof CustomEvent)) return
-      const detail = e.detail
+      const detail = e.detail as string | { prompt?: string; target?: ChatTimelineTarget } | undefined
       const prompt = typeof detail === 'string' ? detail : detail?.prompt
-      if (!prompt?.trim()) return
-      setInput(prompt)
+      const nextTarget = typeof detail === 'string' ? undefined : detail?.target
+      if (!prompt?.trim() && !nextTarget) return
+      setInput(prompt ?? '')
+      setTarget(nextTarget ?? null)
+      setTargetError(null)
       window.setTimeout(() => inputRef.current?.focus(), 0)
     }
     document.addEventListener('cut:agent-chat-prompt', onPrompt)
     return () => document.removeEventListener('cut:agent-chat-prompt', onPrompt)
-  }, [setInput])
+  }, [setInput, setTarget])
 
-  // App-level handoff for prompts emitted while the lazy chat bundle is still
-  // loading. Event listeners cannot catch events fired before mount; this prop
-  // path makes Environment/Agent handoffs durable.
+  // App-level handoff survives lazy mounting, including a Comment request that
+  // intentionally submits through the regular Agent Chat turn after it mounts.
   useEffect(() => {
-    if (!prefill?.prompt.trim()) return
+    if (!prefill || (!prefill.prompt.trim() && !prefill.target)) return
     setInput(prefill.prompt)
+    setTarget(prefill.target ?? null)
+    setTargetError(null)
+    // Timeline prefill opens the normal composer without submitting. Its
+    // app-level handoff must be consumed after this mounted session copied the
+    // draft and target; otherwise reopening Chat can overwrite text the user
+    // typed after leaving the tab. Comment requests retain their later
+    // auto-submit claim so their existing one-shot send and evidence flow stay
+    // intact.
+    if (!prefill.submit) {
+      const detail: { nonce: number; claimed?: boolean } = { nonce: prefill.nonce }
+      document.dispatchEvent(new CustomEvent('cut:claim-agent-chat-prefill', { detail }))
+    }
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }, [prefill?.nonce, prefill?.prompt, setInput])
+  }, [prefill?.nonce, prefill?.prompt, prefill?.submit, prefill?.target, setInput, setTarget])
 
   const send = useCallback(async () => {
     const message = input.trim()
     if (!message || busy) return
+    const turnTarget = target ? rebaseChatTimelineTarget(project, target) : null
+    if (target && !turnTarget) {
+      setTargetError('This target changed before sending. Choose the current timeline range or comment again.')
+      return
+    }
     const turnAttachments = attachments.map((id) => ({
       id,
       label: attachmentOptions.find((option) => option.id === id)?.label ?? id,
     }))
     const turnProjectName = project?.name
+    const turnProjectIdentity = project?.project_identity
     const turnEvidence = evidenceAttachments.selected
     const evidenceIdentity = evidenceAttachmentIdentity(turnEvidence)
     setInput('')
     setAttachments([])
+    setTarget(null)
+    setTargetError(null)
     evidenceAttachments.clear()
-    setLog((l) => [...l, { id: newTurnId(), role: 'user', text: message, attachments: turnAttachments, evidence: turnEvidence }])
+    setLog((l) => [...l, {
+      id: newTurnId(),
+      role: 'user',
+      text: message,
+      attachments: turnAttachments,
+      evidence: turnEvidence,
+      target: turnTarget ?? undefined,
+      requestTarget: turnTarget ?? undefined,
+      projectName: turnProjectName,
+      projectIdentity: turnProjectIdentity,
+    }])
     setBusy(true)
     try {
       // Pass the selected provider. The backend rejects a provider without an
@@ -247,6 +288,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
         message,
         agent,
         attachments: turnAttachments.length > 0 ? turnAttachments.map((attachment) => attachment.id) : undefined,
+        target: turnTarget ?? undefined,
         ...evidenceIdentity,
       })
       const res: ChatResult | null | undefined = r.ok ? r.result : null
@@ -266,9 +308,11 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
             requestAttachments: turnAttachments,
             requestEvidence: turnEvidence,
             projectName: turnProjectName,
+            projectIdentity: turnProjectIdentity,
+            target: res.plan?.target ?? res.target ?? turnTarget ?? undefined,
+            requestTarget: turnTarget ?? undefined,
             plan: res.plan,
             review: res.review,
-            reviewState: res.actions.length > 0 && res.review ? 'pending' : undefined,
           },
         ])
       } else if (res) {
@@ -290,9 +334,11 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
             requestAttachments: turnAttachments,
             requestEvidence: turnEvidence,
             projectName: turnProjectName,
+            projectIdentity: turnProjectIdentity,
+            target: res.plan?.target ?? res.target ?? turnTarget ?? undefined,
+            requestTarget: turnTarget ?? undefined,
             plan: res.plan,
             review: res.review,
-            reviewState: res.actions.length > 0 && res.review ? 'pending' : undefined,
           },
         ])
       } else {
@@ -305,21 +351,32 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
     } finally {
       setBusy(false)
     }
-  }, [input, busy, agent, attachments, attachmentOptions, evidenceAttachments, project?.name, setAttachments, setBusy, setInput, setLog])
+  }, [input, busy, agent, attachments, attachmentOptions, evidenceAttachments, project, setAttachments, setBusy, setInput, setLog, setTarget, target])
+
+  // A Comment already contains an explicit request, so its Make changes action
+  // may send through the normal Chat turn after the target reaches this mounted
+  // composer. Timeline uses the same target path without submit and waits for
+  // the user's normal typed request.
+  useEffect(() => {
+    if (!prefill?.submit || !prefill.prompt.trim() || busy) return
+    if (input !== prefill.prompt || target !== (prefill.target ?? null)) return
+    const detail: { nonce: number; claimed?: boolean } = { nonce: prefill.nonce }
+    document.dispatchEvent(new CustomEvent('cut:claim-agent-chat-prefill', { detail }))
+    if (!detail.claimed) return
+    void send()
+  }, [busy, input, prefill, send, target])
 
   const patchTurn = useCallback((turnId: string, patch: Partial<AgentChatTurn>) => {
     setLog((current) => patchAgentChatTurn(current, turnId, patch))
   }, [setLog])
 
-  const acceptTurn = useCallback((turnId: string, turn: AgentChatTurn) => {
-    if (!turn.projectName || turn.projectName !== project?.name || !turn.actions?.length) return
-    markReviewOps(turn.projectName, turn.actions.map((action) => action.op_id), 'accepted')
-    patchTurn(turnId, { reviewState: 'accepted', reviewError: null })
-  }, [patchTurn, project?.name])
-
   const revertTurn = useCallback(async (turnId: string, turn: AgentChatTurn): Promise<boolean> => {
     const review = turn.review
-    if (!review || !review.revert_safe || !review.tip || !turn.projectName || turn.projectName !== project?.name) return false
+    const currentIdentity = project?.project_identity
+    const sameProject = turn.projectIdentity && currentIdentity
+      && turn.projectIdentity.origin_path_sha256 === currentIdentity.origin_path_sha256
+      && turn.projectIdentity.project_name === currentIdentity.project_name
+    if (!review || !review.revert_safe || !review.tip || !sameProject) return false
     patchTurn(turnId, { reviewBusy: true, reviewError: null })
     try {
       const result = await callVerb('project.revert', {
@@ -334,30 +391,48 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
         })
         return false
       }
-      if (turn.actions?.length) {
-        markReviewOps(turn.projectName, turn.actions.map((action) => action.op_id), 'rejected')
-      }
       patchTurn(turnId, { reviewBusy: false, reviewState: 'reverted', reviewError: null })
       return true
     } catch (error) {
       patchTurn(turnId, { reviewBusy: false, reviewError: errorText(error) })
       return false
     }
-  }, [patchTurn, project?.name])
+  }, [patchTurn, project?.project_identity])
 
-  const retryTurn = useCallback(async (turnId: string, turn: AgentChatTurn) => {
+  const replaceTurn = useCallback((turnId: string, turn: AgentChatTurn) => {
     if (!turn.request) return
-    if (turn.reviewState !== 'reverted') {
-      const reverted = await revertTurn(turnId, turn)
-      if (!reverted) return
+    const currentIdentity = project?.project_identity
+    const sameProject = turn.projectIdentity && currentIdentity
+      && turn.projectIdentity.origin_path_sha256 === currentIdentity.origin_path_sha256
+      && turn.projectIdentity.project_name === currentIdentity.project_name
+    if (!sameProject) {
+      const message = 'This request belongs to a different project. Open its project or start a new request here.'
+      patchTurn(turnId, {
+        reviewError: message,
+      })
+      setTargetError(message)
+      return
+    }
+    const rebased = turn.requestTarget
+      ? rebaseChatTimelineTarget(project, turn.requestTarget)
+      : null
+    if (turn.requestTarget && !rebased) {
+      const message = 'This target no longer exists in the current project. Step back this turn if it is safe, then choose a new target.'
+      patchTurn(turnId, {
+        reviewError: message,
+      })
+      setTargetError(message)
+      return
     }
     const registered = new Set(attachmentOptions.map((option) => option.id))
     setInput(turn.request)
+    setTarget(rebased)
+    setTargetError(null)
     setAttachments((turn.requestAttachments ?? []).map((attachment) => attachment.id).filter((id) => registered.has(id)))
     evidenceAttachments.restore(turn.requestEvidence ?? [])
-    patchTurn(turnId, { reviewState: 'retry', reviewError: null })
+    patchTurn(turnId, { reviewState: 'replacement', reviewError: null })
     window.setTimeout(() => inputRef.current?.focus(), 0)
-  }, [attachmentOptions, evidenceAttachments, patchTurn, revertTurn, setAttachments, setInput])
+  }, [attachmentOptions, evidenceAttachments, patchTurn, project, setAttachments, setInput, setTarget])
 
   const inspectDiff = useCallback((turn: AgentChatTurn) => {
     const review = turn.review
@@ -381,7 +456,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
   }
 
   // Chip click: PRE-FILL the compose box with the chip's request + focus it, so the
-  // user reviews/edits before sending (never auto-spends a CLI turn). Discoverability
+  // user can refine it before sending (never auto-spends a CLI turn). Discoverability
   // over automation — the agent runs the actual verb when the user sends.
   const choosePrompt = useCallback((prompt: string) => {
     if (!hasProject || busy) return
@@ -479,6 +554,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
             data-cut-chat-error={t.role === 'agent' && t.ok === false ? (t.errorKind ?? 'error') : undefined}
           >
             <div className="chat__bubble">{t.text}</div>
+            {t.target && <div className="chat__target" data-cut-chat-target>{t.target.label}</div>}
             {t.role === 'user' && <AssetAttachmentStrip attachments={t.attachments ?? []} turn />}
             {t.role === 'user' && <EvidenceAttachmentStrip attachments={t.evidence ?? []} turn />}
             {/* Error transparency: the agent's OWN final words on a failed turn
@@ -502,22 +578,22 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
             {t.role === 'agent' && t.actions && t.actions.length > 0 && t.review && (
               <div
                 className="chat__review"
-                data-cut-chat-review={t.reviewState ?? 'pending'}
+                data-cut-chat-review={t.reviewState ?? 'applied'}
                 data-cut-chat-revert-safe={t.review.revert_safe ? 'true' : 'false'}
               >
                 <div className="chat__review-head">
-                  <span className="chat__review-title">Turn review</span>
-                  <span className={`chat__review-state chat__review-state--${t.reviewState ?? 'pending'}`}>
-                    {t.reviewState === 'accepted' ? 'Accepted' : t.reviewState === 'reverted' ? 'Reverted' : t.reviewState === 'retry' ? 'Ready to retry' : 'Needs review'}
+                  <span className="chat__review-title">Applied change</span>
+                  <span className={`chat__review-state chat__review-state--${t.reviewState ?? 'applied'}`}>
+                    {t.reviewState === 'reverted' ? 'Stepped back' : t.reviewState === 'replacement' ? 'Ready to replace' : 'Applied'}
                   </span>
                 </div>
                 <div className="chat__review-plan" data-cut-chat-plan>
-                  <span>Plan</span>
+                  <span>Request</span>
                   <p>{t.plan?.request ?? t.request}</p>
                 </div>
                 {!t.review.revert_safe && t.review.concurrent_actions.length > 0 && (
                   <div className="chat__review-warning" data-cut-chat-review-concurrent>
-                    {t.review.concurrent_actions.length} concurrent change{t.review.concurrent_actions.length === 1 ? '' : 's'} detected. Inspect in Review; whole-turn revert is disabled.
+                    {t.review.concurrent_actions.length} concurrent change{t.review.concurrent_actions.length === 1 ? '' : 's'} detected. Inspect Diff; Step back is unavailable.
                   </div>
                 )}
                 {t.review.diff_error && <div className="chat__review-warning">{t.review.diff_error}</div>}
@@ -526,17 +602,14 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
                   <button type="button" data-cut-chat-preview onClick={previewTurn} title="Show the current composed frame">
                     <Icon name="eye" size={14} /> Preview
                   </button>
-                  <button type="button" data-cut-chat-diff onClick={() => inspectDiff(t)} disabled={!t.review.tip} title="Inspect this turn in Review Diff">
+                  <button type="button" data-cut-chat-diff onClick={() => inspectDiff(t)} disabled={!t.review.tip} title="Inspect this turn in Diff">
                     <Icon name="diff" size={14} /> Diff
                   </button>
-                  <button type="button" data-cut-chat-accept onClick={() => acceptTurn(t.id, t)} disabled={t.reviewBusy || t.reviewState === 'accepted'} title="Accept these op-log changes">
-                    <Icon name="check" size={14} /> Accept
+                  <button type="button" data-cut-chat-step-back onClick={() => void revertTurn(t.id, t)} disabled={t.reviewBusy || !t.review.revert_safe || t.reviewState === 'reverted'} title="Undo this complete Agent Chat turn to its history baseline">
+                    <Icon name="undo" size={14} /> Step back
                   </button>
-                  <button type="button" data-cut-chat-revert onClick={() => void revertTurn(t.id, t)} disabled={t.reviewBusy || !t.review.revert_safe || t.reviewState === 'reverted' || t.reviewState === 'retry'} title="Revert the complete turn to its history baseline">
-                    <Icon name="undo" size={14} /> Revert
-                  </button>
-                  <button type="button" data-cut-chat-retry onClick={() => void retryTurn(t.id, t)} disabled={t.reviewBusy || !t.review.revert_safe || !t.request} title="Revert this turn and put its request back in the composer">
-                    <Icon name="redo" size={14} /> Try again
+                  <button type="button" data-cut-chat-replace onClick={() => replaceTurn(t.id, t)} disabled={t.reviewBusy || !t.request} title="Reuse this request with the same target re-resolved against the current project">
+                    <Icon name="redo" size={14} /> Ask replacement
                   </button>
                 </div>
               </div>
@@ -627,6 +700,29 @@ export default function AgentChat({ project, prefill, session, onSessionChange }
         onRemove={(id) => setAttachments((selected) => selected.filter((candidate) => candidate !== id))}
       />
       <EvidenceAttachmentStrip attachments={evidenceAttachments.selected} busy={busy} onRemove={evidenceAttachments.remove} />
+      {target && (
+        <div className="chat__target chat__target--composer" data-cut-chat-target>
+          <span>{target.label}</span>
+          <button
+            type="button"
+            data-cut-action="chat-clear-timeline-target"
+            disabled={busy}
+            onClick={() => { setTarget(null); setTargetError(null) }}
+            aria-label="Clear Agent Chat timeline target"
+            title="Clear timeline target"
+          >×</button>
+        </div>
+      )}
+      {targetError && <div className="chat__target-error" data-cut-chat-target-error>{targetError}</div>}
+      {historyStatus !== 'memory' && (
+        <div className={`chat__history chat__history--${historyStatus}`} data-cut-chat-history-status={historyStatus}>
+          {historyStatus === 'saved'
+            ? 'Chat history is saved on this device for this project.'
+            : historyStatus === 'invalid'
+              ? 'Chat history could not be saved safely on this device; this session will be lost after reload.'
+              : 'Local storage is unavailable; this Chat session will be lost after reload.'}
+        </div>
+      )}
       <div className="chat__compose">
         <AttachmentPicker
           options={attachmentOptions}

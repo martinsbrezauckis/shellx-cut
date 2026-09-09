@@ -118,6 +118,8 @@ export default function AppWorkspace({
             <Comments
               project={project}
               playheadMs={playheadMs}
+              selectedClipIds={selectedClipIds}
+              selectedRange={exportRange}
               onSeek={onSeek}
               onCollapse={onCollapseComments}
               focus={focusComment}

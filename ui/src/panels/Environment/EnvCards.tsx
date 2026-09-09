@@ -49,7 +49,7 @@ export default function EnvCards({
   const visible = new Set(groups)
 
   return (
-    <div className="env-cards" data-cut-env-cards data-cut-env-essential-ok={report.essential_ok}>
+    <div className="env-cards" data-cut-env-cards data-cut-env-essential-ok={report.essential_ok} data-cut-env-scanned-at={report.scanned_at}>
       {visible.has('tools') && <CardGroup label="Video processing" cards={g.tools} os={report.os} onChanged={onChanged} />}
       {visible.has('perception') && <CardGroup label="Captions and transcription" cards={g.perception} os={report.os} onChanged={onChanged} />}
       {visible.has('matte') && <CardGroup label="Background removal" cards={g.matte} os={report.os} onChanged={onChanged} />}

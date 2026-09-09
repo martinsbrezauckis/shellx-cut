@@ -26,6 +26,7 @@ interface TimelineToolbarProps {
   savingRange: boolean
   savingGif: boolean
   saveNote: string | null
+  canAskAgent: boolean
   onCycleTimeDisplay: () => void
   onZoom: (nextZoom: number, anchorMs: number) => void
   onToggleRazor: () => void
@@ -40,6 +41,7 @@ interface TimelineToolbarProps {
   onCutToBeat: () => void | Promise<void>
   onSaveRange: () => void
   onSaveGif: () => void
+  onAskAgent: () => void
 }
 
 export default function TimelineToolbar({
@@ -60,6 +62,7 @@ export default function TimelineToolbar({
   savingRange,
   savingGif,
   saveNote,
+  canAskAgent,
   onCycleTimeDisplay,
   onZoom,
   onToggleRazor,
@@ -74,6 +77,7 @@ export default function TimelineToolbar({
   onCutToBeat,
   onSaveRange,
   onSaveGif,
+  onAskAgent,
 }: TimelineToolbarProps) {
   const hasSelectedVideo = selectedMedia.some((i) => i.kind === 'video')
   const zoomLabel = `${zoom >= 1 ? zoom.toFixed(1) : zoom.toFixed(2)}\u00d7`
@@ -231,6 +235,17 @@ export default function TimelineToolbar({
           onClick={() => document.dispatchEvent(new CustomEvent('cut:open-matte'))}
         >
           Matte
+        </button>
+        <button
+          type="button"
+          className="tl-tool"
+          data-cut-action="timeline-ask-agent"
+          disabled={!canAskAgent}
+          title="Open Agent Chat with this selected timeline target"
+          onClick={onAskAgent}
+        >
+          <Icon name="agent" size={14} />
+          Ask agent
         </button>
         <TimelineSaveActions
           canSaveRange={selectedMedia.length > 0}

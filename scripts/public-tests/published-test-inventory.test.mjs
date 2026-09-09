@@ -62,7 +62,7 @@ function fixture(t, { tests = ['scripts/public-tests/fixture.test.mjs'], resourc
 test('published test inventory names the exact public CI scope and every declared resource', () => {
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
   assert.equal(inventory.version, '0.6.114')
-  assert.deepEqual(inventory.contract, { node_test_count: 10, ui_library_test_count: 34 })
+  assert.deepEqual(inventory.contract, { node_test_count: 11, ui_library_test_count: 37 })
   assert.deepEqual(inventory.tests.map((entry) => entry.path), [
     'scripts/public-tests/cross-host-media.test.mjs',
     'scripts/public-tests/dependency-audit.test.mjs',
@@ -70,6 +70,7 @@ test('published test inventory names the exact public CI scope and every declare
     'scripts/public-tests/grok-judge-tool-policy.test.mjs',
     'scripts/public-tests/judge-adapter.test.mjs',
     'scripts/public-tests/judge-provider-admission.test.mjs',
+    'scripts/public-tests/manual-publication-browser-receipt.test.mjs',
     'scripts/public-tests/manual-publication-package.test.mjs',
     'scripts/public-tests/published-test-inventory.test.mjs',
     'scripts/public-tests/safe-data.test.mjs',

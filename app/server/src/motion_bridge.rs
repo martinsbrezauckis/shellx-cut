@@ -693,6 +693,7 @@ pub(crate) async fn motion_link_edit(
         "clip": request.clip,
         "packageId": package_id,
         "motionId": motion_id,
+        "sourceRevision": source_revision,
         "launched": true,
         "pid": child.id(),
         "returnChannel": { "state": "pending", "pathPrivate": true },

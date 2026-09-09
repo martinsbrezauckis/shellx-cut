@@ -11,21 +11,31 @@
 }
 .rec__head {
   display: flex;
-  align-items: baseline;
-  gap: 18px;
-  padding: 12px 20px;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 7px 20px;
   border-bottom: 1px solid var(--hairline, rgba(255, 255, 255, 0.07));
 }
-.rec__title-wrap { display: flex; align-items: center; gap: 10px; }
 .rec__dot {
-  width: 12px; height: 12px; border-radius: 50%;
+  width: 9px; height: 9px; border-radius: 50%;
   background: #ef4444;
-  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.18);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
 }
 .rec__dot[data-cut-rec-phase="recording"] { animation: rec-pulse 1.2s ease-in-out infinite; }
 @keyframes rec-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
-.rec__title { margin: 0; font: 650 18px/1.15 var(--sans, system-ui); letter-spacing: -0.01em; color: var(--ink, #f2f3f5); }
-.rec__sub { margin: 0; color: var(--ink-3, #aab1bd); font: var(--fs-ui-sm)/1.5 var(--sans); }
+.rec__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.rec__sub { margin: 0; color: var(--ink-3, #aab1bd); font: 600 var(--fs-ui-sm)/1.35 var(--sans); }
 
 .rec__empty { padding: 48px 32px; color: var(--ink-4, #6b7280); text-align: center; }
 
@@ -37,8 +47,7 @@
   grid-template-columns: minmax(250px, 280px) minmax(0, 1fr);
   grid-template-areas:
     "readiness readiness"
-    "settings studio"
-    "transport transport";
+    "settings studio";
   gap: 16px;
   align-items: start;
   padding: 14px 20px 18px;
@@ -50,11 +59,33 @@
 
 .rec > .rec__source-note { margin: 0; padding: 5px 24px 0; }
 
-.rec__cards {
+.rec__readiness {
   grid-area: readiness;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 14px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface-2) 62%, transparent);
+}
+.rec__readiness-summary { min-width: 0; }
+.rec__readiness-summary .rec__eyebrow { margin-bottom: 2px; }
+.rec__readiness-summary strong { color: var(--ink, #f2f3f5); font: 650 var(--fs-ui-sm)/1.2 var(--sans); }
+.rec__readiness-summary p { margin: 2px 0 0; color: var(--ink-3, #aab1bd); font: var(--fs-ui-xs, 11px)/1.35 var(--sans); }
+.rec__readiness[data-cut-rec-readiness-state="attention"] { border-color: rgba(239, 68, 68, .42); }
+.rec__readiness[data-cut-rec-readiness-state="pending"] { border-color: rgba(245, 196, 81, .42); }
+.rec__readiness[data-cut-rec-readiness-state="unknown"] { border-color: rgba(148, 163, 255, .5); }
+.rec__readiness[data-cut-rec-readiness-state="ready"] { border-color: rgba(52, 211, 153, .4); }
+.rec__readiness-details { color: var(--ink-3, #aab1bd); font: 650 var(--fs-ui-xs, 11px)/1.2 var(--sans); }
+.rec__readiness-details > summary { cursor: pointer; white-space: nowrap; }
+.rec__readiness-details[open] { grid-column: 1 / -1; }
+.rec__cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
+  margin-top: 8px;
 }
 .rec__card {
   display: grid;
@@ -80,10 +111,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rec__not-ready { grid-column: 1 / -1; margin: 4px 0 0; color: #ffb4a0; font: var(--fs-ui-sm)/1.5 var(--sans); }
 .rec-rehearsal {
   display: grid;
-  grid-column: 1 / -1;
   gap: 7px;
   padding: 9px 10px;
   border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
@@ -193,6 +222,14 @@
   border-color: rgba(245, 196, 81, .38);
   color: #f5c451;
 }
+.rec__settings-state[data-cut-rec-setup-state="pending"] {
+  border-color: rgba(245, 196, 81, .38);
+  color: #f5c451;
+}
+.rec__settings-state[data-cut-rec-setup-state="unknown"] {
+  border-color: rgba(148, 163, 255, .5);
+  color: #a5b4fc;
+}
 .rec__settings-primary,
 .rec__advanced-body {
   display: grid;
@@ -294,17 +331,16 @@
 .rec__toggle { display: flex; align-items: center; gap: 8px; color: var(--ink-2, #d6dae0); font: var(--fs-ui-sm)/1 var(--sans); cursor: pointer; }
 
 .rec__transport {
-  grid-area: transport;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: min(calc(100% - 40px), 1720px);
+  margin: 0 auto 14px;
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
-  align-self: end;
   min-width: 0;
-  position: sticky;
-  bottom: -2px;
-  z-index: 8;
   min-height: 68px;
   padding: 10px 12px;
   border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
@@ -723,8 +759,7 @@
   color: rgba(255,255,255,.78);
   font: 700 10px/1 var(--sans);
 }
-.rec-studio-preview__camera,
-.rec-studio-preview__camera-placeholder {
+.rec-studio-preview__camera {
   position: absolute;
   display: grid;
   place-items: center;
@@ -735,37 +770,11 @@
   color: #fff;
   box-shadow: 0 12px 28px rgba(0,0,0,.34);
   user-select: none;
-  touch-action: none;
+  touch-action: manipulation;
+  cursor: pointer;
 }
-.rec-studio-preview__camera { cursor: grab; }
-.rec-studio-preview__camera:active { cursor: grabbing; }
 .rec-studio-preview__camera--circle { border-radius: 999px; }
 .rec-studio-preview__camera--rounded_rect { border-radius: 16px; }
-.rec-studio-preview__camera-placeholder {
-  left: 4%;
-  bottom: 6%;
-  width: 112px;
-  height: 64px;
-  border-style: dashed;
-  border-color: rgba(255,255,255,.32);
-  color: var(--ink-4, #6b7280);
-  font: 700 var(--fs-ui-xs, 11px)/1 var(--sans);
-}
-.rec-studio-preview__camera-label {
-  font: 800 var(--fs-ui-xs, 11px)/1 var(--sans);
-  text-transform: uppercase;
-}
-.rec-studio-preview__resize {
-  position: absolute;
-  right: -7px;
-  bottom: -7px;
-  width: 16px;
-  height: 16px;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: #2563eb;
-  cursor: nwse-resize;
-}
 .rec-studio-preview__status {
   position: absolute;
   left: 12px;
@@ -851,14 +860,23 @@
   text-align: left;
   cursor: pointer;
 }
-.rec-scenes__choice:hover:not(:disabled) { border-color: var(--cut, #2563eb); }
+.rec-scenes__choice:hover:not(:disabled) { border-color: rgba(147, 197, 253, .62); }
 .rec-scenes__choice--selected {
-  border-color: var(--cut, #2563eb);
-  background: rgba(37,99,235,.12);
+  border-color: #60a5fa;
+  background: rgba(37, 99, 235, .2);
+  box-shadow: inset 3px 0 0 #60a5fa;
 }
 .rec-scenes__choice:disabled { opacity: .52; cursor: default; }
 .rec-scenes__choice > span:last-child { display: grid; min-width: 0; gap: 3px; }
 .rec-scenes__choice strong { color: var(--ink, #f2f3f5); font: 650 var(--fs-ui-xs, 11px)/1.15 var(--sans); }
+.rec-scenes__selected {
+  align-items: center;
+  color: #93c5fd;
+  display: inline-flex;
+  font: 700 10px/1 var(--sans);
+  gap: 3px;
+  text-transform: uppercase;
+}
 .rec-scenes__choice small,
 .rec-scenes__choice em {
   color: var(--ink-4, #6b7280);
@@ -1091,16 +1109,16 @@
 /* Active capture drops setup and machine-readiness chrome. The large preview,
    live scene/timer controls, and the sticky transport are the only competing
    surfaces until finalization completes. */
-.rec[data-cut-record-phase="recording"] .rec__cards,
+.rec[data-cut-record-phase="recording"] .rec__readiness,
 .rec[data-cut-record-phase="recording"] .rec__settings,
-.rec[data-cut-record-phase="finalizing"] .rec__cards,
+.rec[data-cut-record-phase="finalizing"] .rec__readiness,
 .rec[data-cut-record-phase="finalizing"] .rec__settings {
   display: none;
 }
 .rec[data-cut-record-phase="recording"] .rec__body,
 .rec[data-cut-record-phase="finalizing"] .rec__body {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "studio" "transport";
+  grid-template-areas: "studio";
 }
 .rec[data-cut-record-phase="recording"] .rec-studio-preview,
 .rec[data-cut-record-phase="finalizing"] .rec-studio-preview { min-height: 520px; }
@@ -1113,6 +1131,7 @@
 
 @media (max-width: 1360px) {
   .rec__body { grid-template-columns: 250px minmax(0, 1fr); padding-inline: 14px; }
+  .rec__transport { width: calc(100% - 28px); margin-bottom: 12px; }
   .rec__studio { grid-template-columns: minmax(400px, 1fr) 252px; gap: 12px; }
   .rec-studio-preview { min-height: 320px; }
   .rec-studio-controls { padding: 12px; }
@@ -1121,9 +1140,10 @@
 @media (max-width: 920px) {
   .rec__body {
     grid-template-columns: 1fr;
-    grid-template-areas: "readiness" "studio" "settings" "transport";
+    grid-template-areas: "readiness" "studio" "settings";
     padding: 18px;
   }
+  .rec__transport { width: calc(100% - 36px); margin-bottom: 12px; }
   .rec__studio { grid-template-columns: 1fr; }
   .rec-studio-controls { max-height: none; }
   .rec-studio-preview { min-height: 220px; }
@@ -1174,14 +1194,14 @@
 .rec__stop-recovery .rec__output-row { align-items: center; }
 .rec__stop-recovery [data-cut-rec-output-recovery-note] { margin: 0; color: #f5c451; }
 
-/* The live surface can grow taller than the scrollport (scenes, meters, and
-   raw-output recovery). Keep the action row itself sticky; never pin the whole
-   support stack, which can push Retry Stop underneath the Record heading. */
+/* The scrollable workspace and reserved footer stay separate. A live recovery
+   can grow inside the footer, but its immediate Stop/pause row remains visible
+   without covering source, rehearsal, or scene controls in the body. */
 .rec[data-cut-record-phase="recording"] .rec__transport {
   display: block;
-  align-self: stretch;
-  position: static;
-  min-height: 0;
+  max-height: min(42vh, 360px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1191,8 +1211,7 @@
 }
 .rec[data-cut-record-phase="recording"] .rec-live-controls__transport {
   position: sticky;
-  top: 8px;
-  bottom: 8px;
+  top: 0;
   z-index: 9;
   padding: 10px 12px;
   border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
@@ -1201,3 +1220,7 @@
   box-shadow: 0 -12px 34px rgba(0,0,0,.18);
   backdrop-filter: blur(12px);
 }
+
+
+.rec__global-hotkey-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.rec__field--global-hotkey .rec__source-note { flex-basis: 100%; margin-top: 0; }

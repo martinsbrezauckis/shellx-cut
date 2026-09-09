@@ -330,3 +330,361 @@ async fn jobs_cancel_aborts_active_job_through_dispatch() {
     assert!(r.ok, "{:?}", r.error);
     assert_eq!(r.result.unwrap()["cancelled"], true);
 }
+
+/// Cancelling a live render_queue must abort its currently awaited child before
+/// the queue can enter a later delivery. The Status Bar invokes jobs.cancel, so
+/// exercise that dispatcher route rather than calling the manager directly.
+#[tokio::test]
+async fn jobs_cancel_render_queue_cancels_waiting_child_before_next_delivery() {
+    use crate::jobs::{JobOutcome, JobOutcomeReason, JobState};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use tokio::sync::Notify;
+
+    struct NotifyOnDrop(Arc<Notify>);
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_waiters();
+        }
+    }
+
+    let state = AppState::new();
+    let child = state.jobs.create("render");
+    let queue = state.jobs.create("render_queue");
+    let child_started = Arc::new(Notify::new());
+    let child_stopped = Arc::new(Notify::new());
+    let parent_waiting = Arc::new(Notify::new());
+    let later_delivery_started = Arc::new(AtomicBool::new(false));
+
+    let child_started_signal = child_started.clone();
+    let child_stopped_signal = child_stopped.clone();
+    state.jobs.spawn(&child.job_id, async move {
+        let _notify_on_drop = NotifyOnDrop(child_stopped_signal);
+        child_started_signal.notify_one();
+        std::future::pending::<()>().await;
+    });
+    child_started.notified().await;
+
+    state.jobs.set_waiting_on(
+        &queue.job_id,
+        Some(crate::jobs::JobDependencyInfo {
+            job_id: child.job_id.clone(),
+            kind: "render".into(),
+        }),
+    );
+    let parent_waiting_signal = parent_waiting.clone();
+    let later_delivery_signal = later_delivery_started.clone();
+    state.jobs.spawn(&queue.job_id, async move {
+        parent_waiting_signal.notify_one();
+        child_stopped.notified().await;
+        // This is the queue's next sequential delivery. Parent cancellation
+        // must abort this task before the child becoming terminal can reach it.
+        later_delivery_signal.store(true, Ordering::SeqCst);
+    });
+    parent_waiting.notified().await;
+
+    let cancelled = dispatch(
+        &state,
+        "jobs.cancel",
+        json!({"job_id": queue.job_id}),
+        test_actor(),
+    )
+    .await;
+    assert!(cancelled.ok, "{:?}", cancelled.error);
+    assert_eq!(cancelled.result.unwrap()["cancelled"], true);
+
+    tokio::task::yield_now().await;
+    assert!(
+        !later_delivery_started.load(Ordering::SeqCst),
+        "a cancelled queue must not begin a queued sibling after its active child stops"
+    );
+    for job_id in [&queue.job_id, &child.job_id] {
+        let record = state
+            .jobs
+            .get(job_id)
+            .expect("terminal job record retained");
+        assert_eq!(record.state, JobState::Failed, "{job_id}");
+        assert_eq!(record.outcome, Some(JobOutcome::Cancelled), "{job_id}");
+        assert_eq!(
+            record.outcome_reason,
+            Some(JobOutcomeReason::UserCancelled),
+            "{job_id}"
+        );
+    }
+    assert_eq!(state.jobs.get(&queue.job_id).unwrap().waiting_on, None);
+}
+
+/// `waiting_on` must be read only after the parent task has stopped. Its Drop
+/// models a render queue moving from one completed child to its next child at
+/// the same time cancellation is requested; only the current child may stop.
+#[tokio::test]
+async fn jobs_cancel_render_queue_uses_child_after_parent_drain() {
+    use crate::jobs::{JobOutcome, JobOutcomeReason, JobState};
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    struct ReplaceWaitingChildOnDrop {
+        jobs: crate::jobs::JobManager,
+        queue_id: String,
+        child_id: String,
+    }
+    impl Drop for ReplaceWaitingChildOnDrop {
+        fn drop(&mut self) {
+            self.jobs.set_waiting_on(
+                &self.queue_id,
+                Some(crate::jobs::JobDependencyInfo {
+                    job_id: self.child_id.clone(),
+                    kind: "render".into(),
+                }),
+            );
+        }
+    }
+
+    let state = AppState::new();
+    let first_child = state.jobs.create("render");
+    let current_child = state.jobs.create("render");
+    let queue = state.jobs.create("render_queue");
+    let first_started = Arc::new(Notify::new());
+    let current_started = Arc::new(Notify::new());
+    for (job_id, started) in [
+        (first_child.job_id.clone(), first_started.clone()),
+        (current_child.job_id.clone(), current_started.clone()),
+    ] {
+        state.jobs.spawn(&job_id, async move {
+            started.notify_one();
+            std::future::pending::<()>().await;
+        });
+    }
+    first_started.notified().await;
+    current_started.notified().await;
+
+    state.jobs.set_waiting_on(
+        &queue.job_id,
+        Some(crate::jobs::JobDependencyInfo {
+            job_id: first_child.job_id.clone(),
+            kind: "render".into(),
+        }),
+    );
+    let replacement = ReplaceWaitingChildOnDrop {
+        jobs: state.jobs.clone(),
+        queue_id: queue.job_id.clone(),
+        child_id: current_child.job_id.clone(),
+    };
+    state.jobs.spawn(&queue.job_id, async move {
+        let _replace_waiting_child = replacement;
+        std::future::pending::<()>().await;
+    });
+
+    let cancelled = dispatch(
+        &state,
+        "jobs.cancel",
+        json!({"job_id": queue.job_id}),
+        test_actor(),
+    )
+    .await;
+    assert!(cancelled.ok, "{:?}", cancelled.error);
+    let first = state.jobs.get(&first_child.job_id).unwrap();
+    assert_ne!(first.state, JobState::Failed, "stale child stayed active");
+    let current = state.jobs.get(&current_child.job_id).unwrap();
+    assert_eq!(current.state, JobState::Failed, "current child cancelled");
+    assert_eq!(current.outcome, Some(JobOutcome::Cancelled));
+    assert_eq!(
+        current.outcome_reason,
+        Some(JobOutcomeReason::UserCancelled)
+    );
+    let parent = state.jobs.get(&queue.job_id).unwrap();
+    assert_eq!(parent.state, JobState::Failed);
+    assert_eq!(parent.outcome, Some(JobOutcome::Cancelled));
+}
+
+/// A child with an already-running blocking worker can return
+/// job_cancel_pending. The stopped parent control must remain retryable until
+/// that child drains; otherwise the next jobs.cancel would lose ownership.
+#[tokio::test]
+async fn jobs_cancel_render_queue_retains_parent_authority_when_child_is_pending() {
+    use crate::jobs::{JobOutcome, JobOutcomeReason, JobState};
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    let state = AppState::new();
+    let child = state.jobs.create("render");
+    let queue = state.jobs.create("render_queue");
+    let started = Arc::new(Notify::new());
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let worker_started = started.clone();
+    state.jobs.spawn(&child.job_id, async move {
+        let _ = crate::dispatch::run_blocking("test.queue_child", move || {
+            worker_started.notify_one();
+            release_rx.recv().expect("test releases queue child");
+            Ok(())
+        })
+        .await;
+    });
+    started.notified().await;
+    state.jobs.set_waiting_on(
+        &queue.job_id,
+        Some(crate::jobs::JobDependencyInfo {
+            job_id: child.job_id.clone(),
+            kind: "render".into(),
+        }),
+    );
+    state.jobs.spawn(&queue.job_id, std::future::pending());
+
+    let pending = dispatch(
+        &state,
+        "jobs.cancel",
+        json!({"job_id": queue.job_id}),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        !pending.ok,
+        "a live blocking child must not be claimed cancelled"
+    );
+    assert_eq!(
+        pending.error.as_ref().map(|error| error.code.as_str()),
+        Some("job_cancel_pending")
+    );
+    let retained = state.jobs.get(&queue.job_id).unwrap();
+    assert_ne!(retained.state, JobState::Failed, "parent remains retryable");
+    assert_eq!(
+        retained
+            .waiting_on
+            .as_ref()
+            .map(|child| child.job_id.as_str()),
+        Some(child.job_id.as_str())
+    );
+
+    release_tx.send(()).unwrap();
+    let retried = dispatch(
+        &state,
+        "jobs.cancel",
+        json!({"job_id": queue.job_id}),
+        test_actor(),
+    )
+    .await;
+    assert!(retried.ok, "{:?}", retried.error);
+    for job_id in [&queue.job_id, &child.job_id] {
+        let record = state.jobs.get(job_id).unwrap();
+        assert_eq!(record.state, JobState::Failed, "{job_id}");
+        assert_eq!(record.outcome, Some(JobOutcome::Cancelled), "{job_id}");
+        assert_eq!(
+            record.outcome_reason,
+            Some(JobOutcomeReason::UserCancelled),
+            "{job_id}"
+        );
+    }
+}
+
+/// A direct child cancellation can already own and drain the active render
+/// when the Status Bar cancels its parent queue. The queue must retain its
+/// drained control and return pending until that child reaches a terminal
+/// record; `abort(child) == false` alone is not a completed child.
+#[tokio::test]
+async fn jobs_cancel_render_queue_waits_for_concurrent_child_cancellation() {
+    use crate::jobs::{JobOutcome, JobOutcomeReason, JobState};
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    let state = AppState::new();
+    let child = state.jobs.create("render");
+    let queue = state.jobs.create("render_queue");
+    let started = Arc::new(Notify::new());
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let worker_started = started.clone();
+    state.jobs.spawn(&child.job_id, async move {
+        let _ = crate::dispatch::run_blocking("test.concurrent_queue_child", move || {
+            worker_started.notify_one();
+            release_rx.recv().expect("test releases queue child");
+            Ok(())
+        })
+        .await;
+    });
+    started.notified().await;
+    state.jobs.set_waiting_on(
+        &queue.job_id,
+        Some(crate::jobs::JobDependencyInfo {
+            job_id: child.job_id.clone(),
+            kind: "render".into(),
+        }),
+    );
+    state.jobs.spawn(&queue.job_id, std::future::pending());
+
+    let child_state = state.clone();
+    let child_job_id = child.job_id.clone();
+    let child_cancel = tokio::spawn(async move {
+        dispatch(
+            &child_state,
+            "jobs.cancel",
+            json!({"job_id": child_job_id}),
+            test_actor(),
+        )
+        .await
+    });
+    for _ in 0..100 {
+        if !state.jobs.has_active_task_for_tests(&child.job_id) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !state.jobs.has_active_task_for_tests(&child.job_id),
+        "the direct child cancellation must own the child control before queue cancellation"
+    );
+    assert!(
+        !child_cancel.is_finished(),
+        "the blocking child must still be draining while the parent cancellation runs"
+    );
+
+    let pending = dispatch(
+        &state,
+        "jobs.cancel",
+        json!({"job_id": queue.job_id}),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        !pending.ok,
+        "the queue must not claim success while another cancellation owns its child"
+    );
+    assert_eq!(
+        pending.error.as_ref().map(|error| error.code.as_str()),
+        Some("job_cancel_pending")
+    );
+    let retained = state.jobs.get(&queue.job_id).unwrap();
+    assert_ne!(retained.state, JobState::Failed, "parent remains retryable");
+    assert_eq!(
+        retained
+            .waiting_on
+            .as_ref()
+            .map(|dependency| dependency.job_id.as_str()),
+        Some(child.job_id.as_str())
+    );
+
+    release_tx.send(()).unwrap();
+    let child_cancelled = child_cancel.await.unwrap();
+    assert!(child_cancelled.ok, "{:?}", child_cancelled.error);
+
+    let retried = dispatch(
+        &state,
+        "jobs.cancel",
+        json!({"job_id": queue.job_id}),
+        test_actor(),
+    )
+    .await;
+    assert!(retried.ok, "{:?}", retried.error);
+    for job_id in [&queue.job_id, &child.job_id] {
+        let record = state.jobs.get(job_id).unwrap();
+        assert_eq!(record.state, JobState::Failed, "{job_id}");
+        assert_eq!(record.outcome, Some(JobOutcome::Cancelled), "{job_id}");
+        assert_eq!(
+            record.outcome_reason,
+            Some(JobOutcomeReason::UserCancelled),
+            "{job_id}"
+        );
+    }
+}

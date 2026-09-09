@@ -335,8 +335,9 @@ receipt.
   populated `unsupported` list on a `rendered_media` plan and reports every
   reason as a warning; only an `editable_lowering` plan claiming unsupported
   content is refused. Cut has no `motion.screenshot` call site.
-- `motion.link.edit` revalidates the source identity and launches ShellX Motion
-  with fixed argv (`--motion-package <canonical-dir>` plus a canonical
+- `motion.link.edit` revalidates the source identity and reports the current
+  verified source revision while launching ShellX Motion with fixed argv
+  (`--motion-package <canonical-dir>` plus a canonical
   `--motion-cut-return-request`). ShellX Motion keeps both paths in its trusted
   host, SDK-validates the package, and opens a path-free stale editor revision in
   the same rich workspace. A verified render publishes a new immutable ready

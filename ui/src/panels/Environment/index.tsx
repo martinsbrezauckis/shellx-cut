@@ -92,6 +92,7 @@ export function StartWizard({ report, onRefresh, onClose }: CommonProps) {
         className="env-modal"
         data-cut-wizard
         data-cut-wizard-open="true"
+        data-cut-env-scanned-at={report.scanned_at}
         data-cut-blocking-overlay
         data-cut-wizard-essential-ok={report.essential_ok}
         role="dialog"
@@ -159,6 +160,7 @@ export function EnvironmentPanel({
         className="env-drawer env-settings-shell"
         data-cut-environment
         data-cut-environment-open="true"
+        data-cut-env-scanned-at={report?.scanned_at}
         data-cut-blocking-overlay
         role="dialog"
         aria-modal="true"

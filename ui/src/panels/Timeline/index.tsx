@@ -107,6 +107,7 @@ import { useTimelineAssetDrop } from './useTimelineAssetDrop'
 import { resolveClipPointerDownIntent } from './TimelineSurfaceMenuModel'
 import { sourceTrimAtTimelinePosition } from './rippleTrim'
 import { mediaBasename } from '../../lib/mediaPath'
+import { createTimelineChatTarget } from '../../lib/chatTimelineTarget'
 import { baseVideoTrackId } from '../../lib/layerStack'
 import './timeline.css'
 
@@ -1485,6 +1486,16 @@ export default function Timeline(props: TimelineProps) {
       ? selectedMedia[0].speed ?? 1
       : undefined
     : undefined
+  const askAgent = useCallback(() => {
+    const target = createTimelineChatTarget({
+      project,
+      selectedClipIds,
+      selectedRange: exportRange,
+      positionMs: playheadMs,
+    })
+    if (!target) return
+    document.dispatchEvent(new CustomEvent('cut:open-chat', { detail: { target } }))
+  }, [exportRange, playheadMs, project, selectedClipIds])
 
   return (
     <section
@@ -1513,6 +1524,7 @@ export default function Timeline(props: TimelineProps) {
         savingRange={savingRange}
         savingGif={savingGif}
         saveNote={saveNote}
+        canAskAgent={Boolean(project?.project_identity && project.project_revision)}
         onCycleTimeDisplay={cycleTimeDisplay}
         onZoom={applyZoom}
         onToggleRazor={() => setRazorMode((r) => !r)}
@@ -1526,6 +1538,7 @@ export default function Timeline(props: TimelineProps) {
         onCutToBeat={cutToBeat}
         onSaveRange={onSaveRange}
         onSaveGif={onSaveGif}
+        onAskAgent={askAgent}
       />
 
       <div

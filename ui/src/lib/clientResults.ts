@@ -14,6 +14,7 @@ import type {
   Transcript,
   Waveform,
 } from './clientModel'
+import type { ChatTimelineTarget } from './chatTimelineTarget'
 import type { MotionImportAttestation } from './motionLinkModel'
 import type {
   EvidenceInspectionResult,
@@ -35,6 +36,8 @@ export interface UiStateResult {
   open_surface_ids: string[]
   /** Present on current clients while Settings > About is open; null until doctor text commits. */
   about?: { displayed_version: string | null }
+  /** Browser-visible source manifest stamped into the generated ui/dist index document. */
+  runtime?: { ui_source_content_manifest_sha256: string | null }
   project: { open: boolean; name?: string; active_sequence?: string }
 }
 
@@ -491,6 +494,7 @@ export interface AgentChatPlan {
   reference_ids: string[]
   evidence_ids: string[]
   evidence_index_id?: string | null
+  target?: ChatTimelineTarget | null
   policy: string[]
 }
 
@@ -1524,6 +1528,7 @@ export interface VerbResults {
     attachments: string[]
     evidence_ids: string[]
     evidence_index_id?: string | null
+    target?: ChatTimelineTarget | null
     plan: AgentChatPlan
     review: AgentChatReview | null
     cost_usd: number | null
@@ -1598,8 +1603,10 @@ export interface VerbResults {
     clip: string
     packageId: string
     motionId: string
+    sourceRevision: string
     launched: true
     pid?: number | null
+    returnChannel: { state: 'pending'; pathPrivate: true }
     localOnly: true
     remotePublish: false
   }

@@ -1,20 +1,28 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Project } from '../../lib/client'
 import { emptyAgentChatSession, type AgentChatSession } from './session'
+import {
+  loadAgentChatHistory,
+  saveAgentChatHistory,
+  type AgentChatHistoryStatus,
+} from './history'
 
 const MAX_PROJECT_SESSIONS = 6
 
 /**
- * Chat is deliberately in-session only, but the Chat tab itself unmounts when
- * the right rail changes tab. Keep a small LRU above that tab and key it by the
- * server's path-free origin digest. During an older-server transition without
- * that digest, App's monotonic projectSession is safe for this app lifetime;
- * it changes before a confirmed open/close and therefore cannot mix same-named
- * projects. Receiving a real digest starts a fresh, identity-bound session.
+ * Keep a small in-memory LRU above the tab, which unmounts as the right rail
+ * changes. The identity-bound history helper separately persists safe session
+ * state locally. During an older-server transition without an origin digest,
+ * App's monotonic projectSession is safe for this app lifetime; it changes
+ * before a confirmed open/close and therefore cannot mix same-named projects.
+ * Receiving a real digest starts a fresh, identity-bound session.
  */
 export function agentChatSessionKey(project: Project | null, projectSession: number): string | null {
   if (!project) return null
-  return project.project_identity?.origin_path_sha256 ?? `session:${projectSession}`
+  const identity = project.project_identity
+  return identity
+    ? `${identity.origin_path_sha256}\u0000${identity.project_name}`
+    : `session:${projectSession}`
 }
 
 export function updateAgentChatSessions(
@@ -38,16 +46,43 @@ export function updateAgentChatSessions(
 export function useAgentChatSession(project: Project | null, projectSession: number): {
   session: AgentChatSession
   updateSession: (update: (current: AgentChatSession) => AgentChatSession) => void
+  historyStatus: AgentChatHistoryStatus
 } {
   const key = agentChatSessionKey(project, projectSession)
+  const identity = project?.project_identity
+  const identityKey = identity
+    ? `${identity.origin_path_sha256}\u0000${identity.project_name}`
+    : null
   const [sessions, setSessions] = useState<Map<string, AgentChatSession>>(() => new Map())
+  const [hydratedKey, setHydratedKey] = useState<string | null>(null)
+  const [historyStatus, setHistoryStatus] = useState<AgentChatHistoryStatus>('memory')
   const session = useMemo(
     () => key ? sessions.get(key) ?? emptyAgentChatSession() : emptyAgentChatSession(),
     [key, sessions],
   )
+  useEffect(() => {
+    if (!key || !identity) {
+      setHydratedKey(null)
+      setHistoryStatus('memory')
+      return
+    }
+    const restored = loadAgentChatHistory(identity)
+    setSessions((current) => {
+      if (current.has(key)) return current
+      const next = new Map(current)
+      next.set(key, restored.session)
+      return next
+    })
+    setHistoryStatus(restored.status)
+    setHydratedKey(key)
+  }, [identity, identityKey, key])
+  useEffect(() => {
+    if (!key || !identity || hydratedKey !== key) return
+    setHistoryStatus(saveAgentChatHistory(identity, session))
+  }, [hydratedKey, identity, identityKey, key, session])
   const updateSession = useCallback((update: (current: AgentChatSession) => AgentChatSession) => {
     if (!key) return
     setSessions((current) => updateAgentChatSessions(current, key, update))
   }, [key])
-  return { session, updateSession }
+  return { session, updateSession, historyStatus }
 }

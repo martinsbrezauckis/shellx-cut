@@ -25,9 +25,9 @@ async function source(path: string): Promise<string> {
 
 async function verifyGeneratedManual(): Promise<void> {
   await run(process.execPath, [resolve(root, 'scripts/generate-manual-content.mjs'), '--check'], { cwd: root })
-  assert.equal(MANUAL_CONTENT.featureCount, 199, 'the generated manual retains its 199 indexed entries')
-  assert.equal(MANUAL_FEATURES.length, 199, 'the generated feature array retains every indexed entry')
-  assert.equal(new Set(MANUAL_FEATURES.map((feature) => feature.id)).size, 199, 'every indexed manual feature id is unique')
+  assert.equal(MANUAL_CONTENT.featureCount, 201, 'the generated manual retains its 201 indexed entries')
+  assert.equal(MANUAL_FEATURES.length, 201, 'the generated feature array retains every indexed entry')
+  assert.equal(new Set(MANUAL_FEATURES.map((feature) => feature.id)).size, 201, 'every indexed manual feature id is unique')
   assert.equal(MANUAL_CONTENT.unindexed.length, 0, 'every declared web-manual feature is indexed into the frontend content')
 }
 
@@ -83,6 +83,11 @@ function verifyFeatureTargets(): { exactTargetCount: number; surfaceTargetCount:
   assert.ok(exactTargetCount > 0, 'manual target coverage includes real exact-control targets')
   assert.ok(exactTargetCount < MANUAL_FEATURES.length, 'manual target coverage does not pretend every indexed entry is an exact control')
   assert.equal(exactTargetCount + surfaceTargetCount + unavailableCount, MANUAL_FEATURES.length, 'every indexed feature has either a target or an explicit unavailable state')
+  const agentChange = manualFeatureTarget('cut.workflow.agent_change')
+  assert.ok(MANUAL_FEATURES.some((feature) => feature.id === 'cut.workflow.agent_change'), 'the direct Agent Chat workflow retains its current manual identity')
+  assert.equal(agentChange.unavailable, undefined, 'the direct Agent Chat workflow resolves to its Chat target instead of the unknown-feature fallback')
+  assert.equal(agentChange.surface, 'chat', 'the direct Agent Chat workflow opens the Chat surface')
+  assert.equal(MANUAL_FEATURES.some((feature) => feature.id === 'cut.workflow.agent_review'), false, 'the retired review-named workflow identity is not published as a Manual feature')
   return { exactTargetCount, surfaceTargetCount, unavailableCount }
 }
 

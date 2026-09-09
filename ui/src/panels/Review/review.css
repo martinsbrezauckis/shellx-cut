@@ -1,5 +1,5 @@
 /* review.css — Review rail styles (tokens from theme.css).
-   OPS feed rows (badge/rationale/effects, focused/accepted/
+   OPS feed rows (badge/rationale/effects, focused/restored/
    rejected), RECEIPTS cards (across-the-room banner, check rows, evidence,
    judge stub), DIFF (selectors, chips, tinted op list). Rail focus scope =
    2px --cut top edge. */
@@ -9,17 +9,6 @@
 .rr--focused { box-shadow: inset 0 2px 0 0 var(--cut); }
 
 .rr__header { justify-content: space-between; }
-
-.rr__pending-chip {
-  font: 600 var(--fs-mono-xs) var(--sans);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--amber);
-  background: var(--receipt-pending-bg);
-  border: 1px solid rgba(212, 166, 87, 0.35);
-  border-radius: var(--radius-chip);
-  padding: 2px 7px;
-}
 
 /* header collapse button — folds the rail (mirror of the left sidebar's). */
 .rr__collapse {
@@ -163,9 +152,6 @@
 /* focused (keyboard cursor): bg + 2px --cut left edge (family selected) */
 .rr-op--focused { background: var(--surface-2); box-shadow: inset 2px 0 0 0 var(--cut); }
 
-/* accepted: green check on the right edge */
-.rr-op--accepted .rr-op__check { display: inline; }
-
 /* rejected: dim 55%, verb struck, red ✕ */
 .rr-op--rejected { opacity: 0.55; }
 .rr-op--rejected .rr-op__verb { text-decoration: line-through; }
@@ -214,7 +200,6 @@
   font-size: var(--fs-mono);
   pointer-events: none;
 }
-.rr-op__check { display: none; color: var(--green); }
 .rr-op__cross { color: var(--err); }
 
 /* review actions (mouse hover, keyboard cursor, or tab focus) */

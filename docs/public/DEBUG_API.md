@@ -850,6 +850,15 @@ Cut re-runs the same current-range validation before launching a provider. A
 changed index, missing asset, or stale authority refuses the attachment; prompt
 text is never treated as a substitute for current evidence.
 
+`agent.chat` can also carry one immutable
+`shellx-cut/chat-timeline-target/1` from a Comment, selected timeline range,
+selected clips, or the playhead. It contains the exact project identity and
+revision plus clip spans and range/position data. Cut revalidates it before
+launch, returns it with the turn, and never replaces it with a newer UI
+selection. Timeline **Ask agent** opens Chat with this target and waits for the
+normal prompt; Comment **Make changes** routes its note and target through the
+same Chat route.
+
 Headless editing supports installed Claude Code, Codex, Grok, and Antigravity CLIs. Provider version
 text is informational only; Cut verifies each route's required policy flags before every turn. Claude uses a
 contained capability contract with a disposable cwd and
@@ -864,7 +873,8 @@ plugin. Its headless approval mode is bounded by that empty workspace and Cut's
 filtered server-side verb policy; the resolved CLI must advertise the complete
 launch contract before each turn, including on Windows. See [SECURITY.md](../../SECURITY.md).
 
-Every launched turn also returns a review contract:
+Every launched turn applies its validated result directly and returns a turn
+receipt:
 
 - `result.plan` records the request, registered reference IDs, and execution
   policy shown by the Chat rail.
@@ -879,9 +889,14 @@ Every launched turn also returns a review contract:
   during the turn. Their presence disables whole-turn revert so those changes are
   never silently rolled back with the agent's work.
 
-The Chat rail exposes the current composed Preview, exact Review Diff, shared
-Accept markers, atomic Revert, and Try again (revert then prefill, never auto-send).
-Timeout/CLI failure responses keep `actions` and `review` when partial edits landed.
+The Chat rail exposes the current composed Preview and exact Diff. It offers
+**Step back** only when `revert_safe` remains true, and **Ask replacement**
+re-resolves the retained target before a new request; a stale or deleted target
+refuses visibly. There is no Draft, Accept, or editor approval stage. Bounded
+history stays on the local device for the exact project identity and retains
+validated requests, targets, replies, actions, and revisions; interrupted turns
+remain marked as interrupted. Timeout/CLI failure responses keep `actions` and
+`review` when partial edits landed.
 
 The four promoted rich template IDs are returned by `generate.list`; current
 families cover cinematic fog titles, editorial liquid surfaces, keyed-subject

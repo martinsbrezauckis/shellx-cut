@@ -69,6 +69,75 @@ export async function revealRegisteredSource(assetId: string): Promise<Registere
   }
 }
 
+export interface RecordHotkeyCapability {
+  schema: 'shellx-cut/record-hotkey-capability@1'
+  state: 'disabled' | 'configured' | 'observed' | 'registered' | 'unavailable'
+  scope: 'focused_only' | 'global'
+  backend: 'none' | 'gnome_custom_keybinding' | 'native_global_shortcut'
+  enabled: boolean
+  can_enable: boolean
+  reason: string | null
+}
+
+function validRecordHotkeyCapability(value: unknown): value is RecordHotkeyCapability {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<RecordHotkeyCapability>
+  return candidate.schema === 'shellx-cut/record-hotkey-capability@1'
+    && ['disabled', 'configured', 'observed', 'registered', 'unavailable'].includes(String(candidate.state))
+    && ['focused_only', 'global'].includes(String(candidate.scope))
+    && ['none', 'gnome_custom_keybinding', 'native_global_shortcut'].includes(String(candidate.backend))
+    && typeof candidate.enabled === 'boolean'
+    && typeof candidate.can_enable === 'boolean'
+    && (candidate.reason === null || typeof candidate.reason === 'string')
+}
+
+export async function getRecordHotkeyCapability(): Promise<RecordHotkeyCapability | null> {
+  const t = tauri()
+  if (!t) return null
+  try {
+    const value = await t.core.invoke<unknown>('get_record_hotkey_capability')
+    return validRecordHotkeyCapability(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+async function setGnomeRecordHotkey(command: 'enable_gnome_record_hotkey' | 'disable_gnome_record_hotkey'): Promise<RecordHotkeyCapability | null> {
+  const t = tauri()
+  if (!t) return null
+  try {
+    const value = await t.core.invoke<unknown>(command)
+    return validRecordHotkeyCapability(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+export function enableGnomeRecordHotkey(): Promise<RecordHotkeyCapability | null> {
+  return setGnomeRecordHotkey('enable_gnome_record_hotkey')
+}
+
+export function disableGnomeRecordHotkey(): Promise<RecordHotkeyCapability | null> {
+  return setGnomeRecordHotkey('disable_gnome_record_hotkey')
+}
+
+export function onRecordHotkeyCapability(cb: (capability: RecordHotkeyCapability) => void): () => void {
+  const t = tauri()
+  if (!t) return () => {}
+  let off: (() => void) | null = null
+  let cancelled = false
+  t.event.listen('cut:record-hotkey-capability', ({ payload }) => {
+    if (validRecordHotkeyCapability(payload)) cb(payload)
+  }).then((unlisten) => {
+    if (cancelled) unlisten()
+    else off = unlisten
+  }).catch(() => {})
+  return () => {
+    cancelled = true
+    off?.()
+  }
+}
+
 export interface LaunchUpdatePreference {
   schema: 'shellx-cut/update-preferences/1'
   check_on_launch: boolean

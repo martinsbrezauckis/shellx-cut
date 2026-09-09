@@ -126,7 +126,26 @@ export default function App() {
   const projectSessionRef = useRef(0)
   const [generateTab, setGenerateTab] = useState<GenerateWorkspaceTab>('templates')
   const agentChatPromptSeq = useRef(0)
+  const claimedAgentChatPrefills = useRef(new Set<number>())
   const [agentChatPrefill, setAgentChatPrefill] = useState<AgentChatPrefill | null>(null)
+  const agentChatPrefillRef = useRef<AgentChatPrefill | null>(null)
+  agentChatPrefillRef.current = agentChatPrefill
+  const claimAgentChatPrefill = useCallback((nonce: number): boolean => {
+    const current = agentChatPrefillRef.current
+    if (!current || current.nonce !== nonce || claimedAgentChatPrefills.current.has(nonce)) return false
+    claimedAgentChatPrefills.current.add(nonce)
+    while (claimedAgentChatPrefills.current.size > 64) {
+      const oldest = claimedAgentChatPrefills.current.values().next().value
+      if (oldest === undefined) break
+      claimedAgentChatPrefills.current.delete(oldest)
+    }
+    // The mounted Chat has already copied this exact prompt and target into its
+    // project-keyed session. Drop the app-level handoff so a later tab remount
+    // cannot overwrite the user's new draft or submit the comment again.
+    agentChatPrefillRef.current = null
+    setAgentChatPrefill((previous) => previous?.nonce === nonce ? null : previous)
+    return true
+  }, [])
   // The right-side control drawers (Music, Title, Kinetic captions, Grade) —
   // each a one-verb-convenience scrim modal launched from its natural home
   // (Music/Title from the topbar, Kinetic from the transcript, Grade from the
@@ -219,6 +238,7 @@ export default function App() {
     },
     agentChatPromptSeq,
     setAgentChatPrefill,
+    claimAgentChatPrefill,
   })
   useManualFrontendBridge({ openSurface: openUiSurface })
   const uiStateRef = useUiStatePublisher({
@@ -690,10 +710,12 @@ export default function App() {
     >
       {layout.workspaceMode === 'record' ? (
         <RecordingTopBar
-          projectName={project?.name ?? null}
+          project={project}
+          onProjectChanged={() => void resync()}
+          onSequenceChanged={onSequenceChanged}
           doctor={doctor}
           manualOpen={!embeddedManualFrontend && localManual.open}
-          onBackToEdit={() => { requestLayout((current) => ({ ...current, workspaceMode: 'edit' })) }}
+          onMode={(mode) => { requestLayout((current) => ({ ...current, workspaceMode: mode })) }}
           backDisabled={recordingWorkspaceAdmission.blocked}
           backReason={recordingWorkspaceAdmission.reason}
           onOpenSetup={() => {
@@ -809,7 +831,6 @@ export default function App() {
           playheadMs={playheadMs}
           onSeek={onSeek}
           agentChatPrefill={agentChatPrefill}
-          onReject={onRestore}
           onUndo={onUndo}
           onRedo={onRedo}
         />

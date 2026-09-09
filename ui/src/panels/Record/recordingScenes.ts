@@ -218,8 +218,9 @@ export function recordingSceneTimerAcknowledged(
 ): value is RecordingSceneTimerResult {
   const candidate = object(value)
   const scene = object(candidate?.scene)
+  const expectedState = action === 'pause' ? 'paused' : action === 'end' ? 'ended' : 'running'
   return candidate?.action === action
-    && (candidate.state === 'running' || candidate.state === 'paused' || candidate.state === 'ended')
+    && candidate.state === expectedState
     && typeof candidate.logical_media_time_ms === 'number'
     && Number.isSafeInteger(candidate.logical_media_time_ms)
     && candidate.logical_media_time_ms >= 0

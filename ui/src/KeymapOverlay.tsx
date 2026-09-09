@@ -44,7 +44,7 @@ const ROWS: Array<[scope: string, keys: string[], action: string]> = [
   ['global', ['R'], 'focus review rail'],
   ['global', ['\\'], 'collapse / expand review rail'],
   ['rail', ['j', 'k'], 'op cursor down / up'],
-  ['rail', ['a', 'x'], 'accept op / reject (edit.restore)'],
+  ['rail', ['x'], 'undo current operation'],
   ['rail', ['Enter'], 'seek playhead to op location'],
   ['any', ['Esc'], 'clear selection / leave rail / close overlay'],
   ['any', ['?'], 'this keyboard map'],

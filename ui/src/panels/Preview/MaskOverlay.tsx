@@ -237,6 +237,7 @@ export function MaskOverlay({
       <div
         className="mk-capture"
         data-cut-mask-capture
+        data-cut-action="mask-capture"
         data-cut-mask-capture-shape={shape}
         onPointerDown={onCaptureDown}
         onPointerMove={onCaptureMove}

@@ -8,9 +8,11 @@ interface SequenceSwitcherProps {
   project: Project
   onProjectChanged?: () => void
   onSequenceChanged?: () => void
+  /** Capture owns its destination while non-terminal; leave the existing control visible but inert. */
+  disabled?: boolean
 }
 
-export default function SequenceSwitcher({ project, onProjectChanged, onSequenceChanged }: SequenceSwitcherProps) {
+export default function SequenceSwitcher({ project, onProjectChanged, onSequenceChanged, disabled = false }: SequenceSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [sequences, setSequences] = useState<SequenceSummary[]>([])
   const [busy, setBusy] = useState(false)
@@ -23,6 +25,11 @@ export default function SequenceSwitcher({ project, onProjectChanged, onSequence
   const rootRef = useRef<HTMLDivElement>(null)
   useTopbarDismissibleMenu(rootRef, open, setOpen)
 
+  useEffect(() => {
+    if (disabled) setOpen(false)
+  }, [disabled])
+
+  const menuOpen = open && !disabled
   const activeId = project.active_sequence ?? 'seq1'
   const activeName = useMemo(() => {
     const persisted = project.sequences?.find((sequence) => sequence.id === activeId)?.name
@@ -41,8 +48,8 @@ export default function SequenceSwitcher({ project, onProjectChanged, onSequence
   }
 
   useEffect(() => {
-    if (open) void refresh()
-  }, [open, activeId])
+    if (menuOpen) void refresh()
+  }, [menuOpen, activeId])
 
   const run = async (action: () => ReturnType<typeof callVerb>, activeChanged = false) => {
     setBusy(true)
@@ -114,19 +121,20 @@ export default function SequenceSwitcher({ project, onProjectChanged, onSequence
     <div className="tb-sequences" ref={rootRef} data-cut-sequences>
       <button
         type="button"
-        className={`tb-sequence-trigger${open ? ' tb-sequence-trigger--open' : ''}`}
+        className={`tb-sequence-trigger${menuOpen ? ' tb-sequence-trigger--open' : ''}`}
         data-cut-sequence-trigger
         aria-haspopup="menu"
-        aria-expanded={open}
-        title={`Sequence: ${activeName}`}
-        onClick={() => setOpen((value) => !value)}
+        aria-expanded={menuOpen}
+        disabled={disabled}
+        title={disabled ? 'Recording owns its destination until capture reaches a terminal state' : `Sequence: ${activeName}`}
+        onClick={() => { if (!disabled) setOpen((value) => !value) }}
       >
         <Icon name="layers" size={16} tone="brand" />
         <span data-cut-sequence-active={activeId}>{activeName}</span>
         <Icon name="chevronDown" size={14} />
       </button>
 
-      {open && (
+      {menuOpen && (
         <div className="tb-sequence-menu" role="menu" data-cut-sequence-menu>
           <div className="tb-sequence-head">
             <span>Sequences</span>

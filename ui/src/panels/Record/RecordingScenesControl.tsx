@@ -6,6 +6,7 @@ import {
   type RecordingSceneTimer,
   type RecordingSceneTimerAction,
 } from './recordingScenes'
+import { Icon } from '../../icons'
 import type {
   RecordingRecoveryState,
   RecordingSceneStatus,
@@ -59,10 +60,23 @@ export function RecordingScenesControl({
   const liveUnavailableReason = recording && !liveSupported
     ? 'Live scene switching is unavailable because this recorder has not advertised the scene API.'
     : null
-  const timerDisabledReason = recording && !liveSupported
-    ? 'Live timer controls are unavailable because this recorder has not advertised the scene API.'
-    : null
+  const timerDisabledReason = recording && timer.kind === 'off'
+    ? 'The timer is off for this recording. Choose a timer before the next recording.'
+    : recording && !liveSupported
+      ? 'Live timer controls are unavailable because this recorder has not advertised the scene API.'
+      : null
   const timerActionDisabled = disabled || Boolean(unavailableReason) || Boolean(timerDisabledReason) || timerStatus.state === 'switching'
+  const timerActionReason = (action: RecordingSceneTimerAction): string | null => {
+    if (timerDisabledReason) return timerDisabledReason
+    if (action === 'pause' && timerStatus.state === 'paused') return 'The timer is already paused.'
+    if (action === 'resume' && (timerStatus.state === 'running' || timerStatus.state === 'awaiting_ack')) {
+      return 'Pause the timer before resuming it.'
+    }
+    if (timerStatus.state === 'ended' && (action === 'pause' || action === 'resume' || action === 'end')) {
+      return 'The timer has ended. Reset or restart it to run it again.'
+    }
+    return null
+  }
 
   return (
     <section className={`rec-scenes${compact ? ' rec-scenes--compact' : ''}`} data-cut-rec-scenes data-cut-rec-scene-state={status.state}>
@@ -77,16 +91,19 @@ export function RecordingScenesControl({
       </div>
       <div className="rec-scenes__choices" role="group" aria-label="Recording scene">
         {RECORDING_SCENE_PRESETS.map((scene) => {
-          const disabledReason = unavailableReason ?? (sceneUsesCamera(scene) && cameraReason ? cameraReason : liveUnavailableReason)
+          const selected = selectedScene.id === scene.id
+          const disabledReason = unavailableReason
+            ?? (sceneUsesCamera(scene) && cameraReason ? cameraReason : liveUnavailableReason)
+            ?? (recording && selected ? 'This scene is already active.' : null)
           const isDisabled = disabled || Boolean(disabledReason)
           return (
             <button
               key={scene.id}
               type="button"
-              className={`rec-scenes__choice${selectedScene.id === scene.id ? ' rec-scenes__choice--selected' : ''}`}
+              className={`rec-scenes__choice${selected ? ' rec-scenes__choice--selected' : ''}`}
               data-cut-rec-scene={scene.id}
               data-cut-rec-scene-layout={scene.layout.kind}
-              aria-pressed={selectedScene.id === scene.id}
+              aria-pressed={selected}
               disabled={isDisabled}
               title={disabledReason ?? sceneDescription(scene)}
               onClick={() => onSelect(scene.id)}
@@ -97,6 +114,7 @@ export function RecordingScenesControl({
               </span>
               <span>
                 <strong>{scene.name}</strong>
+                {selected && <span className="rec-scenes__selected" data-cut-rec-scene-selected><Icon name="check" size={14} /> Selected</span>}
                 <small>{sceneDescription(scene)}</small>
                 {disabledReason && <em data-cut-rec-scene-disabled-reason>{disabledReason}</em>}
               </span>
@@ -144,8 +162,8 @@ export function RecordingScenesControl({
                 key={action}
                 type="button"
                 data-cut-rec-scene-timer-action={action}
-                disabled={timerActionDisabled}
-                title={timerDisabledReason ?? `Ask the recorder to ${action} the timer.`}
+                disabled={timerActionDisabled || Boolean(timerActionReason(action))}
+                title={timerActionReason(action) ?? `Ask the recorder to ${action} the timer.`}
                 onClick={() => onTimerControl(action)}
               >
                 {action === 'end' ? 'End timer' : action[0].toUpperCase() + action.slice(1)}
@@ -154,7 +172,7 @@ export function RecordingScenesControl({
           </div>
         )}
         <p data-cut-rec-scene-timer-state={timerStatus.state} role="status">
-          {recording ? timerStatus.message : recordingSceneTimerLabel(timer)}
+          {recording ? timerDisabledReason ?? timerStatus.message : recordingSceneTimerLabel(timer)}
         </p>
       </div>
       {!compact && (

@@ -24,6 +24,7 @@ const MOCK_EMBEDDED_MANUAL_READ_ONLY = MOCK_PARAMS.get('manual') === 'embed' && 
 const MOCK_TRANSCRIPT_MISSING = MOCK_PARAMS.has('mockTranscriptMissing')
 const MOCK_DIRECTOR_ERROR = MOCK_PARAMS.has('mockDirectorError')
 const MOCK_ENVIRONMENT = MOCK_PARAMS.has('mockEnvironment')
+const MOCK_CHAT_ACTION_FIXTURE = MOCK_PARAMS.has('mockChatActionFixture')
 const MOCK_KINETIC = MOCK_PARAMS.has('mockKinetic')
 const MOCK_LIBRARY_TOTAL = Math.max(0, Number.parseInt(MOCK_PARAMS.get('mockLibraryTotal') ?? '0', 10) || 0)
 // Chapter-navigation fixtures exercise current occurrence resolution without
@@ -657,7 +658,25 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
           os: 'mock',
           arch: 'mock',
           app_version: 'mock',
-          cards: MOCK_ENVIRONMENT
+          cards: MOCK_CHAT_ACTION_FIXTURE
+            ? ['claude', 'grok'].map((name) => ({
+                id: `judge.${name}`,
+                kind: 'judge',
+                status: 'ok',
+                details: {
+                  chat: {
+                    installed: true,
+                    resolved: `/mock/bin/${name}`,
+                    wired: true,
+                    authenticated: 'yes',
+                    auth_detail: 'fixture-only admission',
+                    capability_verified: true,
+                    ready: true,
+                    posture: 'fixture-only; no provider launched',
+                  },
+                },
+              }))
+            : MOCK_ENVIRONMENT
             ? [{
                 id: 'gpu-encode',
                 kind: 'tool',
@@ -1015,6 +1034,7 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
         ? args.attachments.filter((item): item is string => typeof item === 'string')
         : []
       const message = typeof args.message === 'string' ? args.message : ''
+      const target = isObject(args.target) && !Array.isArray(args.target) ? args.target : null
       const o = op({
         actor: agent,
         verb: 'edit.add_marker',
@@ -1028,13 +1048,15 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
         result: {
           ok: true,
           agent: typeof args.agent === 'string' ? args.agent : 'claude',
-          reply: `Applied one reviewable edit for: ${message}`,
+          reply: `Applied one edit for: ${message}`,
           actions: [{ op_id: o.op_id, verb: o.verb }],
           attachments,
+          target,
           plan: {
             request: message,
             reference_ids: attachments,
-            policy: ['show the exact turn result for review'],
+            target,
+            policy: ['show the exact turn result and Step back history'],
           },
           review: {
             turn_id: turnId,

@@ -76,6 +76,7 @@
   margin: 8px 0 0; color: var(--ink-3, #8a909a);
   font: var(--fs-ui-xs, 12px) var(--mono, ui-monospace); line-height: 1.4;
 }
+.rq-form-error { margin: 10px 0 0; }
 
 .rq-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 14px; }
 .rq-count { margin-right: auto; font: var(--fs-mono-xs, 12px) var(--mono, ui-monospace); color: var(--ink-3, #8a909a); }

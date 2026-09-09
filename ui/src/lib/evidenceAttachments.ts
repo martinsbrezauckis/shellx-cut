@@ -1,5 +1,6 @@
 import type { MediaEvidenceHit } from './mediaIntelligenceModel'
 import type { Project } from './clientModel'
+import type { ChatTimelineTarget } from './chatTimelineTarget'
 
 export const MAX_CHAT_EVIDENCE_ATTACHMENTS = 12
 
@@ -13,6 +14,10 @@ export interface AgentChatPrefill {
   prompt: string
   nonce: number
   evidence?: ChatEvidenceAttachment[]
+  /** Immutable editor context for one Agent Chat request. */
+  target?: ChatTimelineTarget
+  /** Comment shortcuts may submit their already-written request after Chat opens. */
+  submit?: boolean
 }
 
 const basename = (path: string | undefined, fallback: string): string =>

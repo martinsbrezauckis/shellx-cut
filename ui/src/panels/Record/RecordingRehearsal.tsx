@@ -148,13 +148,13 @@ export function RecordingRehearsal({
         ? state.detail
         : blockReason
           ? blockReason
-          : `Take a 3-second native rehearsal of your ${sourceLabel(sourceKind)} before recording.`
+          : `Optionally take a 3-second rehearsal of your ${sourceLabel(sourceKind)} to check it before recording.`
 
   return (
     <section className="rec-rehearsal" data-cut-rec-rehearsal data-cut-rec-rehearsal-state={state.kind}>
       <div className="rec-rehearsal__head">
         <div>
-          <span className="rec__eyebrow">Before you record</span>
+          <span className="rec__eyebrow">Optional check</span>
           <strong>Rehearse setup</strong>
         </div>
         <button

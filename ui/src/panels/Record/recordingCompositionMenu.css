@@ -1,0 +1,60 @@
+.rec-studio-preview__frame { min-width: 0; }
+
+.rec-studio-preview__chrome {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 2px 8px;
+}
+
+.rec-studio-preview__chrome .rec-studio-preview__heading {
+  position: static;
+  z-index: auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-1, #f7f7f8);
+  backdrop-filter: none;
+}
+
+.rec-studio-preview__chrome .rec-studio-preview__heading small {
+  color: var(--ink-4, #94a3b8);
+}
+
+.rec-studio-preview__camera { z-index: 1; }
+
+.rec-studio-preview .rec-studio-preview__status {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.rec-studio-preview__actions {
+  position: static;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, .3);
+  border-radius: 7px;
+  background: rgba(8, 10, 14, .86);
+  color: #fff;
+  font: 650 var(--fs-ui-xs, 11px)/1.2 var(--sans);
+  cursor: pointer;
+}
+
+.rec-studio-preview__actions:hover { background: #20242d; }
+.rec-studio-preview .rec-studio-preview__camera,
+.rec-studio-preview .rec-studio-preview__camera:active { cursor: pointer; }
+.rec-studio-preview:focus-visible,
+.rec-studio-preview__camera:focus-visible,
+.rec-studio-preview__actions:focus-visible {
+  outline: 2px solid var(--cut, #2563eb);
+  outline-offset: -3px;
+}
+
+@media (max-width: 720px) {
+  .rec-studio-preview__actions { min-height: 44px; }
+}

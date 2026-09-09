@@ -53,14 +53,22 @@ pub(super) async fn jobs_cancel(state: &AppState, args: Value) -> Result<VerbRes
         job_id: String,
     }
     let a: Args = parse_args(args)?;
-    if state.jobs.get(&a.job_id).is_none() {
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            format!("no job '{}'", a.job_id),
-            "job ids come from job-returning verbs and can be listed with jobs.list",
-        ));
-    }
-    if !state.jobs.abort(&a.job_id).await? {
+    let record = match state.jobs.get(&a.job_id) {
+        Some(record) => record,
+        None => {
+            return Err(CutError::new(
+                error_codes::NOT_FOUND,
+                format!("no job '{}'", a.job_id),
+                "job ids come from job-returning verbs and can be listed with jobs.list",
+            ));
+        }
+    };
+    let cancelled = if record.kind == "render_queue" {
+        state.jobs.abort_render_queue(&a.job_id).await?
+    } else {
+        state.jobs.abort(&a.job_id).await?
+    };
+    if !cancelled {
         return Err(CutError::new(
             error_codes::CONFLICT,
             format!("job '{}' is not active", a.job_id),

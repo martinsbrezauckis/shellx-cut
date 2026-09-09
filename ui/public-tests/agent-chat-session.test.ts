@@ -28,18 +28,42 @@ assert.equal(
   'Agent Chat patches an async review by stable turn identity after eviction',
 )
 
-const projectA = { project_identity: { origin_path_sha256: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } } as Project
-const projectB = { project_identity: { origin_path_sha256: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } } as Project
+const projectA = {
+  project_identity: {
+    schema: 'shellx-cut/project-identity/1',
+    origin_path_sha256: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    project_name: 'project-a',
+  },
+} as Project
+const projectB = {
+  project_identity: {
+    schema: 'shellx-cut/project-identity/1',
+    origin_path_sha256: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    project_name: 'project-b',
+  },
+} as Project
+const projectARenamed = {
+  project_identity: {
+    ...projectA.project_identity,
+    project_name: 'project-a-renamed',
+  },
+} as Project
 const keyA = agentChatSessionKey(projectA, 7)
 const keyB = agentChatSessionKey(projectB, 7)
+const renamedKeyA = agentChatSessionKey(projectARenamed, 7)
 assert.ok(keyA)
 assert.ok(keyB)
+assert.ok(renamedKeyA)
 const afterA = updateAgentChatSessions(new Map(), keyA, (session) => ({ ...session, input: 'project A review' }))
 const afterB = updateAgentChatSessions(afterA, keyB, (session) => ({ ...session, input: 'project B review' }))
+const afterRename = updateAgentChatSessions(afterB, renamedKeyA, (session) => ({ ...session, input: 'renamed project review' }))
 
-assert.notEqual(keyA, keyB, 'Agent Chat does not key same-session projects by a display name')
+assert.notEqual(keyA, keyB, 'Agent Chat keeps different immutable project identities apart')
+assert.notEqual(keyA, renamedKeyA, 'a changed project name is a new exact identity even when its origin digest is unchanged')
 assert.equal(afterB.get(keyA)?.input, 'project A review', 'Agent Chat keeps project A state isolated after an async project switch')
 assert.equal(afterB.get(keyB)?.input, 'project B review', 'Agent Chat writes the switched project into its own session')
+assert.equal(afterRename.get(keyA)?.input, 'project A review', 'a new identity on the same origin cannot reuse the old Chat draft')
+assert.equal(afterRename.get(renamedKeyA)?.input, 'renamed project review', 'the new identity gets its own Chat session')
 
 const unavailableRenderJudgeReport = {
   schema: 'shellx-cut/doctor/1',

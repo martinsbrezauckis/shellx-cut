@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import {
   type RecordingSourceKind,
   type RegionPickerCapability,
@@ -33,7 +33,7 @@ interface RecordingSourceControlProps {
   readonly disabled: boolean
   readonly allowWindow?: boolean
   readonly regionCapability: RegionPickerCapability
-  readonly onRefresh: () => void
+  readonly onRefresh: () => void | Promise<unknown>
   readonly onSourceKindChange: (source: RecordingSourceKind) => void
   readonly onMonitorChange: (index: number) => void
   readonly onWindowChange: (id: string | null) => void
@@ -62,6 +62,26 @@ export function RecordingSourceControl({
   onMonitorChange,
   onWindowChange,
 }: RecordingSourceControlProps) {
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+  const refresh = async (): Promise<boolean> => {
+    if (disabled || refreshing) return false
+    setRefreshing(true)
+    setRefreshError(null)
+    try {
+      const refreshed = await onRefresh()
+      if (refreshed === false) {
+        setRefreshError('Could not refresh sources. Try again.')
+        return false
+      }
+      return true
+    }
+    catch {
+      setRefreshError('Could not refresh sources. Try again.')
+      return false
+    }
+    finally { setRefreshing(false) }
+  }
   const regionUnavailable = regionCapability.availability === 'unavailable'
   // A persisted/stale `region` source must not make an unavailable control
   // visible. Record keeps its own fail-closed start guard; this surface repairs
@@ -88,7 +108,7 @@ export function RecordingSourceControl({
             aria-pressed={visibleSourceKind === kind}
             disabled={disabled}
             onClick={() => {
-              void onRefresh()
+              void refresh()
               onSourceKindChange(kind)
             }}
           >
@@ -96,6 +116,19 @@ export function RecordingSourceControl({
           </button>
         ))}
       </div>
+
+      <button
+        type="button"
+        className="rec__export-btn rec__export-btn--ghost rec__export-btn--small"
+        data-cut-action="record-source-refresh"
+        disabled={disabled || refreshing}
+        aria-busy={refreshing}
+        title="Refresh the available displays and application windows"
+        onClick={() => { void refresh() }}
+      >
+        {refreshing ? 'Refreshing…' : 'Refresh sources'}
+      </button>
+      {refreshError && <p className="rec__source-note" data-cut-rec-source-refresh-error role="status">{refreshError}</p>}
 
       {visibleSourceKind === 'region' ? (
         <p className="rec__source-note" data-cut-rec-region-ready role="status">
@@ -109,7 +142,7 @@ export function RecordingSourceControl({
             data-cut-rec-monitor={visibleSourceKind === 'window' ? '' : (monitorIdx ?? '')}
             data-cut-rec-window={visibleSourceKind === 'window' ? (windowTargetId ?? '') : ''}
             disabled={disabled}
-            onMouseDown={() => { void onRefresh() }}
+            onMouseDown={() => { void refresh() }}
             value={selectionValue}
             onChange={(event) => {
               const value = event.target.value
@@ -150,7 +183,7 @@ export function RecordingSourceControl({
 
           {visibleSourceKind === 'window' && !windowTargetId && !selectedWindowMissing && (
             <p className="rec__source-note" data-cut-rec-window-no-selection>
-              Choose the app window to record. If it just opened, reopen this list to refresh it.
+              Choose the app window to record. If it just opened, refresh sources.
             </p>
           )}
           {selectedWindowMissing && (
@@ -160,7 +193,7 @@ export function RecordingSourceControl({
           )}
           {visibleSourceKind === 'display' && monitors.length < 2 && windows.length < 1 && (
             <p className="rec__source-note" data-cut-rec-source-note>
-              Choose a source here when it is listed. If this recorder reports a system-picker capture path, that picker makes the final user-consented choice.
+              Choose a display or window here when one is listed. Otherwise, choose what to share in the system picker when you start.
             </p>
           )}
         </>

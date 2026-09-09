@@ -77,6 +77,7 @@ use tauri::Emitter;
 #[cfg(target_os = "macos")]
 mod macos_controller_owner;
 mod macos_region_bridge;
+mod record_hotkey;
 mod source_reveal;
 mod tools;
 mod update_handoff;
@@ -781,7 +782,11 @@ fn grant_engine_origin_capability(
         // request an install (which still passes through the shell's native
         // confirm). No download/restart/filesystem power is granted directly —
         // the webview can only ask; update_state.rs decides.
-        .permission("allow-update-state");
+        .permission("allow-update-state")
+        // The remote origin can query and explicitly enable/disable only the
+        // fixed Record F9 GNOME binding. It receives no command, path, socket,
+        // or shortcut text input.
+        .permission("allow-record-hotkey-control");
     let capability = if allow_foreground_region {
         // This is granted only to the exact selected engine origin while this
         // shell retains a successfully bound child. An adopted/external cutd
@@ -891,6 +896,9 @@ pub fn run() {
     // updater report, then return — no GTK, no window, no cutd child. This has
     // to sit before the builder: `Builder::run` is what touches GTK.
     // `std::env::args()` skips argv[0] (the program path itself).
+    if record_hotkey::consume_forwarder_invocation(std::env::args_os().skip(1)) {
+        return;
+    }
     if let Some(line) = version_answer(
         std::env::args().skip(1),
         &context.package_info().version.to_string(),
@@ -964,6 +972,7 @@ pub fn run() {
         })))
         .manage(ForegroundRegionBridgeState(Mutex::new(None)))
         .manage(ToolResolutionState(Mutex::new(ToolResolution::default())))
+        .manage(record_hotkey::RecordHotkeyState::default())
         // Update-state service: the snapshot the topbar button + Settings>About
         // read over the bridge. Seeded with the installed version; the setup
         // hook spawns the automatic (launch + 6-hourly) check driver.
@@ -981,6 +990,9 @@ pub fn run() {
             update_state::get_update_state,
             update_state::update_check_now,
             update_state::update_install_now,
+            record_hotkey::get_record_hotkey_capability,
+            record_hotkey::enable_gnome_record_hotkey,
+            record_hotkey::disable_gnome_record_hotkey,
         ])
         .setup(move |app| {
             #[cfg(windows)]
@@ -1132,48 +1144,37 @@ pub fn run() {
                 });
             }
 
-            // Global record hotkey (desktop only). A screen recorder is, by
-            // definition, NOT the focused window while it records — so an in-page
-            // keydown listener can never reliably STOP a capture (the recorded app
-            // owns focus). We register one OS-level key, F9, via the
-            // global-shortcut plugin: its handler fires even
-            // when another app is focused and EMITS `cut:record-hotkey` to the
-            // webview, which toggles start⇄stop on the Record panel (the SAME
-            // action as the Stop/Start button). Registration is Rust-side only, so
-            // the remote engine-served origin gets no global-shortcut IPC grant —
-            // it merely LISTENS for the event (core:event:allow-listen, already
-            // granted). The in-page F9 keydown stays as a focused-window fallback
-            // (and the sole path in the plain web/dev build, where this plugin and
-            // its OS registration don't exist).
+            // Global Record F9. macOS/Windows use the native plugin. GNOME
+            // Wayland uses an explicit visible custom-keybinding opt-in because
+            // the supported portal backend is absent and GNOME Shell's private
+            // accelerator API rejects normal apps. Focused-window F9 remains
+            // independent on every surface.
             #[cfg(desktop)]
             {
-                use tauri_plugin_global_shortcut::{
-                    Code, GlobalShortcutExt, Shortcut, ShortcutState,
-                };
-
-                // F9, no modifiers — a single global key.
-                let record_hotkey = Shortcut::new(None, Code::F9);
-                let plugin = tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |app, shortcut, event| {
-                        // Fire once per PHYSICAL press (ignore the key-up event),
-                        // otherwise a single tap would toggle twice and cancel out.
-                        if shortcut == &record_hotkey && event.state() == ShortcutState::Pressed {
-                            // Unit payload — the webview reads no data, it just
-                            // toggles. A failed emit (no main window yet) is benign.
-                            let _ = app.emit("cut:record-hotkey", ());
-                        }
-                    })
-                    .build();
-                // Register the plugin, then the key. Both are best-effort: if the
-                // OS denies the global registration (another app already owns F9,
-                // or a headless/CI run), the app still launches and the in-page F9
-                // fallback keeps working — we log and move on, never panic.
-                if let Err(e) = app.handle().plugin(plugin) {
-                    eprintln!("[shellx-cut] global-shortcut plugin init failed: {e} — F9 falls back to in-app (focused-window) only");
-                } else if let Err(e) = app.global_shortcut().register(record_hotkey) {
-                    eprintln!("[shellx-cut] could not register global F9 record hotkey: {e} — F9 falls back to in-app (focused-window) only");
+                if record_hotkey::use_gnome_wayland_fallback() {
+                    record_hotkey::restore_opt_in(app.handle());
+                } else {
+                    use tauri_plugin_global_shortcut::{
+                        Code, GlobalShortcutExt, Shortcut, ShortcutState,
+                    };
+                    let record_hotkey = Shortcut::new(None, Code::F9);
+                    let plugin = tauri_plugin_global_shortcut::Builder::new()
+                        .with_handler(move |app, shortcut, event| {
+                            if shortcut == &record_hotkey && event.state() == ShortcutState::Pressed {
+                                let _ = app.emit("cut:record-hotkey", ());
+                            }
+                        })
+                        .build();
+                    if let Err(error) = app.handle().plugin(plugin) {
+                        eprintln!("[shellx-cut] global-shortcut plugin init failed: {error} — F9 stays focused-window only");
+                    } else if let Err(error) = app.global_shortcut().register(record_hotkey) {
+                        eprintln!("[shellx-cut] could not register global F9 record hotkey: {error} — F9 stays focused-window only");
+                    } else {
+                        record_hotkey::native_registered(app.handle());
+                    }
                 }
             }
+
             Ok(())
         })
         // Kill the spawned engine when the window goes away so no orphan cutd
@@ -1193,6 +1194,7 @@ pub fn run() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
+            record_hotkey::release_runtime(app_handle);
             stop_owned_engine(app_handle);
         }
     });

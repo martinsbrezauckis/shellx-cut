@@ -26,6 +26,8 @@ const root = fileURLToPath(new URL('../src/', import.meta.url))
 const read = (path: string) => readFileSync(new URL(path, `file://${root}`), 'utf8')
 const app = read('App.tsx')
 const topBar = read('topbar/RecordingTopBar.tsx')
+const modeTabs = read('topbar/WorkspaceModeTabs.tsx')
+const sequenceSwitcher = read('topbar/SequenceSwitcher.tsx')
 const surfaceEvents = read('app/useAppSurfaceEvents.ts')
 const sourceNavigation = read('app/useSourceNavigationController.ts')
 const keyboard = read('app/useAppKeyboardController.ts')
@@ -40,8 +42,18 @@ assert.match(app, /if \(recordingWorkspaceAdmission\.blocked \|\| !deferredProje
   'the deferred project reset resumes after the recorder reaches a safe terminal state')
 assert.match(app, /backDisabled=\{recordingWorkspaceAdmission\.blocked\}[\s\S]*?backReason=\{recordingWorkspaceAdmission\.reason\}/,
   'Recording chrome receives the current admission and reason')
-assert.match(topBar, /data-cut-record-back-blocked[\s\S]*?disabled=\{backDisabled\}[\s\S]*?data-cut-record-back-reason/,
-  'Back visibly exposes both blocked state and its reason')
+assert.match(topBar, /<WorkspaceModeTabs[\s\S]*?mode="record"[\s\S]*?recordingExitAdmission=\{\{ blocked: backDisabled, reason: backReason \}\}/,
+  'Recording chrome keeps the shared mode switch and supplies its exit admission')
+assert.match(modeTabs, /data-cut-mode="edit"[\s\S]*?data-cut-action="record-back-edit"[\s\S]*?data-cut-record-back-blocked=\{blocked \|\| undefined\}[\s\S]*?disabled=\{blocked\}/,
+  'the Record Edit tab retains its action, visibly exposes blocked state, and disables refusal')
+assert.match(modeTabs, /aria-describedby=\{reason \? 'cut-record-back-reason' : undefined\}/,
+  'the blocked Edit tab remains linked to the exact admission reason')
+assert.match(modeTabs, /mode === 'record' && workspace\.id !== 'record'/,
+  'any future non-Record shared workspace tab remains subject to active-capture admission')
+assert.match(topBar, /<SequenceSwitcher[\s\S]*?disabled=\{backDisabled\}/,
+  'the shared active-sequence control remains visible but cannot change capture destination while Record owns it')
+assert.match(sequenceSwitcher, /const menuOpen = open && !disabled/,
+  'a disabled sequence context also closes any already-open project mutation menu')
 assert.match(surfaceEvents, /if \(!showEditor\(\)\) return false/,
   'agent and document surface routes refuse before they claim to open Edit')
 assert.match(sourceNavigation, /const moved = setLayout[\s\S]*?if \(!moved\) return/,

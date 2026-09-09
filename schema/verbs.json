@@ -2118,7 +2118,7 @@
     {
       "name": "comment.add",
       "domain": "comment",
-      "description": "Append a timecoded REVIEW COMMENT. Anchors review feedback at a timeline position (at_ms, optional end_ms for a range) with a free-text note; status starts 'open'. When a clip exists under at_ms, the stored comment also carries anchor:{track_id,clip_id,offset_ms} so the UI/agents can resolve it after upstream ripple edits and badge it stale if the clip is removed. A review-metadata op (in the op-log for receipts + replay, but NOT a timeline edit / not in the undo stack). The agent later drafts a concrete change for it (comment.draft) which is reviewed + applied (comment.apply). author defaults to 'client'.",
+      "description": "Append a timecoded review comment. Anchors feedback at a timeline position (at_ms, optional end_ms for a range) with a free-text note; status starts 'open'. When a clip exists under at_ms, the stored comment also carries anchor:{track_id,clip_id,offset_ms} so the UI can resolve it after upstream ripple edits and badge it stale if the clip is removed. A review-metadata op (in the op-log for receipts + replay, but NOT a timeline edit / not in the undo stack). Make changes routes the comment plus its immutable anchor into the existing Agent Chat conversation, which applies normal reversible edits and records their receipt. author defaults to 'client'.",
       "args": {
         "type": "object",
         "required": [
@@ -2299,7 +2299,7 @@
     {
       "name": "comment.resolve",
       "domain": "comment",
-      "description": "Set a comment's lifecycle status: 'addressed' (its drafted change was applied), 'dismissed' (won't act on it), or back to 'open'. A review-metadata op.",
+      "description": "Set a comment's lifecycle status: 'addressed' (its linked Agent Chat change was handled), 'dismissed' (won't act on it), or back to 'open'. A review-metadata op.",
       "args": {
         "type": "object",
         "required": [
@@ -2348,7 +2348,7 @@
     {
       "name": "comment.draft",
       "domain": "comment",
-      "description": "Ask the drafting agent (the verify.judge claude-CLI ladder, reused) to propose a concrete change set for an OPEN review comment — a sequence of editor verb calls that addresses it, given the timeline + transcript context + the verb catalog. The proposal is STORED on the comment for review (comment.draft does NOT apply it; comment.apply executes it after review). Honest backend semantics like verify.judge: a missing/not-logged-in CLI returns status 'not_run', a run that fails returns 'error', and NO draft is stored in either case (never a fabricated edit). The proposed verbs are validated against the real registry (unknown/non-actionable verbs flagged in draft.validation).",
+      "description": "Compatibility/debug-only legacy API for a previously stored comment draft. The editor does not expose this Draft/Apply workflow: Comment Make changes sends an immutable target through existing Agent Chat, which applies direct reversible edits and retains its receipt. This endpoint remains available for migration and diagnostics only; it never represents an interactive human approval step.",
       "args": {
         "type": "object",
         "required": [
@@ -2382,7 +2382,7 @@
         "idempotency": "request_key",
         "replayability": "replayable",
         "async_job": "none",
-        "ui_exposure": "human",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -2391,7 +2391,7 @@
     {
       "name": "comment.apply",
       "domain": "comment",
-      "description": "EXECUTE a comment's drafted change. Dispatches each verb in the comment's draft as a real op carrying the comment as its rationale (the receipt linking the edit to the comment), wrapped in an AUTO-CHECKPOINT so the whole apply is revertible in one step (project.revert{to: the returned checkpoint}). Returns the before/after project.diff — the review artifact — and marks the comment 'addressed'. Stops on the FIRST failing verb and hands back the checkpoint to revert the partial apply (a half-applied draft is never left silently). Requires the comment to have a draft (run comment.draft first); a no-op draft (empty verbs) is refused — dismiss the comment instead.",
+      "description": "Compatibility/debug-only legacy API for an already persisted draft. The editor does not expose this Draft/Apply workflow: Comment Make changes uses existing Agent Chat and normal direct edit receipts with Step back. This endpoint remains for migration and diagnostics only; it is not a human approval surface.",
       "args": {
         "type": "object",
         "required": [
@@ -2469,7 +2469,7 @@
         "idempotency": "request_key",
         "replayability": "replayable",
         "async_job": "none",
-        "ui_exposure": "human",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -6677,7 +6677,7 @@
     {
       "name": "agent.chat",
       "domain": "agent",
-      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Provider version text is informational only; required containment flags are verified before every turn. Claude uses Cut's contained capability contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place; Cut grants session-scoped trust only to that newly created empty workspace so Grok can start the project-scoped Cut MCP server. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional media attachments are registered project asset IDs only (maximum 8). Optional cited-moment attachments are up to 12 opaque evidence IDs plus their exact MediaEvidenceIndex@1 snapshot: Cut resolves them through inspect.range before launch and the agent must inspect that same current evidence rather than trust copied prompt prose. The op-log is the receipt: every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn returns a deterministic plan plus review {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; revert_safe is true only when no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
+      "description": "Natural-language timeline editing through the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Provider version text is informational only; required containment flags are verified before every turn. Claude uses Cut's contained capability contract. Codex keeps the user's normal configuration, native sandbox, permissions, and login location. Grok receives a disposable config/home with native tools disabled and only Cut's MCP route while retaining its existing auth file in place; Cut grants session-scoped trust only to that newly created empty workspace so Grok can start the project-scoped Cut MCP server. Antigravity keeps the user's normal settings, sandbox, permissions, and login location while Cut adds a workspace-local MCP entry; the resolved CLI must advertise Cut's required sandbox and non-interactive flags before each turn, including on Windows. Cut connects every route to THIS running serve without copying or rewriting CLI credentials. Every brokered MCP child receives an attributed restricted marker, activating the same server-side filtered Cut MCP surface: inspection of the already-open project and reversible in-project edits are allowed while project switching/deletion, import/relink/path or local-folder search, provider fetch/generation, plugins, process/install/network actions, render/export, navigation/revert, and recursive agent_chat are denied at discovery and invocation. A normal user-configured MCP server receives no marker and remains unrestricted. Codex and Antigravity may retain native tools and integrations according to the user's own CLI configuration. NO model is hosted; the user's logged-in CLI does the reasoning. Optional media attachments are registered project asset IDs only (maximum 8). Optional cited-moment attachments are up to 12 opaque evidence IDs plus their exact MediaEvidenceIndex@1 snapshot: Cut resolves them through inspect.range before launch and the agent must inspect that same current evidence rather than trust copied prompt prose. An optional immutable timeline target names one current project identity/revision and exact clip spans; the route validates it before provider launch, carries it in the turn receipt, and never substitutes a later selection. Every allowed Cut verb carries a unique per-turn actor and is a normal reversible op. A launched turn applies its results directly and returns a deterministic plan plus receipt {turn_id, baseline, checkpoint?, tip, diff, diff_error?, revert_safe, concurrent_actions}; Step back is enabled only when revert_safe is true and no human/system/other-agent op appeared after the baseline. HONEST degradation: no supported CLI on PATH, unsupported CLI capabilities, timeout, or CLI failure returns {ok:false, reason} and never a fake edit. Requires an open project. The turn is bounded by timeout_ms.",
       "args": {
         "type": "object",
         "required": [
@@ -6714,6 +6714,129 @@
             "pattern": "^idx_[a-f0-9]{24}$",
             "description": "Exact MediaEvidenceIndex@1 snapshot for evidence_ids. Refused when the index or an authority changed after selection."
           },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "kind",
+              "project_identity",
+              "project_revision",
+              "range_ms",
+              "clips",
+              "label"
+            ],
+            "description": "Optional immutable timeline context from a Comment, timeline selection/range, or playhead. Cut validates project identity, revision, and every clip span before launching the provider; the label is returned for the human Chat trace and is never prompt authority.",
+            "properties": {
+              "schema": {
+                "const": "shellx-cut/chat-timeline-target/1"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "range",
+                  "selection",
+                  "comment",
+                  "position"
+                ]
+              },
+              "project_identity": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema",
+                  "origin_path_sha256",
+                  "project_name"
+                ],
+                "properties": {
+                  "schema": {
+                    "const": "shellx-cut/project-identity/1"
+                  },
+                  "origin_path_sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "project_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                }
+              },
+              "project_revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "comment_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "range_ms": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "position_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "clips": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "track_id",
+                    "clip_id",
+                    "timeline_range_ms",
+                    "target_range_ms"
+                  ],
+                  "properties": {
+                    "track_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "clip_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "timeline_range_ms": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "target_range_ms": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  }
+                }
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              }
+            }
+          },
           "agent": {
             "type": "string",
             "enum": [
@@ -6734,7 +6857,7 @@
           }
         }
       },
-      "result": "{ok, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment fields echo validated current identities; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
+      "result": "{ok, agent, reply, actions:[{op_id, verb}], attachments:[asset_id], evidence_ids:[evidence_id], evidence_index_id?, target?, plan:{request,reference_ids,evidence_ids,evidence_index_id?,target?,policy}, review:{turn_id,baseline,checkpoint?,tip,diff,diff_error?,revert_safe,concurrent_actions}, cost_usd?} — attachment and target fields echo the validated request snapshot; actions contains only this uniquely attributed turn's ops. Whole-turn project.revert to baseline is safe only when review.revert_safe is true. ok:false carries the reason in reply and may still carry actions/review after a partial edit.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -16547,7 +16670,7 @@
           }
         }
       },
-      "result": "{ok:true, schema:'shellx-cut/motion-link-edit@1', clip, packageId, motionId, launched:true, pid?, returnChannel:{state:'pending',pathPrivate:true}, localOnly:true, remotePublish:false}. SHELLX_CANVAS_BIN remains a backward-compatible executable override for legacy installations.",
+      "result": "{ok:true, schema:'shellx-cut/motion-link-edit@1', clip, packageId, motionId, sourceRevision, launched:true, pid?, returnChannel:{state:'pending',pathPrivate:true}, localOnly:true, remotePublish:false}. sourceRevision is the current verified package revision; neither source nor return-request paths are returned. SHELLX_CANVAS_BIN remains a backward-compatible executable override for legacy installations.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

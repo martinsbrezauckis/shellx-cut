@@ -369,8 +369,11 @@ async fn scrub_frame_bytes_from_snapshot(
                 cut_media::proxy::PROXY_HEIGHT,
             ));
         let height = frame_height_for_class(class, height, source_width, source_height)?;
+        let shutdown = state.server_shutdown_probe();
         let bytes = run_blocking("render.scrub", move || {
-            cut_media::render::extract_scrub_frame(&plan, height)
+            process::run_server_owned_foreground_render(shutdown, || {
+                cut_media::render::extract_scrub_frame(&plan, height)
+            })
         })
         .await?;
         (bytes, true)
@@ -387,8 +390,11 @@ async fn scrub_frame_bytes_from_snapshot(
         } else {
             None
         };
+        let shutdown = state.server_shutdown_probe();
         let bytes = run_blocking("render.frame", move || {
-            cut_media::render::extract_frame(&project, &edl, &dir, at_ms, preview_height)
+            process::run_server_owned_foreground_render(shutdown, || {
+                cut_media::render::extract_frame(&project, &edl, &dir, at_ms, preview_height)
+            })
         })
         .await?;
         (bytes, false)
@@ -2500,6 +2506,8 @@ pub(super) async fn render_direct(
                 "contact_sheet_url": sheet_url,
                 "scene_count": sheet.get("scene_count"),
                 "scenes": sheet.get("scenes"),
+                "face_aware": sheet.get("face_aware"),
+                "face_backend": sheet.get("face_backend"),
                 "preset": preset,
                 "note": "read the contact_sheet image, then call render.reframe{aspect, direction:{scene: {cx}|{mode:\"widen\"}}} — cx is each candidate's normalized x from scenes[].candidates",
             }),
@@ -2622,6 +2630,8 @@ pub(super) async fn render_qc(
                 "scene_count": sheet.get("scene_count"),
                 "review_count": sheet.get("review_count"),
                 "scenes": sheet.get("scenes"),
+                "face_aware": sheet.get("face_aware"),
+                "face_backend": sheet.get("face_backend"),
                 "note": "read the qc_sheet image; for any needs_review scene re-issue render.reframe{aspect, direction:{\"<scene>\":{\"cx\":<a better candidate from render.direct>}|{\"mode\":\"widen\"}}}",
             }),
         );
@@ -2777,6 +2787,7 @@ pub(super) async fn render_reframe(
         let subject_fps_warning = track.fps_warning.clone();
         let speaker_aware = track.speaker_aware; // audio-gated active-speaker applied?
         let face_aware = track.face_aware; // face/eye-line framing available?
+        let face_backend = track.face_backend.clone();
         let directed_scenes = track.directed_scenes.clone(); // director-decided scenes
         let (t4, o4) = (temp.clone(), out.clone());
         let (sb, jb) = (st.clone(), jid.clone());
@@ -2827,6 +2838,7 @@ pub(super) async fn render_reframe(
             "subject_fps_source": subject_fps_source,
             "active_speaker": speaker_aware,
             "face_aware": face_aware,
+            "face_backend": face_backend.clone(),
             "directed_scenes": directed_scenes,
             "framed_by": if directed_scenes.is_empty() { "ranker" } else { "director+ranker" },
             "at_op": at_op,
@@ -2880,6 +2892,7 @@ pub(super) async fn render_reframe(
                 "subject_in_frame_pct": in_frame_pct,
                 "active_speaker": speaker_aware,
                 "face_aware": face_aware,
+                "face_backend": face_backend,
             }),
         );
     });

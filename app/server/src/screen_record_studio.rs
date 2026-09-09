@@ -206,7 +206,7 @@ pub(crate) fn apply_studio_events_to_plan(
     camera_clock: Option<record_core::CameraClockRange>,
     log: &StudioEventLog,
 ) -> Result<usize, CutError> {
-    let mut timeline: Vec<(u64, u64, record_core::WebcamKeyframe)> = log
+    let mut studio_timeline: Vec<(u64, u64, record_core::WebcamKeyframe)> = log
         .events
         .iter()
         .enumerate()
@@ -224,11 +224,7 @@ pub(crate) fn apply_studio_events_to_plan(
         .collect::<Result<Vec<_>, _>>()?;
     // Playback still follows recording time, while equal timestamps retain the
     // exact order in which the recorder accepted the overlapping requests.
-    timeline.sort_by_key(|(t_ms, logical_ts, _)| (*t_ms, *logical_ts));
-    let timeline = timeline
-        .into_iter()
-        .map(|(_, _, keyframe)| keyframe)
-        .collect::<Vec<_>>();
+    studio_timeline.sort_by_key(|(t_ms, logical_ts, _)| (*t_ms, *logical_ts));
 
     if let Some(background) = log
         .events
@@ -255,16 +251,62 @@ pub(crate) fn apply_studio_events_to_plan(
         plan.validate().map_err(crate::screen_record::record_err)?;
         return Ok(0);
     };
-    let base_size = timeline
+    let base_size = studio_timeline
         .iter()
-        .find_map(|key| key.size)
+        .find_map(|(_, _, key)| key.size)
+        .or_else(|| {
+            plan.webcam
+                .as_ref()
+                .and_then(|wc| wc.timeline.iter().find_map(|key| key.size))
+        })
         .or_else(|| plan.webcam.as_ref().map(|wc| wc.size))
         .unwrap_or(0.22);
-    let base_shape = timeline
+    let base_shape = studio_timeline
         .iter()
-        .find_map(|key| key.shape)
+        .find_map(|(_, _, key)| key.shape.clone())
+        .or_else(|| {
+            plan.webcam
+                .as_ref()
+                .and_then(|wc| wc.timeline.iter().find_map(|key| key.shape.clone()))
+        })
         .or_else(|| plan.webcam.as_ref().map(|wc| wc.shape))
         .unwrap_or(record_core::WebcamShape::Circle);
+    // A scene replay is the base timeline. Studio controls are explicit user
+    // edits made after recording starts, including the initial configuration
+    // event at t=0. Keep both histories: a later scene activation changes the
+    // camera from that point, while a later Studio edit changes it again.
+    //
+    // Scene events have CaptureClock time plus an internal sequence; Studio
+    // events have UI elapsed time plus their own server journal sequence. The
+    // editable camera timeline retains only millisecond boundaries, so the two
+    // logs have no cross-journal ordering at an equal millisecond. Resolve that
+    // deliberate tie in favor of the explicit Studio edit. It preserves the
+    // start-time configuration shown in the UI and gives the direct camera
+    // control a deterministic override when the clocks quantize together.
+    let existing_timeline = plan
+        .webcam
+        .as_ref()
+        .map(|webcam| webcam.timeline.clone())
+        .unwrap_or_default();
+    let studio_event_count = studio_timeline.len();
+    let mut timeline = existing_timeline
+        .into_iter()
+        .enumerate()
+        .map(|(index, keyframe)| (keyframe.t_ms, index as u64, keyframe))
+        .collect::<Vec<_>>();
+    let scene_key_count = timeline.len() as u64;
+    timeline.extend(
+        studio_timeline
+            .into_iter()
+            .map(|(t_ms, logical_ts, keyframe)| {
+                (t_ms, scene_key_count.saturating_add(logical_ts), keyframe)
+            }),
+    );
+    timeline.sort_by_key(|(t_ms, accepted_order, _)| (*t_ms, *accepted_order));
+    let timeline = timeline
+        .into_iter()
+        .map(|(_, _, keyframe)| keyframe)
+        .collect::<Vec<_>>();
 
     plan.webcam = Some(record_core::WebcamOverlay {
         source,
@@ -280,11 +322,7 @@ pub(crate) fn apply_studio_events_to_plan(
         timeline,
     });
     plan.validate().map_err(crate::screen_record::record_err)?;
-    Ok(plan
-        .webcam
-        .as_ref()
-        .map(|wc| wc.timeline.len())
-        .unwrap_or(0))
+    Ok(studio_event_count)
 }
 
 fn studio_event_to_webcam_keyframe(
@@ -521,5 +559,109 @@ mod tests {
             studio_background_to_record_background("solid").unwrap(),
             record_core::Background::Solid { .. }
         ));
+    }
+
+    #[test]
+    fn studio_keys_merge_after_scene_keys_without_erasing_later_scene_changes() {
+        let mut plan = record_core::EditPlan::empty(320, 180, 2_000, 30.0);
+        // This is the plan just produced by Recording Scenes: its initial
+        // composition is followed by a live scene activation at 1s.
+        plan.webcam = Some(record_core::WebcamOverlay {
+            source: "scene-camera.mp4".into(),
+            shape: record_core::WebcamShape::Circle,
+            anchor: record_core::Anchor::TopRight,
+            margin: 0.04,
+            size: 0.25,
+            camera_clock: None,
+            timeline: vec![
+                record_core::WebcamKeyframe {
+                    t_ms: 0,
+                    visible: Some(true),
+                    x: Some(0.70),
+                    y: Some(0.04),
+                    size: Some(0.25),
+                    shape: Some(record_core::WebcamShape::Circle),
+                },
+                record_core::WebcamKeyframe {
+                    t_ms: 1_000,
+                    visible: Some(true),
+                    x: Some(0.04),
+                    y: Some(0.04),
+                    size: Some(0.20),
+                    shape: Some(record_core::WebcamShape::RoundedRect { radius: 18.0 }),
+                },
+            ],
+        });
+        let log = StudioEventLog {
+            version: STUDIO_EVENTS_VERSION,
+            events: vec![
+                // The initial Studio configuration is accepted after the
+                // capture-start scene snapshot, so it wins at t=0.
+                StudioEvent {
+                    logical_ts: Some(1),
+                    t_ms: 0,
+                    source: "camera".into(),
+                    kind: "transform".into(),
+                    visible: None,
+                    x: Some(0.10),
+                    y: Some(0.20),
+                    size: Some(0.30),
+                    shape: Some("circle".into()),
+                    radius: None,
+                    label: None,
+                    background: None,
+                },
+                // When UI and CaptureClock quantize a later scene action to
+                // the same millisecond, the explicit Studio control wins.
+                StudioEvent {
+                    logical_ts: Some(2),
+                    t_ms: 1_000,
+                    source: "camera".into(),
+                    kind: "transform".into(),
+                    visible: None,
+                    x: Some(0.80),
+                    y: Some(0.20),
+                    size: Some(0.28),
+                    shape: Some("circle".into()),
+                    radius: None,
+                    label: None,
+                    background: None,
+                },
+                // A manual live edit after the later scene activation wins
+                // from its own timestamp without deleting the scene history.
+                StudioEvent {
+                    logical_ts: Some(3),
+                    t_ms: 1_500,
+                    source: "camera".into(),
+                    kind: "transform".into(),
+                    visible: None,
+                    x: Some(0.60),
+                    y: Some(0.50),
+                    size: Some(0.35),
+                    shape: Some("rounded_rect".into()),
+                    radius: Some(12.0),
+                    label: None,
+                    background: None,
+                },
+            ],
+        };
+
+        assert_eq!(
+            apply_studio_events_to_plan(&mut plan, None, None, &log).unwrap(),
+            3
+        );
+        let timeline = &plan.webcam.as_ref().unwrap().timeline;
+        assert_eq!(timeline.len(), 5);
+        assert_eq!(timeline[0].t_ms, 0);
+        assert_eq!(timeline[0].x, Some(0.70));
+        assert_eq!(timeline[1].t_ms, 0);
+        assert_eq!(timeline[1].x, Some(0.10));
+        assert_eq!(timeline[2].t_ms, 1_000);
+        assert_eq!(timeline[2].x, Some(0.04));
+        assert_eq!(timeline[3].t_ms, 1_000);
+        assert_eq!(timeline[3].x, Some(0.80));
+        assert_eq!(timeline[4].t_ms, 1_500);
+        assert_eq!(timeline[4].x, Some(0.60));
+        assert!(plan.validate().is_ok());
     }
 }

@@ -11,7 +11,7 @@ mod project_identity;
 mod project_paths;
 mod project_sync;
 use project_health::project_health as project_health_read;
-pub(super) use project_identity::project_identity as path_free_project_identity;
+pub(crate) use project_identity::project_identity as path_free_project_identity;
 use project_paths::default_projects_dir;
 
 /// Cache lifecycle is intentionally separate from `project.health`: the health

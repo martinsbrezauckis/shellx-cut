@@ -213,6 +213,10 @@ fn default_subject_fps_source() -> String {
     "measured".to_string()
 }
 
+fn default_face_backend() -> String {
+    "unavailable".to_string()
+}
+
 /// Per-asset subject track for auto-reframe (the `subject` instrument; perception contract
 /// reframe rework.
 ///
@@ -258,6 +262,10 @@ pub struct SubjectTrack {
     /// Receipt honesty: false ⇒ framing fell back to body/saliency centers.
     #[serde(default)]
     pub face_aware: bool,
+    /// Face enhancement implementation used for face/eye-line framing, or
+    /// "unavailable" when the sidecar fell back to body/saliency centers.
+    #[serde(default = "default_face_backend")]
+    pub face_backend: String,
     /// Director-model scene indices whose subject the
     /// foundation model decided (via a `direction` brief), vs the CV ranker.
     /// Empty ⇒ pure CV framing. Receipt honesty for "who chose the subject".
@@ -373,16 +381,19 @@ mod tests {
         .expect("old subject track receipts should remain compatible");
 
         assert!(!track.face_aware);
+        assert_eq!(track.face_backend, "unavailable");
 
         let track: SubjectTrack = serde_json::from_value(serde_json::json!({
             "fps": 24.0,
             "frame_width": 1920,
             "frame_height": 1080,
             "face_aware": true,
+            "face_backend": "opencv-yunet",
             "frames": []
         }))
         .expect("new subject track receipts should preserve face-awareness");
 
         assert!(track.face_aware);
+        assert_eq!(track.face_backend, "opencv-yunet");
     }
 }

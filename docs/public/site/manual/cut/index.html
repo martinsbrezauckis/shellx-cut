@@ -86,7 +86,7 @@
           <button class="manual-node" data-feature-id="cut.header.recipes">Recipes</button>
           <button class="manual-node" data-feature-id="cut.header.assemble">Assemble AI</button>
           <button class="manual-node" data-feature-id="cut.header.storyboard">Storyboard</button>
-          <button class="manual-node" data-feature-id="cut.header.comments">Review comments</button>
+          <button class="manual-node" data-feature-id="cut.header.comments">Comments</button>
           <button class="manual-node" data-feature-id="cut.header.gpu">Faster exports (GPU)</button>
 
           <div class="manual-tree-subgroup">Header tool choices</div>
@@ -132,7 +132,7 @@
           <button class="manual-node" data-feature-id="cut.header.storyboard.preview">Storyboard: preview sequence</button>
           <button class="manual-node" data-feature-id="cut.header.storyboard.insert">Storyboard: insert</button>
           <button class="manual-node" data-feature-id="cut.header.comments.add">Comments: add comment</button>
-          <button class="manual-node" data-feature-id="cut.header.comments.apply">Comments: apply note</button>
+          <button class="manual-node" data-feature-id="cut.header.comments.make_changes">Comments: make changes</button>
           <button class="manual-node" data-feature-id="cut.header.comments.resolve">Comments: resolve</button>
 
           <div class="manual-tree-subgroup">Delivery</div>
@@ -207,6 +207,7 @@
           <button class="manual-node" data-feature-id="cut.timeline.split_scenes">Split scenes</button>
           <button class="manual-node" data-feature-id="cut.timeline.mark_scenes">Mark scenes</button>
           <button class="manual-node" data-feature-id="cut.timeline.grade">Grade, Layer, Matte</button>
+          <button class="manual-node" data-feature-id="cut.timeline.ask_agent">Ask agent</button>
           <button class="manual-node" data-feature-id="cut.timeline.track_controls">Timeline: track controls</button>
           <button class="manual-node" data-feature-id="cut.timeline.track_visibility">Track: show or hide</button>
           <button class="manual-node" data-feature-id="cut.timeline.track_lock">Track: lock edits</button>
@@ -237,7 +238,8 @@
           <button class="manual-node" data-feature-id="cut.inspector.audio">Audio tab</button>
           <button class="manual-node" data-feature-id="cut.inspector.chat">Chat tab</button>
           <button class="manual-node" data-feature-id="cut.inspector.chat_assets">Chat: attach project assets</button>
-          <button class="manual-node" data-feature-id="cut.inspector.chat_review">Chat: review each turn</button>
+          <button class="manual-node" data-feature-id="cut.inspector.chat_change">Chat: applied change</button>
+          <button class="manual-node" data-feature-id="cut.inspector.chat_clear_target">Chat: clear timeline target</button>
           <button class="manual-node" data-feature-id="cut.inspector.tools_overlay">Tools overlay</button>
           <button class="manual-node" data-feature-id="cut.inspector.pin">Pin tools</button>
           <button class="manual-node" data-feature-id="cut.inspector.fades">Fades</button>
@@ -277,7 +279,7 @@
           <button class="manual-node" data-feature-id="cut.workflow.generated_media">Compare and place generated media</button>
           <button class="manual-node" data-feature-id="cut.workflow.motion_roundtrip">Edit a linked clip in Motion</button>
           <button class="manual-node" data-feature-id="cut.workflow.sequence_index">Search across sequences</button>
-          <button class="manual-node" data-feature-id="cut.workflow.agent_review">Review an agent turn</button>
+          <button class="manual-node" data-feature-id="cut.workflow.agent_change">Applied agent change</button>
           <button class="manual-node" data-feature-id="cut.workflow.recording">Record, polish, export, and retry</button>
           <button class="manual-node" data-feature-id="cut.workflow.review">Review receipts</button>
           <button class="manual-node" data-feature-id="cut.workflow.export">Render and export</button>
@@ -360,6 +362,14 @@
             <div class="manual-highlight" data-manual-highlight="recording" data-label="Recording Studio" aria-hidden="true" hidden></div>
           </div>
           <div class="manual-grid">
+            <article class="manual-card">
+              <h3>Check readiness, then choose a source</h3>
+              <p>Open <strong>Record</strong> from the shared <strong>Edit | Record</strong> switch. Read the compact Capture readiness result, open its technical checks if needed, then choose a display or window. Use <strong>Refresh sources</strong> after a display, app, or device changes; Start stays unavailable while Cut checks the current setup.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Keep composition controls out of the picture</h3>
+              <p>In Auto-edit mode, use <strong>Actions</strong>, right-click the composition preview, or press <kbd>Shift</kbd>+<kbd>F10</kbd> to adjust the same guarded camera and background setup. The camera preview opens its own menu for its placement and shape. Raw capture and an active take keep unavailable changes disabled.</p>
+            </article>
             <article class="manual-card">
               <h3>Camera stays editable</h3>
               <p>In Auto-edit mode, turn Camera on, choose one current Windows/macOS device, and set its position, size, and shape. Cut keeps the finalized camera as a separate editable take instead of baking it into the screen source.</p>
@@ -477,8 +487,8 @@
               <p>Open a linked package with Edit in Motion, render a verified copy-on-write revision in Canvas, then refresh the same Cut clip. Identity or revision mismatches leave the last good render untouched.</p>
             </article>
             <article class="manual-card">
-              <h3>Agent turn review</h3>
-              <p>Attach up to eight registered project assets, use the editable prompt library, then inspect Preview and Diff before Accept, guarded Revert, or Try again. Concurrent edits disable whole-turn revert.</p>
+              <h3>Agent Chat changes</h3>
+              <p>Attach registered assets or a timeline target, write and send the request, then inspect its Preview and Diff. Results apply directly; Step back stays available only while its guarded revert is safe, and Ask replacement rechecks the saved target.</p>
             </article>
             <article class="manual-card">
               <h3>Record and polish</h3>

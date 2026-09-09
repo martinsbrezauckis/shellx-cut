@@ -540,7 +540,8 @@ assert.ok(surface.includes('attempt(doctorRefresh.current())'), 'the system Doct
 assert.ok(surface.includes('setToolchainScanFailed(true)'), 'a failed system Doctor request cannot render the shared stale report as healthy')
 
 const recordSurface = readFileSync(new URL('../src/panels/Record/index.tsx', import.meta.url), 'utf8')
+const readinessSurface = readFileSync(new URL('../src/panels/Record/RecordingReadinessSummary.tsx', import.meta.url), 'utf8')
 const recordUiModel = readFileSync(new URL('../src/panels/Record/recordingUiModel.ts', import.meta.url), 'utf8')
-assert.ok(recordSurface.includes('recordCardLabel(c.name)') && recordUiModel.includes("system_audio: 'System audio'"), 'Record gives the passive system-audio card a human label through its shared UI model')
+assert.ok(recordSurface.includes('RecordingReadinessSummary') && readinessSurface.includes('recordCardLabel(card.name)') && recordUiModel.includes("system_audio: 'System audio'"), 'Record gives the passive system-audio card a human label through its compact shared readiness summary')
 
 console.log('health-recovery.test.ts passed')

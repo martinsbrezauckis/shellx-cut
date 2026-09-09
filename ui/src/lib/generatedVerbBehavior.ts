@@ -914,7 +914,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "request_key",
     "replayability": "replayable",
     "async_job": "none",
-    "ui_exposure": "human",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "reversible",
     "facets": []
@@ -932,7 +932,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "request_key",
     "replayability": "replayable",
     "async_job": "none",
-    "ui_exposure": "human",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "reversible",
     "facets": []

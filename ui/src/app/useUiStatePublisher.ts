@@ -28,7 +28,12 @@ interface UiStatePublisherArgs {
   project: Project | null
 }
 
-const EMPTY_DOM: UiDomState = { activeReviewTab: null, dialogs: [], aboutVersion: null }
+const EMPTY_DOM: UiDomState = {
+  activeReviewTab: null,
+  dialogs: [],
+  aboutVersion: null,
+  uiSourceContentManifestSha256: null,
+}
 
 /** Publish a path-safe, revisioned state snapshot after each React commit.
  * A small DOM observer adds self-owned dialogs and the Review tab without
@@ -38,7 +43,7 @@ export const UI_DOM_MUTATION_OBSERVER_OPTIONS: MutationObserverInit = {
   childList: true,
   characterData: true,
   attributes: true,
-  attributeFilter: ['aria-selected', 'data-cut-app-version'],
+  attributeFilter: ['aria-selected', 'data-cut-app-version', 'data-cut-ui-source-content-manifest-sha256'],
 }
 
 export function useUiStatePublisher(args: UiStatePublisherArgs) {

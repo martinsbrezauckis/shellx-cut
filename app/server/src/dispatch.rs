@@ -1156,6 +1156,7 @@ pub(crate) use safety::{
 };
 mod motion_link_projection;
 mod project_workspace;
+pub(crate) use project_workspace::path_free_project_identity;
 use project_workspace::{
     comment_add, comment_apply, comment_draft, comment_list, comment_resolve, library_add,
     library_add_to_project, library_favorite, library_folder_add, library_folder_remove,

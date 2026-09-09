@@ -35,7 +35,7 @@ interface RecordingSourceSetupProps {
   readonly disabled: boolean
   readonly pauseEnabled: boolean
   readonly regionCapability: RegionPickerCapability
-  readonly onRefresh: () => void
+  readonly onRefresh: () => void | Promise<unknown>
   readonly onSourceKindChange: (source: RecordingSourceKind) => void
   readonly onMonitorChange: (index: number) => void
   readonly onWindowChange: (id: string | null) => void

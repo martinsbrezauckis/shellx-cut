@@ -1,0 +1,7 @@
+# Visible Record F9 capability control for the exact selected engine origin.
+# The commands accept no path, command, binding, or socket input. On GNOME
+# Wayland they own only ShellX Cut's exact F9 custom-keybinding entry.
+[[permission]]
+identifier = "allow-record-hotkey-control"
+description = "Allows the selected ShellX Cut UI to read and explicitly control the fixed Record F9 capability."
+commands.allow = ["get_record_hotkey_capability", "enable_gnome_record_hotkey", "disable_gnome_record_hotkey"]

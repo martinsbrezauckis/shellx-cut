@@ -55,6 +55,7 @@ mod schema_validation;
 mod screen_record;
 mod screen_record_studio;
 mod screen_record_studio_journal;
+mod server_shutdown;
 mod startup_tasks;
 mod state;
 mod stt_settings;
@@ -213,11 +214,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 .unwrap_or_else(|_| addr.clone());
             httpc::write_discovery(&bound);
             tracing::info!("cutd listening on http://{bound}/ (POST /api/verb/{{name}})");
-            let startup_doctor = startup_tasks::spawn_post_ui_doctor(state);
+            let startup_doctor = startup_tasks::spawn_post_ui_doctor(state.clone());
             let result = axum::serve(listener, router)
-                .with_graceful_shutdown(async {
-                    let _ = tokio::signal::ctrl_c().await;
-                })
+                .with_graceful_shutdown(server_shutdown::wait_for_server_shutdown(state.clone()))
                 .await;
             startup_doctor.abort();
             let _ = startup_doctor.await;
@@ -307,6 +306,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
     }
 }
+
 /// Open a project into state when --project was passed (shared by all
 /// subcommands). Side effect: attaches the job manager to the project dir.
 async fn open_if_given(state: &AppState, project: Option<PathBuf>) -> anyhow::Result<()> {

@@ -3,6 +3,7 @@ import type { GenerateWorkspaceTab } from '../panels/GenerateTemplates'
 import { isSettingsCategoryId, type SettingsCategoryId } from '../panels/Environment/settingsModel'
 import type { AppDrawer } from './AppDrawerStack'
 import type { AgentChatPrefill, ChatEvidenceAttachment } from '../lib/evidenceAttachments'
+import type { ChatTimelineTarget } from '../lib/chatTimelineTarget'
 import { normalizeGenerateTab } from './model'
 import { uiSurface } from './uiSurfaceRegistry'
 import type { RequestLayout } from './useRecordingWorkspaceNavigation'
@@ -20,6 +21,7 @@ interface AppSurfaceEventsArgs {
   onOpenManual?: (featureId?: string) => void
   agentChatPromptSeq: MutableRefObject<number>
   setAgentChatPrefill: Dispatch<SetStateAction<AgentChatPrefill | null>>
+  claimAgentChatPrefill: (nonce: number) => boolean
 }
 
 /** Bridges document-level app events to the shared surface registry. Returns
@@ -37,6 +39,7 @@ export function useAppSurfaceEvents({
   onOpenManual,
   agentChatPromptSeq,
   setAgentChatPrefill,
+  claimAgentChatPrefill,
 }: AppSurfaceEventsArgs) {
   const openSurface = useCallback((id: string): boolean => {
     const entry = uiSurface(id)
@@ -171,16 +174,24 @@ export function useAppSurfaceEvents({
     }
     const onOpenChat = (e: Event) => {
       openSurface('chat')
-      const detail = (e as CustomEvent<string | { prompt?: string; evidence?: ChatEvidenceAttachment[] }>).detail
+      const detail = (e as CustomEvent<string | { prompt?: string; evidence?: ChatEvidenceAttachment[]; target?: ChatTimelineTarget; submit?: boolean }>).detail
       const prompt = typeof detail === 'string' ? detail : detail?.prompt
-      if (prompt?.trim()) {
+      const target = typeof detail === 'string' ? undefined : detail?.target
+      if (prompt?.trim() || target) {
         agentChatPromptSeq.current += 1
         setAgentChatPrefill({
-          prompt,
+          prompt: prompt ?? '',
           nonce: agentChatPromptSeq.current,
           evidence: typeof detail === 'string' ? undefined : detail?.evidence,
+          target,
+          submit: typeof detail === 'string' ? undefined : detail?.submit,
         })
       }
+    }
+    const onClaimAgentChatPrefill = (e: Event) => {
+      const detail = (e as CustomEvent<{ nonce?: unknown; claimed?: boolean }>).detail
+      if (!detail || !Number.isSafeInteger(detail.nonce) || (detail.nonce as number) < 1) return
+      detail.claimed = claimAgentChatPrefill(detail.nonce as number)
     }
     const onOpenDrawer = (e: Event) => {
       const name = (e as CustomEvent).detail as AppDrawer | 'grade' | 'mixer' | 'stock' | 'search' | 'generate'
@@ -213,6 +224,7 @@ export function useAppSurfaceEvents({
     document.addEventListener('cut:open-search', onSearch)
     document.addEventListener('cut:open-generate', onGenerate)
     document.addEventListener('cut:open-chat', onOpenChat)
+    document.addEventListener('cut:claim-agent-chat-prefill', onClaimAgentChatPrefill)
     document.addEventListener('cut:open-drawer', onOpenDrawer)
     return () => {
       document.removeEventListener('cut:open-ui-surface', onOpenUiSurface)
@@ -232,10 +244,12 @@ export function useAppSurfaceEvents({
       document.removeEventListener('cut:open-search', onSearch)
       document.removeEventListener('cut:open-generate', onGenerate)
       document.removeEventListener('cut:open-chat', onOpenChat)
+      document.removeEventListener('cut:claim-agent-chat-prefill', onClaimAgentChatPrefill)
       document.removeEventListener('cut:open-drawer', onOpenDrawer)
     }
   }, [
     agentChatPromptSeq,
+    claimAgentChatPrefill,
     setAgentChatPrefill,
     setFocusComment,
     openSurface,

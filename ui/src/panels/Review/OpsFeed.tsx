@@ -1,14 +1,14 @@
 // panels/Review/OpsFeed.tsx — the OPS tab: live op-log feed.
 // Role: rows newest at BOTTOM with auto-follow (pinned to bottom unless the
 // user scrolled up); 3-line row anatomy (actor badge + verb + age / rationale
-// / effects summary); focused/accepted/rejected states; hover highlights the
+// / effects summary); focused/restored states; hover highlights the
 // linked transcript span via the shared op-id bridge. Every actor is badged —
 // no un-attributed ops, ever (rule 1 of the feel).
 //
 // OP-REBASE (engine 4408dbd/211f810): a non-tip mutating op gets a SECOND
 // undo affordance — "Undo (keep later edits)" — that calls edit.restore{mode:"rebase"}
 // to selectively undo it while keeping later ops. It is visually distinct from
-// the plain tip reject (x) and gated behind an inline confirm step (history
+// the plain tip undo (x) and gated behind an inline confirm step (history
 // surgery = one extra click, never silent). Ops the engine re-based OVER get a
 // transient "kept" indicator (KEPT badge + green edge), driven by `keptOps`.
 // Callers: Review/index.tsx. Deps: ./shared, lib/client types.
@@ -22,12 +22,11 @@ import {
   operationGroupHeading,
   type IndexedOperation,
 } from './opGroupModel'
-import { effectsSummary, highlightOpTargets, opSeekMs, timeAgo, type Reviewed } from './shared'
+import { effectsSummary, highlightOpTargets, opSeekMs, timeAgo } from './shared'
 
 export interface OpsFeedProps {
   ops: OpRecord[]
   cursor: number
-  reviewed: Reviewed
   /** Op ids undone by a later edit.restore (derived server truth). */
   restored: Set<string>
   /** Op ids the newest applied op references but cannot be rebased OUT of yet
@@ -37,24 +36,23 @@ export interface OpsFeedProps {
    * (the rebased_over set) — they were re-based OVER and kept intact. */
   keptOps: Set<string>
   /** The current tip op id (newest applied mutating op). Non-tip mutating ops
-   * are the ones that get the rebase affordance; the tip uses plain reject. */
+   * are the ones that get the rebase affordance; the tip uses plain undo. */
   tipOpId: string | null
   onCursor: (idx: number) => void
-  onAccept: (opId: string) => void
   onReject: (opId: string) => void
-  /** Rebase-reject a non-tip op → edit.restore{mode:"rebase"}. */
+  /** Selectively undo a non-tip op → edit.restore{mode:"rebase"}. */
   onRebaseReject: (opId: string) => void
   onSeek: (atMs: number) => void
 }
 
 // Timeline-mutating classification = lib/ops::mutatesTimeline (the BLOCKLIST
 // mirror of the engine), shared with Review/shared.ts + Timeline. Only mutating
-// ops are restorable history, so only they get a reject/rebase affordance. Was a
+// ops are restorable history, so only they get an undo/rebase affordance. Was a
 // stale local allowlist that missed edit.grade/title.add/captions.kinetic/….
 
 export default function OpsFeed({
-  ops, cursor, reviewed, restored, highlightedDeps, keptOps, tipOpId,
-  onCursor, onAccept, onReject, onRebaseReject, onSeek,
+  ops, cursor, restored, highlightedDeps, keptOps, tipOpId,
+  onCursor, onReject, onRebaseReject, onSeek,
 }: OpsFeedProps) {
   const listRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true) // auto-follow while the user stays at bottom
@@ -104,7 +102,7 @@ export default function OpsFeed({
   }
 
   const renderRow = ({ op, index }: IndexedOperation) => {
-    const isRejected = restored.has(op.op_id)
+    const isRejected = restored.has(op.op_id) || op.status === 'rejected'
     const canRebase =
       op.status === 'applied' &&
       op.verb !== 'edit.restore' &&
@@ -117,12 +115,11 @@ export default function OpsFeed({
         op={op}
         idx={index}
         focused={index === cursor}
-        verdict={isRejected ? 'rejected' : reviewed[op.op_id]}
+        rejected={isRejected}
         canRebase={canRebase}
         isDependent={highlightedDeps.has(op.op_id)}
         isKept={keptOps.has(op.op_id)}
         onCursor={onCursor}
-        onAccept={onAccept}
         onReject={onReject}
         onRebaseReject={onRebaseReject}
         onSeek={onSeek}
@@ -163,7 +160,8 @@ interface OpRowProps {
   op: OpRecord
   idx: number
   focused: boolean
-  verdict?: 'accepted' | 'rejected'
+  /** Restored or rejected by engine-backed history. */
+  rejected: boolean
   /** This op can be rebased out (applied, mutating, non-tip, not rejected). */
   canRebase: boolean
   /** This op blocks a refused rebase (a named dependent) — highlight it. */
@@ -171,21 +169,19 @@ interface OpRowProps {
   /** This op was just re-based OVER and kept — flash a transient KEPT badge. */
   isKept: boolean
   onCursor: (idx: number) => void
-  onAccept: (opId: string) => void
   onReject: (opId: string) => void
   onRebaseReject: (opId: string) => void
   onSeek: (atMs: number) => void
 }
 
 function OpRow({
-  op, idx, focused, verdict, canRebase, isDependent, isKept,
-  onCursor, onAccept, onReject, onRebaseReject, onSeek,
+  op, idx, focused, rejected, canRebase, isDependent, isKept,
+  onCursor, onReject, onRebaseReject, onSeek,
 }: OpRowProps) {
   const effects = useMemo(() => effectsSummary(op), [op])
   const actorKind = op.actor?.kind ?? 'system'
-  const rejected = verdict === 'rejected' || op.status === 'rejected'
   const isRestore = op.verb === 'edit.restore'
-  // Confirm-step for the rebase reject: one extra click, no modal. The button
+  // Confirm-step for selective undo: one extra click, no modal. The button
   // flips into a "Rebase out? [yes] [no]" inline confirm before firing — this
   // is history surgery, so it never goes off on a single stray click.
   const [confirming, setConfirming] = useState(false)
@@ -193,7 +189,6 @@ function OpRow({
   const cls = [
     'rr-op',
     focused ? 'rr-op--focused' : '',
-    verdict === 'accepted' ? 'rr-op--accepted' : '',
     rejected ? 'rr-op--rejected' : '',
     isDependent ? 'rr-op--dependent' : '',
     isKept ? 'rr-op--kept' : '',
@@ -232,12 +227,11 @@ function OpRow({
         {op.rationale ?? 'no rationale'}
       </div>
       {effects && <div className="rr-op__effects">{effects}</div>}
-      {/* verdict marks + inline actions; restore ops are outcomes, not reviewables */}
+      {/* Engine-backed restore mark + inline recovery actions. */}
       <div className="rr-op__edge">
-        {verdict === 'accepted' && <span className="rr-op__check"><Icon name="check" size={14} tone="success" label="accepted" /></span>}
-        {rejected && <span className="rr-op__cross"><Icon name="close" size={14} tone="danger" label="rejected" /></span>}
+        {rejected && <span className="rr-op__cross"><Icon name="close" size={14} tone="danger" label="undone" /></span>}
       </div>
-      {!verdict && !rejected && !isRestore && (
+      {!rejected && !isRestore && (
         <div className="rr-op__actions">
           {confirming ? (
             // Confirm step — distinct, deliberate, one extra click. The label
@@ -272,20 +266,9 @@ function OpRow({
           ) : (
             <>
               <button
-                className="rr-op__act"
-                data-cut-action="accept-op"
-                title="accept (a)"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onAccept(op.op_id)
-                }}
-              >
-                ✓
-              </button>
-              <button
                 className="rr-op__act rr-op__act--reject"
                 data-cut-action="reject-op"
-                title="Reject and restore this edit (X)"
+                title="Undo this edit (X)"
                 onClick={(e) => {
                   e.stopPropagation()
                   onReject(op.op_id)
@@ -293,7 +276,7 @@ function OpRow({
               >
                 ✕
               </button>
-              {/* Reject (rebase): non-tip only — selectively undo THIS op,
+              {/* Selective undo: non-tip only — undo THIS op,
                   keeping later ops. Distinct glyph + label; opens the confirm. */}
               {canRebase && (
                 <button

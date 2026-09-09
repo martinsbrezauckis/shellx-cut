@@ -8,11 +8,15 @@ export interface ResolvedCommentTime {
   status: CommentAnchorStatus
 }
 
-interface ClipSpan {
+export interface TimelineClipSpan {
+  trackId: string
   clipId: string
   startMs: number
   durationMs: number
+  endMs: number
 }
+
+type ClipSpan = TimelineClipSpan
 
 function clipId(clip: Clip): string | null {
   return 'id' in clip ? clip.id : null
@@ -35,7 +39,13 @@ function trackSpans(track: Track): ClipSpan[] {
       if (!('range_ms' in clip)) return []
       const id = clipId(clip)
       if (!id) return []
-      return [{ clipId: id, startMs: clip.range_ms[0], durationMs: Math.max(0, clip.range_ms[1] - clip.range_ms[0]) }]
+      return [{
+        trackId: track.id,
+        clipId: id,
+        startMs: clip.range_ms[0],
+        durationMs: Math.max(0, clip.range_ms[1] - clip.range_ms[0]),
+        endMs: clip.range_ms[1],
+      }]
     })
   }
 
@@ -49,11 +59,18 @@ function trackSpans(track: Track): ClipSpan[] {
       : 0
     const start = Math.max(0, cursor - xfade)
     const id = clipId(clip)
-    if (id) spans.push({ clipId: id, startMs: start, durationMs: dur })
+    if (id) spans.push({ trackId: track.id, clipId: id, startMs: start, durationMs: dur, endMs: start + dur })
     cursor = start + dur
     prevMediaDur = 'src_in_ms' in clip ? dur : null
   }
   return spans
+}
+
+/** Current canonical timeline spans. This uses the same anchored-comment
+ * geometry as the comment rail, so target snapshots do not drift after ripple edits. */
+export function timelineClipSpans(project: Project | null): TimelineClipSpan[] {
+  if (!project) return []
+  return project.tracks.flatMap((track) => trackSpans(track))
 }
 
 function findAnchorSpan(project: Project | null, anchor: CommentAnchor): ClipSpan | null {

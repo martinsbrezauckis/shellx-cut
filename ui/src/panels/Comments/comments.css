@@ -320,3 +320,9 @@
 /* spinner */
 .cm__spin { animation: cm-spin 0.7s linear infinite; }
 @keyframes cm-spin { to { transform: rotate(360deg); } }
+
+.cm__target {
+  margin: 0 0 8px;
+  color: var(--ink-3);
+  font: var(--fs-mono-xs) / 1.4 var(--mono);
+}

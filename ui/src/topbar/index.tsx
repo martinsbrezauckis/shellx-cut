@@ -37,6 +37,7 @@ import PreflightWarning from './PreflightWarning'
 import SequenceSwitcher from './SequenceSwitcher'
 import { useTopbarDismissibleMenu } from './useTopbarDismissibleMenu'
 import { useTopbarJobs } from './useTopbarJobs'
+import { WorkspaceModeTabs } from './WorkspaceModeTabs'
 import {
   ASPECTS,
   ASYNC_RENDER_IDS,
@@ -49,7 +50,6 @@ import {
   PRESETS,
   PROFILES,
   REFRAME_PRESETS,
-  WORKSPACE_MODES,
   selectedOption,
   type Aspect,
   type FileFormat,
@@ -502,27 +502,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         />
       )}
 
-      {/* Workspace mode switch (Edit, Record, Color, Audio,
-          Export). Swaps the layout while the project persists; Record is the
-          flagship capture surface. */}
-      <div className="tb-modes" role="tablist" aria-label="Workspace mode" data-cut-modes={mode}>
-        {WORKSPACE_MODES.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            role="tab"
-            aria-selected={mode === m.id}
-            className={`tb-mode${mode === m.id ? ' tb-mode--on' : ''}${m.id === 'record' ? ' tb-mode--record' : ''}`}
-            data-cut-mode={m.id}
-            data-cut-manual-id={m.id === 'record' ? 'cut.record.open' : undefined}
-            title={m.hint}
-            onClick={(e) => { e.currentTarget.blur(); onMode?.(m.id) }}
-          >
-            {m.id === 'record' && <span className="tb-mode-dot" aria-hidden="true" />}
-            {m.label}
-          </button>
-        ))}
-      </div>
+      <WorkspaceModeTabs mode={mode} onMode={onMode} />
 
       {/* Primary nav (top-left menu position): Projects + Library. "New"
           and "Import" were removed from the header — New lives in the Projects tab,

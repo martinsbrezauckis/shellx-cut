@@ -82,6 +82,8 @@ tauri-plugin-wdio = { version = "1.2.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle = "0.6"
+gio = "0.18"
+libc = "0.2"
 
 [features]
 # Production builds use the embedded asset protocol (no devUrl).

@@ -1,10 +1,11 @@
 // panels/Review — the review rail: OPS · RECEIPTS · DIFF.
 // Role: tab container + the RAIL keyboard scope. Focus model:
-// clicking the rail (or pressing R anywhere) focuses it; skim keys j/k/a/x/
+// clicking the rail (or pressing R anywhere) focuses it; skim keys j/k/x/
 // Enter act on the OPS feed; Esc blurs back to GLOBAL. Focused scope is shown
-// by a 2px --cut top edge. Accept (`a`) is a LOCAL review marker (no verb —
-// accepting confirmed truth changes nothing); reject (`x`) dispatches
-// edit.restore via onReject. Every row/element carries data-cut-*.
+// by a 2px --cut top edge. Undo (`x`) dispatches edit.restore in this panel.
+// The rail shows applied history and offers real recovery; it never asks the
+// editor to locally accept a change that is already applied. Every row/element
+// carries data-cut-*.
 // Callers: App.tsx. Deps: lib/client types./shared./OpsFeed./Receipts,
 // ./DiffView.
 
@@ -26,15 +27,8 @@ import {
   revertTo,
   seekPlayhead,
   tipUndoOp,
-  type Reviewed,
   type RestoreGuidance,
 } from './shared'
-import {
-  loadReviewMarkers,
-  REVIEW_MARKERS_EVENT,
-  saveReviewMarkers,
-  type ReviewMarkersDetail,
-} from './reviewMarkers'
 
 /** Typed props — contract between App.tsx and the Review panel. */
 export interface ReviewProps {
@@ -47,8 +41,6 @@ export interface ReviewProps {
   receipts: RenderReceipt[]
   /** Deferred tab request from the rail wrapper; survives collapsed/unmounted rails. */
   reviewTabRequest?: ReviewTabRequest | null
-  /** Reject an op → App dispatches edit.restore. */
-  onReject: (opId: string) => void
   /** Seek request (optional — integration wires; fallback = ui.playhead verb). */
   onSeek?: (atMs: number) => void
   /** Collapse the rail (the header button; mirrors the `\` key + left sidebar). */
@@ -66,10 +58,9 @@ export interface ReviewTabRequest {
   diff?: { from: string; to: string }
 }
 
-export default function Review({ project, playheadMs, ops, receipts, reviewTabRequest, onReject, onSeek, onCollapse, onUndo, onRedo }: ReviewProps) {
+export default function Review({ project, playheadMs, ops, receipts, reviewTabRequest, onSeek, onCollapse, onUndo, onRedo }: ReviewProps) {
   const [tab, setTab] = useState<ReviewTab>('ops')
   const [cursor, setCursor] = useState(-1) // index into ops; -1 = none
-  const [reviewed, setReviewed] = useState<Reviewed>({})
   const [railFocused, setRailFocused] = useState(false)
   // Undo surface: the engine's verbatim guidance after a refused non-tip
   // tip-undo OR a rebase blocked by dependents) — shown until the next
@@ -80,7 +71,6 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
   const [keptFlash, setKeptFlash] = useState<Set<string>>(new Set())
   const keptTimer = useRef<number | null>(null)
   const rootRef = useRef<HTMLElement>(null)
-  const skipReviewedSaveRef = useRef(false)
 
   const restored = useMemo(() => restoredOpIds(ops), [ops])
   // The tip op edit.restore can undo (newest applied, not-restored, mutating).
@@ -120,54 +110,6 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
     [undoGuidance],
   )
 
-  useEffect(() => {
-    skipReviewedSaveRef.current = true
-    if (!project) {
-      setReviewed({})
-      return
-    }
-    try {
-      setReviewed(loadReviewMarkers(project.name))
-    } catch {
-      setReviewed({})
-    }
-  }, [project?.name])
-
-  useEffect(() => {
-    if (!project) return
-    if (skipReviewedSaveRef.current) {
-      skipReviewedSaveRef.current = false
-      return
-    }
-    saveReviewMarkers(project.name, reviewed)
-  }, [project?.name, project, reviewed])
-
-  // Agent Chat accepts/reverts the same op records shown by this rail. Keep one
-  // persisted marker model and mirror changes live when both surfaces are open.
-  useEffect(() => {
-    const onMarkers = (event: Event) => {
-      const detail = (event as CustomEvent<ReviewMarkersDetail>).detail
-      if (!project || detail?.projectName !== project.name || !Array.isArray(detail.opIds)) return
-      setReviewed((prev) => {
-        const next = { ...prev }
-        for (const opId of detail.opIds) next[opId] = detail.verdict
-        return next
-      })
-    }
-    document.addEventListener(REVIEW_MARKERS_EVENT, onMarkers)
-    return () => document.removeEventListener(REVIEW_MARKERS_EVENT, onMarkers)
-  }, [project?.name])
-
-  // Pending review = applied, not locally reviewed, not undone, and not a
-  // restore op itself (a reject's own restore op needs no second review).
-  const pendingCount = useMemo(
-    () =>
-      ops.filter(
-        (o) => o.status === 'applied' && o.verb !== 'edit.restore' && !reviewed[o.op_id] && !restored.has(o.op_id),
-      ).length,
-    [ops, reviewed, restored],
-  )
-
   const seek = useCallback(
     (atMs: number) => {
       if (onSeek) onSeek(atMs)
@@ -175,10 +117,6 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
     },
     [onSeek],
   )
-
-  const accept = useCallback((opId: string) => {
-    setReviewed((prev) => ({ ...prev, [opId]: 'accepted' }))
-  }, [])
 
   // Flash the "kept" indicator on the rebased_over ops for ~2.4s. Presentational
   // only — the rejected/kept truth lives in the op log; this is a glance cue.
@@ -190,7 +128,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
   }, [])
   useEffect(() => () => { if (keptTimer.current) window.clearTimeout(keptTimer.current) }, [])
 
-  // Reject / undo path — owns the edit.restore dispatch so it can read the
+  // Per-operation undo path — owns the edit.restore dispatch so it can read the
   // envelope and surface the engine's guidance VERBATIM. The spawned
   // restore op arrives as a new row via op_applied. `reason` flavors the
   // rationale; `mode` selects tip (default) vs rebase (selective non-tip undo).
@@ -198,7 +136,6 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
     async (opId: string, reason: string, mode: 'tip' | 'rebase' = 'tip') => {
       const res = await restoreOp(opId, reason, mode)
       if (res.ok) {
-        setReviewed((prev) => ({ ...prev, [opId]: 'rejected' }))
         setUndoGuidance(null) // a successful undo clears any stale guidance
         flashKept(res.rebasedOver) // rebase: glow the ops it kept
       } else {
@@ -210,16 +147,16 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
     [flashKept],
   )
 
-  const reject = useCallback((opId: string) => void restore(opId, 'rail reject'), [restore])
+  const undoOperation = useCallback((opId: string) => void restore(opId, 'rail undo'), [restore])
 
-  // Reject (rebase): selectively undo a NON-TIP op while keeping later ops.
+  // Selective undo: undo a NON-TIP op while keeping later ops.
   // Rationale names the op + its verb so the op log reads honestly (the lowered
   // verb is looked up from the live ops list). The confirm-step lives in the row.
   const rebaseReject = useCallback(
     (opId: string) => {
       const target = ops.find((o) => o.op_id === opId)
       const verb = target?.verb ?? '?'
-      void restore(opId, `user rebase-reject: ${opId} (${verb}) from history`, 'rebase')
+      void restore(opId, `user selective undo: ${opId} (${verb}) from history`, 'rebase')
     },
     [ops, restore],
   )
@@ -249,11 +186,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
     window.setTimeout(() => void refreshAvail(), 350)
   }, [onRedo, refreshAvail])
 
-  // onReject kept in the contract for App-level hooks, but Review now owns the
-  // restore dispatch (single source) so it can read the guidance envelope.
-  void onReject
-
-  // --- RAIL keyboard scope: j/k cursor, a accept, x reject, Enter seek --
+  // --- RAIL keyboard scope: j/k cursor, x undo, Enter seek -----------------
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       // Let the DIFF selects / any form control keep their native keys.
@@ -276,17 +209,10 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
         case 'k':
           move(-1)
           break
-        case 'a':
-          if (cursor >= 0 && ops[cursor]) {
-            e.preventDefault()
-            accept(ops[cursor].op_id)
-            setCursor((c) => Math.min(ops.length - 1, c + 1)) // skim flows downward
-          }
-          break
         case 'x':
           if (cursor >= 0 && ops[cursor]) {
             e.preventDefault()
-            reject(ops[cursor].op_id)
+            undoOperation(ops[cursor].op_id)
             setCursor((c) => Math.min(ops.length - 1, c + 1))
           }
           break
@@ -298,7 +224,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
           break
       }
     },
-    [tab, ops, cursor, accept, reject, seek],
+    [tab, ops, cursor, undoOperation, seek],
   )
 
   // GLOBAL↔RAIL scope flag (focus model): Preview and Timeline skip their
@@ -378,11 +304,6 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
     >
       <div className="panel__header rr__header">
         <span>Review</span>
-        {pendingCount > 0 && (
-          <span className="rr__pending-chip" data-cut-pending={pendingCount}>
-            {pendingCount} pending review
-          </span>
-        )}
         {onCollapse && (
           <button
             className="rr__collapse"
@@ -490,14 +411,12 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
           <OpsFeed
             ops={ops}
             cursor={cursor}
-            reviewed={reviewed}
             restored={restored}
             highlightedDeps={highlightedDeps}
             keptOps={keptFlash}
             tipOpId={tipOp?.op_id ?? null}
             onCursor={setCursor}
-            onAccept={accept}
-            onReject={reject}
+            onReject={undoOperation}
             onRebaseReject={rebaseReject}
             onSeek={seek}
           />
@@ -508,7 +427,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
         {tab === 'diff' && <DiffView project={project} ops={ops} onSeek={seek} request={reviewTabRequest?.diff ? { ...reviewTabRequest.diff, nonce: reviewTabRequest.nonce } : null} />}
       </div>
       <div className="rr__keyhint">
-        <kbd>j</kbd>/<kbd>k</kbd> skim · <kbd>a</kbd> accept · <kbd>x</kbd> reject · <kbd>Enter</kbd> seek ·{' '}
+        <kbd>j</kbd>/<kbd>k</kbd> skim · <kbd>x</kbd> undo · <kbd>Enter</kbd> seek ·{' '}
         <kbd>Esc</kbd> leave
       </div>
     </section>

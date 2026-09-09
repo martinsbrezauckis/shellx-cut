@@ -128,6 +128,35 @@ pub(crate) async fn screen_record_autoedit(
     } else {
         None
     };
+    if let Some(receipt) = scene_receipt.as_ref() {
+        let mut plan = load_plan(&out)?;
+        super::scene_projection_start::apply_to_edit_plan(
+            &mut plan,
+            receipt,
+            scene_camera.as_ref(),
+        )?;
+        std::fs::write(
+            &out,
+            serde_json::to_vec_pretty(&plan).map_err(|e| {
+                CutError::new(
+                    error_codes::IO,
+                    format!("could not serialize the Recording Scenes EditPlan: {e}"),
+                    "EditPlan serialization failed after applying Recording Scenes",
+                )
+            })?,
+        )
+        .map_err(|e| {
+            CutError::new(
+                error_codes::IO,
+                format!(
+                    "could not write the Recording Scenes EditPlan to {}: {e}",
+                    out.display()
+                ),
+                "writing the plan file failed after applying Recording Scenes",
+            )
+        })?;
+        summary = format!("{summary}; Recording Scenes replay");
+    }
     let mut studio_event_count = 0usize;
     if webcam_path.is_some() || studio_events_path.is_some() || camera_clock.is_some() {
         let log = if let Some(path) = studio_events_path.as_deref() {
@@ -165,35 +194,6 @@ pub(crate) async fn screen_record_autoedit(
         if studio_event_count > 0 {
             summary = format!("{summary}; {studio_event_count} Studio camera event(s)");
         }
-    }
-    if let Some(receipt) = scene_receipt.as_ref() {
-        let mut plan = load_plan(&out)?;
-        super::scene_projection_start::apply_to_edit_plan(
-            &mut plan,
-            receipt,
-            scene_camera.as_ref(),
-        )?;
-        std::fs::write(
-            &out,
-            serde_json::to_vec_pretty(&plan).map_err(|e| {
-                CutError::new(
-                    error_codes::IO,
-                    format!("could not serialize the Recording Scenes EditPlan: {e}"),
-                    "EditPlan serialization failed after applying Recording Scenes",
-                )
-            })?,
-        )
-        .map_err(|e| {
-            CutError::new(
-                error_codes::IO,
-                format!(
-                    "could not write the Recording Scenes EditPlan to {}: {e}",
-                    out.display()
-                ),
-                "writing the plan file failed after applying Recording Scenes",
-            )
-        })?;
-        summary = format!("{summary}; Recording Scenes replay");
     }
     let effective_camera_clock = scene_camera
         .as_ref()

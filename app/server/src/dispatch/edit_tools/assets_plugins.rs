@@ -661,6 +661,7 @@ pub(in crate::dispatch) async fn agent_chat(
         #[serde(default)]
         evidence_ids: Vec<String>,
         evidence_index_id: Option<String>,
+        target: Option<crate::chat::timeline_target::TimelineTarget>,
         agent: Option<String>,
         model: Option<String>,
         timeout_ms: Option<u64>,
@@ -674,22 +675,14 @@ pub(in crate::dispatch) async fn agent_chat(
             "type what you want changed, e.g. \"add a marker at 1 second\"",
         ));
     }
-    // Resolve attachment membership while briefly holding the project read lock,
-    // then drop it before the agent spawn so its MCP edits cannot deadlock.
-    let attachments = {
-        let project = state.project.read().await;
-        let store = project.as_ref().ok_or_else(no_project)?;
-        crate::chat::validate_attachment_ids(&a.attachments, |id| {
-            store.project.assets.contains_key(id)
-        })
-        .map_err(|detail| {
-            CutError::new(
-                error_codes::INVALID_ARGS,
-                "invalid chat attachments",
-                detail,
-            )
-        })?
-    };
+    // Resolve references and the immutable target before the provider starts.
+    let (attachments, timeline_target) =
+        crate::chat::timeline_target_admission::validate_request_scope(
+            state,
+            &a.attachments,
+            a.target,
+        )
+        .await?;
     let evidence_index_id = crate::dispatch::media_intelligence::validate_evidence_attachments(
         state,
         a.evidence_index_id.as_deref(),
@@ -701,6 +694,7 @@ pub(in crate::dispatch) async fn agent_chat(
         "reference_ids": &attachments,
         "evidence_ids": &a.evidence_ids,
         "evidence_index_id": &evidence_index_id,
+        "target": &timeline_target,
         "policy": ["inspect the open project", "apply only reversible editing verbs", "return op-log receipts"],
     });
     // Every non-success path is an explicit HTTP-200 result that the UI renders.
@@ -722,6 +716,7 @@ pub(in crate::dispatch) async fn agent_chat(
             "attachments": &attachments,
             "evidence_ids": &a.evidence_ids,
             "evidence_index_id": &evidence_index_id,
+            "target": &timeline_target,
             "agent_message": agent_message,
             "detail": detail,
             "plan": &plan,
@@ -934,6 +929,7 @@ pub(in crate::dispatch) async fn agent_chat(
         &attachments,
         evidence_index_id.as_deref(),
         &a.evidence_ids,
+        timeline_target.as_ref(),
     );
     let timeout =
         std::time::Duration::from_millis(a.timeout_ms.unwrap_or(180_000).clamp(10_000, 600_000));
@@ -1124,6 +1120,7 @@ pub(in crate::dispatch) async fn agent_chat(
             "attachments": &attachments,
             "evidence_ids": &a.evidence_ids,
             "evidence_index_id": &evidence_index_id,
+            "target": &timeline_target,
             "plan": &plan,
             "review": review,
             "cost_usd": result.cost_usd,

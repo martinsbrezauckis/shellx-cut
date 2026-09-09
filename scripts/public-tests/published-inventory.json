@@ -2,8 +2,8 @@
   "schema": "shellx-cut/published-test-inventory@1",
   "version": "0.6.114",
   "contract": {
-    "node_test_count": 10,
-    "ui_library_test_count": 34
+    "node_test_count": 11,
+    "ui_library_test_count": 37
   },
   "prerequisites": [
     {
@@ -55,8 +55,13 @@
       "requires": ["python"]
     },
     {
+      "path": "scripts/public-tests/manual-publication-browser-receipt.test.mjs",
+      "resources": ["scripts/public-tests/manual-publication-browser-receipt.test.mjs", "scripts/lib/manual-publication-browser-receipt.mjs"],
+      "requires": []
+    },
+    {
       "path": "scripts/public-tests/manual-publication-package.test.mjs",
-      "resources": ["scripts/public-tests/manual-publication-package.test.mjs", "scripts/public/cut-manual-publication-lib.mjs", "scripts/public/stage-cut-manual.mjs", "ui/public-tests/lib/sealedPlaywrightChromium.mjs", "ui/package.json", "ui/package-lock.json", "ui/index.html", "ui/manual.html", "ui/vite.config.ts", "ui/tsconfig.json", "ui/src/main.tsx", "ui/src/manual/ManualShell.tsx", "ui/src/manual/useManualFrontendBridge.ts", "ui/src/panels/Review/mock.ts", "docs/public/site/manual/cut/index.html", "docs/public/site/manual/manual.js", "docs/public/site/manual/manual.css", "docs/public/site/manual/assets/cut/cut-main-editor-current.png", "docs/public/site/manual/assets/cut/cut-recording-studio-current.png"],
+      "resources": ["scripts/public-tests/manual-publication-package.test.mjs", "scripts/lib/manual-publication-browser-receipt.mjs", "scripts/public/cut-manual-publication-lib.mjs", "scripts/public/stage-cut-manual.mjs", "ui/public-tests/lib/sealedPlaywrightChromium.mjs", "ui/package.json", "ui/package-lock.json", "ui/index.html", "ui/manual.html", "ui/vite.config.ts", "ui/tsconfig.json", "ui/src/main.tsx", "ui/src/manual/ManualShell.tsx", "ui/src/manual/useManualFrontendBridge.ts", "ui/src/panels/Review/mock.ts", "docs/public/site/manual/cut/index.html", "docs/public/site/manual/manual.js", "docs/public/site/manual/manual.css", "docs/public/site/manual/assets/cut/cut-main-editor-current.png", "docs/public/site/manual/assets/cut/cut-recording-studio-current.png"],
       "requires": []
     },
     {
@@ -83,10 +88,12 @@
     "tests": [
       "about-version-state.test.ts",
       "active-job-presentation.test.ts",
+      "agent-chat-history.test.ts",
       "agent-chat-session.test.ts",
       "asset-uses.test.ts",
       "base-video-track-regression.test.ts",
       "capture-error-contract.test.ts",
+      "chat-timeline-target.test.ts",
       "clip-context-menu.test.ts",
       "context-menu-reverse-match-frame.test.ts",
       "feature-surface-contract.test.ts",
@@ -106,6 +113,7 @@
       "record-pause-lifetime.test.ts",
       "record-scene-lifetime.test.ts",
       "recording-workspace-admission.test.ts",
+      "render-queue-terminal.test.ts",
       "source-navigation.test.ts",
       "source-overwrite-targets.test.ts",
       "speed-ramp-editor.test.ts",

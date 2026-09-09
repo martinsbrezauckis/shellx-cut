@@ -14,7 +14,7 @@ use crate::registry::VerbRegistry;
 use crate::startup_tasks::UiMountReadiness;
 use crate::ui_bridge::UiBridge;
 use cut_core::ProjectStore;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
@@ -100,6 +100,10 @@ pub struct AppState {
     /// reading the card knows which cutd it is talking to. None for non-serve
     /// surfaces (CLI/MCP-standalone) — the report then omits `addr`.
     pub addr: Arc<RwLock<Option<String>>>,
+    /// Set before a serve process exits on a cooperative shutdown signal. Direct
+    /// foreground media operations use this to stop and reap their owned ffmpeg
+    /// tree before the server releases them to the OS.
+    server_shutdown_requested: Arc<AtomicBool>,
     /// Bounded LRU of recently served scrub frames. Keyed on the
     /// timeline revision, so any edit invalidates the whole timeline's frames
     /// by key change — never serves a stale frame. Derived state.
@@ -139,6 +143,7 @@ impl AppState {
             doctor: Arc::new(RwLock::new(None)),
             doctor_scan_gate: Arc::new(Mutex::new(())),
             addr: Arc::new(RwLock::new(None)),
+            server_shutdown_requested: Arc::new(AtomicBool::new(false)),
             frame_cache: Arc::new(FrameCache::new(FRAME_CACHE_CAP, FRAME_CACHE_BYTE_CAP)),
             frame_render_limiter: Arc::new(Semaphore::new(FRAME_RENDER_CONCURRENCY)),
         }
@@ -148,6 +153,19 @@ impl AppState {
     /// doctor reports can name the endpoint.
     pub async fn set_addr(&self, addr: impl Into<String>) {
         *self.addr.write().await = Some(addr.into());
+    }
+
+    /// Request cooperative shutdown for direct foreground media work, then let
+    /// the server's graceful-shutdown future finish after each owned child tree
+    /// has been reaped.
+    pub fn request_server_shutdown(&self) {
+        self.server_shutdown_requested
+            .store(true, Ordering::Release);
+    }
+
+    /// Clone the shared shutdown probe for a blocking foreground operation.
+    pub fn server_shutdown_probe(&self) -> Arc<AtomicBool> {
+        self.server_shutdown_requested.clone()
     }
 
     /// Return the cached doctor report, scanning ONCE if it has never run.

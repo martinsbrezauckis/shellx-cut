@@ -1,7 +1,7 @@
 {
   "schema": "shellx-cut/manual-content@1",
   "appVersion": "0.6.114",
-  "featureCount": 199,
+  "featureCount": 201,
   "features": [
     {
       "id": "cut.setup.ffmpeg",
@@ -69,7 +69,7 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Top bar",
-      "description": "Switch from Edit into the focused Recording Studio workspace for an exact native source preview, capture-input meters, disposable rehearsal, scenes, live controls, raw streams, and auto-polished recording clips.",
+      "description": "Use the shared Edit | Record switch to enter Recording Studio. Check the compact capture-readiness result, choose or refresh a source, optionally rehearse, then use the focused preview and live controls for a recording.",
       "requirement": "Requires a supported desktop capture backend; FFmpeg is required for recording and output. Preview and meter availability is reported by the current native build.",
       "api": "ui.open {panel:\"record\"}, screen_record.doctor, screen_record.preview_capability"
     },
@@ -215,13 +215,13 @@
     },
     {
       "id": "cut.header.comments",
-      "label": "Review comments",
+      "label": "Comments",
       "group": "header",
-      "title": "Review comments",
+      "title": "Comments",
       "where": "Header tools",
-      "description": "Open review notes, add comments, apply comment-driven changes, or resolve feedback.",
-      "requirement": "Requires project review context for existing comments.",
-      "api": "comment.add, comment.list, comment.apply, comment.resolve"
+      "description": "Open timeline notes, add or resolve feedback, or route a note into Agent Chat with its exact target.",
+      "requirement": "Requires an open project for existing comments.",
+      "api": "comment.add, comment.list, comment.resolve, agent.chat"
     },
     {
       "id": "cut.header.gpu",
@@ -654,14 +654,14 @@
       "api": "comment.add"
     },
     {
-      "id": "cut.header.comments.apply",
-      "label": "Comments: apply note",
+      "id": "cut.header.comments.make_changes",
+      "label": "Comments: make changes",
       "group": "header",
-      "title": "Apply note",
-      "where": "Review comments menu",
-      "description": "Apply an actionable comment as a reversible edit operation.",
-      "requirement": "Requires an actionable comment.",
-      "api": "comment.apply"
+      "title": "Make changes",
+      "where": "Comments menu",
+      "description": "Route this comment and its exact timeline target to Agent Chat. The target is checked again before Chat runs.",
+      "requirement": "Requires an existing comment, an open project, and a configured CLI agent.",
+      "api": "agent.chat {target}"
     },
     {
       "id": "cut.header.comments.resolve",
@@ -1304,6 +1304,16 @@
       "api": "edit.grade, edit.effect"
     },
     {
+      "id": "cut.timeline.ask_agent",
+      "label": "Ask agent",
+      "group": "timeline",
+      "title": "Ask agent",
+      "where": "Timeline toolbar",
+      "description": "Open Agent Chat with the selected range, clips, or playhead attached as an immutable target. Write and send the normal Chat request to continue.",
+      "requirement": "Requires an open project and a configured CLI agent.",
+      "api": "agent.chat {target}"
+    },
+    {
       "id": "cut.timeline.track_controls",
       "label": "Timeline: track controls",
       "group": "timeline",
@@ -1549,8 +1559,8 @@
       "group": "inspector",
       "title": "Chat tab",
       "where": "Inspector",
-      "description": "Use the connected agent to discuss the current project or selected edit context.",
-      "requirement": "Requires a configured CLI agent.",
+      "description": "Use the connected agent to discuss the current project, a selected edit, or an attached timeline target.",
+      "requirement": "Requires a configured CLI agent and an open project.",
       "api": "agent.chat"
     },
     {
@@ -1564,14 +1574,24 @@
       "api": "agent.chat {attachments:[asset_ids]}"
     },
     {
-      "id": "cut.inspector.chat_review",
-      "label": "Chat: review each turn",
+      "id": "cut.inspector.chat_change",
+      "label": "Chat: applied change",
       "group": "inspector",
-      "title": "Review each agent turn",
-      "where": "Chat tab and Review Diff",
-      "description": "Every editing turn records its plan, baseline, tip, exact diff, and safe-revert verdict. Preview or inspect Diff, then Accept, Revert, or Try again. Concurrent human or agent operations disable whole-turn revert.",
-      "requirement": "Requires an agent turn that applied at least one operation.",
+      "title": "Applied Chat change",
+      "where": "Chat tab",
+      "description": "Chat applies a validated result directly. The turn keeps its request, baseline, tip, and diff; use Step back only while the guarded whole-turn revert is safe, or Ask replacement to re-resolve the target before a new request.",
+      "requirement": "Requires an agent turn that applied at least one operation. Concurrent later changes can make Step back unavailable.",
       "api": "agent.chat, project.diff, project.revert"
+    },
+    {
+      "id": "cut.inspector.chat_clear_target",
+      "label": "Chat: clear timeline target",
+      "group": "inspector",
+      "title": "Clear Chat target",
+      "where": "Chat tab",
+      "description": "Remove the attached timeline target before sending so the next request uses the context you choose.",
+      "requirement": "Requires an attached timeline target and an open project.",
+      "api": "agent.chat"
     },
     {
       "id": "cut.inspector.tools_overlay",
@@ -1649,8 +1669,8 @@
       "group": "record",
       "title": "Studio preview",
       "where": "Focused Record workspace",
-      "description": "Record replaces editor chrome with a capture-focused layout. Choose screen and sound on the left, inspect the dominant composition in the centre, adjust scenes and style on the right, and keep Start/Stop visible. Capture setup provides 24/25/30/50/60 FPS presets with custom 1–240 FPS validation and remembers one selected microphone as an app-local preference. Start native preview explicitly to see real bounded pixels from the exact selected display/window, or a fresh Linux Portal choice; pause, hide, stop, permission, source-loss, recursion, and unavailable states are shown truthfully. Preview controls bind to the current preview generation and opaque server-owner lease, so a late control cannot release a newer source; that lease changes when the Cut server restarts. If an unavailable state says a native release could not be confirmed, restart ShellX Cut; reopening Record cannot clear that owner. Microphone and system-audio meters come from the admitted capture streams without monitoring playback or a second stream. A video-only 3–5 second rehearsal can be played immediately and discarded without creating project media. During a normal take, compact live controls expose the real Stop, Pause/Resume, marker, scene, timer, and meter state. Back to Edit stays unavailable while a countdown, pending Start, live capture, finalization, or unacknowledged Stop owns the capture; follow the visible reason to cancel, wait, Stop, or Retry Stop. A successful Stop releases capture ownership before subsequent auto-edit or polish, so a later processing failure is safe to leave or start again from Record.",
-      "requirement": "Requires the Record workspace and a supported native capture adapter. Linux preview always uses the system picker. Rehearsal is disposable and video-only; use the explicit audio checks and meters for sound. Unsupported preview or meter inputs stay labeled unavailable, and real capture still depends on OS permissions.",
+      "description": "Record keeps the shared Edit | Record switch while reserving the workspace for capture. Check the compact readiness result first; open its technical details when needed, and refresh sources after a display, window, or device changes. Start stays unavailable while that current check is unknown. Choose screen and sound, rehearse if useful, then inspect the composition preview and use the reserved transport. In Auto-edit mode, Actions, right-click, and Shift+F10 on the composition preview reach the same guarded camera/background setup; the camera preview has its own placement and shape menu. Capture setup provides 24/25/30/50/60 FPS presets with custom 1–240 FPS validation and remembers one selected microphone as an app-local preference. Start native preview explicitly to see real bounded pixels from the exact selected display/window, or a fresh Linux Portal choice; pause, hide, stop, permission, source-loss, recursion, and unavailable states are shown truthfully. Preview controls bind to the current preview generation and opaque server-owner lease, so a late control cannot release a newer source; that lease changes when the Cut server restarts. If an unavailable state says a native release could not be confirmed, restart ShellX Cut; reopening Record cannot clear that owner. Microphone and system-audio meters come from the admitted capture streams without monitoring playback or a second stream. A video-only 3–5 second rehearsal can be played immediately and discarded without creating project media. During a normal take, compact live controls expose the real Stop, Pause/Resume, marker, scene, timer, and meter state. Back to Edit stays unavailable while a countdown, pending Start, live capture, finalization, or unacknowledged Stop owns the capture; follow the visible reason to cancel, wait, Stop, or Retry Stop. A successful Stop releases capture ownership before subsequent auto-edit or polish, so a later processing failure is safe to leave or start again from Record.",
+      "requirement": "Requires the Record workspace and a supported native capture adapter. Linux preview always uses the system picker. Rehearsal is disposable and video-only; use the explicit audio checks and meters for sound. Raw capture and active operations keep composition changes unavailable. Unsupported preview or meter inputs stay labeled unavailable, and real capture still depends on OS permissions.",
       "api": "screen_record.preview_capability, screen_record.preview_start, screen_record.preview_status, screen_record.preview_frame, screen_record.preview_pause, screen_record.preview_resume, screen_record.preview_hide, screen_record.preview_stop, screen_record.rehearsal_start, screen_record.rehearsal_discard, screen_record.start, screen_record.stop"
     },
     {
@@ -1759,8 +1779,8 @@
       "group": "record",
       "title": "Recording hotkeys",
       "where": "Record workspace",
-      "description": "F9 starts or stops recording and F12 drops a marker. Camera visibility and placement shortcuts operate only when this Auto-edit take has an admitted camera.",
-      "requirement": "Global F9 is available in the desktop app; focused-window fallback works while Cut has focus.",
+      "description": "F9 starts or stops recording while Cut is focused, and F12 drops a marker. On GNOME Wayland, Enable global F9 creates Cut's one owned shortcut; it is global only after Cut observes its forwarded callback.",
+      "requirement": "Focused F9 remains available when a global route is disabled or unavailable. The Record shortcut status names the actual reason.",
       "api": "screen_record.start, screen_record.stop, screen_record.studio_event"
     },
     {
@@ -1884,13 +1904,13 @@
       "api": "project.sequence_index, project.sequence_switch, ui.playhead"
     },
     {
-      "id": "cut.workflow.agent_review",
-      "label": "Review an agent turn",
+      "id": "cut.workflow.agent_change",
+      "label": "Applied agent change",
       "group": "workflow",
-      "title": "Review an agent turn",
-      "where": "Chat tab and Review Diff",
-      "description": "Attach registered project assets, choose or edit a prompt, run the turn, inspect its composed Preview and exact Diff, then Accept, guarded Revert, or Try again.",
-      "requirement": "Requires a configured CLI agent; whole-turn revert is available only when no concurrent operation crossed the turn boundary.",
+      "title": "Applied agent change",
+      "where": "Chat tab",
+      "description": "Attach registered project assets or a timeline target, choose or edit a prompt, and run the turn. A validated result applies directly; inspect Preview and Diff, use Step back only while it is safe, or Ask replacement to re-resolve the retained target.",
+      "requirement": "Requires a configured CLI agent and an open project. Concurrent later operations can make Step back unavailable.",
       "api": "agent.chat, project.diff, project.revert"
     },
     {
@@ -1909,7 +1929,7 @@
       "group": "workflow",
       "title": "Review receipts",
       "where": "Review panel",
-      "description": "Check operation history, receipts, QC, scopes, and diffs before accepting a change or rendering final output.",
+      "description": "Check operation history, receipts, QC, scopes, and diffs to understand the project state before rendering final output.",
       "requirement": "Requires project operations or completed checks.",
       "api": "project.ops, project.diff, verify.checks, verify.scopes"
     },

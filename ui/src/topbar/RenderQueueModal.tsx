@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type VerbArgs, type VerbResults } from '../lib/client'
 import { outputDirectoryForPath, withAuthorizedOutputPath } from '../lib/exportDestination'
 import { mediaBasename } from '../lib/mediaPath'
+import { renderQueueTerminalError, type RenderQueueTerminalResult } from '../lib/renderQueueTerminal'
 import { isTauri, pickRenderOutput } from '../lib/tauri'
 import { Icon } from '../icons'
 import { useBlockingOverlay } from '../components/overlay/useBlockingOverlay'
@@ -68,10 +69,9 @@ function duplicateOutputPaths(rows: Row[]): string | null {
 
 /** The queue job's accruing result — per-entry job ids/outputs/receipts land here
  * (jobs.status{queue_id}.result) as each render completes. Read defensively. */
-interface QueueResult {
+interface QueueResult extends RenderQueueTerminalResult {
   queue_id?: string
-  count?: number
-  jobs?: Array<{ idx?: number; output?: string; job_id?: string; state?: string }>
+  jobs?: Array<{ idx?: number; output?: string; job_id?: string; state?: string; ok?: boolean; error?: { code?: string; message?: string } }>
 }
 
 export interface RenderQueueModalProps {
@@ -92,10 +92,18 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
 
   useEffect(() => () => { cancelled.current = true }, [])
 
-  const setRow = (i: number, patch: Partial<Row>) =>
+  const setRow = (i: number, patch: Partial<Row>) => {
+    setErr(null)
     setRows((rs) => rs.map((r, k) => (k === i ? { ...r, ...patch } : r)))
-  const addRow = () => setRows((rs) => [...rs, newRow()])
-  const removeRow = (i: number) => setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, k) => k !== i)))
+  }
+  const addRow = () => {
+    setErr(null)
+    setRows((rs) => [...rs, newRow()])
+  }
+  const removeRow = (i: number) => {
+    setErr(null)
+    setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, k) => k !== i)))
+  }
   const chooseOutput = async (i: number) => {
     setPickerNote(null)
     if (!isTauri()) {
@@ -126,7 +134,12 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
         if (typeof rec.progress === 'number') setProgress(rec.progress)
         const res = rec.result as QueueResult | undefined
         if (res) setQueue(res)
-        if (rec.state === 'done') { setPhase('done'); return }
+        if (rec.state === 'done') {
+          const terminalError = renderQueueTerminalError(res)
+          if (terminalError) { setErr(terminalError); setPhase('error'); return }
+          setPhase('done')
+          return
+        }
         if (rec.state === 'failed') { setErr(rec.error?.message ?? rec.error?.code ?? 'a delivery failed'); setPhase('error'); return }
       } else if (!r.ok) {
         setErr(r.error?.message ?? 'lost the queue job'); setPhase('error'); return
@@ -246,6 +259,9 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
               ))}
             </div>
             {pickerNote && <p className="rq-note" data-cut-render-queue-note>{pickerNote}</p>}
+            {err && <div className="rq-error-msg rq-form-error" role="alert" data-cut-render-queue-form-error>
+              <Icon name="warning" size={16} tone="warn" /> {err}
+            </div>}
             <button className="rq-add" data-cut-render-queue-add onClick={addRow}>
               <Icon name="plus" size={14} /> Add a delivery
             </button>
@@ -289,7 +305,7 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
           <div className="rq-error" data-cut-render-queue-error>
             <div className="rq-error-msg"><Icon name="warning" size={16} tone="warn" /> {err}</div>
             <div className="rq-actions">
-              <button className="rq-btn" data-cut-render-queue-error-back onClick={() => setPhase('form')}>Back</button>
+              <button className="rq-btn" data-cut-render-queue-error-back onClick={() => { setErr(null); setPhase('form') }}>Back</button>
               <button className="rq-btn rq-btn--primary" data-cut-render-queue-error-close onClick={onClose}>Close</button>
             </div>
           </div>
