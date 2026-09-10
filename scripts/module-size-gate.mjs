@@ -13,6 +13,13 @@ const lineCount = (relative) => {
 // Feature modules should stay reviewable in one sitting. A module that needs
 // more room must be decomposed by responsibility, not added as an exception.
 const boundedSources = [
+  "scripts/lib/macos-accepted-updater-transition.mjs",
+  "scripts/lib/macos-accepted-updater-transition-reader.mjs",
+  "scripts/lib/macos-accepted-updater-ui-proof.mjs",
+  "scripts/lib/macos-accepted-updater-ui.mjs",
+  "scripts/release/macos-accepted-updater-transition.mjs",
+  "scripts/release/macos-accepted-updater-transition-process.mjs",
+  "scripts/release/macos-staged-update-accept.swift",
   "scripts/lib/macos-installed-ax-discovery.mjs",
   "scripts/lib/macos-staged-update-ui-proof.mjs",
   "scripts/lib/macos-staged-update-ui.mjs",
@@ -700,12 +707,21 @@ const boundedSources = [
   "ui/private-tests/lib/fullCoverageInstalledRecordRuntimeBridge.mjs",
   "ui/private-tests/lib/fullCoverageInstalledLibraryPagination.mjs",
   "ui/private-tests/lib/fullCoverageInstalledDirectorActions.mjs",
+  "ui/private-tests/lib/fullCoverageInstalledRecordRuntimeBridgeFixtureMicrophone.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeCameraCompositionPixels.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeMediaFlowAudioFixture.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeMicrophoneCapture.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeMicrophoneFlow.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeRawImportPreview.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeVoiceoverAudibleCapture.mjs",
 ];
-for (const file of boundedSources) {
-  assert.ok(lineCount(file) <= 350, `${file} exceeds the 350-line feature-module limit`);
-}
 
 const boundedTests = [
+  "scripts/private-tests/macos-accepted-updater-transition.test.mjs",
+  "scripts/private-tests/macos-accepted-updater-ui.test.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeCameraCompositionBackgroundPixels.test.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeMicrophoneCapture.test.mjs",
+  "ui/private-tests/lib/recordingRehearsalLiveNativeVoiceoverAudibleCapture.test.mjs",
   "ui/private-tests/lib/recordingRehearsalLiveNativeMediaFlowRecorderFixture.test.mjs",
   "ui/private-tests/lib/recordingRehearsalLiveNativeOutputIsolation.test.mjs",
   "ui/private-tests/lib/recordingRehearsalLiveNativeCollectedProof.test.mjs",
@@ -1020,9 +1036,13 @@ const boundedTests = [
   "ui/private-tests/lib/fullCoverageInstalledDirectorActions.test.mjs",
   "ui/private-tests/lib/fullCoverageInstalledRouteDispatch.test.mjs",
 ];
-for (const file of boundedTests) {
-  assert.ok(lineCount(file) <= 600, `${file} exceeds the 600-line test-module limit`);
-}
+const sizeViolations = [
+  ...boundedSources.map((file) => ({ file, limit: 350, actual: lineCount(file) })),
+  ...boundedTests.map((file) => ({ file, limit: 600, actual: lineCount(file) })),
+].filter(({ actual, limit }) => actual > limit);
+assert.deepEqual(sizeViolations, [], `module-size-gate violations:\n${sizeViolations
+  .map(({ file, actual, limit }) => `${file} has ${actual} lines; limit is ${limit}`)
+  .join("\n")}`);
 
 // Behavior tables are intentionally large mechanical projections, not review
 // modules. Generator currentness plus this header check prevents them becoming
