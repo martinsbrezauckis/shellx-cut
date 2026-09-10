@@ -13,6 +13,16 @@ const lineCount = (relative) => {
 // Feature modules should stay reviewable in one sitting. A module that needs
 // more room must be decomposed by responsibility, not added as an exception.
 const boundedSources = [
+  "scripts/lib/macos-installed-ax-discovery.mjs",
+  "scripts/lib/macos-staged-update-ui-proof.mjs",
+  "scripts/lib/macos-staged-update-ui.mjs",
+  "scripts/lib/staged-update-rig-owned-app.mjs",
+  "scripts/lib/staged-update-ui-results.mjs",
+  "scripts/release/macos-staged-update-ui.mjs",
+  "scripts/private-tests/macos-staged-update-ui-fixture.mjs",
+  "scripts/private-tests/macos-staged-update-ui.test.mjs",
+  "scripts/private-tests/staged-update-rig-owned-app.test.mjs",
+  "scripts/private-tests/staged-update-artifact-names.test.mjs",
   "scripts/lib/updater-test-version.mjs",
   "scripts/lib/macos-updater-baseline-install.mjs",
   "scripts/lib/macos-updater-baseline-runtime.mjs",
