@@ -38,6 +38,8 @@ import { activeCutSpans, dispatchVerb, fmtDur, fmtTc, seekPlayhead, type CutSpan
 import { sourceAtPlayhead } from '../Timeline/layout'
 import { Icon } from '../../icons'
 import { runUserVerb } from '../../lib/userActionFeedback'
+import { selectedSpeechAsset } from './speechServiceModel'
+import { useSpeechServiceActions } from './useSpeechServiceActions'
 import './transcript.css'
 
 /** Typed props — contract between App.tsx and the transcript panel. */
@@ -118,6 +120,12 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   const [setupBusy, setSetupBusy] = useState(false)
   const [setupMsg, setSetupMsg] = useState('')
   const [setupErr, setSetupErr] = useState<string | null>(null)
+  /** Optional external speech services share the existing cached Doctor report.
+   * Direct user controls stay disabled until Doctor marks the exact service ready. */
+  const [speechServices, setSpeechServices] = useState<{ diarize: DoctorCard | null; dub: DoctorCard | null }>({
+    diarize: null,
+    dub: null,
+  })
   // --- EDL-aware transcript views -------------------------------------
   /** 'timeline' = words mapped to the timeline (default); 'source' = legacy
    *  raw per-asset blobs (kept as a fallback for whole-source review). */
@@ -126,12 +134,20 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   const [txScope, setTxScope] = useState<'clip' | 'program'>('clip')
   /** transcript.timeline entries for the active scope. */
   const [tlEntries, setTlEntries] = useState<TimelineWord[]>([])
+  /** Diarization updates transcript metadata without a timeline operation. Keep
+   * a separate refresh signal so a completed, current job re-reads the rendered
+   * phrase data even when the project revision did not change. */
+  const [speechRefreshRevision, setSpeechRefreshRevision] = useState(0)
 
   // Read the perception card from the doctor → ready/hint. Cheap (cached read).
   const probePerception = useCallback(async () => {
     const report = await fetchDoctor(false)
     if (!report) return
     const card: DoctorCard | undefined = report.cards.find((c) => c.id === 'perception')
+    setSpeechServices({
+      diarize: report.cards.find((c) => c.id === 'diarize') ?? null,
+      dub: report.cards.find((c) => c.id === 'dub') ?? null,
+    })
     // Word-level transcription needs the STT runtime specifically. Gate on the card's
     // `stt_ready` detail — NOT `status === 'ok'`: the card can be 'ok' (perception
     // instruments installed: silence/scenes/beats) while word-level STT is still absent,
@@ -149,6 +165,10 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     const off = events.subscribe((ev) => {
       if (ev.type === 'doctor_updated') {
         const card = ev.report.cards.find((c) => c.id === 'perception')
+        setSpeechServices({
+          diarize: ev.report.cards.find((c) => c.id === 'diarize') ?? null,
+          dub: ev.report.cards.find((c) => c.id === 'dub') ?? null,
+        })
         const ready = card ? card.details?.stt_ready === true : false
         setPerceptionReady(ready)
         setPerceptionHint(card?.hint ?? null)
@@ -193,7 +213,8 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     void run()
     return () => { cancelled = true }
     // `ops` re-fetches after every edit; project name covers project switches.
-  }, [txView, txScope, selectedClipId, project?.name, ops])
+    // Speaker labels are receipt-backed transcript metadata, not an edit op.
+  }, [txView, txScope, selectedClipId, project?.name, ops, speechRefreshRevision])
 
   // Clip-scoped cut from the timeline view → transcript.cut_words{clip}.
   const cutTimelineWords = useCallback((asset: string, wordRange: [number, number], clipId: string | null) => {
@@ -304,6 +325,35 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     return w ? { asset: at.asset, idx: w.idx } : null
   }, [project, all, effPlayhead])
 
+  // The human's current transcript range wins; then the selected timeline
+  // occurrence, then the current playhead occurrence. Every candidate is
+  // re-checked against this project's loaded transcript assets.
+  const selectedClipSpeechAsset = useMemo(() => {
+    if (!selectedClipId) return null
+    for (const track of project?.tracks ?? []) {
+      for (const clip of track.clips) {
+        if ('asset' in clip && clip.id === selectedClipId) return clip.asset
+      }
+    }
+    return null
+  }, [project?.tracks, selectedClipId])
+  const speechAsset = useMemo(() => selectedSpeechAsset({
+    selectedAsset: sel?.asset,
+    selectedClipAsset: selectedClipSpeechAsset,
+    activeAsset: active?.asset,
+    assetIds,
+  }), [active?.asset, assetIds, selectedClipSpeechAsset, sel?.asset])
+  const onSpeechProjectChanged = useCallback(() => {
+    setSpeechRefreshRevision((revision) => revision + 1)
+    onProjectChanged?.()
+  }, [onProjectChanged])
+  const speechActions = useSpeechServiceActions({
+    asset: speechAsset,
+    projectIdentity: project?.project_identity ?? null,
+    services: speechServices,
+    onProjectChanged: onSpeechProjectChanged,
+  })
+
   useEffect(() => {
     if (!active || Date.now() < pausedUntilRef.current) return
     bodyRef.current
@@ -347,6 +397,11 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
       window.removeEventListener('keydown', onEsc)
     }
   }, [toolsOpen])
+  useEffect(() => {
+    const openSpeechActions = () => setToolsOpen(true)
+    document.addEventListener('cut:open-transcript-speech-actions', openSpeechActions)
+    return () => document.removeEventListener('cut:open-transcript-speech-actions', openSpeechActions)
+  }, [])
   const onSearch = useCallback(async () => {
     const q = searchQuery.trim()
     if (!q) return
@@ -791,7 +846,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
             aria-haspopup="menu"
             aria-expanded={toolsOpen}
             onClick={() => setToolsOpen((v) => !v)}
-            title="Transcript tools — silence/filler passes, captions, reel mode"
+            title="Transcript tools — speech services, cleanup passes, captions, reel mode"
           >
             {reelMode ? 'Tools · Reel on' : 'Tools'}
             <Icon name="chevronDown" size={14} className="tx__tools-caret" />
@@ -872,6 +927,69 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
               >
                 {passBusy === 'chapters' ? 'segmenting…' : 'Generate chapters'}
               </button>
+              <div className="tx__tools-sep" />
+              <div className="tx__speech-tools" data-cut-transcript-speech-actions>
+                <span className="tx__speech-tools-title">Speech services</span>
+                <button
+                  className="tx__tools-item"
+                  role="menuitem"
+                  data-cut-action="diarize"
+                  data-cut-transcript-diarize
+                  disabled={!speechActions.diarizeAvailability.ready || speechActions.state.phase === 'running'}
+                  onClick={speechActions.startDiarize}
+                  title={speechActions.diarizeAvailability.message}
+                >
+                  {speechActions.state.phase === 'running' ? 'Working…' : 'Label speakers'}
+                </button>
+                <div className="tx__tools-row">
+                  <button
+                    className="tx__tools-item tx__tools-item--inline"
+                    role="menuitem"
+                    data-cut-action="dub"
+                    data-cut-transcript-dub
+                    disabled={!speechActions.dubAvailability.ready || speechActions.state.phase === 'running'}
+                    onClick={speechActions.startDub}
+                    title={speechActions.dubAvailability.message}
+                  >
+                    {speechActions.state.phase === 'running' ? 'Working…' : 'Dub audio'}
+                  </button>
+                  <select
+                    className="tx__aggr"
+                    data-cut-transcript-dub-language
+                    value={speechActions.targetLang}
+                    disabled={speechActions.state.phase === 'running'}
+                    onChange={(event) => speechActions.setTargetLang(event.target.value)}
+                    aria-label="Dub target language"
+                    title="Language for the new dubbed audio track"
+                  >
+                    <option value="lv">Latvian</option>
+                    <option value="en">English</option>
+                    <option value="de">German</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                  </select>
+                </div>
+                <p
+                  className="tx__speech-status"
+                  data-cut-transcript-speech-status={speechActions.state.phase}
+                  data-cut-transcript-speech-asset={speechAsset ?? ''}
+                >
+                  {speechActions.state.message
+                    || (!speechActions.diarizeAvailability.ready
+                      ? speechActions.diarizeAvailability.message
+                      : speechActions.dubAvailability.message)}
+                </p>
+                {(!speechActions.diarizeAvailability.ready || !speechActions.dubAvailability.ready) && (
+                  <button
+                    className="tx__speech-setup"
+                    type="button"
+                    data-cut-transcript-speech-setup
+                    onClick={speechActions.openServiceSetup}
+                  >
+                    Open Services & integrations
+                  </button>
+                )}
+              </div>
               <div className="tx__tools-sep" />
               {/* Generate captions through captions.generate. */}
               <button

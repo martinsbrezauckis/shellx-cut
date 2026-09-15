@@ -4,8 +4,6 @@
 //! configuration, rules, and safeguards while routing headless approval prompts
 //! through its native automatic reviewer in Cut's disposable workspace.
 
-use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::Path;
 
 #[path = "broker/antigravity.rs"]
@@ -32,10 +30,15 @@ pub(crate) use claude::{
 #[path = "broker/grok.rs"]
 mod grok;
 pub(crate) use grok::{
-    args as grok_args, isolated_environment as isolated_grok_environment,
+    args as grok_args, isolated_environment_for_provider as isolated_grok_environment_for_provider,
     project_config as grok_project_config,
     verify_capability_contract as verify_grok_capability_contract,
 };
+#[path = "broker/environment.rs"]
+mod environment;
+pub use environment::{native_environment, sanitized_environment_for_provider, LaunchEnvironment};
+#[cfg(test)]
+pub(crate) use environment::{sanitized_environment_from, sanitized_environment_from_admitted};
 #[path = "broker/verify.rs"]
 mod verify;
 const REQUIRED_CODEX_EXEC_HELP_TOKENS: &[&str] = &[
@@ -68,131 +71,6 @@ impl IsolatedWorkspace {
 
     pub fn path(&self) -> &Path {
         self.0.path()
-    }
-}
-
-/// Environment policy for one local-agent launch.
-#[derive(Clone, Debug)]
-pub struct LaunchEnvironment {
-    clear_inherited: bool,
-    vars: Vec<(OsString, OsString)>,
-}
-
-impl LaunchEnvironment {
-    #[cfg(test)]
-    pub fn names(&self) -> Vec<String> {
-        self.vars
-            .iter()
-            .map(|(name, _)| name.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    pub fn apply(&self, command: &mut tokio::process::Command) {
-        if self.clear_inherited {
-            command.env_clear();
-        }
-        command.envs(self.vars.iter().cloned());
-    }
-}
-
-fn named<I>(environment: I, wanted: &str) -> Option<OsString>
-where
-    I: IntoIterator<Item = (OsString, OsString)>,
-{
-    environment.into_iter().find_map(|(name, value)| {
-        name.to_string_lossy()
-            .eq_ignore_ascii_case(wanted)
-            .then_some(value)
-    })
-}
-
-/// Retain only runtime/auth routing essentials; remove credentials, proxies,
-/// plugin settings, MCP variables, and all caller-controlled sentinel values.
-pub fn sanitized_environment_from<I>(
-    inherited: I,
-    proxy_addr: &str,
-    proxy_actor: &str,
-) -> Result<LaunchEnvironment, String>
-where
-    I: IntoIterator<Item = (OsString, OsString)>,
-{
-    let entries: Vec<(OsString, OsString)> = inherited.into_iter().collect();
-    let path = named(entries.clone(), "PATH").ok_or_else(|| {
-        "cannot launch contained Claude: inherited PATH is unavailable".to_string()
-    })?;
-    let home = named(entries.clone(), "HOME");
-    let user_profile = named(entries.clone(), "USERPROFILE");
-    if home.is_none() && user_profile.is_none() {
-        return Err("cannot launch contained Claude: HOME or USERPROFILE is unavailable for its existing login".into());
-    }
-
-    let mut vars = BTreeMap::new();
-    vars.insert(OsString::from("PATH"), path);
-    if let Some(home) = home {
-        vars.insert(OsString::from("HOME"), home);
-    }
-    if let Some(profile) = user_profile {
-        vars.insert(OsString::from("USERPROFILE"), profile);
-    }
-    // Windows CSPRNG initialization reaches system libraries through SystemRoot.
-    // A fully cleared environment without this OS-owned path makes Node-based CLIs
-    // abort before their own capability probe runs. Preserve only that runtime
-    // locator; credentials and caller-controlled integration variables stay absent.
-    #[cfg(windows)]
-    if let Some(system_root) = named(entries.clone(), "SystemRoot") {
-        vars.insert(OsString::from("SystemRoot"), system_root);
-    }
-    for locale in ["LANG", "LC_ALL"] {
-        if let Some(value) = named(entries.clone(), locale) {
-            vars.insert(OsString::from(locale), value);
-        }
-    }
-    vars.insert(
-        OsString::from("CUTD_PROXY_ADDR"),
-        OsString::from(proxy_addr),
-    );
-    vars.insert(
-        OsString::from("CUTD_PROXY_ACTOR"),
-        OsString::from(proxy_actor),
-    );
-    vars.insert(
-        OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER),
-        OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE),
-    );
-    Ok(LaunchEnvironment {
-        clear_inherited: true,
-        vars: vars.into_iter().collect(),
-    })
-}
-
-pub fn sanitized_environment(
-    proxy_addr: &str,
-    proxy_actor: &str,
-) -> Result<LaunchEnvironment, String> {
-    sanitized_environment_from(std::env::vars_os(), proxy_addr, proxy_actor)
-}
-
-/// Preserve the user's normal CLI environment and auth/config routing for
-/// native-policy providers. Cut only adds the exact live-engine proxy values
-/// and restricted-MCP marker consumed by its MCP child; it does not copy, move,
-/// or rewrite the CLI's credential files.
-pub fn native_environment(proxy_addr: &str, proxy_actor: &str) -> LaunchEnvironment {
-    LaunchEnvironment {
-        clear_inherited: false,
-        vars: vec![
-            (
-                OsString::from("CUTD_PROXY_ADDR"),
-                OsString::from(proxy_addr),
-            ),
-            (
-                OsString::from("CUTD_PROXY_ACTOR"),
-                OsString::from(proxy_actor),
-            ),
-            (
-                OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER),
-                OsString::from(crate::chat::capabilities::RESTRICTED_MCP_MARKER_VALUE),
-            ),
-        ],
     }
 }
 
@@ -313,7 +191,7 @@ pub(crate) fn verify_agent_capability_contract(agent: &str, help: &str) -> Resul
 
 pub async fn verify_installed_agent(
     agent: &str,
-    executable: &Path,
+    executable: &crate::gen::ProviderChildCommand,
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<(), String> {

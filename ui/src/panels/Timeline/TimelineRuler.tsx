@@ -73,6 +73,7 @@ export default function TimelineRuler({
               }}
               title={`${m.label}${m.note ? ` · ${m.note}` : ''}${draggable ? ' — drag to move' : ''}`}
               data-cut-marker={m.id}
+              data-cut-action="timeline-marker"
               data-cut-marker-class={cls}
               data-cut-marker-color={m.color ?? 'default'}
               tabIndex={draggable ? 0 : undefined}

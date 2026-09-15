@@ -4,6 +4,14 @@
 
 #[path = "motion_connector_contract.rs"]
 mod connector_contract;
+#[path = "motion_bridge/materialization.rs"]
+mod materialization;
+#[cfg(test)]
+pub(crate) use materialization::{install_motion_request_build_gate, MotionRequestBuildGate};
+pub(crate) use materialization::{
+    motion_script_to_cut, motion_script_to_cut_under_materialization, motion_template_to_cut,
+    motion_template_to_cut_under_materialization,
+};
 
 use crate::dispatch::{
     dispatch_send, no_project, spawn_plain_import_chain, verify_attested_media_source,
@@ -122,53 +130,6 @@ pub(crate) enum MotionTemplatePolicy {
 pub(crate) enum MotionScriptPolicy {
     Preview,
     Insert,
-}
-
-/// Public verb: motion.template_to_cut.
-pub(crate) async fn motion_template_to_cut(
-    state: &AppState,
-    args: Value,
-    actor: Actor,
-) -> Result<VerbResult, CutError> {
-    let request = parse_motion_template_request(state, args).await?;
-    if request.policy == MotionTemplatePolicy::Insert {
-        let guard = state.project.read().await;
-        guard.as_ref().ok_or_else(no_project)?;
-    }
-    let connector = run_motion_template_connector(&request).await?;
-    match request.policy {
-        MotionTemplatePolicy::Preview => {
-            Ok(VerbResult::ok(motion_preview_result(&request, connector)))
-        }
-        MotionTemplatePolicy::Insert => {
-            apply_motion_template_insert(state, request, connector, actor).await
-        }
-    }
-}
-
-/// Public verb: motion.script_to_cut.
-pub(crate) async fn motion_script_to_cut(
-    state: &AppState,
-    args: Value,
-    actor: Actor,
-) -> Result<VerbResult, CutError> {
-    let request = parse_motion_script_request(state, args).await?;
-    if request.policy == MotionScriptPolicy::Insert {
-        let guard = state.project.read().await;
-        guard.as_ref().ok_or_else(no_project)?;
-    }
-    let script_path = materialize_motion_script(&request).await?;
-    let connector = run_motion_script_connector(&request, &script_path).await?;
-    match request.policy {
-        MotionScriptPolicy::Preview => Ok(VerbResult::ok(motion_script_preview_result(
-            &request,
-            &script_path,
-            connector,
-        ))),
-        MotionScriptPolicy::Insert => {
-            apply_motion_script_insert(state, request, script_path, connector, actor).await
-        }
-    }
 }
 
 /// Public verb: motion.map_import.
@@ -740,174 +701,6 @@ fn resolve_motion_editor_program() -> Option<String> {
         }
     }
     None
-}
-
-pub(crate) async fn parse_motion_template_request(
-    state: &AppState,
-    args: Value,
-) -> Result<MotionTemplateRequest, CutError> {
-    #[derive(serde::Deserialize)]
-    struct Args {
-        #[serde(default)]
-        template: Option<String>,
-        #[serde(default)]
-        params: Map<String, Value>,
-        #[serde(default)]
-        policy: Option<String>,
-        #[serde(default)]
-        out_dir: Option<String>,
-        #[serde(default)]
-        at_ms: Option<u64>,
-        #[serde(default)]
-        track: Option<String>,
-        #[serde(default)]
-        duration_ms: Option<u64>,
-        #[serde(default)]
-        dry_run_render: Option<bool>,
-        #[serde(default)]
-        checkpoint: Option<bool>,
-        #[serde(default)]
-        rationale: Option<String>,
-        #[serde(default)]
-        job_id: Option<String>,
-    }
-
-    let a: Args = serde_json::from_value(args).map_err(|e| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            "motion.template_to_cut args did not match schema",
-            e.to_string(),
-        )
-    })?;
-    let policy = match a.policy.as_deref().unwrap_or("insert") {
-        "preview" => MotionTemplatePolicy::Preview,
-        "insert" => MotionTemplatePolicy::Insert,
-        other => {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                format!("invalid motion.template_to_cut policy '{other}'"),
-                "allowed policy values: preview, insert",
-            ));
-        }
-    };
-    let template = a
-        .template
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_TEMPLATE_ALIAS.to_string());
-    let out_dir = match a.out_dir {
-        Some(path) if !path.trim().is_empty() => PathBuf::from(path),
-        _ => default_motion_out_dir(state, &template, policy).await,
-    };
-    let caller_scope = motion_caller_scope(state, &out_dir).await;
-    let dry_run_render = match policy {
-        MotionTemplatePolicy::Preview => true,
-        MotionTemplatePolicy::Insert => a.dry_run_render.unwrap_or(false),
-    };
-    Ok(MotionTemplateRequest {
-        template,
-        params: a.params,
-        policy,
-        out_dir,
-        at_ms: a.at_ms.unwrap_or(0),
-        track: a.track.unwrap_or_else(|| "v1".to_string()),
-        duration_ms: a.duration_ms,
-        dry_run_render,
-        checkpoint: a.checkpoint.unwrap_or(true),
-        rationale: a.rationale,
-        motion_job_id: a.job_id,
-        caller_scope,
-    })
-}
-
-pub(crate) async fn parse_motion_script_request(
-    state: &AppState,
-    args: Value,
-) -> Result<MotionScriptRequest, CutError> {
-    #[derive(serde::Deserialize)]
-    struct Args {
-        #[serde(default)]
-        script: Option<Value>,
-        #[serde(default)]
-        script_path: Option<String>,
-        #[serde(default)]
-        policy: Option<String>,
-        #[serde(default)]
-        out_dir: Option<String>,
-        #[serde(default)]
-        at_ms: Option<u64>,
-        #[serde(default)]
-        track: Option<String>,
-        #[serde(default)]
-        duration_ms: Option<u64>,
-        #[serde(default)]
-        dry_run_render: Option<bool>,
-        #[serde(default)]
-        checkpoint: Option<bool>,
-        #[serde(default)]
-        rationale: Option<String>,
-        #[serde(default)]
-        job_id: Option<String>,
-    }
-
-    let a: Args = serde_json::from_value(args).map_err(|e| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            "motion.script_to_cut args did not match schema",
-            e.to_string(),
-        )
-    })?;
-    let script_path = a
-        .script_path
-        .filter(|s| !s.trim().is_empty())
-        .map(PathBuf::from);
-    if a.script.is_some() == script_path.is_some() {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            "motion.script_to_cut requires exactly one of script or script_path",
-            "pass an inline shellx-motion/scripted-video@1 object, or a path to one",
-        ));
-    }
-    let policy = match a.policy.as_deref().unwrap_or("insert") {
-        "preview" => MotionScriptPolicy::Preview,
-        "insert" => MotionScriptPolicy::Insert,
-        other => {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                format!("invalid motion.script_to_cut policy '{other}'"),
-                "allowed policy values: preview, insert",
-            ));
-        }
-    };
-    let default_leaf = a
-        .script
-        .as_ref()
-        .and_then(|script| script.get("id"))
-        .and_then(|id| id.as_str())
-        .map(safe_fragment)
-        .unwrap_or_else(|| "scripted_video".to_string());
-    let out_dir = match a.out_dir {
-        Some(path) if !path.trim().is_empty() => PathBuf::from(path),
-        _ => default_motion_script_out_dir(state, &default_leaf, policy).await,
-    };
-    let caller_scope = motion_caller_scope(state, &out_dir).await;
-    let dry_run_render = match policy {
-        MotionScriptPolicy::Preview => true,
-        MotionScriptPolicy::Insert => a.dry_run_render.unwrap_or(false),
-    };
-    Ok(MotionScriptRequest {
-        script: a.script,
-        script_path,
-        policy,
-        out_dir,
-        at_ms: a.at_ms.unwrap_or(0),
-        track: a.track.unwrap_or_else(|| "v1".to_string()),
-        duration_ms: a.duration_ms,
-        dry_run_render,
-        checkpoint: a.checkpoint.unwrap_or(true),
-        rationale: a.rationale,
-        motion_job_id: a.job_id,
-        caller_scope,
-    })
 }
 
 pub(crate) fn parse_motion_import_request(
@@ -2723,3 +2516,5 @@ pub(crate) fn safe_fragment(value: &str) -> String {
 #[cfg(test)]
 #[path = "motion_bridge/tests.rs"]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::MOTION_ENV_LOCK;

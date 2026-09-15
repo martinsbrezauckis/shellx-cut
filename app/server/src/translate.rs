@@ -91,11 +91,12 @@ pub fn normalize_lang(s: &str) -> String {
 /// for all three.) Uses the FULL resolution ladder (process PATH FIRST, then the
 /// explicit install dirs incl. grok's off-PATH ~/.grok/bin / a Finder-stripped-PATH
 /// .app's Homebrew dirs) via `gen::resolve_agent` — NOT a process-PATH-only scan —
-/// so an off-PATH grok still detects and `run_translation` then spawns the RESOLVED
-/// path. Shared with `gen::detect` / `chat::detect`; the on-PATH case is unchanged
-/// because `resolve_agent` searches the process PATH first.
+/// so an off-PATH grok still detects and `run_translation` then spawns the resolved
+/// path. Shared with Agent Chat; the on-PATH case is unchanged because
+/// `resolve_agent` searches the process PATH first.
 pub fn detect_cli(agent: &str) -> bool {
-    TRANSLATE_AGENTS.contains(&agent) && crate::gen::resolve_agent(agent).is_some()
+    TRANSLATE_AGENTS.contains(&agent)
+        && crate::gen::provider_is_available(agent, agent).unwrap_or(false)
 }
 
 /// Is the CLI translation path for `agent` the PROVEN path? Only claude is wired
@@ -114,8 +115,30 @@ pub fn available_cli_agents() -> Vec<&'static str> {
         .collect()
 }
 
+fn selected_context_cli_agents() -> Result<Option<Vec<&'static str>>, CutError> {
+    crate::provider_runtime::provider_launches_from_process_environment()
+        .map(|launches| {
+            launches.map(|launches| {
+                TRANSLATE_AGENTS
+                    .iter()
+                    .copied()
+                    .filter(|agent| launches.contains_key(*agent))
+                    .collect()
+            })
+        })
+        .map_err(|reason| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "provider runtime context is invalid for CLI translation",
+                reason,
+            )
+        })
+}
+
 /// Resolve the backend from the request + what is actually available.
-/// `"auto"` (or absent): CLI if any agent is installed, else local. `"cli"` /
+/// `"auto"` (or absent): CLI if any agent is installed, else local. A malformed
+/// provider context is rejected before this decision; a valid context with no
+/// selected translation CLI may still use Cut's independent local sidecar. `"cli"` /
 /// `"local"` force one (and error if that one is unavailable). Returns the
 /// backend or a structured error explaining what is missing.
 pub fn select_backend(
@@ -242,7 +265,8 @@ async fn run_translation_once(
     model: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> Result<TranslateOutcome, CutError> {
-    let cli_agents = available_cli_agents();
+    let selected_context_agents = selected_context_cli_agents()?;
+    let cli_agents = selected_context_agents.unwrap_or_else(available_cli_agents);
     let runtime = runtime();
     let backend = select_backend(backend_req, !cli_agents.is_empty(), runtime.is_some())?;
 
@@ -455,19 +479,38 @@ async fn run_translation_cli_agent(
             })
             .collect()
     };
-    let agent_path = crate::gen::resolve_agent(agent)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| cmd.cmd.clone());
-    let mut command =
-        crate::gen::agent_tokio_command(std::path::Path::new(&agent_path), &resolved_args)
-            .map_err(|e| {
-                let _ = std::fs::remove_dir_all(&ws);
-                CutError::new(
-                    error_codes::INVALID_ARGS,
-                    format!("cannot launch the {} CLI safely: {e}", cmd.cmd),
-                    "the resolved Windows batch shim received an unsafe path or argument",
-                )
-            })?;
+    let provider_child = crate::gen::provider_child_command(agent, &cmd.cmd).map_err(|reason| {
+        let _ = std::fs::remove_dir_all(&ws);
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("{agent} was not admitted by the provider runtime context: {reason}"),
+            "repair the enrolled provider selection before running a CLI translation",
+        )
+    })?;
+    if !provider_child.available() {
+        let _ = std::fs::remove_dir_all(&ws);
+        return Err(CutError::new(
+            error_codes::SIDECAR,
+            format!("the {agent} CLI is not available"),
+            "install the selected CLI or choose the local translation backend",
+        ));
+    }
+    let mut command = provider_child.tokio_command(&resolved_args).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&ws);
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("cannot launch the {} CLI safely: {e}", cmd.cmd),
+            "the resolved Windows batch shim received an unsafe path or argument",
+        )
+    })?;
+    if let Err(error) = provider_child.apply_admitted_environment(&mut command, &ws) {
+        let _ = std::fs::remove_dir_all(&ws);
+        return Err(CutError::new(
+            error_codes::IO,
+            "prepare admitted provider temporary directory",
+            error,
+        ));
+    }
     command.current_dir(&ws);
     let control = ProcessControl::for_operation(timeout);
     let out = run_owned(
@@ -909,6 +952,7 @@ pub fn distribute_tokens(start_ms: u64, end_ms: u64, translated: &str) -> Vec<(u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn lang_normalization() {
@@ -943,6 +987,71 @@ mod tests {
         );
         assert!(select_backend(Some("local"), true, false).is_err());
         assert!(select_backend(Some("nope"), true, true).is_err());
+    }
+
+    #[test]
+    fn malformed_provider_context_blocks_auto_before_local_fallback() {
+        let _context = crate::provider_runtime::install_test_provider_context("");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(run_translation(
+            Some("auto"),
+            Some("en"),
+            "es",
+            &["hello".into()],
+            None,
+            Some(10_000),
+        ));
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("malformed provider context unexpectedly selected a backend"),
+        };
+        assert_eq!(
+            error.message,
+            "provider runtime context is invalid for CLI translation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn valid_context_without_translation_cli_keeps_local_mt_eligible() {
+        let root = crate::provider_runtime::test_fixture_root();
+        let home = root.join("translation-context-home");
+        let document = serde_json::json!({
+            "schema": "release-runner.provider-runtime/v1",
+            "admission": {
+                "schema": "release-runner.provider-runtime/v1",
+                "resourceLease": "provider-login:test:antigravity",
+                "enrollment": {
+                    "id": "translation-antigravity",
+                    "provider": "antigravity",
+                    "userIdentity": "uid:1000",
+                    "executable": {
+                        "path": root.join("translation-provider"),
+                        "sha256": "a".repeat(64)
+                    },
+                    "runtimeCode": [],
+                    "canonicalEnvironment": { "home": home }
+                }
+            },
+            "effectiveEnvironment": {
+                "HOME": root.join("translation-context-home"),
+                "PATH": root.join("translation-provider-bin")
+            }
+        });
+        let mut context = tempfile::NamedTempFile::new_in(&root).unwrap();
+        context
+            .write_all(serde_json::to_string(&document).unwrap().as_bytes())
+            .unwrap();
+        context.flush().unwrap();
+        let _context =
+            crate::provider_runtime::install_test_provider_context(context.path().as_os_str());
+
+        let agents = selected_context_cli_agents().unwrap().unwrap();
+        assert!(agents.is_empty());
+        assert_eq!(
+            select_backend(Some("auto"), false, true).unwrap(),
+            Backend::Local
+        );
     }
 
     #[test]

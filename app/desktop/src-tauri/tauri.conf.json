@@ -60,6 +60,7 @@
       "../../perception/py/diarize_runner.py": "perception/diarize_runner.py",
       "../../perception/py/generate_prompt_adapter.py": "perception/generate_prompt_adapter.py",
       "../../perception/py/generate_storyboard_adapter.py": "perception/generate_storyboard_adapter.py",
+      "../../perception/py/provider_child_launch.py": "perception/provider_child_launch.py",
       "../../perception/py/judge": "perception/judge",
       "../../perception/py/face_runner.py": "perception/face_runner.py",
       "../../perception/py/face_detection_yunet_2023mar.onnx": "perception/face_detection_yunet_2023mar.onnx",

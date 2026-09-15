@@ -21,7 +21,10 @@ import tempfile
 # Single source of truth for prompts/schema/digest lives in ../judge.py.
 _JUDGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _JUDGE_DIR)
+_PY_ROOT = os.path.dirname(_JUDGE_DIR)
+sys.path.insert(0, _PY_ROOT)
 import judge  # noqa: E402
+import provider_child_launch  # noqa: E402
 
 # Shared pipeline (perception resolution by content hash, the post-filter,
 # frame-extraction defaults) lives in cli_judge.py; codex_judge.py owns the
@@ -102,7 +105,7 @@ EXPLICIT_SCHEMA_BLOCK = _build_schema_block()
 # ---------------------------------------------------------------------------
 
 
-def detect() -> dict:
+def detect(launch: dict | None = None) -> dict:
     """Detect a Grok CLI that can enforce this adapter's no-tool policy.
 
     Capability admission uses only ``--version`` and ``--help``. It never
@@ -111,8 +114,8 @@ def detect() -> dict:
     the adapter must not substitute a broader invocation just to keep Grok
     available.
     """
-    path = shutil.which("grok")
-    cli, reason = grok_tool_policy.resolve_grok_tool_policy("grok")
+    path = launch["executable"] if launch else shutil.which("grok")
+    cli, reason = grok_tool_policy.resolve_grok_tool_policy("grok", launch)
     entry: dict = {
         "provider": "grok",
         "binary": "grok",
@@ -215,8 +218,8 @@ def build_content_blocks(full_prompt: str,
 
 
 def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
-                frame_paths: list[str], cwd: str, timeout_s: int
-                ) -> tuple[dict | None, dict, str | None]:
+                frame_paths: list[str], cwd: str, timeout_s: int,
+                launch: dict | None = None) -> tuple[dict | None, dict, str | None]:
     """Run one judge review through the `grok` CLI (single-turn --prompt-json).
 
     Returns (review|None, cli_meta, error_or_not_run_reason|None) — the SAME
@@ -248,7 +251,7 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
     codex/agy/gemini, the system rules are PREPENDED to the user prompt (clearly
     delimited) inside the text content block, so all rungs share one prompt path.
     """
-    cli, policy_reason = grok_tool_policy.resolve_grok_tool_policy(grok_bin)
+    cli, policy_reason = grok_tool_policy.resolve_grok_tool_policy(grok_bin, launch)
     if cli is None:
         return None, {
             "available": False,
@@ -281,7 +284,7 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
 
     try:
         cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", cwd=cwd_abs,
-                            timeout=timeout_s)
+                            timeout=timeout_s, env=grok_tool_policy.child_environment(cli))
     except subprocess.TimeoutExpired:
         return None, {"available": True, "timed_out": True}, (
             f"grok CLI exceeded {timeout_s}s timeout")
@@ -415,10 +418,22 @@ def main() -> int:
     ap.add_argument("--bundle-dir", help="workspace for frames (default: tmp)")
     ap.add_argument("--keep-bundle", action="store_true",
                     help="keep the frames workspace after the run")
+    ap.add_argument("--provider-child-stdin", action="store_true",
+                    help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    try:
+        launch = (provider_child_launch.launches_from_stdin({DEFAULT_PROVIDER})
+                  .get(DEFAULT_PROVIDER) if args.provider_child_stdin else None)
+    except ValueError as error:
+        print(f"invalid admitted Grok provider handoff: {error}", file=sys.stderr)
+        return 2
+    if args.provider_child_stdin and launch is None:
+        print("admitted Grok provider handoff is missing Grok", file=sys.stderr)
+        return 2
+
     if args.command == "detect":
-        print(json.dumps(detect(), indent=2))
+        print(json.dumps(detect(launch), indent=2))
         return 0
 
     if not args.render:
@@ -497,7 +512,7 @@ def main() -> int:
     else:
         review_raw, cli_meta, reason = invoke_grok(
             args.grok_bin, sys_p, user_p, args.cli_model, frame_paths,
-            bundle, args.timeout)
+            bundle, args.timeout, launch)
 
     if review_raw is not None:
         status = "completed"

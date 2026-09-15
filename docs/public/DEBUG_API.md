@@ -850,6 +850,12 @@ Cut re-runs the same current-range validation before launching a provider. A
 changed index, missing asset, or stale authority refuses the attachment; prompt
 text is never treated as a substitute for current evidence.
 
+The eight Agent Chat prompt presets only pre-fill the editable composer. Their
+verb metadata is limited to the contained Chat policy's inspect/edit routes; it
+does not make an external speech service, render/delivery route, or verification
+route available. Use **Transcript Tools** for speaker labels or dubbing,
+**Clips** for candidates and delivery, and **Review > QC** for verification.
+
 `agent.chat` can also carry one immutable
 `shellx-cut/chat-timeline-target/1` from a Comment, selected timeline range,
 selected clips, or the playhead. It contains the exact project identity and

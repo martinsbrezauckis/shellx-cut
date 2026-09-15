@@ -25,6 +25,10 @@ const MOCK_TRANSCRIPT_MISSING = MOCK_PARAMS.has('mockTranscriptMissing')
 const MOCK_DIRECTOR_ERROR = MOCK_PARAMS.has('mockDirectorError')
 const MOCK_ENVIRONMENT = MOCK_PARAMS.has('mockEnvironment')
 const MOCK_CHAT_ACTION_FIXTURE = MOCK_PARAMS.has('mockChatActionFixture')
+// Source-only deterministic fixture for the Transcript speech-control matrix.
+// It never calls an AI service or native runtime and must not be read as such
+// qualification; native coverage uses the unmocked conditional route.
+const MOCK_SPEECH_SERVICES = MOCK_PARAMS.has('mockSpeechServices')
 const MOCK_KINETIC = MOCK_PARAMS.has('mockKinetic')
 const MOCK_LIBRARY_TOTAL = Math.max(0, Number.parseInt(MOCK_PARAMS.get('mockLibraryTotal') ?? '0', 10) || 0)
 // Chapter-navigation fixtures exercise current occurrence resolution without
@@ -277,6 +281,8 @@ let opSeq = 0
 let chatTurnSeq = 0
 let mockTranscriptIgnores: Array<{ asset: string; word_range: [number, number] }> = []
 let mockMuteRanges: Array<[number, number]> = []
+let mockDiarized = false
+let mockDubbed = false
 const mockJobs = new Map<string, unknown>()
 const recordingMock = createMockRecordingLifecycle({ startMode: MOCK_RECORD_START_MODE, jobs: mockJobs })
 const nextOpId = () => `op_${String(++opSeq).padStart(6, '0')}`
@@ -513,6 +519,13 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
             ],
           })
         }
+        if (MOCK_SPEECH_SERVICES && mockDubbed) {
+          tracks.push({
+            id: 'dub1',
+            kind: 'audio',
+            clips: [{ id: 'dub_clip_1', asset: 'a1', src_in_ms: 0, src_out_ms: 58_000 }],
+          })
+        }
       return {
         ok: true,
         result: MOCK_TRANSCRIPT_MISSING
@@ -529,6 +542,13 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
               ...PROJECT,
               tracks,
               transcript_ignores: [...mockTranscriptIgnores],
+              ...(MOCK_SPEECH_SERVICES ? {
+                project_identity: {
+                  schema: 'shellx-cut/project-identity/1' as const,
+                  origin_path_sha256: 'sha256:' + 'a'.repeat(64),
+                  project_name: PROJECT.name,
+                },
+              } : {}),
             },
       }
       }
@@ -640,6 +660,20 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
     case 'jobs.list':
       return { ok: true, result: { jobs: [] } }
     case 'jobs.status':
+      if (MOCK_SPEECH_SERVICES && args.job_id === 'job_mock_diarize') {
+        mockDiarized = true
+        return {
+          ok: true,
+          result: {
+            job_id: 'job_mock_diarize',
+            kind: 'diarize',
+            state: 'done',
+            outcome: 'succeeded',
+            progress: 1,
+            result: mockJobs.get('job_mock_diarize'),
+          },
+        }
+      }
       return {
         ok: true,
         result: {
@@ -676,6 +710,30 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
                   },
                 },
               }))
+            : MOCK_SPEECH_SERVICES
+              ? [
+                  {
+                    id: 'perception',
+                    kind: 'perception',
+                    title: 'Captions and transcription',
+                    status: 'ok',
+                    details: { stt_ready: true },
+                  },
+                  {
+                    id: 'diarize',
+                    kind: 'service',
+                    title: 'Speaker labels',
+                    status: 'ok',
+                    details: { powers: ['media.diarize'] },
+                  },
+                  {
+                    id: 'dub',
+                    kind: 'service',
+                    title: 'Audio dubbing',
+                    status: 'ok',
+                    details: { powers: ['audio.dub'] },
+                  },
+                ]
             : MOCK_ENVIRONMENT
             ? [{
                 id: 'gpu-encode',
@@ -777,6 +835,9 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
         src_end_ms: word.end_ms,
         timeline_start_ms: word.start_ms,
         timeline_end_ms: word.end_ms,
+        ...(MOCK_SPEECH_SERVICES && mockDiarized
+          ? { speaker: word.idx < 6 ? 'S1' : 'S2' }
+          : {}),
       }))
       return {
         ok: true,
@@ -785,6 +846,36 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
           track: typeof args.track === 'string' ? args.track : null,
           word_count: entries.length,
           entries,
+        },
+      }
+    }
+    case 'media.diarize': {
+      if (!MOCK_SPEECH_SERVICES || args.asset !== 'a1') {
+        return { ok: false, error: { code: 'fixture_only', message: 'Mock speaker labels require the explicit speech fixture.' } }
+      }
+      mockJobs.set('job_mock_diarize', {
+        diarization: 'receipts/a1.diarize.json',
+        num_speakers: 2,
+        labeled_words: 12,
+      })
+      return { ok: true, result: { job_id: 'job_mock_diarize' } }
+    }
+    case 'audio.dub': {
+      if (!MOCK_SPEECH_SERVICES || args.asset !== 'a1' || args.target_lang !== 'lv') {
+        return { ok: false, error: { code: 'fixture_only', message: 'Mock dubbing requires the explicit speech fixture and Latvian target.' } }
+      }
+      mockDubbed = true
+      const o = op({ actor: human, verb: name, args, effects: [{ track: 'dub1', clip: 'dub_clip_1' }] })
+      applyOp(o)
+      return {
+        ok: true,
+        op_ids: [o.op_id],
+        result: {
+          asset: 'a1',
+          target_lang: 'lv',
+          track_id: 'dub1',
+          n_clips: 1,
+          receipt: 'receipts/a1.lv.dub.json',
         },
       }
     }

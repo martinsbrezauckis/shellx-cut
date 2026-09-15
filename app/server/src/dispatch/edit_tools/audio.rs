@@ -1,4 +1,5 @@
 use super::*;
+use crate::project_materialization::ProjectMaterializationPin;
 
 /// Resolve an `edit.eq` PRESET name into explicit (high_pass, low_pass, bands) so
 /// the op log stores resolved values (replay never depends on the preset table).
@@ -148,6 +149,13 @@ pub(in crate::dispatch) async fn assemble_broll(
         .unwrap_or_else(|| "local_folder".to_string());
     let kind = a.kind.clone().unwrap_or_else(|| "video".to_string());
 
+    // Bind the request to the project that accepted it before it creates its
+    // checkpoint or target track. The first verified lock protects those setup
+    // mutations; a refreshed pin then makes every later post-search admission
+    // reject a different project or an intervening edit instead of retargeting.
+    let initial_pin = ProjectMaterializationPin::capture(state, "Assemble b-roll").await?;
+    let initial_materialization = initial_pin.lock_verified(state).await?;
+
     // Auto-checkpoint: the whole assembly reverts to here in one step.
     let cp = Box::pin(dispatch(
         state,
@@ -190,6 +198,13 @@ pub(in crate::dispatch) async fn assemble_broll(
             return Ok(at);
         }
     }
+
+    // The setup above advanced this request's own revision. Snapshot it while
+    // replacement remains held, then let a potentially slow provider search run
+    // without blocking project.open. Each selected hit re-verifies this exact
+    // owner before it can admit an asset or insert a clip.
+    let mut project_pin = ProjectMaterializationPin::capture(state, "Assemble b-roll").await?;
+    drop(initial_materialization);
 
     let revert_hint = format!(
         "a slot failed — project.revert{{to:\"{checkpoint_id}\"}} undoes the partial assembly"
@@ -238,13 +253,44 @@ pub(in crate::dispatch) async fn assemble_broll(
                 "revert_hint": revert_hint,
             })));
         };
+        #[cfg(test)]
+        wait_for_assemble_broll_search_gate_after_search(&slot.query).await;
+
+        // Do not let the selected hit cross a project boundary. The proof stays
+        // held through fetch admission, its import job reaching Done, and this
+        // slot's placement. `assets.fetch` needs its materialized private entry
+        // below because recursively locking project_transition would deadlock.
+        let materialization = match project_pin.lock_verified(state).await {
+            Ok(materialization) => materialization,
+            Err(error) => {
+                let origin_project = project_pin.origin_binding();
+                return Ok(broll_project_binding_failure(
+                    i,
+                    &slot.query,
+                    error,
+                    &placed,
+                    &checkpoint_id,
+                    &origin_project,
+                ));
+            }
+        };
 
         // 2. FETCH it as a project asset (downloads + starts the import chain).
         let mut fetch_args = json!({"provider": provider, "id": hit_id, "kind": kind});
         if provider == "local_folder" {
             fetch_args["dir"] = json!(a.dir.clone());
         }
-        let fres = Box::pin(dispatch(state, "assets.fetch", fetch_args, actor.clone())).await;
+        let fres = match super::assets_plugins::assets_fetch_under_materialization(
+            state,
+            fetch_args,
+            actor.clone(),
+            &materialization,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return Ok(fail("assets.fetch", &VerbResult::err(error))),
+        };
         if !fres.ok {
             return Ok(fail("assets.fetch", &fres));
         }
@@ -270,27 +316,20 @@ pub(in crate::dispatch) async fn assemble_broll(
             .as_ref()
             .and_then(|r| r["job_id"].as_str())
             .map(String::from);
+        let Some(import_job) = import_job else {
+            return Ok(fail(
+                "assets.fetch",
+                &VerbResult::err(CutError::new(
+                    error_codes::IO,
+                    "assets.fetch returned no import job",
+                    "the fetched asset cannot be placed until its import chain reports done",
+                )),
+            ));
+        };
 
         // 3. WAIT for the import chain (probe) so the asset is insert-ready.
-        if let Some(job) = import_job {
-            for _ in 0..60 {
-                let js = Box::pin(dispatch(
-                    state,
-                    "jobs.status",
-                    json!({"job_id": job}),
-                    actor.clone(),
-                ))
-                .await;
-                let st = js
-                    .result
-                    .as_ref()
-                    .and_then(|r| r["state"].as_str())
-                    .unwrap_or("");
-                if st == "done" || st == "failed" {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            }
+        if let Err(error) = wait_for_broll_import(state, &import_job).await {
+            return Ok(fail("assets.fetch.import", &VerbResult::err(error)));
         }
 
         // 4. PLACE the first `duration_ms` of the source at `at_ms` (no ripple — a
@@ -325,6 +364,13 @@ pub(in crate::dispatch) async fn assemble_broll(
             "at_ms": slot.at_ms,
             "duration_ms": slot.duration_ms,
         }));
+
+        // The next slot may search while project transitions are allowed again.
+        // Advance the expected revision while this slot still owns the same
+        // transition, so the next verified admission accepts its own ops but
+        // rejects a later foreign project or unrelated edit.
+        project_pin = ProjectMaterializationPin::capture(state, "Assemble b-roll").await?;
+        drop(materialization);
     }
 
     Ok(VerbResult::ok(json!({
@@ -335,6 +381,133 @@ pub(in crate::dispatch) async fn assemble_broll(
         "checkpoint": checkpoint_id,
         "revert_hint": format!("project.revert{{to:\"{checkpoint_id}\"}} undoes the whole assembly"),
     })))
+}
+
+async fn wait_for_broll_import(state: &AppState, job_id: &str) -> Result<(), CutError> {
+    for _ in 0..60 {
+        let Some(job) = state.jobs.get(job_id) else {
+            return Err(CutError::new(
+                error_codes::NOT_FOUND,
+                format!("no import job '{job_id}'"),
+                "assets.fetch returned a job that is no longer available for readiness confirmation",
+            ));
+        };
+        match job.state {
+            crate::jobs::JobState::Done => return Ok(()),
+            crate::jobs::JobState::Failed => {
+                return Err(job.error.unwrap_or_else(|| {
+                    CutError::new(
+                        error_codes::JOB_FAILED,
+                        "b-roll import failed",
+                        "the import chain reached failed without an error record",
+                    )
+                }));
+            }
+            crate::jobs::JobState::Queued | crate::jobs::JobState::Running => {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        }
+    }
+    Err(CutError::new(
+        error_codes::CONFLICT,
+        "b-roll import did not finish in time",
+        "the import chain stayed queued or running for 18 seconds",
+    )
+    .with_suggested_action("wait for the import to finish, then run assemble.broll again"))
+}
+
+/// An Assemble request may already have created its origin checkpoint and
+/// target track when a later provider search discovers that another project is
+/// current. Keep the typed ownership conflict inside the orchestrator's normal
+/// partial-result envelope and make recovery explicitly origin-bound: a generic
+/// `project.revert` while the replacement project is open would be unsafe.
+fn broll_project_binding_failure(
+    slot: usize,
+    query: &str,
+    error: CutError,
+    placed: &[Value],
+    checkpoint_id: &str,
+    origin_project: &Value,
+) -> VerbResult {
+    let origin_checkpoint = json!({
+        "id": checkpoint_id,
+        "project": origin_project,
+    });
+    VerbResult::ok(json!({
+        "status": "failed",
+        "slot": slot,
+        "query": query,
+        "failed_step": "project-binding",
+        "error": error,
+        "placed": placed,
+        // Preserve the historical scalar for clients that already render it.
+        "checkpoint": checkpoint_id,
+        "origin_checkpoint": origin_checkpoint,
+        "recovery": {
+            "action": "reopen_origin_then_review_checkpoint",
+            "origin_project": origin_project,
+            "checkpoint": checkpoint_id,
+            "guidance": "Select the origin project, confirm project.state identity matches origin_checkpoint.project, compare its current revision with origin_checkpoint.project.project_revision, and review intervening changes before reviewing or restoring that checkpoint.",
+        },
+        "revert_hint": "The project or revision changed. Select the origin project, compare its current revision, and review intervening changes before restoring its checkpoint; no revert was applied to the current project.",
+    }))
+}
+
+/// Test-only pause after a provider search has returned a hit but before that
+/// hit is admitted to a project. It makes the owner-transition race
+/// reproducible without adding a production synchronization path.
+#[cfg(test)]
+#[derive(Clone)]
+pub(in crate::dispatch) struct AssembleBrollSearchGate {
+    query: String,
+    pub search_completed: std::sync::Arc<tokio::sync::Notify>,
+    pub continue_after_search: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+impl AssembleBrollSearchGate {
+    pub(in crate::dispatch) fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            search_completed: std::sync::Arc::new(tokio::sync::Notify::new()),
+            continue_after_search: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+#[cfg(test)]
+static ASSEMBLE_BROLL_SEARCH_GATE: std::sync::OnceLock<
+    std::sync::Mutex<Option<AssembleBrollSearchGate>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn assemble_broll_search_gate() -> &'static std::sync::Mutex<Option<AssembleBrollSearchGate>> {
+    ASSEMBLE_BROLL_SEARCH_GATE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(in crate::dispatch) fn install_assemble_broll_search_gate(
+    gate: Option<AssembleBrollSearchGate>,
+) {
+    *assemble_broll_search_gate()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = gate;
+}
+
+#[cfg(test)]
+async fn wait_for_assemble_broll_search_gate_after_search(query: &str) {
+    let gate = assemble_broll_search_gate()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .filter(|gate| gate.query == query)
+        .cloned();
+    let Some(gate) = gate else {
+        return;
+    };
+    // notify_one retains a permit when the test has not polled its waiter yet.
+    gate.search_completed.notify_one();
+    gate.continue_after_search.notified().await;
 }
 
 /// ORCHESTRATOR (mirrors comment.apply / autopilot): records NO op of its own — it

@@ -12,6 +12,9 @@ interface RetryAdmission {
   retry_of: string
   root_job_id: string
   attempt: number
+  status: 'queued'
+  path?: string
+  format?: 'mp4' | 'gif'
 }
 
 interface JobRetryRecoveryProps {
@@ -62,6 +65,8 @@ export default function JobRetryRecovery({ jobs, projectSession, onRefresh }: Jo
           retry_of: result.retry_of,
           root_job_id: result.root_job_id,
           attempt: result.attempt,
+          status: result.status,
+          ...('path' in result && 'format' in result ? { path: result.path, format: result.format } : {}),
         },
       }))
       void onRefresh().catch(() => {
@@ -113,7 +118,17 @@ export default function JobRetryRecovery({ jobs, projectSession, onRefresh }: Jo
                 </div>
                 {job.lineage && <small data-cut-job-retry-lineage>{job.lineage}</small>}
                 {admission ? (
-                  <p className="settings-job-retry-admitted" data-cut-job-retry-admitted={job.jobId}>{retryAdmissionLine(admission)}</p>
+                  <p
+                    className="settings-job-retry-admitted"
+                    data-cut-job-retry-admitted={job.jobId}
+                    data-cut-job-retry-child={admission.job_id}
+                    data-cut-job-retry-of={admission.retry_of}
+                    data-cut-job-retry-root={admission.root_job_id}
+                    data-cut-job-retry-attempt={admission.attempt}
+                    data-cut-job-retry-status={admission.status}
+                    data-cut-job-retry-path={admission.path}
+                    data-cut-job-retry-format={admission.format}
+                  >{retryAdmissionLine(admission)}</p>
                 ) : job.canRetry ? (
                   error && <p className="settings-job-retry-error" data-cut-job-retry-error={job.jobId}>{error}</p>
                 ) : (
@@ -125,6 +140,11 @@ export default function JobRetryRecovery({ jobs, projectSession, onRefresh }: Jo
                   type="button"
                   className="env-btn env-btn--ghost"
                   data-cut-job-retry-action={job.jobId}
+                  data-cut-job-retry-source-kind={job.kind}
+                  data-cut-job-retry-source-state={job.state}
+                  data-cut-job-retry-source-eligible={job.eligible ? 'true' : 'false'}
+                  data-cut-job-retry-source-root={job.rootJobId}
+                  data-cut-job-retry-source-attempt={job.attempt}
                   data-cut-job-retry-pending={isPending ? 'true' : undefined}
                   disabled={isPending}
                   onClick={() => void retry(job)}

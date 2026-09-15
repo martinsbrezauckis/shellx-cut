@@ -7,6 +7,17 @@ use crate::dispatch::generated_assets::{
     GenerationReference,
 };
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
+#[path = "assets_plugins/fetch.rs"]
+mod fetch;
+#[path = "assets_plugins/provider_chat.rs"]
+mod provider_chat;
+
+pub(in crate::dispatch) use fetch::assets_fetch;
+pub(super) use fetch::assets_fetch_under_materialization;
+#[cfg(test)]
+pub(in crate::dispatch) use fetch::{
+    install_assets_fetch_project_transition_gate, AssetsFetchProjectTransitionGate,
+};
 
 /// effects.list — the effects-as-data CATALOG: every `edit.effect` effect
 /// with its track (video/audio), description, overlay-only flag, and parameter
@@ -768,6 +779,31 @@ pub(in crate::dispatch) async fn agent_chat(
             None,
         );
     };
+    let provider_child = match crate::chat::provider_child_command(agent) {
+        Ok(command) if command.available() => command,
+        Ok(_) => {
+            return fail(
+                "not_available",
+                format!("{agent} is not available on this machine"),
+                Some(agent.into()),
+                vec![],
+                None,
+                None,
+                None,
+            );
+        }
+        Err(reason) => {
+            return fail(
+                "not_available",
+                format!("{agent} was not admitted by the provider runtime context: {reason}"),
+                Some(agent.into()),
+                vec![],
+                None,
+                None,
+                None,
+            );
+        }
+    };
     // The cutd binary that will serve `cutd mcp` (same build as this serve).
     let cutd_exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
@@ -807,43 +843,18 @@ pub(in crate::dispatch) async fn agent_chat(
         }
     };
     let ws = workspace.path().to_path_buf();
-    let launch_env = match agent {
-        "claude" => match crate::chat::broker::sanitized_environment(&proxy_addr, &proxy_actor) {
-            Ok(environment) => environment,
-            Err(reason) => {
-                return fail(
-                    "not_available",
-                    reason,
-                    Some(agent.into()),
-                    vec![],
-                    None,
-                    None,
-                    None,
-                );
-            }
-        },
-        "codex" => crate::chat::broker::native_environment(&proxy_addr, &proxy_actor),
-        "antigravity" => crate::chat::broker::native_environment(&proxy_addr, &proxy_actor),
-        "grok" => {
-            match crate::chat::broker::isolated_grok_environment(&ws, &proxy_addr, &proxy_actor) {
-                Ok(environment) => environment,
-                Err(reason) => {
-                    return fail(
-                        "not_available",
-                        reason,
-                        Some(agent.into()),
-                        vec![],
-                        None,
-                        None,
-                        None,
-                    );
-                }
-            }
-        }
-        _ => {
+    let launch_env = match provider_chat::launch_environment(
+        agent,
+        &provider_child,
+        &ws,
+        &proxy_addr,
+        &proxy_actor,
+    ) {
+        Ok(environment) => environment,
+        Err(reason) => {
             return fail(
                 "not_available",
-                format!("agent '{agent}' has no launch environment"),
+                reason,
                 Some(agent.into()),
                 vec![],
                 None,
@@ -864,20 +875,9 @@ pub(in crate::dispatch) async fn agent_chat(
             e.to_string(),
         ));
     }
-    // Resolve the agent to a runnable path (process PATH first, then the explicit
-    // install-dir ladder). A resolved absolute CLI path is spawned directly.
-    // pick_agent already proved detection, so resolution is Some here; fall back to
-    // the bare name defensively rather than aborting the turn.
-    let agent_path = crate::chat::resolve_executable(agent)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| agent.to_string());
-    if let Err(reason) = crate::chat::broker::verify_installed_agent(
-        agent,
-        std::path::Path::new(&agent_path),
-        &launch_env,
-        &ws,
-    )
-    .await
+    let agent_path = provider_child.executable().to_string_lossy().into_owned();
+    if let Err(reason) =
+        crate::chat::broker::verify_installed_agent(agent, &provider_child, &launch_env, &ws).await
     {
         return fail(
             "unsupported_capability",
@@ -964,17 +964,14 @@ pub(in crate::dispatch) async fn agent_chat(
             })
             .collect()
     };
-    let mut command =
-        crate::gen::agent_tokio_command(std::path::Path::new(&cmd.cmd), &resolved_args).map_err(
-            |e| {
-                CutError::new(
-                    error_codes::INVALID_ARGS,
-                    format!("cannot launch the {agent} CLI safely: {e}"),
-                    "the resolved Windows batch shim received an unsafe path or argument",
-                )
-            },
-        )?;
-    launch_env.apply(&mut command);
+    let mut command = provider_child.tokio_command(&resolved_args).map_err(|e| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("cannot launch the {agent} CLI safely: {e}"),
+            "the resolved Windows batch shim received an unsafe path or argument",
+        )
+    })?;
+    launch_env.apply_with_admitted_environment(&mut command, provider_child.admitted_environment());
     command
         .current_dir(&ws)
         .stdin(std::process::Stdio::piped())
@@ -1962,10 +1959,12 @@ async fn assets_generate_run(
             a.provider
         ));
     }
-    if !crate::gen::detect(&a.provider) {
+    let provider_cli = crate::gen::cli_for(&a.provider).expect("provider was validated above");
+    let provider_child = provider_chat::generation_provider(&a.provider, provider_cli)?;
+    if !provider_child.available() {
         return degrade(format!(
             "the '{}' CLI is not installed/on PATH — install it (and sign in) to generate",
-            crate::gen::cli_for(&a.provider).unwrap_or("?")
+            provider_cli
         ));
     }
 
@@ -2189,23 +2188,23 @@ async fn assets_generate_run(
     };
 
     // --- spawn the agent CLI (bounded) ----------------------------------------
-    // Spawn the RESOLVED path, not the bare provider name: gen::detect now uses the
-    // full resolve_agent ladder (process PATH first, THEN the off-PATH install dirs
-    // incl. grok's self-managed ~/.grok/bin), so a detected-but-off-PATH provider must be
-    // launched BY its resolved absolute path or `Command::new` would ENOENT.
-    // detect already proved it resolves ⇒ Some here; fall back to the bare name
-    // defensively. An on-PATH provider resolves to itself ⇒ behavior is unchanged.
-    let agent_path = crate::gen::resolve_agent(&cmd.cmd)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| cmd.cmd.clone());
     // Reuse the existing Antigravity capability probe before a potentially paid
-    // request. It only runs `agy --help` under the user's
-    // normal CLI environment; Cut does not inspect, copy, or mutate auth/settings.
+    // request. It receives the selected child environment when admission is
+    // active; Cut does not inspect, copy, or mutate auth/settings.
     if a.provider == "antigravity" {
-        let environment = crate::chat::broker::native_environment("", "");
+        let environment = if provider_child.admitted_environment().is_some() {
+            match crate::chat::broker::native_environment("", "")
+                .with_owned_temporary_directory(&ws.join("tmp"))
+            {
+                Ok(environment) => environment,
+                Err(reason) => return degrade(reason),
+            }
+        } else {
+            crate::chat::broker::native_environment("", "")
+        };
         if let Err(reason) = crate::chat::broker::verify_installed_agent(
             "antigravity",
-            std::path::Path::new(&agent_path),
+            &provider_child,
             &environment,
             &ws,
         )
@@ -2216,15 +2215,22 @@ async fn assets_generate_run(
             ));
         }
     }
-    let mut command =
-        crate::gen::agent_tokio_command(std::path::Path::new(&agent_path), &resolved_args)
-            .map_err(|e| {
-                CutError::new(
-                    error_codes::INVALID_ARGS,
-                    format!("cannot launch the {} CLI safely: {e}", cmd.cmd),
-                    "the resolved Windows batch shim received an unsafe path or argument",
-                )
-            })?;
+    let mut command = provider_child.tokio_command(&resolved_args).map_err(|e| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("cannot launch the {} CLI safely: {e}", cmd.cmd),
+            "the resolved Windows batch shim received an unsafe path or argument",
+        )
+    })?;
+    provider_child
+        .apply_admitted_environment(&mut command, &ws)
+        .map_err(|error| {
+            CutError::new(
+                error_codes::IO,
+                "prepare admitted provider temporary directory",
+                error,
+            )
+        })?;
     command.current_dir(&ws);
     let control = ProcessControl::for_operation(timeout);
     let out = run_owned(
@@ -2395,285 +2401,4 @@ async fn assets_generate_run(
         actor,
     )
     .await)
-}
-
-/// assets.fetch — import a provider hit as a normal project asset. Needs
-/// an open project (the asset lands in it). RE-RESOLVES the hit by id through the
-/// provider (no caller-supplied URL — no SSRF surface), then: local_folder
-/// imports the file in place only when the id is still under the search `dir`;
-/// openverse downloads it (size-capped) into the
-/// project's assets/providers/ dir. Import goes through core's record_import +
-/// the import chain (receipts/replay intact). The license + attribution are
-/// recorded on the op rationale and returned so the caller can credit the source.
-pub(in crate::dispatch) async fn assets_fetch(
-    state: &AppState,
-    args: Value,
-    actor: Actor,
-) -> Result<VerbResult, CutError> {
-    #[derive(serde::Deserialize)]
-    #[allow(dead_code)]
-    struct Args {
-        provider: String,
-        id: String,
-        kind: Option<String>,
-        dir: Option<String>,
-        rationale: Option<String>,
-    }
-    let a: Args = parse_args(args.clone())?;
-    let kind = a.kind.clone().unwrap_or_else(|| "audio".to_string());
-    let local_scoped_path = if a.provider == "local_folder" {
-        Some(resolve_local_folder_fetch_path(&a.id, a.dir.as_deref())?)
-    } else {
-        None
-    };
-
-    // An import has one project owner from source resolution through durable
-    // admission. Hold the same ownership-transition lock used by project.open
-    // / create / close / delete across provider I/O: otherwise an A request
-    // could resolve while A is open, then record the result into B after a
-    // project switch. This intentionally makes a workspace transition wait
-    // for the bounded fetch instead of silently retargeting or losing it.
-    // RAII releases the guard on every provider/file/project error below.
-    let _project_import_transition = state.project_transition.lock().await;
-    let proj_dir = {
-        let guard = state.project.read().await;
-        let store = guard.as_ref().ok_or_else(no_project)?;
-        store.dir.clone()
-    };
-    #[cfg(test)]
-    wait_for_assets_fetch_project_transition_gate_after_pin(&a.id).await;
-
-    // Resolve the authoritative hit (download URL + license) — blocking.
-    let (provider, id, kind_c) = (
-        a.provider.clone(),
-        local_scoped_path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| a.id.clone()),
-        kind.clone(),
-    );
-    let hit =
-        tokio::task::spawn_blocking(move || crate::providers::resolve(&provider, &id, &kind_c))
-            .await
-            .map_err(|e| {
-                CutError::new(error_codes::IO, "resolve task panicked", e.to_string())
-            })??;
-
-    // Determine the local source path: local_folder + stickers import in place (the
-    // sticker is rendered to a local PNG at resolve time); a network provider
-    // downloads into the project's assets/providers/<provider>/ dir.
-    let src_path: PathBuf = if hit.provider == "local_folder" {
-        local_scoped_path.unwrap_or_else(|| PathBuf::from(&hit.download_url))
-    } else if hit.provider == "stickers" {
-        PathBuf::from(&hit.download_url)
-    } else {
-        let ext = hit
-            .filetype
-            .clone()
-            .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric()) && !e.is_empty())
-            .unwrap_or_else(|| "bin".to_string());
-        let safe_id: String = hit
-            .id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let dest = proj_dir
-            .join("assets")
-            .join("providers")
-            .join(&hit.provider)
-            .join(format!("{safe_id}.{ext}"));
-        let url = hit.download_url.clone();
-        let dest_c = dest.clone();
-        let target = crate::providers::prepare_download_target(url).await?;
-        let n = tokio::task::spawn_blocking(move || {
-            crate::providers::download_vetted_to(target, &dest_c)
-        })
-        .await
-        .map_err(|e| CutError::new(error_codes::IO, "download task panicked", e.to_string()))??;
-        tracing::info!("assets.fetch downloaded {n} bytes for {}", hit.id);
-        dest
-    };
-
-    if !src_path.is_file() {
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            format!("fetched asset not found: {}", src_path.display()),
-            "the provider returned a path/url that did not yield a readable file",
-        ));
-    }
-    let src = src_path.canonicalize()?;
-    let hash = cut_core::hash_file(&src)?;
-    // Record the credit on the op rationale so the timeline history carries it.
-    let rationale = a
-        .rationale
-        .clone()
-        .unwrap_or_else(|| format!("fetch {} — {}", hit.provider, hit.attribution));
-    let asset = cut_core::Asset {
-        path: src.display().to_string(),
-        hash: hash.clone(),
-        probe: None,
-        transcript: None,
-        perception: None,
-        proxy: None,
-        filmstrip: None,
-    };
-    let (asset_id, op) = {
-        let mut guard = state.project.write().await;
-        let store = guard.as_mut().ok_or_else(no_project)?;
-        guard_call("assets.fetch", || {
-            store.record_import(None, asset, actor, Some(rationale.clone()))
-        })?
-    };
-    let op_id = op.op_id.clone();
-    state.events.publish(Event::OpApplied { op: op.clone() });
-    let job = spawn_plain_import_chain(state.clone(), asset_id.clone(), src, hash, true);
-    #[cfg(test)]
-    wait_for_assets_fetch_project_transition_gate_after_admission(&a.id).await;
-    Ok(VerbResult::ok_with_ops(
-        json!({
-            "asset_id": asset_id,
-            "job_id": job,
-            "provider": hit.provider,
-            "title": hit.title,
-            "license": hit.license,
-            "license_url": hit.license_url,
-            "attribution": hit.attribution,
-            "requires_attribution": hit.requires_attribution,
-            "source_url": hit.source_url,
-            "op": op_for_result(&op, wants_legacy_inverse(&args)),
-        }),
-        vec![op_id],
-    ))
-}
-
-/// Test-only deterministic barrier for the project-owner race regression.
-/// Production builds contain neither the barrier nor its global registration.
-#[cfg(test)]
-#[derive(Clone)]
-pub(in crate::dispatch) struct AssetsFetchProjectTransitionGate {
-    fetch_id: String,
-    pub project_pinned: std::sync::Arc<tokio::sync::Notify>,
-    pub continue_after_pin: std::sync::Arc<tokio::sync::Notify>,
-    pub import_admitted: std::sync::Arc<tokio::sync::Notify>,
-    pub continue_after_admission: std::sync::Arc<tokio::sync::Notify>,
-}
-
-#[cfg(test)]
-impl AssetsFetchProjectTransitionGate {
-    pub(in crate::dispatch) fn new(fetch_id: impl Into<String>) -> Self {
-        Self {
-            fetch_id: fetch_id.into(),
-            project_pinned: std::sync::Arc::new(tokio::sync::Notify::new()),
-            continue_after_pin: std::sync::Arc::new(tokio::sync::Notify::new()),
-            import_admitted: std::sync::Arc::new(tokio::sync::Notify::new()),
-            continue_after_admission: std::sync::Arc::new(tokio::sync::Notify::new()),
-        }
-    }
-}
-
-#[cfg(test)]
-static ASSETS_FETCH_PROJECT_TRANSITION_GATE: std::sync::OnceLock<
-    std::sync::Mutex<Option<AssetsFetchProjectTransitionGate>>,
-> = std::sync::OnceLock::new();
-
-#[cfg(test)]
-fn assets_fetch_project_transition_gate(
-) -> &'static std::sync::Mutex<Option<AssetsFetchProjectTransitionGate>> {
-    ASSETS_FETCH_PROJECT_TRANSITION_GATE.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-#[cfg(test)]
-pub(in crate::dispatch) fn install_assets_fetch_project_transition_gate(
-    gate: Option<AssetsFetchProjectTransitionGate>,
-) {
-    *assets_fetch_project_transition_gate()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = gate;
-}
-
-#[cfg(test)]
-fn current_assets_fetch_project_transition_gate(
-    fetch_id: &str,
-) -> Option<AssetsFetchProjectTransitionGate> {
-    assets_fetch_project_transition_gate()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .filter(|gate| gate.fetch_id == fetch_id)
-        .cloned()
-}
-
-#[cfg(test)]
-async fn wait_for_assets_fetch_project_transition_gate_after_pin(fetch_id: &str) {
-    let Some(gate) = current_assets_fetch_project_transition_gate(fetch_id) else {
-        return;
-    };
-    // notify_one retains a permit when the test has not polled its waiter yet.
-    gate.project_pinned.notify_one();
-    gate.continue_after_pin.notified().await;
-}
-
-#[cfg(test)]
-async fn wait_for_assets_fetch_project_transition_gate_after_admission(fetch_id: &str) {
-    let Some(gate) = current_assets_fetch_project_transition_gate(fetch_id) else {
-        return;
-    };
-    // Keep this milestone observable even if the test has not polled yet.
-    gate.import_admitted.notify_one();
-    gate.continue_after_admission.notified().await;
-}
-
-fn resolve_local_folder_fetch_path(id: &str, dir: Option<&str>) -> Result<PathBuf, CutError> {
-    let Some(dir) = dir.map(str::trim).filter(|d| !d.is_empty()) else {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            "local_folder fetch needs the original search dir",
-            "pass the same `dir` used for assets.search so the local hit can be fenced",
-        ));
-    };
-    let root = PathBuf::from(dir).canonicalize().map_err(|e| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            format!("local_folder search dir not found: {dir}"),
-            e.to_string(),
-        )
-    })?;
-    if !root.is_dir() {
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            format!(
-                "local_folder search dir is not a folder: {}",
-                root.display()
-            ),
-            "pass the folder originally used for assets.search",
-        ));
-    }
-    let path = PathBuf::from(id).canonicalize().map_err(|e| {
-        CutError::new(
-            error_codes::NOT_FOUND,
-            format!("local_folder hit not found: {id}"),
-            e.to_string(),
-        )
-    })?;
-    if !path.is_file() {
-        return Err(CutError::new(
-            error_codes::NOT_FOUND,
-            format!("local_folder hit is not a file: {}", path.display()),
-            "pass an id returned by assets.search",
-        ));
-    }
-    if !path.starts_with(&root) {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            "local_folder hit is outside the searched folder",
-            format!("{} is not under {}", path.display(), root.display()),
-        ));
-    }
-    Ok(path)
 }

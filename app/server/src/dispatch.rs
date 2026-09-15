@@ -545,17 +545,18 @@ async fn dispatch_validated(
         DispatchTarget::RecipeRun => recipe_run(state, args, actor).await.into(),
 
         DispatchTarget::AssembleBroll => assemble_broll(state, args, actor).await.into(),
-        DispatchTarget::AssembleRepurpose => {
-            speech_text::assemble_repurpose(state, args).await.into()
-        }
-        DispatchTarget::AssembleShorts => speech_text::assemble_shorts(state, args).await.into(),
-        DispatchTarget::AssembleFromScript => {
-            speech_text::assemble_from_script(state, args).await.into()
-        }
+        DispatchTarget::AssembleRepurpose => speech_text::assemble_repurpose(state, args, actor)
+            .await
+            .into(),
+        DispatchTarget::AssembleShorts => speech_text::assemble_shorts(state, args, actor)
+            .await
+            .into(),
+        DispatchTarget::AssembleFromScript => speech_text::assemble_from_script(state, args, actor)
+            .await
+            .into(),
         DispatchTarget::ScoreClip => speech_text::score_clip(state, args).await.into(),
 
-        // screen_record.* — the exhaustive domain list remains visible here;
-        // its adapters live in the bounded recorder router.
+        // screen_record.* keeps the exhaustive domain list here; bounded adapters own routing.
         target @ (DispatchTarget::ScreenRecordDoctor
         | DispatchTarget::ScreenRecordMicrophoneSelection
         | DispatchTarget::ScreenRecordSystemAudioProbe

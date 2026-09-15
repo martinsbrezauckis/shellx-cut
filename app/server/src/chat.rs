@@ -52,14 +52,16 @@ pub fn detect(agent: &str) -> bool {
     if !CHAT_AGENTS.contains(&agent) {
         return false;
     }
-    crate::gen::resolve_agent(executable_name(agent)).is_some()
+    crate::gen::provider_is_available(agent, executable_name(agent)).unwrap_or(false)
 }
 
-pub fn resolve_executable(agent: &str) -> Option<std::path::PathBuf> {
-    CHAT_AGENTS
-        .contains(&agent)
-        .then(|| crate::gen::resolve_agent(executable_name(agent)))
-        .flatten()
+pub(crate) fn provider_child_command(
+    agent: &str,
+) -> Result<crate::gen::ProviderChildCommand, String> {
+    if !CHAT_AGENTS.contains(&agent) {
+        return Err(format!("unknown Agent Chat provider '{agent}'"));
+    }
+    crate::gen::provider_child_command(agent, executable_name(agent))
 }
 
 /// Is the chat turn implemented for this provider?

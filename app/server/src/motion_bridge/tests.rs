@@ -11,7 +11,7 @@ mod edit_return;
 #[path = "tests/lineage_integrity.rs"]
 mod lineage_integrity;
 
-static MOTION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static MOTION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct EnvRestore {
     key: &'static str,

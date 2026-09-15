@@ -18,6 +18,11 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
+
+_PY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _PY_ROOT)
+import provider_child_launch
 
 MIN_RESTRICTED_VERSION = (2, 1, 248)
 _VERSION_RE = re.compile(r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(?![0-9.])")
@@ -50,7 +55,7 @@ def restricted_frame_bundle_available() -> tuple[bool, str | None]:
     return False, _unsupported_descriptor_reason()
 
 
-def resolve_restricted_claude(claude_bin: str) -> tuple[dict | None, str | None]:
+def resolve_restricted_claude(claude_bin: str, launch: dict | None = None) -> tuple[dict | None, str | None]:
     """Resolve and version-check a Claude executable without starting a model.
 
     Wrapper binaries are supported as long as their normal ``--version`` output
@@ -61,13 +66,14 @@ def resolve_restricted_claude(claude_bin: str) -> tuple[dict | None, str | None]
     bundle_ready, bundle_reason = restricted_frame_bundle_available()
     if not bundle_ready:
         return None, bundle_reason
-    path = shutil.which(claude_bin)
+    path = launch["executable"] if launch else shutil.which(claude_bin)
     if not path:
         return None, f"claude CLI not found ({claude_bin!r}) — honest not_run"
     try:
         cp = subprocess.run(
-            [path, "--version"], capture_output=True, text=True,
-            encoding="utf-8", timeout=15)
+            provider_child_launch.command(launch, ["--version"]) if launch else [path, "--version"],
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
+            env=provider_child_launch.environment(launch) if launch else None)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None, f"could not verify Claude restricted-mode version: {exc}"
     version_text = (cp.stdout.strip() or cp.stderr.strip())[:240]
@@ -85,20 +91,26 @@ def resolve_restricted_claude(claude_bin: str) -> tuple[dict | None, str | None]
             f"Claude Code {'.'.join(map(str, version))} lacks the required "
             "restricted file-confinement contract; requires >= "
             f"{'.'.join(map(str, MIN_RESTRICTED_VERSION))}")
-    return {"path": path, "version": version_text, "version_tuple": version}, None
+    return {"path": path, "version": version_text, "version_tuple": version, "launch": launch}, None
 
 
 def restricted_claude_argv(cli: dict, model: str, *, json_schema: str | None) -> list[str]:
     """Return the fixed capability boundary for a Claude judge invocation."""
     argv = [
-        cli["path"], "--safe-mode", "--restricted", "--strict-mcp-config",
+        "--safe-mode", "--restricted", "--strict-mcp-config",
         "--disallowedTools", "mcp__*", "--permission-prompts", "none",
         "--no-chrome", "-p", "--output-format", "json", "--model", model,
         "--tools", "Read", "--no-session-persistence",
     ]
     if json_schema is not None:
         argv += ["--json-schema", json_schema]
-    return argv
+    launch = cli.get("launch")
+    return provider_child_launch.command(launch, argv) if launch else [cli["path"]] + argv
+
+
+def child_environment(cli: dict) -> dict | None:
+    launch = cli.get("launch")
+    return provider_child_launch.environment(launch) if launch else None
 
 
 def _safe_relative_frame_path(value: object) -> str:

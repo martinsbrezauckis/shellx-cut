@@ -4,8 +4,8 @@ interface ServiceRuntimeInfo {
   model: string
   verb: string
   outcome: string
-  chatLabel: string
-  chatPrompt: string
+  readyActionLabel: string
+  readyActionTitle: string
   setupPrompt: string
   readyCopy: string
   setupCopy: string
@@ -20,8 +20,8 @@ export function serviceInfo(card: DoctorCard): ServiceRuntimeInfo | null {
       model: String(card.details?.model ?? 'OmniVoice TTS'),
       verb: String(card.details?.powers ?? 'audio.dub'),
       outcome: 'Creates a translated voice track',
-      chatLabel: 'Ask Chat to dub',
-      chatPrompt: 'Dub the timeline audio into Latvian',
+      readyActionLabel: 'Open Transcript tools',
+      readyActionTitle: 'Open Transcript Tools to choose a source and create a dubbed track',
       setupPrompt: 'Help me connect OmniVoice TTS for ShellX Cut dubbing',
       readyCopy: 'Ready for re-voicing translated speech into a new audio track.',
       setupCopy: 'Editing, captions, and export work without this optional service.',
@@ -30,7 +30,7 @@ export function serviceInfo(card: DoctorCard): ServiceRuntimeInfo | null {
       setupSteps: [
         'Start the OmniVoice service for ShellX Cut.',
         'If it uses another address, set CUT_DUB_ENDPOINT before opening the app.',
-        'Re-scan here, then ask Agent Chat or run audio.dub on a transcribed clip.',
+        'Re-scan here, then use Transcript Tools on a transcribed clip.',
       ],
     }
   }
@@ -39,8 +39,8 @@ export function serviceInfo(card: DoctorCard): ServiceRuntimeInfo | null {
       model: String(card.details?.model ?? 'Sortformer v2'),
       verb: String(card.details?.powers ?? 'media.diarize'),
       outcome: 'Adds speaker labels to transcripts',
-      chatLabel: 'Ask Chat to label speakers',
-      chatPrompt: 'Label the speakers in this video — diarize who is talking and when',
+      readyActionLabel: 'Open Transcript tools',
+      readyActionTitle: 'Open Transcript Tools to choose a source and label its speakers',
       setupPrompt: 'Help me connect Sortformer v2 for ShellX Cut speaker labels',
       readyCopy: 'Ready to label who speaks when for transcripts, multicam, and dubbing.',
       setupCopy: 'Editing and export work without this optional service.',
@@ -49,7 +49,7 @@ export function serviceInfo(card: DoctorCard): ServiceRuntimeInfo | null {
       setupSteps: [
         'Start the Sortformer v2 service for ShellX Cut.',
         'If it uses another address, set CUT_DIARIZE_ENDPOINT before opening the app.',
-        'Re-scan here, then label speakers from Agent Chat or media.diarize.',
+        'Re-scan here, then use Transcript Tools on a transcribed clip.',
       ],
     }
   }
@@ -58,6 +58,16 @@ export function serviceInfo(card: DoctorCard): ServiceRuntimeInfo | null {
 
 function openAgentTask(prompt: string) {
   document.dispatchEvent(new CustomEvent('cut:open-chat', { detail: { prompt } }))
+}
+
+function openTranscriptTools() {
+  document.dispatchEvent(new CustomEvent('cut:open-ui-surface', { detail: { id: 'transcript' } }))
+  // The Transcript panel may mount only after the surface change. Queue the
+  // menu request so a ready service card always lands on its actual human
+  // action instead of pre-filling Agent Chat with an unexecutable request.
+  window.setTimeout(() => {
+    document.dispatchEvent(new Event('cut:open-transcript-speech-actions'))
+  }, 0)
 }
 
 export function ServiceRuntimeActions({
@@ -76,11 +86,11 @@ export function ServiceRuntimeActions({
       <button
         className="env-btn env-btn--primary env-btn--sm"
         data-cut-env-service-primary={card.id}
-        data-cut-env-service-chat={card.id}
-        onClick={() => openAgentTask(svc.chatPrompt)}
-        title={svc.chatLabel}
+        data-cut-env-service-transcript={card.id}
+        onClick={openTranscriptTools}
+        title={svc.readyActionTitle}
       >
-        Use in Chat
+        {svc.readyActionLabel}
       </button>
     )
   }

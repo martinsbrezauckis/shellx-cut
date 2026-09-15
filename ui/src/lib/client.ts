@@ -114,6 +114,27 @@ export interface VerbResult<T = unknown> {
 export const UI_OPEN_PANELS = UI_OPEN_SURFACE_IDS
 export type UiOpenPanel = (typeof UI_OPEN_PANELS)[number]
 
+/** A reviewed Assemble proposal is bound to one project revision and the exact
+ * ranges/crop the server planned. It is reviewed input, not a persistent
+ * capability: the server rechecks it while holding the project write lock. */
+export interface AssemblePlanBinding {
+  schema: 'shellx-cut/assemble-plan-binding/1'
+  project_identity: {
+    schema: 'shellx-cut/project-identity/1'
+    origin_path_sha256: string
+    project_name: string
+  }
+  project_revision: string
+  verb: 'assemble.repurpose' | 'assemble.shorts' | 'assemble.from_script'
+  asset: string
+  selected_ranges: Array<[number, number]>
+  /** Canonical transcript word spans used to plan these exact ranges. */
+  transcript_sha256: string
+  materialization:
+    | { kind: 'reel' }
+    | { kind: 'shorts'; aspect: '9:16' | '1:1' | '4:5' | '16:9'; crop: [number, number, number, number] | null }
+}
+
 // Verb args map — one entry per verb in schema/verbs.json.
 // Keys ARE the wire names; keep in sync with the registry. Later additions
 // edit.crop, edit.crossfade, edit.move_marker, audio.add_music,
@@ -698,9 +719,9 @@ export interface VerbArgs {
   'assets.search': { provider: 'local_folder' | 'openverse' | 'archive_org' | 'wikimedia' | 'nasa' | 'stickers'; q: string; kind?: 'audio' | 'image' | 'video'; limit?: number; dir?: string; rationale?: string }
   'assets.fetch': { provider: 'local_folder' | 'openverse' | 'archive_org' | 'wikimedia' | 'nasa' | 'stickers'; id: string; kind?: 'audio' | 'image' | 'video'; dir?: string; rationale?: string }
   'assemble.broll': { slots: { query: string; at_ms: number; duration_ms: number }[]; source?: 'search' | 'generate'; provider?: string; dir?: string; kind?: 'video' | 'image' | 'audio'; track?: string; rationale?: string }
-  'assemble.repurpose': { asset: string; count?: number; target_ms?: number; prompt?: string }
-  'assemble.shorts': { asset: string; count?: number; target_ms?: number; aspect?: '9:16' | '1:1' | '4:5' | '16:9'; prompt?: string }
-  'assemble.from_script': { asset: string; script: string; min_score?: number }
+  'assemble.repurpose': { asset: string; count?: number; target_ms?: number; prompt?: string; apply?: AssemblePlanBinding }
+  'assemble.shorts': { asset: string; count?: number; target_ms?: number; aspect?: '9:16' | '1:1' | '4:5' | '16:9'; prompt?: string; apply?: AssemblePlanBinding }
+  'assemble.from_script': { asset: string; script: string; min_score?: number; apply?: AssemblePlanBinding }
   'score.clip': { clip?: string; asset?: string; range_ms?: [number, number] }
   // Integrated Cut recorder (doctor + autoedit + the polish orchestrator
   // + a fenced file export). config (autoedit) is accepted but currently ignored.

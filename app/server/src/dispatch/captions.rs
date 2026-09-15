@@ -20,6 +20,55 @@ pub(super) struct ReflowOpts {
     pub(super) min_gap_ms: u64,
 }
 
+/// Turn already-timed transcript words into the same readable line cues that
+/// `captions.generate` uses. Callers that already know their source words (for
+/// example Assemble's reviewed short plan) do not need to re-read transcripts
+/// or run ASR merely to create editable caption clips.
+pub(crate) fn caption_cues_from_timeline_words(
+    words: Vec<(u64, u64, String)>,
+    style_ref: Option<String>,
+    id_prefix: &str,
+    first_id: usize,
+) -> Vec<cut_core::CaptionClip> {
+    let mut clips = Vec::new();
+    let (mut text, mut start, mut end) = (String::new(), 0u64, 0u64);
+    let mut n = first_id;
+    for (s, e, word) in words {
+        let would = if text.is_empty() {
+            word.len()
+        } else {
+            text.len() + 1 + word.len()
+        };
+        if !text.is_empty() && (would > CAPTION_MAX_CHARS || s.saturating_sub(end) > CAPTION_GAP_MS)
+        {
+            n += 1;
+            clips.push(cut_core::CaptionClip {
+                id: format!("{id_prefix}{n:04}"),
+                text: std::mem::take(&mut text),
+                style_ref: style_ref.clone(),
+                range_ms: [start, end],
+            });
+        }
+        if text.is_empty() {
+            start = s;
+        } else {
+            text.push(' ');
+        }
+        text.push_str(&word);
+        end = e;
+    }
+    if !text.is_empty() {
+        n += 1;
+        clips.push(cut_core::CaptionClip {
+            id: format!("{id_prefix}{n:04}"),
+            text,
+            style_ref,
+            range_ms: [start, end],
+        });
+    }
+    clips
+}
+
 /// Reflow a caption track to satisfy the timed-text limits. TWO distinct fixes,
 /// because they address different violations:
 ///   - EXTEND (for reading speed): a too-fast cue (cps > max_cps) keeps its text
@@ -344,7 +393,9 @@ pub(super) async fn captions_import(
             .position(|t| t.kind == cut_core::TrackKind::Caption && t.id == "cap1")
             .or_else(|| {
                 tracks.iter().position(|t| {
-                    t.kind == cut_core::TrackKind::Caption && t.id != speech_text::TEXT_TRACK_ID
+                    t.kind == cut_core::TrackKind::Caption
+                        && t.id != speech_text::TEXT_TRACK_ID
+                        && t.id != speech_text::assemble_apply::ASSEMBLE_CAPTION_TRACK_ID
                 })
             }) {
             Some(i) => &mut tracks[i],
@@ -452,42 +503,7 @@ pub(super) async fn captions_generate(
         ));
     }
     // Group into caption lines: char budget + speech-gap breaks.
-    let mut clips: Vec<cut_core::CaptionClip> = Vec::new();
-    let (mut text, mut start, mut end) = (String::new(), 0u64, 0u64);
-    let mut n = 0usize;
-    for (s, e, w) in words {
-        let would = if text.is_empty() {
-            w.len()
-        } else {
-            text.len() + 1 + w.len()
-        };
-        if !text.is_empty() && (would > CAPTION_MAX_CHARS || s.saturating_sub(end) > CAPTION_GAP_MS)
-        {
-            n += 1;
-            clips.push(cut_core::CaptionClip {
-                id: format!("cap_{n:04}"),
-                text: std::mem::take(&mut text),
-                style_ref: a.style_ref.clone(),
-                range_ms: [start, end],
-            });
-        }
-        if text.is_empty() {
-            start = s;
-        } else {
-            text.push(' ');
-        }
-        text.push_str(&w);
-        end = e;
-    }
-    if !text.is_empty() {
-        n += 1;
-        clips.push(cut_core::CaptionClip {
-            id: format!("cap_{n:04}"),
-            text,
-            style_ref: a.style_ref.clone(),
-            range_ms: [start, end],
-        });
-    }
+    let clips = caption_cues_from_timeline_words(words, a.style_ref.clone(), "cap_", 0);
     let count = clips.len();
     // Build the POST-state tracks (find-or-create caption track "cap1",
     // replace its clips) and commit as ONE lowered edit._set_timeline step —
@@ -503,7 +519,9 @@ pub(super) async fn captions_generate(
             .position(|t| t.kind == cut_core::TrackKind::Caption && t.id == "cap1")
             .or_else(|| {
                 tracks.iter().position(|t| {
-                    t.kind == cut_core::TrackKind::Caption && t.id != speech_text::TEXT_TRACK_ID
+                    t.kind == cut_core::TrackKind::Caption
+                        && t.id != speech_text::TEXT_TRACK_ID
+                        && t.id != speech_text::assemble_apply::ASSEMBLE_CAPTION_TRACK_ID
                 })
             });
         let track = match caption_idx {
@@ -955,6 +973,7 @@ pub(super) async fn captions_translate(
                     store.project.tracks.iter().find(|tr| {
                         tr.kind == cut_core::TrackKind::Caption
                             && tr.id != speech_text::TEXT_TRACK_ID
+                            && tr.id != speech_text::assemble_apply::ASSEMBLE_CAPTION_TRACK_ID
                     })
                 })
                 .or_else(|| {

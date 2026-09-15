@@ -16,6 +16,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use crate::project_materialization::{ProjectMaterialization, ProjectMaterializationPin};
+
 fn parse_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, CutError> {
     serde_json::from_value(args).map_err(|e| {
         CutError::new(
@@ -574,6 +576,24 @@ pub(crate) async fn generate_insert(
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
+    generate_insert_materialized(state, args, actor, None).await
+}
+
+async fn generate_insert_under_materialization(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+    materialization: &ProjectMaterialization<'_>,
+) -> Result<VerbResult, CutError> {
+    generate_insert_materialized(state, args, actor, Some(materialization)).await
+}
+
+async fn generate_insert_materialized(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+    materialization: Option<&ProjectMaterialization<'_>>,
+) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         id: String,
@@ -631,6 +651,20 @@ pub(crate) async fn generate_insert(
         let guard = state.project.read().await;
         guard.as_ref().ok_or_else(no_project)?;
     }
+
+    let direct_materialization = if materialization.is_none() {
+        Some(
+            ProjectMaterializationPin::capture(state, "Generate")
+                .await?
+                .lock_verified(state)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let materialization = materialization
+        .or(direct_materialization.as_ref())
+        .expect("direct or caller-owned Generate materialization is present");
 
     let rationale = a
         .rationale
@@ -691,7 +725,27 @@ pub(crate) async fn generate_insert(
         .unwrap_or("")
         .to_string();
 
-    let native = dispatch_send(state, lowering_verb, lowering_args.clone(), actor.clone()).await;
+    let native = match lowering_verb {
+        "motion.template_to_cut" => {
+            crate::motion_bridge::motion_template_to_cut_under_materialization(
+                state,
+                lowering_args.clone(),
+                actor.clone(),
+                materialization,
+            )
+            .await
+            .unwrap_or_else(VerbResult::err)
+        }
+        "motion.script_to_cut" => crate::motion_bridge::motion_script_to_cut_under_materialization(
+            state,
+            lowering_args.clone(),
+            actor.clone(),
+            materialization,
+        )
+        .await
+        .unwrap_or_else(VerbResult::err),
+        _ => dispatch_send(state, lowering_verb, lowering_args.clone(), actor.clone()).await,
+    };
     if !native.ok {
         if let Some(err) = native.error {
             let mut err = err;
@@ -742,15 +796,29 @@ const GENERATE_PROMPT_TIMEOUT_MS_DEFAULT: u64 = 120_000;
 /// place (gen.rs ladder: PATH first, then known install dirs) so the Python
 /// shims never guess platform layouts; a null for every agent lets the shim
 /// return an honest not_run.
-fn generate_agent_paths() -> Value {
-    let mut map = Map::new();
-    for name in ["claude", "codex", "grok"] {
-        let path = crate::gen::resolve_agent(name)
-            .map(|p| Value::String(p.to_string_lossy().into_owned()))
-            .unwrap_or(Value::Null);
-        map.insert(name.to_string(), path);
+fn generate_agent_paths(agent: &str) -> Result<Value, String> {
+    let launches = crate::provider_runtime::provider_launches_from_process_environment()?;
+    let Some(launches) = launches else {
+        let mut map = Map::new();
+        for name in ["claude", "codex", "grok"] {
+            let path = crate::gen::resolve_agent(name)
+                .map(|p| Value::String(p.to_string_lossy().into_owned()))
+                .unwrap_or(Value::Null);
+            map.insert(name.to_string(), path);
+        }
+        return Ok(Value::Object(map));
+    };
+
+    let handoff = crate::provider_runtime::python_child_launches_value(
+        &launches,
+        &["claude", "codex", "grok"],
+    );
+    if agent != "auto" && handoff["launches"].get(agent).is_none() {
+        return Err(format!(
+            "selected Generate planner provider '{agent}' is absent from the admitted provider runtime context"
+        ));
     }
-    Value::Object(map)
+    Ok(handoff)
 }
 
 fn find_generate_prompt_adapter() -> Option<PathBuf> {
@@ -1044,6 +1112,11 @@ pub(crate) async fn generate_from_prompt(
             "allowed agent values: auto, claude, codex, grok",
         ));
     }
+    let project_pin = if policy == "insert" {
+        Some(ProjectMaterializationPin::capture(state, "Generate").await?)
+    } else {
+        None
+    };
 
     let project_geometry = {
         let guard = state.project.read().await;
@@ -1068,12 +1141,19 @@ pub(crate) async fn generate_from_prompt(
         .unwrap_or(GENERATE_PROMPT_TIMEOUT_MS_DEFAULT)
         .clamp(1_000, 300_000);
     let motion_ok = crate::motion_bridge::motion_available();
+    let agents = generate_agent_paths(&agent).map_err(|reason| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "Generate planner provider context is unavailable",
+            reason,
+        )
+    })?;
     let request = json!({
         "schema": "shellx-cut/generate-prompt-request/1",
         "prompt": prompt,
         "policy": policy,
         "agent": agent,
-        "agents": generate_agent_paths(),
+        "agents": agents,
         "timeout_ms": timeout_ms,
         "template_id": a.template_id,
         "at_ms": a.at_ms,
@@ -1206,6 +1286,11 @@ pub(crate) async fn generate_from_prompt(
             return Ok(VerbResult::ok(result));
         }
         "insert" => {
+            let _project_transition = project_pin
+                .as_ref()
+                .expect("insert policy captures a Generate project pin")
+                .lock_verified(state)
+                .await?;
             let rationale = request
                 .get("rationale")
                 .and_then(|v| v.as_str())
@@ -1218,9 +1303,8 @@ pub(crate) async fn generate_from_prompt(
                         .map(String::from)
                 })
                 .unwrap_or_else(|| format!("generate.from_prompt {template_id}"));
-            let insert = dispatch_send(
+            let insert = generate_insert_under_materialization(
                 state,
-                "generate.insert",
                 json!({
                     "id": template_id,
                     "params": params,
@@ -1228,8 +1312,10 @@ pub(crate) async fn generate_from_prompt(
                     "rationale": rationale,
                 }),
                 actor,
+                &_project_transition,
             )
-            .await;
+            .await
+            .unwrap_or_else(VerbResult::err);
             if !insert.ok {
                 return Ok(VerbResult::ok(generate_prompt_result(
                     "error",
@@ -1889,6 +1975,7 @@ async fn generate_storyboard_insert_scenes(
     storyboard: &Value,
     actor: Actor,
     rationale: Option<String>,
+    materialization: &ProjectMaterialization<'_>,
 ) -> Result<(Value, Vec<String>), GenerateStoryboardInsertError> {
     let scenes = storyboard
         .get("scenes")
@@ -1951,9 +2038,8 @@ async fn generate_storyboard_insert_scenes(
         let scene_rationale = rationale
             .clone()
             .unwrap_or_else(|| format!("generate.storyboard {storyboard_id} scene {scene_id}"));
-        let insert = dispatch_send(
+        let insert = generate_insert_under_materialization(
             state,
-            "generate.insert",
             json!({
                 "id": template_id,
                 "params": generate_storyboard_scene_params(scene),
@@ -1961,8 +2047,10 @@ async fn generate_storyboard_insert_scenes(
                 "rationale": scene_rationale,
             }),
             actor.clone(),
+            materialization,
         )
-        .await;
+        .await
+        .unwrap_or_else(VerbResult::err);
         if !insert.ok {
             let reason = insert
                 .error
@@ -2139,19 +2227,31 @@ pub(crate) async fn generate_storyboard(
             "pass selected media, transcript, brand, or platform context as an object",
         ));
     }
+    let project_pin = if policy == "insert" {
+        Some(ProjectMaterializationPin::capture(state, "Generate").await?)
+    } else {
+        None
+    };
 
     let timeout_ms = a
         .timeout_ms
         .unwrap_or(GENERATE_STORYBOARD_TIMEOUT_MS_DEFAULT)
         .clamp(1_000, 300_000);
     let motion_ok = crate::motion_bridge::motion_available();
+    let agents = generate_agent_paths(&agent).map_err(|reason| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "Generate storyboard provider context is unavailable",
+            reason,
+        )
+    })?;
     let request = json!({
         "schema": "shellx-cut/generate-storyboard-request/1",
         "input": input,
         "mode": mode,
         "policy": policy,
         "agent": agent,
-        "agents": generate_agent_paths(),
+        "agents": agents,
         "timeout_ms": timeout_ms,
         "answers": answers,
         "context": context,
@@ -2263,8 +2363,20 @@ pub(crate) async fn generate_storyboard(
         };
     }
     if final_status == "completed" && policy == "insert" {
+        let _project_transition = project_pin
+            .as_ref()
+            .expect("insert policy captures a Generate project pin")
+            .lock_verified(state)
+            .await?;
         let evidence = generate_storyboard_set_policy_evidence(&evidence, "insert", true);
-        return match generate_storyboard_insert_scenes(state, &storyboard, actor, a.rationale).await
+        return match generate_storyboard_insert_scenes(
+            state,
+            &storyboard,
+            actor,
+            a.rationale,
+            &_project_transition,
+        )
+        .await
         {
             Ok((insert, op_ids)) => {
                 let mut result = generate_storyboard_result(

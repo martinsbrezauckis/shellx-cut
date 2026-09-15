@@ -14,6 +14,14 @@ export const SETTINGS_CATEGORY_IDS = [
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORY_IDS)[number]
 
+// Keep the native category rail addressable through the same stable identity
+// that macOS Accessibility exposes as AXDOMIdentifier. The data-cut attribute
+// remains the browser-harness contract; this ID supplies a semantic native
+// lookup without adding any visible UI metadata.
+export function settingsCategoryDomId(id: SettingsCategoryId): `cut-settings-category-${SettingsCategoryId}` {
+  return `cut-settings-category-${id}`
+}
+
 export interface SettingsCategory {
   id: SettingsCategoryId
   label: string

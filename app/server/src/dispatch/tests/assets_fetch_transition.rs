@@ -1,41 +1,18 @@
 //! Deterministic ownership regression for a held provider import versus project.open.
 
+use super::transition_test_support::{
+    create_project, transition_gate_test_lock, AssetsFetchTransitionGateReset, ONE_BY_ONE_PNG,
+    TEST_TIMEOUT,
+};
 use super::*;
 use crate::dispatch::edit_tools::{
     install_assets_fetch_project_transition_gate, AssetsFetchProjectTransitionGate,
 };
 use crate::events::Event;
-use std::time::Duration;
-
-const TEST_TIMEOUT: Duration = Duration::from_secs(2);
-
-const ONE_BY_ONE_PNG: &[u8] = &[
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
-    0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 8, 215, 99, 248, 207, 192, 240, 31, 0, 5,
-    0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
-];
-
-struct AssetsFetchTransitionGateReset;
-
-impl Drop for AssetsFetchTransitionGateReset {
-    fn drop(&mut self) {
-        install_assets_fetch_project_transition_gate(None);
-    }
-}
-
-async fn create_project(state: &AppState, name: &str, path: &std::path::Path) {
-    let created = dispatch(
-        state,
-        "project.create",
-        json!({"name": name, "dir": path}),
-        test_actor(),
-    )
-    .await;
-    assert!(created.ok, "{name} create failed: {:?}", created.error);
-}
 
 #[tokio::test]
 async fn assets_fetch_pins_project_until_import_job_admission_then_project_open_switches_cleanly() {
+    let _test_lock = transition_gate_test_lock().lock().await;
     let root = tempfile::tempdir().unwrap();
     let a_path = root.path().join("a.cutproj");
     let b_path = root.path().join("b.cutproj");

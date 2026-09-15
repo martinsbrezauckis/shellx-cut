@@ -90,6 +90,38 @@ fn isolated_environment_keeps_auth_in_place_and_drops_parent_state() {
 }
 
 #[test]
+fn provider_context_grok_policy_derives_login_from_admitted_home() {
+    let workspace = tempfile::Builder::new()
+        .prefix("provider-context-grok-")
+        .tempdir_in(crate::provider_runtime::test_fixture_root())
+        .unwrap();
+    let environment = isolated_environment_for_provider(
+        Some(&BTreeMap::from([
+            ("PATH".into(), "/runner/bin".into()),
+            ("HOME".into(), "/runner/canonical-home".into()),
+        ])),
+        workspace.path(),
+        "127.0.0.1:6161",
+        "agent:test:agent.chat",
+    )
+    .unwrap();
+    let vars: BTreeMap<_, _> = environment.vars.into_iter().collect();
+    assert_eq!(
+        vars.get(&OsString::from("GROK_AUTH_PATH")),
+        Some(
+            &std::path::Path::new("/runner/canonical-home")
+                .join(".grok")
+                .join("auth.json")
+                .into_os_string()
+        )
+    );
+    assert_eq!(
+        vars.get(&OsString::from("HOME")),
+        Some(&workspace.path().join("os-home").into_os_string())
+    );
+}
+
+#[test]
 fn capability_contract_is_flag_based_and_fails_closed() {
     let help = REQUIRED_HELP_TOKENS.join(" ");
     for version in ["", "other CLI", "current Grok build"] {

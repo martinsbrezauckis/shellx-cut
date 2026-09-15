@@ -188,6 +188,7 @@ export default function LeftPanel({
         <div className="lp__pane lp__pane--generate" style={{ display: tab === 'generate' ? 'flex' : 'none' }}>
           <GenerateTemplatesWorkspace
             project={project}
+            projectScope={projectScope}
             playheadMs={playheadMs}
             selectedClipId={selectedClipId}
             onInserted={onProjectChanged}

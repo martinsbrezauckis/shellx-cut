@@ -7,6 +7,13 @@
 
 use super::*;
 
+pub(super) mod assemble_apply;
+use assemble_apply::{
+    apply_planned_ranges, aspect_label, aspect_parts, bind_plan, binding_value,
+    capture_plan_context, ensure_plan_context_current, transcript_content_sha256, Materialization,
+    PlanBinding,
+};
+
 /// One auto-selected highlight segment (assemble.repurpose).
 struct RepurposeSeg {
     word_range: [usize; 2],
@@ -134,12 +141,13 @@ fn repurpose_segments(
     segs
 }
 
-/// assemble.repurpose{asset, count?, target_ms?, prompt?} — NON-MUTATING auto-highlight
-/// selection. Returns ranked candidate clips; the agent/user feeds a clip's word_range
-/// into transcript.assemble (reel) or its range_ms into a sub-clip + render.reframe (short).
+/// assemble.repurpose{asset, count?, target_ms?, prompt?, apply?} — a reviewed
+/// auto-highlight plan by default; `apply` explicitly materializes its ranges
+/// as one editable, undoable timeline operation.
 pub(super) async fn assemble_repurpose(
     state: &AppState,
     args: Value,
+    actor: Actor,
 ) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
@@ -147,8 +155,13 @@ pub(super) async fn assemble_repurpose(
         count: Option<usize>,
         target_ms: Option<u64>,
         prompt: Option<String>,
+        apply: Option<PlanBinding>,
     }
-    let a: Args = parse_args(args)?;
+    let a: Args = parse_args(args.clone())?;
+    let plan_context = match a.apply.is_none() {
+        true => Some(capture_plan_context(state).await?),
+        false => None,
+    };
     let count = a.count.unwrap_or(5).clamp(1, 50);
     let target_ms = a.target_ms.unwrap_or(30_000).clamp(3_000, 600_000);
     let t = load_transcript(state, &a.asset).await?;
@@ -160,6 +173,31 @@ pub(super) async fn assemble_repurpose(
         ));
     }
     let segs = repurpose_segments(&t.words, count, target_ms, a.prompt.as_deref());
+    let selected_ranges: Vec<[usize; 2]> = segs.iter().map(|segment| segment.word_range).collect();
+    let transcript_sha256 = transcript_content_sha256(&t)?;
+    if let Some(binding) = a.apply {
+        return apply_planned_ranges(
+            state,
+            actor,
+            binding,
+            "assemble.repurpose",
+            &a.asset,
+            selected_ranges,
+            Materialization::Reel,
+            args,
+        )
+        .await;
+    }
+    let plan_context = plan_context.expect("non-apply plan captured a context");
+    ensure_plan_context_current(state, &plan_context).await?;
+    let plan_binding = bind_plan(
+        plan_context,
+        "assemble.repurpose",
+        &a.asset,
+        selected_ranges,
+        transcript_sha256,
+        Materialization::Reel,
+    );
     let clips: Vec<Value> = segs
         .iter()
         .enumerate()
@@ -180,7 +218,8 @@ pub(super) async fn assemble_repurpose(
         "count": clips.len(),
         "target_ms": target_ms,
         "clips": clips,
-        "next": "feed a clip's word_range into transcript.assemble{ranges:[[lo,hi]]} for a reel, or its range_ms into a sub-clip + render.reframe for a vertical short",
+        "plan_binding": binding_value(&plan_binding)?,
+        "next": "review the ranked clips, then resend this exact request with apply:plan_binding plus request_id and expected_revision to add the editable reel in one Undo step",
     })))
 }
 
@@ -253,7 +292,11 @@ fn short_title(text: &str) -> String {
 /// INVALID_ARGS error. A missing probe → `reframe.crop = null` (+ a note),
 /// never a panic; a missing perception report → `factors` omitted, the
 /// transcript score still ranks the shorts.
-pub(super) async fn assemble_shorts(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
+pub(super) async fn assemble_shorts(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         asset: String,
@@ -261,8 +304,13 @@ pub(super) async fn assemble_shorts(state: &AppState, args: Value) -> Result<Ver
         target_ms: Option<u64>,
         aspect: Option<String>,
         prompt: Option<String>,
+        apply: Option<PlanBinding>,
     }
-    let a: Args = parse_args(args)?;
+    let a: Args = parse_args(args.clone())?;
+    let plan_context = match a.apply.is_none() {
+        true => Some(capture_plan_context(state).await?),
+        false => None,
+    };
     let count = a.count.unwrap_or(5).clamp(1, 50);
     let target_ms = a.target_ms.unwrap_or(30_000).clamp(3_000, 600_000);
     let aspect = a.aspect.clone().unwrap_or_else(|| "9:16".to_string());
@@ -289,7 +337,7 @@ pub(super) async fn assemble_shorts(state: &AppState, args: Value) -> Result<Ver
     // lock that is dropped before the (separately-locking) perception load. The
     // crop is identical for every short (same source → same target aspect), so
     // compute it ONCE. Missing/garbage probe → None → reframe.crop = null.
-    let (src_w, src_h) = {
+    let (src_w, src_h, project_width, project_height) = {
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
         let asset = store.project.assets.get(&a.asset);
@@ -299,7 +347,12 @@ pub(super) async fn assemble_shorts(state: &AppState, args: Value) -> Result<Ver
                 .and_then(|p| p.get(k))
                 .and_then(|v| v.as_u64())
         };
-        (dim("width"), dim("height"))
+        (
+            dim("width"),
+            dim("height"),
+            store.project.settings.width,
+            store.project.settings.height,
+        )
     };
     let crop = match (src_w, src_h) {
         (Some(w), Some(h)) => center_crop_fractions(w as f64, h as f64, target_ar),
@@ -313,7 +366,11 @@ pub(super) async fn assemble_shorts(state: &AppState, args: Value) -> Result<Ver
     // BEST-EFFORT engagement factors: present only when the asset has a
     // perception report. A transcript-only asset still ranks (via the repurpose
     // score) and simply omits `factors` — never an error.
-    let report = load_perception_report(state, &a.asset).await.ok();
+    let report = if a.apply.is_none() {
+        load_perception_report(state, &a.asset).await.ok()
+    } else {
+        None
+    };
 
     let shorts: Vec<Value> = segs
         .iter()
@@ -350,14 +407,81 @@ pub(super) async fn assemble_shorts(state: &AppState, args: Value) -> Result<Ver
         })
         .collect();
 
+    let selected_ranges: Vec<[usize; 2]> = segs.iter().map(|segment| segment.word_range).collect();
+    if let Some(binding) = a.apply {
+        let crop = crop.ok_or_else(|| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "the reviewed short plan has no usable source crop",
+                "run media.probe, review the short plan again, then apply it",
+            )
+        })?;
+        return apply_planned_ranges(
+            state,
+            actor,
+            binding,
+            "assemble.shorts",
+            &a.asset,
+            selected_ranges,
+            Materialization::Shorts {
+                aspect,
+                crop: Some(crop),
+            },
+            args,
+        )
+        .await;
+    }
+    let plan_context = plan_context.expect("non-apply plan captured a context");
+    ensure_plan_context_current(state, &plan_context).await?;
+
+    let [required_width, required_height] = aspect_parts(&aspect).expect("validated above");
+    let project_aspect = aspect_label(project_width, project_height);
+    let aspect_matches = u64::from(project_width) * u64::from(required_height)
+        == u64::from(project_height) * u64::from(required_width);
+    let materialization = if crop.is_none() {
+        json!({
+            "eligible": false,
+            "required_aspect": aspect,
+            "project_aspect": project_aspect,
+            "reason": "The source has no usable frame geometry; run media.probe before applying this short plan.",
+        })
+    } else if !aspect_matches {
+        json!({
+            "eligible": false,
+            "required_aspect": aspect,
+            "project_aspect": project_aspect,
+            "reason": format!("This plan needs a {aspect} project, but the open project is {project_aspect}. Change the project format and plan again."),
+        })
+    } else {
+        json!({
+            "eligible": true,
+            "required_aspect": aspect,
+            "project_aspect": project_aspect,
+        })
+    };
+    let transcript_sha256 = transcript_content_sha256(&t)?;
+    let plan_binding = bind_plan(
+        plan_context,
+        "assemble.shorts",
+        &a.asset,
+        selected_ranges,
+        transcript_sha256,
+        Materialization::Shorts {
+            aspect: aspect.clone(),
+            crop,
+        },
+    );
+
     let mut out = serde_json::Map::new();
     out.insert("asset".into(), json!(a.asset));
     out.insert("count".into(), json!(shorts.len()));
     out.insert("target_ms".into(), json!(target_ms));
     out.insert("aspect".into(), json!(aspect));
     out.insert("shorts".into(), Value::Array(shorts));
+    out.insert("plan_binding".into(), binding_value(&plan_binding)?);
+    out.insert("materialization".into(), materialization);
     out.insert("next".into(), json!(format!(
-        "for each short: edit.insert its range_ms on a {aspect} project, apply reframe.crop via edit.crop, then captions from the transcript span"
+        "review the short ranges, then resend this exact request with apply:plan_binding plus request_id and expected_revision to add editable clips, their planned source crops, and transcript-derived captions on a {aspect} project"
     )));
     if crop.is_none() {
         out.insert(
@@ -796,22 +920,27 @@ fn match_script_to_words(
 /// assemble.from_script{asset, script, min_score?} — SCRIPT-TO-TIMELINE matching:
 /// given a written script and a transcribed asset, find the transcript span that
 /// best matches each script line (in order) so the chosen spans can be strung
-/// into a cut that follows the script. NON-MUTATING: returns the ordered match
-/// plan; never edits the timeline. The matched `word_range`s feed straight into
-/// `transcript.assemble` (the actual reel build). Deterministic token-overlap
-/// matcher (no model) — a low-confidence line is reported unmatched, not
-/// force-fit. Requires the asset to be transcribed (media.transcribe).
+/// into a cut that follows the script. The default returns the ordered review
+/// plan; `apply` materializes only its matched word ranges. Deterministic
+/// token-overlap matcher (no model) — a low-confidence line is reported
+/// unmatched, never force-fit. Requires the asset to be transcribed.
 pub(super) async fn assemble_from_script(
     state: &AppState,
     args: Value,
+    actor: Actor,
 ) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         asset: String,
         script: String,
         min_score: Option<f64>,
+        apply: Option<PlanBinding>,
     }
-    let a: Args = parse_args(args)?;
+    let a: Args = parse_args(args.clone())?;
+    let plan_context = match a.apply.is_none() {
+        true => Some(capture_plan_context(state).await?),
+        false => None,
+    };
     let min_score = a.min_score.unwrap_or(0.35).clamp(0.0, 1.0);
     if a.script.split_whitespace().next().is_none() {
         return Err(CutError::new(
@@ -833,6 +962,7 @@ pub(super) async fn assemble_from_script(
     let matched = segs.iter().filter(|s| s.matched).count();
     let total_lines = segs.len();
     let assemble_ranges: Vec<[usize; 2]> = segs.iter().filter_map(|s| s.word_range).collect();
+    let transcript_sha256 = transcript_content_sha256(&transcript)?;
     let segments: Vec<Value> = segs
         .iter()
         .map(|s| {
@@ -847,6 +977,29 @@ pub(super) async fn assemble_from_script(
             })
         })
         .collect();
+    if let Some(binding) = a.apply {
+        return apply_planned_ranges(
+            state,
+            actor,
+            binding,
+            "assemble.from_script",
+            &a.asset,
+            assemble_ranges,
+            Materialization::Reel,
+            args,
+        )
+        .await;
+    }
+    let plan_context = plan_context.expect("non-apply plan captured a context");
+    ensure_plan_context_current(state, &plan_context).await?;
+    let plan_binding = bind_plan(
+        plan_context,
+        "assemble.from_script",
+        &a.asset,
+        assemble_ranges.clone(),
+        transcript_sha256,
+        Materialization::Reel,
+    );
     Ok(VerbResult::ok(json!({
         "asset": a.asset,
         "min_score": min_score,
@@ -854,7 +1007,8 @@ pub(super) async fn assemble_from_script(
         "matched": matched,
         "segments": segments,
         "assemble_ranges": assemble_ranges,
-        "next": "feed assemble_ranges into transcript.assemble to build the reel in script order",
+        "plan_binding": binding_value(&plan_binding)?,
+        "next": "unmatched lines stay visible and are not fabricated; review the matches, then resend this exact request with apply:plan_binding plus request_id and expected_revision to add only the matched ranges in one Undo step",
     })))
 }
 

@@ -13,7 +13,135 @@
 //! timeout) + import live in dispatch.rs `assets_generate`. Honest degradation: the
 //! CLI absent → the verb returns `ok:false` with a clear reason (never a fake asset).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// One provider command resolved for this child process.  With no Runner
+/// provider context it retains Cut's ordinary resolver behavior.  With an
+/// admitted context it contains only the exact executable, optional entrypoint,
+/// and effective child environment selected by the Runner.
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderChildCommand {
+    executable: PathBuf,
+    entrypoint: Option<PathBuf>,
+    admitted_environment: Option<BTreeMap<String, String>>,
+    available: bool,
+}
+
+impl ProviderChildCommand {
+    pub(crate) fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    pub(crate) fn available(&self) -> bool {
+        self.available
+    }
+
+    pub(crate) fn admitted_environment(&self) -> Option<&BTreeMap<String, String>> {
+        self.admitted_environment.as_ref()
+    }
+
+    fn prefixed_arguments(&self, arguments: &[String]) -> Vec<String> {
+        let mut prefixed =
+            Vec::with_capacity(arguments.len() + usize::from(self.entrypoint.is_some()));
+        if let Some(entrypoint) = &self.entrypoint {
+            prefixed.push(entrypoint.to_string_lossy().into_owned());
+        }
+        prefixed.extend(arguments.iter().cloned());
+        prefixed
+    }
+
+    pub(crate) fn std_command(
+        &self,
+        arguments: &[String],
+    ) -> Result<std::process::Command, String> {
+        agent_std_command(self.executable(), &self.prefixed_arguments(arguments))
+    }
+
+    pub(crate) fn tokio_command(
+        &self,
+        arguments: &[String],
+    ) -> Result<tokio::process::Command, String> {
+        agent_tokio_command(self.executable(), &self.prefixed_arguments(arguments))
+    }
+
+    pub(crate) fn apply_admitted_environment(
+        &self,
+        command: &mut tokio::process::Command,
+        temporary_directory: &Path,
+    ) -> Result<(), String> {
+        if let Some(environment) = self.admitted_environment() {
+            let temporary_directory = admitted_temporary_directory(temporary_directory)?;
+            command.env_clear();
+            command.envs(environment);
+            for name in ["TMPDIR", "TEMP", "TMP"] {
+                command.env(name, temporary_directory);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply_admitted_std_environment(
+        &self,
+        command: &mut std::process::Command,
+        temporary_directory: &Path,
+    ) -> Result<(), String> {
+        if let Some(environment) = self.admitted_environment() {
+            let temporary_directory = admitted_temporary_directory(temporary_directory)?;
+            command.env_clear();
+            command.envs(environment);
+            for name in ["TMPDIR", "TEMP", "TMP"] {
+                command.env(name, temporary_directory);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn admitted_temporary_directory(directory: &Path) -> Result<&Path, String> {
+    if !directory.is_absolute() || !directory.is_dir() {
+        return Err(format!(
+            "admitted provider temporary directory must be an existing absolute directory: {}",
+            directory.display()
+        ));
+    }
+    Ok(directory)
+}
+
+/// Resolve a logical provider for one child process.  A Runner context is an
+/// admission decision: bad or incomplete context is an error, never a reason to
+/// search Cut's inherited PATH or home-directory ladder.
+pub(crate) fn provider_child_command(
+    logical_provider: &str,
+    ordinary_program: &str,
+) -> Result<ProviderChildCommand, String> {
+    match crate::provider_runtime::selected_from_process_environment(logical_provider)? {
+        Some(selected) => Ok(ProviderChildCommand {
+            executable: selected.executable,
+            entrypoint: selected.entrypoint,
+            admitted_environment: Some(selected.environment),
+            available: true,
+        }),
+        None => {
+            let resolved = resolve_agent(ordinary_program);
+            let available = resolved.is_some();
+            let executable = resolved.unwrap_or_else(|| PathBuf::from(ordinary_program));
+            Ok(ProviderChildCommand {
+                executable,
+                entrypoint: None,
+                admitted_environment: None,
+                available,
+            })
+        }
+    }
+}
+
+pub(crate) fn provider_is_available(
+    logical_provider: &str,
+    ordinary_program: &str,
+) -> Result<bool, String> {
+    Ok(provider_child_command(logical_provider, ordinary_program)?.available())
+}
 
 /// The CLI binary for a provider (`codex` → gpt-image, `grok` → grok-imagine,
 /// `antigravity` → `agy`).
@@ -24,19 +152,6 @@ pub fn cli_for(provider: &str) -> Option<&'static str> {
         "antigravity" => Some("agy"),
         _ => None,
     }
-}
-
-/// Is the provider's CLI installed anywhere we can launch it? Maps the provider to
-/// its binary name (`cli_for`), then uses the FULL resolution ladder (process PATH
-/// FIRST, then the explicit agent install dirs including ~/.grok/bin and
-/// Homebrew/npm dirs) via [`resolve_agent`] — NOT a process-PATH-only scan.
-/// The on-PATH case preserves normal resolution because `resolve_agent` searches
-/// the process PATH first. Mirrors
-/// `chat::detect` / `translate::detect_cli`.
-pub fn detect(provider: &str) -> bool {
-    cli_for(provider)
-        .map(|bin| resolve_agent(bin).is_some())
-        .unwrap_or(false)
 }
 
 // ── Agent-CLI resolution (the "shellx approach": PATH is the LAST resort) ──────
@@ -644,6 +759,88 @@ mod tests {
     fn touch_exe(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"#!/bin/sh\n").unwrap();
+    }
+
+    #[test]
+    fn provider_context_command_keeps_explicit_entrypoint_and_child_environment() {
+        let command = ProviderChildCommand {
+            executable: PathBuf::from("/runtime/node"),
+            entrypoint: Some(PathBuf::from("/runtime/codex.mjs")),
+            admitted_environment: Some(BTreeMap::from([
+                ("HOME".into(), "/runtime/home".into()),
+                ("PATH".into(), "/runtime/bin".into()),
+            ])),
+            available: true,
+        };
+        let process = command
+            .std_command(&["exec".into(), "--help".into()])
+            .unwrap();
+        assert_eq!(process.get_program(), std::ffi::OsStr::new("/runtime/node"));
+        assert_eq!(
+            process.get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new("/runtime/codex.mjs"),
+                std::ffi::OsStr::new("exec"),
+                std::ffi::OsStr::new("--help"),
+            ]
+        );
+        let temporary_directory = crate::provider_runtime::test_fixture_root();
+        let mut process = command.std_command(&[]).unwrap();
+        command
+            .apply_admitted_std_environment(&mut process, &temporary_directory)
+            .unwrap();
+        assert!(process
+            .get_envs()
+            .any(|(name, value)| name == "HOME"
+                && value == Some(std::ffi::OsStr::new("/runtime/home"))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_context_command_executes_with_only_selected_environment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::Builder::new()
+            .prefix("provider-child-command-")
+            .tempdir_in(crate::provider_runtime::test_fixture_root())
+            .unwrap();
+        let executable = fixture.path().join("fake-provider");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s|%s|%s|%s|%s|%s|%s\\n' \"$HOME\" \"$PATH\" \"$TMPDIR\" \"$TEMP\" \"$TMP\" \"$CUT_PROVIDER_TEST_SENTINEL\" \"$1\"\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+        let command = ProviderChildCommand {
+            executable,
+            entrypoint: None,
+            admitted_environment: Some(BTreeMap::from([
+                ("HOME".into(), "/runner/home".into()),
+                ("PATH".into(), "/runner/bin".into()),
+            ])),
+            available: true,
+        };
+        let temporary_directory = fixture.path().join("provider-tmp");
+        std::fs::create_dir_all(&temporary_directory).unwrap();
+        let mut process = command.std_command(&["argument".into()]).unwrap();
+        process.env(
+            "CUT_PROVIDER_TEST_SENTINEL",
+            "must-not-reach-admitted-child",
+        );
+        command
+            .apply_admitted_std_environment(&mut process, &temporary_directory)
+            .unwrap();
+        let output = process.output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "/runner/home|/runner/bin|{0}|{0}|{0}||argument\n",
+                temporary_directory.display()
+            )
+        );
     }
 
     /// The resolver finds an agent in an explicit install dir that is NOT on PATH —

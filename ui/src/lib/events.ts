@@ -339,6 +339,7 @@ export class EventsClient {
   private ws: WebSocket | null = null
   private listeners = new Set<EventListener>()
   private statusListeners = new Set<StatusListener>()
+  private connectionState: ConnectionState = 'connecting'
   private backoffMs = 500
   private closedByUser = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -498,8 +499,11 @@ export class EventsClient {
     return this.subscribe(l)
   }
 
-  /** Subscribe to connection-state changes; returns unsubscribe. */
+  /** Subscribe to connection-state changes and immediately replay the current state. */
   onStatus(l: StatusListener): () => void {
+    // Do not retain a listener that throws during its initial replay. Later
+    // transition delivery deliberately keeps its existing direct propagation.
+    l(this.connectionState)
     this.statusListeners.add(l)
     return () => this.statusListeners.delete(l)
   }
@@ -516,6 +520,7 @@ export class EventsClient {
   }
 
   private emitStatus(s: ConnectionState): void {
+    this.connectionState = s
     this.statusListeners.forEach((l) => l(s))
   }
 

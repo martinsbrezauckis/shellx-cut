@@ -22,8 +22,14 @@ tries to call it; that is a separate provider/configuration lifecycle concern.
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import subprocess
+import sys
+
+_PY_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _PY_ROOT)
+import provider_child_launch
 
 MIN_GROK_TOOL_POLICY_VERSION = (1, 0, 21)
 _VERSION_RE = re.compile(r"(?<![0-9.])(\d+)\.(\d+)\.(\d+)(?![0-9.])")
@@ -62,7 +68,7 @@ def _minimum_version_text() -> str:
     return ".".join(str(part) for part in MIN_GROK_TOOL_POLICY_VERSION)
 
 
-def resolve_grok_tool_policy(grok_bin: str) -> tuple[dict | None, str | None]:
+def resolve_grok_tool_policy(grok_bin: str, launch: dict | None = None) -> tuple[dict | None, str | None]:
     """Resolve a Grok CLI whose documented no-tool policy can be enforced.
 
     This admission performs only ``--version`` and ``--help`` subprocesses. It
@@ -70,13 +76,14 @@ def resolve_grok_tool_policy(grok_bin: str) -> tuple[dict | None, str | None]:
     files. Unknown, older, failed, or flag-incomplete wrappers are rejected
     before prompt-file creation and cannot fall back to a broader command.
     """
-    path = shutil.which(grok_bin)
+    path = launch["executable"] if launch else shutil.which(grok_bin)
     if not path:
         return None, f"grok CLI not found ({grok_bin!r}) — honest not_run"
     try:
         version = subprocess.run(
-            [path, "--version"], capture_output=True, text=True,
-            encoding="utf-8", timeout=15)
+            provider_child_launch.command(launch, ["--version"]) if launch else [path, "--version"],
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
+            env=provider_child_launch.environment(launch) if launch else None)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None, f"could not verify Grok no-tool policy version: {exc}"
     version_text = (version.stdout.strip() or version.stderr.strip())[:240]
@@ -97,8 +104,9 @@ def resolve_grok_tool_policy(grok_bin: str) -> tuple[dict | None, str | None]:
 
     try:
         help_result = subprocess.run(
-            [path, "--help"], capture_output=True, text=True,
-            encoding="utf-8", timeout=15)
+            provider_child_launch.command(launch, ["--help"]) if launch else [path, "--help"],
+            capture_output=True, text=True, encoding="utf-8", timeout=15,
+            env=provider_child_launch.environment(launch) if launch else None)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return None, f"could not verify Grok no-tool policy flags: {exc}"
     help_text = (help_result.stdout or "") + "\n" + (help_result.stderr or "")
@@ -112,6 +120,7 @@ def resolve_grok_tool_policy(grok_bin: str) -> tuple[dict | None, str | None]:
         "path": path,
         "version": version_text,
         "version_tuple": parsed,
+        "launch": launch,
     }, None
 
 
@@ -119,7 +128,6 @@ def grok_judge_argv(cli: dict, prompt_file: str, cwd: str,
                     model: str) -> list[str]:
     """Build the fixed no-tool headless argv after capability admission."""
     argv = [
-        cli["path"],
         "--prompt-file", prompt_file,
         "--output-format", "json",
         "--no-memory",
@@ -134,7 +142,13 @@ def grok_judge_argv(cli: dict, prompt_file: str, cwd: str,
     ]
     if model:
         argv += ["--model", model]
-    return argv
+    launch = cli.get("launch")
+    return provider_child_launch.command(launch, argv) if launch else [cli["path"]] + argv
+
+
+def child_environment(cli: dict) -> dict | None:
+    launch = cli.get("launch")
+    return provider_child_launch.environment(launch) if launch else None
 
 
 def policy_metadata(cli: dict) -> dict:

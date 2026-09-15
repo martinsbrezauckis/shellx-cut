@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import {
   KEY_ACTIONS,
   getBinding,
+  matchesAction,
   resetKeymap,
   setBinding,
 } from '../src/lib/keymap'
@@ -68,6 +69,41 @@ assert.deepEqual(applyKeymapPreset('missing'), {
   ignored: 0,
   reason: 'Unknown shortcut preset.',
 })
+
+function keydown(key: string, modifiers: {
+  ctrlKey?: boolean
+  metaKey?: boolean
+  altKey?: boolean
+  shiftKey?: boolean
+} = {}): KeyboardEvent {
+  return {
+    key,
+    ctrlKey: modifiers.ctrlKey === true,
+    metaKey: modifiers.metaKey === true,
+    altKey: modifiers.altKey === true,
+    shiftKey: modifiers.shiftKey === true,
+  } as KeyboardEvent
+}
+
+// These prove the current keymap matcher. They intentionally do not recreate
+// the retired shortcut-provenance schema or claim Timeline dispatch evidence.
+resetKeymap()
+assert.equal(getBinding('timeline.nextMarker'), ']')
+assert.equal(matchesAction(keydown(']'), 'timeline.nextMarker'), true, 'Cut default next-marker key matches')
+assert.equal(matchesAction(keydown('['), 'timeline.nextMarker'), false, 'previous-marker key cannot invoke next-marker')
+assert.equal(matchesAction(keydown(']', { shiftKey: true }), 'timeline.nextMarker'), false, 'default next-marker rejects an extra modifier')
+assert.equal(matchesAction(keydown(']'), 'timeline.unknown'), false, 'an undeclared action cannot borrow the marker binding')
+
+assert.equal(applyKeymapPreset('premiere').ok, true)
+assert.equal(matchesAction(keydown('M', { shiftKey: true }), 'timeline.nextMarker'), true, 'Premiere remapped next-marker key matches its exact modifier')
+assert.equal(matchesAction(keydown('M'), 'timeline.nextMarker'), false, 'Premiere remapped next-marker rejects missing Shift')
+assert.equal(matchesAction(keydown('M', { ctrlKey: true, shiftKey: true }), 'timeline.nextMarker'), false, 'Premiere previous-marker chord cannot invoke next-marker')
+
+assert.equal(applyKeymapPreset('final-cut').ok, true)
+assert.equal(matchesAction(keydown("'", { ctrlKey: true }), 'timeline.nextMarker'), true, 'Final Cut next-marker accepts Ctrl')
+assert.equal(matchesAction(keydown("'", { metaKey: true }), 'timeline.nextMarker'), true, 'Final Cut next-marker accepts Command through the current Ctrl binding')
+assert.equal(matchesAction(keydown("'"), 'timeline.nextMarker'), false, 'Final Cut next-marker rejects a missing platform modifier')
+assert.equal(matchesAction(keydown(';', { ctrlKey: true }), 'timeline.nextMarker'), false, 'Final Cut previous-marker chord cannot invoke next-marker')
 
 const beforeRejectedProfile = getBinding('timeline.split')
 const duplicate = importKeymapProfile(JSON.stringify({

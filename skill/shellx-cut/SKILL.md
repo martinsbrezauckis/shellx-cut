@@ -24,11 +24,16 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 > - **Speaker diarization** — `media.diarize` ("who spoke when": a job that POSTs
 >   the asset's audio to the Sortformer-v2 service → arrival-order speaker turns +
 >   per-word `speaker` labels, refreshing the transcript so captions/multicam can
->   key by speaker).
+>   key by speaker). For a human, use **Transcript Tools > Label speakers** only
+>   after the Doctor diarize card is ready; it binds the selected current-project
+>   asset and accepts only its returned job and `receipts/<asset>.diarize.json`.
 > - **AI dubbing + subtitle translation** — `audio.dub` (re-voice an asset's
 >   speech into another language in a cloned voice, time-fit to the original,
 >   added as a NEW audio track; reuses `transcript.translate` + the OmniVoice TTS
->   service). `transcript.translate` / `captions.translate` are TEXT-only
+>   service). For a human, use **Transcript Tools > Dub audio** after the Doctor
+>   dub card is ready and choose the target language there; the control verifies
+>   the selected asset, target language, resulting track, and matching receipt.
+>   `transcript.translate` / `captions.translate` are TEXT-only
 >   translation (CLI-primary, local Opus-MT/MADLAD fallback — no dubbing).
 > - **Kinetic captions** — `captions.kinetic` defaults to animated caption
 >   lines and requires caption cues from `captions.generate`; pass
@@ -63,14 +68,23 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   or editor approval stage. A stale or deleted retained target refuses visibly
 >   instead of applying to a replacement selection.
 >   The Agent Chat prompt library offers eight curated Polish, Repurpose, Speech,
->   and Review requests mapped only to existing verbs/recipes. Choosing one merely
->   pre-fills the editable composer; it never launches a CLI turn by itself.
+>   and Review requests mapped only to inspect/edit verbs admitted by the contained
+>   Chat policy. Choosing one merely pre-fills the editable composer; it never
+>   launches a CLI turn by itself. A speech-service, render, delivery, or
+>   verification request must navigate the human to Transcript Tools, Clips, or
+>   Review > QC rather than claiming Chat can perform that denied work.
 > - **Scoped plugins (agent-only)** — `plugins.list`, `plugins.enable`, and
 >   `plugins.call` expose the built-in Openverse-assets and matte-runtime scopes
 >   as a permission fence over the SAME verb registry. A disabled, out-of-scope,
 >   or corrupt/unavailable-state call fails closed; this is not a second
 >   extension API. Inspect `plugins.list` for recovery guidance; an explicit
 >   `plugins.enable {name,enabled:true}` repairs only that named grant.
+> - **Agent motion measurement** — `edit.track {clip, bbox|point, ...}` is a
+>   direct REST/MCP measurement call, not an editor control or Agent Chat action.
+>   It returns sampled `points` and `pos_x`/`pos_y` keyframe arrays for a seeded
+>   region; bind them explicitly through `edit.keyframe` or a tracked
+>   `edit.redact` mask. It does not mutate the project, and reports the required
+>   perception-sidecar setup when that dependency is unavailable.
 > - **Native editable Generate** — `generate.list` / `generate.describe` /
 >   `generate.preview` / `generate.insert` / `generate.from_prompt` /
 >   `generate.storyboard` power the editor-side Generate tab: reusable
@@ -389,10 +403,20 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `render.reframe{direction}`), `render.queue` (batch delivery), `render.bundle`
 >   (social repurposing pack), `verify.pregate` (PRE-render predictive quality
 >   gate, no render spent).
-> - **Repurposing / assembly** — `assemble.repurpose` (auto-highlight selection),
->   `assemble.shorts` (vertical-short planner), `assemble.from_script`
->   (script→timeline matching), `assemble.broll` (slot→retrieve→place),
->   `clip.candidates`, `score.clip` (engagement score, model-free).
+> - **Repurposing / assembly** — `assemble.repurpose`, `assemble.shorts`, and
+>   `assemble.from_script` return a reviewed, revision- and transcript-bound
+>   plan by default.
+>   Resend the unchanged request with its `apply:plan_binding`, `request_id`,
+>   and matching `expected_revision` to make one editable, normal-Undo timeline
+>   operation. Shorts apply their planned source crop and transcript captions
+>   only when the current project aspect already matches the requested aspect;
+>   the plan reports a disabled reason otherwise. `assemble.broll` remains the
+>   direct slot→retrieve→place path. If its delayed provider search sees a project or
+>   revision change, its partial result names the path-free origin identity, last
+>   accepted revision, and checkpoint; verify the identity, compare the current
+>   revision, and review intervening changes before restore. It never reverts the
+>   now-current project. `clip.candidates` and `score.clip` remain model-free
+>   selection tools.
 > - **AI matte (no green screen)** — `edit.matte` (+ `system.setup_matte`):
 >   background removal/replace, RVM auto default or premium target-assigned
 >   MatAnyone2 (SAM2 click-to-pick subject).
@@ -1243,6 +1267,13 @@ exporter (add a layer over a span → render it → save the clip).
   `ui.state` returns `shellx-cut/ui-state/2` with active workspace/tabs,
   overlays/dialogs, available surface ids, selection, playhead, and path-safe
   project identity.
+- `ui.highlight {selector|clip|panel|clear:true}` confirms that a registered
+  target is visibly highlighted. Give the human a stable selector, clip, or
+  panel; `duration_ms:0` leaves the dismissible overlay open for guidance.
+- `debug.screenshot {inline?, monitor?, window?}` is the server-side visual
+  verification path when no connected UI client is available. It captures the
+  actual display/window through the compiled native recorder; use the opaque
+  window id from `screen_record.doctor`, never a window title.
 
 ## Worked example — clean a talking-head take
 

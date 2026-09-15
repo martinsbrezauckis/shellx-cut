@@ -204,7 +204,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "inspect",
         "risk": "none",
         "facets": []
@@ -477,7 +477,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "inspect",
         "risk": "none",
         "facets": []
@@ -2598,7 +2598,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -2619,7 +2619,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -2640,7 +2640,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -2850,7 +2850,7 @@
         "idempotency": "request_key",
         "replayability": "not_replayable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -4076,7 +4076,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -4097,7 +4097,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -4748,7 +4748,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "none",
         "facets": []
@@ -5315,7 +5315,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "none",
         "facets": []
@@ -5378,7 +5378,7 @@
         "idempotency": "request_key",
         "replayability": "not_replayable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -5546,7 +5546,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -5567,7 +5567,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -5588,7 +5588,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "setup",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -5609,7 +5609,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "setup",
-        "ui_exposure": "rig_only",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -5630,7 +5630,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "setup",
-        "ui_exposure": "rig_only",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -5693,7 +5693,7 @@
         "idempotency": "request_key",
         "replayability": "replayable",
         "async_job": "motion",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -5945,7 +5945,7 @@
         "idempotency": "request_key",
         "replayability": "replayable",
         "async_job": "motion",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []

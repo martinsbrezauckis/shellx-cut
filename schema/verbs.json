@@ -388,7 +388,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "inspect",
         "risk": "none",
         "facets": []
@@ -981,7 +981,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "inspect",
         "risk": "none",
         "facets": []
@@ -7087,7 +7087,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -7131,7 +7131,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -7180,7 +7180,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -8209,7 +8209,7 @@
         "idempotency": "request_key",
         "replayability": "not_replayable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -11871,7 +11871,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -11925,7 +11925,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -13614,7 +13614,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "none",
         "facets": []
@@ -14528,7 +14528,7 @@
     {
       "name": "assemble.repurpose",
       "domain": "assemble",
-      "description": "AUTO-HIGHLIGHT SELECTION (long video -> short clips): pick the best `count` highlight segments from an asset's word-level transcript -- the selection 'intelligence' that transcript.assemble (build a reel from CHOSEN spans) and transcript.search (find spans by keyword) do NOT provide. NON-MUTATING: returns ranked candidate clips {rank, word_range:[lo,hi], range_ms, duration_ms, text, score, reason}; it never edits the timeline. Heuristic v1 (no model, deterministic): splits the words into sentence-ish units at long pauses, greedily packs them into ~target_ms candidates (capped at 1.5x), and scores each by speech density + ASR confidence + optional prompt-keyword overlap + duration fit. Feed a result's word_range into transcript.assemble for a highlight reel, or its range_ms into a sub-clip + render.reframe for a vertical short. Requires the asset to be transcribed (media.transcribe).",
+      "description": "AUTO-HIGHLIGHT SELECTION AND EXPLICIT MATERIALIZATION: without `apply`, return ranked candidate clips {rank, word_range:[lo,hi], range_ms, duration_ms, text, score, reason} and a revision-bound `plan_binding`; this default never edits the timeline. Resend the unchanged request with `apply:plan_binding`, request_id, and expected_revision equal to plan_binding.project_revision to add the reviewed ranges as one editable timeline operation with one normal Undo. The apply rechecks exact project identity/revision and destination-track safety; it refuses stale or cross-project plans without a partial edit. Heuristic v1 (no model, deterministic): splits words into sentence-ish units at long pauses, greedily packs them into ~target_ms candidates (capped at 1.5x), and scores each by speech density + ASR confidence + optional prompt-keyword overlap + duration fit. Requires the asset to be transcribed (media.transcribe).",
       "args": {
         "type": "object",
         "required": [
@@ -14555,10 +14555,92 @@
           "prompt": {
             "type": "string",
             "description": "Optional theme/keywords to bias selection toward (keyword overlap boosts a segment's score)."
+          },
+          "apply": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "project_identity",
+              "project_revision",
+              "verb",
+              "asset",
+              "selected_ranges",
+              "transcript_sha256",
+              "materialization"
+            ],
+            "properties": {
+              "schema": {
+                "const": "shellx-cut/assemble-plan-binding/1"
+              },
+              "project_identity": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema",
+                  "origin_path_sha256",
+                  "project_name"
+                ],
+                "properties": {
+                  "schema": {
+                    "const": "shellx-cut/project-identity/1"
+                  },
+                  "origin_path_sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "project_name": {
+                    "type": "string"
+                  }
+                }
+              },
+              "project_revision": {
+                "type": "string",
+                "pattern": "^op_[0-9]{6,}$"
+              },
+              "verb": {
+                "const": "assemble.repurpose"
+              },
+              "asset": {
+                "type": "string",
+                "minLength": 1
+              },
+              "selected_ranges": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "items": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "transcript_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "materialization": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "reel"
+                  }
+                }
+              }
+            },
+            "description": "Revision- and transcript-bound binding returned with this exact plan. Its presence is the explicit apply policy; requires request_id and expected_revision at the request root."
           }
         }
       },
-      "result": "{asset, count, target_ms, clips:[{rank, word_range:[lo,hi], range_ms:[s,e], duration_ms, text, score, reason}], next}",
+      "result": "Plan: {asset, count, target_ms, clips:[...], plan_binding, next}; explicit apply: {materialized:true, video_clip_ids, audio_clip_ids, spans_placed, total_ms, undo:{verb,op_id}} with one op_id.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -14581,7 +14663,7 @@
     {
       "name": "assemble.shorts",
       "domain": "assemble",
-      "description": "AUTO-SHORTS PLANNER (one call: long transcribed video -> N ranked vertical-short PLANS). PURE orchestration over existing internals -- NO new model, NO rendering: it reuses assemble.repurpose's transcript ranker for the best `count` moments and, BEST-EFFORT, score.clip's perception-factor system for a per-short engagement breakdown. NON-MUTATING: returns PLANS only -- materializing each short (insert + crop + captions) is described by `next`. Each short is {rank, word_range:[lo,hi], range_ms:[s,e], duration_ms, score (0..100), reason, title (the first ~8 words as a hook line), factors? (omitted when the asset has no perception report), reframe:{aspect, crop:{x,y,w,h} fractions 0..1 of the SOURCE frame for a CENTER crop to the target aspect, or null when the probe lacks frame dimensions), has_captions:true}. `aspect` (default \"9:16\"; one of \"9:16\",\"1:1\",\"4:5\",\"16:9\") sets the target. Honest degradation mirrors assemble.repurpose: an un-transcribed / empty-transcript asset is an INVALID_ARGS error (needs a speech transcript). Requires the asset to be transcribed (media.transcribe); a perception report is optional (adds `factors`).",
+      "description": "AUTO-SHORTS PLANNER WITH EXPLICIT EDITABLE TIMELINE APPLY. Without `apply`, return ranked short plans plus revision- and transcript-bound plan_binding and materialization eligibility; this default never edits the timeline. When eligibility is true, resend the unchanged request with `apply:plan_binding`, request_id, and expected_revision to commit all reviewed ranges as one editable timeline operation: media clips, their planned source-pixel edit.crop reframes, and transcript-derived caption clips. No render, ASR, provider call, or spend occurs. The plan visibly refuses Apply when the configured project aspect differs from the requested aspect or source geometry is absent; apply repeats that admission plus identity/revision/transcript/track checks and makes no partial edit. Each short is {rank, word_range:[lo,hi], range_ms:[s,e], duration_ms, score (0..100), reason, title, factors?, reframe:{aspect, crop:{x,y,w,h} fractions 0..1 of SOURCE}, has_captions:true}. `aspect` (default \"9:16\"; one of \"9:16\",\"1:1\",\"4:5\",\"16:9\") sets the target. Requires a transcribed asset; perception is optional for factors.",
       "args": {
         "type": "object",
         "required": [
@@ -14618,10 +14700,119 @@
           "prompt": {
             "type": "string",
             "description": "Optional theme/keywords to bias selection toward (keyword overlap boosts a segment's score)."
+          },
+          "apply": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "project_identity",
+              "project_revision",
+              "verb",
+              "asset",
+              "selected_ranges",
+              "transcript_sha256",
+              "materialization"
+            ],
+            "properties": {
+              "schema": {
+                "const": "shellx-cut/assemble-plan-binding/1"
+              },
+              "project_identity": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema",
+                  "origin_path_sha256",
+                  "project_name"
+                ],
+                "properties": {
+                  "schema": {
+                    "const": "shellx-cut/project-identity/1"
+                  },
+                  "origin_path_sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "project_name": {
+                    "type": "string"
+                  }
+                }
+              },
+              "project_revision": {
+                "type": "string",
+                "pattern": "^op_[0-9]{6,}$"
+              },
+              "verb": {
+                "const": "assemble.shorts"
+              },
+              "asset": {
+                "type": "string",
+                "minLength": 1
+              },
+              "selected_ranges": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "items": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "transcript_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "materialization": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "aspect",
+                  "crop"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "shorts"
+                  },
+                  "aspect": {
+                    "enum": [
+                      "9:16",
+                      "1:1",
+                      "4:5",
+                      "16:9"
+                    ]
+                  },
+                  "crop": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "array",
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "items": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "description": "Revision- and transcript-bound binding returned with this exact plan. Its presence is the explicit apply policy; requires request_id and expected_revision at the request root."
           }
         }
       },
-      "result": "{asset, count, target_ms, aspect, shorts:[{rank, word_range:[lo,hi], range_ms:[s,e], duration_ms, score, reason, title, factors?, reframe:{aspect, crop:{x,y,w,h}|null}, has_captions}], next, note?}",
+      "result": "Plan: {asset, count, target_ms, aspect, shorts:[...], plan_binding, materialization:{eligible,required_aspect,project_aspect,reason?}, next, note?}; explicit apply: {materialized:true, video_clip_ids, audio_clip_ids, caption_track, caption_clip_ids, undo:{verb,op_id}} with one op_id.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -14644,7 +14835,7 @@
     {
       "name": "assemble.from_script",
       "domain": "assemble",
-      "description": "SCRIPT-TO-TIMELINE matching: given a written `script` (one talking point per line) and a TRANSCRIBED asset, find the transcript span that best matches each script line -- IN ORDER -- so the chosen spans can be strung into a cut that follows the script. NON-MUTATING: returns the ordered match plan ({line_idx, script_line, matched, score, word_range:[lo,hi], range_ms, text}); it never edits the timeline. Deterministic token-overlap matcher (no model): for each line it scans forward from a cursor for the contiguous transcript-word window whose normalized token SET best overlaps the line (F1 = 2*|A intersect B|/(|A|+|B|)), within +-2 words of the line length; the cursor advances past each match so segments stay in script order and never overlap. A line whose best window scores below `min_score` (default 0.35) is reported unmatched (no range) rather than force-fit. Feed the returned `assemble_ranges` (the matched word_ranges, in order) into transcript.assemble to build the reel. Requires the asset to be transcribed (media.transcribe).",
+      "description": "SCRIPT-TO-TIMELINE MATCHING WITH EXPLICIT APPLY: given a written script (one talking point per line) and a transcribed asset, return the ordered match plan plus revision- and transcript-bound plan_binding by default; this default never edits the timeline. Resend the unchanged request with `apply:plan_binding`, request_id, and expected_revision to place only the reviewed matched ranges as one editable timeline operation with one normal Undo. Unmatched lines remain visible in the proposal and are never fabricated; an all-unmatched plan refuses apply. The apply rechecks exact project identity, revision, transcript, and destination-track safety, refusing stale or cross-project plans without a partial edit. Deterministic token-overlap matcher scans forward, so matched segments stay in script order and never overlap. Requires media.transcribe.",
       "args": {
         "type": "object",
         "required": [
@@ -14666,10 +14857,92 @@
             "minimum": 0,
             "maximum": 1,
             "description": "Minimum token-overlap F1 to count a line as matched (default 0.35)."
+          },
+          "apply": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema",
+              "project_identity",
+              "project_revision",
+              "verb",
+              "asset",
+              "selected_ranges",
+              "transcript_sha256",
+              "materialization"
+            ],
+            "properties": {
+              "schema": {
+                "const": "shellx-cut/assemble-plan-binding/1"
+              },
+              "project_identity": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema",
+                  "origin_path_sha256",
+                  "project_name"
+                ],
+                "properties": {
+                  "schema": {
+                    "const": "shellx-cut/project-identity/1"
+                  },
+                  "origin_path_sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "project_name": {
+                    "type": "string"
+                  }
+                }
+              },
+              "project_revision": {
+                "type": "string",
+                "pattern": "^op_[0-9]{6,}$"
+              },
+              "verb": {
+                "const": "assemble.from_script"
+              },
+              "asset": {
+                "type": "string",
+                "minLength": 1
+              },
+              "selected_ranges": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": 50,
+                "items": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "transcript_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "materialization": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "reel"
+                  }
+                }
+              }
+            },
+            "description": "Revision- and transcript-bound reviewed plan. Applying an empty script match is refused without an edit; requires request_id and expected_revision at the request root."
           }
         }
       },
-      "result": "{asset, min_score, total_lines, matched, segments:[{line_idx, script_line, matched, score, word_range:[lo,hi]|null, range_ms|null, text}], assemble_ranges:[[lo,hi]...], next}",
+      "result": "Plan: {asset, min_score, total_lines, matched, segments:[...], assemble_ranges, plan_binding, next}; explicit apply: {materialized:true, video_clip_ids, audio_clip_ids, spans_placed, undo:{verb,op_id}} with one op_id.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -14812,7 +15085,7 @@
           }
         }
       },
-      "result": "{status, track, slots_filled, placed:[{slot,query,asset_id,clip_id,at_ms,duration_ms}], checkpoint, revert_hint} — or {status:\"failed\", slot, failed_step, error, placed, checkpoint, revert_hint} on the first failing slot. Orchestrator: no op of its own; the sub-verbs (assets.search/fetch, edit.insert) record the ops.",
+      "result": "{status, track, slots_filled, placed:[{slot,query,asset_id,clip_id,at_ms,duration_ms}], checkpoint, revert_hint} — or {status:\"failed\", slot, failed_step, error, placed, checkpoint, revert_hint} on the first failing slot. A delayed project-binding conflict also returns origin_checkpoint:{id,project:{project_identity,project_revision}} and recovery:{action:\"reopen_origin_then_review_checkpoint\",origin_project,checkpoint}; verify that origin identity, compare its current revision with the last accepted revision, and review intervening changes before restoring the origin checkpoint. No revert is directed at the now-current project. Orchestrator: no op of its own; the sub-verbs (assets.search/fetch, edit.insert) record the ops.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -15599,7 +15872,7 @@
         "idempotency": "not_applicable",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "none",
         "facets": []
@@ -15707,7 +15980,7 @@
         "idempotency": "request_key",
         "replayability": "not_replayable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -16112,7 +16385,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -16149,7 +16422,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "none",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -16192,7 +16465,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "setup",
-        "ui_exposure": "internal",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -16230,7 +16503,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "setup",
-        "ui_exposure": "rig_only",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -16281,7 +16554,7 @@
         "idempotency": "none",
         "replayability": "not_applicable",
         "async_job": "setup",
-        "ui_exposure": "rig_only",
+        "ui_exposure": "human",
         "agent_chat": "deny",
         "risk": "external",
         "facets": []
@@ -16454,7 +16727,7 @@
         "idempotency": "request_key",
         "replayability": "replayable",
         "async_job": "motion",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []
@@ -17123,7 +17396,7 @@
         "idempotency": "request_key",
         "replayability": "replayable",
         "async_job": "motion",
-        "ui_exposure": "internal",
+        "ui_exposure": "agent_only",
         "agent_chat": "deny",
         "risk": "reversible",
         "facets": []

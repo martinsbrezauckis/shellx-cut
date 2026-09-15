@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   callVerb,
   type GenerateFromPromptResult,
@@ -28,12 +28,15 @@ import {
   type PromptPolicy,
   type StoryboardMode,
 } from './model'
+import { GenerateRequestScopeGuard } from './generateRequestScope'
 import './generateTemplates.css'
 
 export type { GenerateWorkspaceTab } from './model'
 
 interface GenerateTemplatesWorkspaceProps {
   project: Project | null
+  /** Monotonic App identity; makes a prior project's pending adapter result inert. */
+  projectScope: number
   playheadMs: number
   selectedClipId?: string | null
   onInserted?: () => void
@@ -41,9 +44,15 @@ interface GenerateTemplatesWorkspaceProps {
   onTab?: (tab: GenerateWorkspaceTab) => void
 }
 
-export default function GenerateTemplatesWorkspace({ project, playheadMs, selectedClipId, onInserted, activeTab, onTab }: GenerateTemplatesWorkspaceProps) {
+export default function GenerateTemplatesWorkspace({ project, projectScope, playheadMs, selectedClipId, onInserted, activeTab, onTab }: GenerateTemplatesWorkspaceProps) {
   const [localTab, setLocalTab] = useState<GenerateWorkspaceTab>('templates')
   const tab = activeTab ?? localTab
+  const templateRequestGuard = useRef(new GenerateRequestScopeGuard(projectScope))
+  const promptRequestGuard = useRef(new GenerateRequestScopeGuard(projectScope))
+  const storyboardRequestGuard = useRef(new GenerateRequestScopeGuard(projectScope))
+  templateRequestGuard.current.setProjectScope(projectScope)
+  promptRequestGuard.current.setProjectScope(projectScope)
+  storyboardRequestGuard.current.setProjectScope(projectScope)
   const selectTab = (next: GenerateWorkspaceTab) => {
     if (onTab) onTab(next)
     else setLocalTab(next)
@@ -74,6 +83,18 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
   const [storyboardBusy, setStoryboardBusy] = useState<PromptPolicy | null>(null)
   const [storyboardResult, setStoryboardResult] = useState<GenerateStoryboardResult | null>(null)
   const [storyboardError, setStoryboardError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setBusy(null)
+    setPreview(null)
+    setInsertResult(null)
+    setPromptBusy(false)
+    setPromptResult(null)
+    setError(null)
+    setStoryboardBusy(null)
+    setStoryboardResult(null)
+    setStoryboardError(null)
+  }, [projectScope])
 
   useEffect(() => {
     if (!atTouched) setAtMs(Math.max(0, Math.round(playheadMs)))
@@ -201,6 +222,7 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
   const runPreview = async () => {
     const serialized = validateForAction()
     if (!manifest || !serialized) return
+    const request = templateRequestGuard.current.begin()
     setBusy('preview')
     setError(null)
     setPreview(null)
@@ -212,13 +234,14 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
         height: 360,
         frame_ms: atMs,
       })
+      if (!templateRequestGuard.current.isCurrent(request)) return
       if (r.ok && r.result) setPreview(r.result)
       else if (r.ok) setError('preview returned no result')
       else setError(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'preview failed'}`)
     } catch {
-      setError('server unreachable during Generate preview')
+      if (templateRequestGuard.current.isCurrent(request)) setError('server unreachable during Generate preview')
     } finally {
-      setBusy(null)
+      if (templateRequestGuard.current.isCurrent(request)) setBusy(null)
     }
   }
 
@@ -229,6 +252,7 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
       setError('Create or open a project first.')
       return
     }
+    const request = promptRequestGuard.current.begin()
     setPromptBusy(true)
     setError(null)
     setPromptResult(null)
@@ -243,6 +267,7 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
         height: 360,
         rationale: 'human: generate prompt',
       })
+      if (!promptRequestGuard.current.isCurrent(request)) return
       if (r.ok && r.result) {
         setPromptResult(r.result)
         if (r.result.insert) onInserted?.()
@@ -252,9 +277,9 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
         setError(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'prompt generation failed'}`)
       }
     } catch {
-      setError('server unreachable during Generate prompt')
+      if (promptRequestGuard.current.isCurrent(request)) setError('server unreachable during Generate prompt')
     } finally {
-      setPromptBusy(false)
+      if (promptRequestGuard.current.isCurrent(request)) setPromptBusy(false)
     }
   }
 
@@ -265,6 +290,7 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
       setStoryboardError('Create or open a project first.')
       return
     }
+    const request = storyboardRequestGuard.current.begin()
     const answers = Object.fromEntries(Object.entries(storyboardAnswers).filter(([, value]) => value.trim().length > 0))
     setStoryboardBusy(policy)
     setStoryboardError(null)
@@ -282,6 +308,7 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
         },
         rationale: `human: generate storyboard ${policy}`,
       })
+      if (!storyboardRequestGuard.current.isCurrent(request)) return
       if (r.ok && r.result) {
         setStoryboardResult(r.result)
         if (r.result.insert) onInserted?.()
@@ -291,15 +318,16 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
         setStoryboardError(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'storyboard generation failed'}`)
       }
     } catch {
-      setStoryboardError('server unreachable during Generate storyboard')
+      if (storyboardRequestGuard.current.isCurrent(request)) setStoryboardError('server unreachable during Generate storyboard')
     } finally {
-      setStoryboardBusy(null)
+      if (storyboardRequestGuard.current.isCurrent(request)) setStoryboardBusy(null)
     }
   }
 
   const runInsert = async () => {
     const serialized = validateForAction()
     if (!manifest || !serialized) return
+    const request = templateRequestGuard.current.begin()
     setBusy('insert')
     setError(null)
     try {
@@ -309,6 +337,7 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
         at_ms: atMs,
         rationale: 'human: generate template insert',
       })
+      if (!templateRequestGuard.current.isCurrent(request)) return
       if (r.ok && r.result) {
         setInsertResult(r.result)
         onInserted?.()
@@ -318,9 +347,9 @@ export default function GenerateTemplatesWorkspace({ project, playheadMs, select
         setError(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'insert failed'}`)
       }
     } catch {
-      setError('server unreachable during Generate insert')
+      if (templateRequestGuard.current.isCurrent(request)) setError('server unreachable during Generate insert')
     } finally {
-      setBusy(null)
+      if (templateRequestGuard.current.isCurrent(request)) setBusy(null)
     }
   }
 

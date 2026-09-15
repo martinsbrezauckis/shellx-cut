@@ -217,6 +217,30 @@ pub(crate) fn isolated_environment(
     isolated_environment_from(std::env::vars_os(), workspace, proxy_addr, proxy_actor)
 }
 
+/// Build the disposable Grok environment from the admitted provider locators.
+/// `isolated_environment_from` derives the canonical login location in memory;
+/// it never opens the login file.  Applying this policy after the admitted
+/// environment replaces the provider's active HOME with the disposable turn
+/// home while retaining that canonical locator as `GROK_AUTH_PATH`.
+pub(crate) fn isolated_environment_for_provider(
+    admitted: Option<&BTreeMap<String, String>>,
+    workspace: &Path,
+    proxy_addr: &str,
+    proxy_actor: &str,
+) -> Result<LaunchEnvironment, String> {
+    match admitted {
+        Some(environment) => isolated_environment_from(
+            environment
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+            workspace,
+            proxy_addr,
+            proxy_actor,
+        ),
+        None => isolated_environment(workspace, proxy_addr, proxy_actor),
+    }
+}
+
 pub(crate) fn verify_capability_contract(help: &str) -> Result<(), String> {
     let missing = missing_required_help_tokens(help, REQUIRED_HELP_TOKENS);
     if !missing.is_empty() {

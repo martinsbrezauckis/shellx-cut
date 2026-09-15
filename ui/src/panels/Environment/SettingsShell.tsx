@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { DoctorReport } from '../../lib/doctor'
-import { SETTINGS_CATEGORIES, searchSettings, settingsCategory, type SettingsCategoryId } from './settingsModel'
+import { SETTINGS_CATEGORIES, searchSettings, settingsCategory, settingsCategoryDomId, type SettingsCategoryId } from './settingsModel'
 import './settings-shell.css'
 
 interface SettingsShellProps {
@@ -76,6 +76,7 @@ export default function SettingsShell({
           {SETTINGS_CATEGORIES.map((category) => (
             <button
               key={category.id}
+              id={settingsCategoryDomId(category.id)}
               type="button"
               className={`settings-nav-item${active === category.id ? ' settings-nav-item--active' : ''}`}
               data-cut-settings-category={category.id}

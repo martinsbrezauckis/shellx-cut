@@ -67,6 +67,33 @@
 
 .tx__tools-row { display: flex; align-items: center; gap: 6px; }
 .tx__tools-sep { height: 1px; background: var(--hairline); margin: 3px 4px; }
+.tx__speech-tools { display: grid; gap: 3px; padding: 2px 0; }
+.tx__speech-tools-title {
+  padding: 2px 8px 1px;
+  color: var(--ink-4);
+  font: 600 var(--fs-mono-xs) var(--mono);
+  text-transform: uppercase;
+}
+.tx__speech-status {
+  margin: 1px 8px 2px;
+  color: var(--ink-4);
+  font: var(--fs-mono-xs)/1.35 var(--mono);
+}
+.tx__speech-status[data-cut-transcript-speech-status="success"] { color: var(--green); }
+.tx__speech-status[data-cut-transcript-speech-status="error"],
+.tx__speech-status[data-cut-transcript-speech-status="stale"] { color: var(--amber); }
+.tx__speech-setup {
+  justify-self: start;
+  margin: 1px 8px 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cut-soft);
+  cursor: pointer;
+  font: var(--fs-mono-xs) var(--mono);
+}
+.tx__speech-setup:hover { color: var(--cut); text-decoration: underline; }
+.tx__speech-setup:focus-visible { outline: 1px solid var(--cut); outline-offset: 2px; }
 
 /* aggressiveness select — .field pattern; the empty option gates the pass */
 .tx__aggr {

@@ -1,4 +1,5 @@
 use super::*;
+use std::ffi::OsString;
 
 #[test]
 fn claude_policy_allows_only_cutd_mcp_and_denies_native_tools() {
@@ -71,6 +72,51 @@ fn sanitized_environment_drops_hostile_parent_values() {
     ] {
         assert!(names.iter().any(|name| name.eq_ignore_ascii_case(required)));
     }
+}
+
+#[test]
+fn provider_context_claude_policy_uses_only_admitted_locators() {
+    let environment = sanitized_environment_from_admitted(
+        &std::collections::BTreeMap::from([
+            ("PATH".into(), "/runner/bin".into()),
+            ("HOME".into(), "/runner/canonical-home".into()),
+            ("XDG_CONFIG_HOME".into(), "/runner/config".into()),
+        ]),
+        "127.0.0.1:6161",
+        "agent:test:agent.chat",
+    )
+    .unwrap();
+    assert!(environment.clear_inherited);
+    let vars: std::collections::BTreeMap<_, _> = environment.vars.into_iter().collect();
+    assert_eq!(
+        vars.get(&OsString::from("HOME")),
+        Some(&OsString::from("/runner/canonical-home"))
+    );
+    assert_eq!(
+        vars.get(&OsString::from("XDG_CONFIG_HOME")),
+        Some(&OsString::from("/runner/config"))
+    );
+    assert!(!vars.contains_key(&OsString::from("HTTP_PROXY")));
+}
+
+#[test]
+fn admitted_provider_policy_uses_only_the_owned_temporary_directory() {
+    let fixture = tempfile::Builder::new()
+        .prefix("provider-policy-temp-")
+        .tempdir_in(crate::provider_runtime::test_fixture_root())
+        .unwrap();
+    let temporary_directory = fixture.path().join("child-tmp");
+    let environment = native_environment("127.0.0.1:6161", "agent:test:agent.chat")
+        .with_owned_temporary_directory(&temporary_directory)
+        .unwrap();
+    let vars: std::collections::BTreeMap<_, _> = environment.vars.into_iter().collect();
+    for name in ["TMPDIR", "TEMP", "TMP"] {
+        assert_eq!(
+            vars.get(&OsString::from(name)),
+            Some(&temporary_directory.as_os_str().to_owned())
+        );
+    }
+    assert!(temporary_directory.is_dir());
 }
 
 #[cfg(windows)]

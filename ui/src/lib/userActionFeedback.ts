@@ -9,7 +9,7 @@ export const USER_ACTION_FEEDBACK_EVENT = 'cut:user-action-feedback'
 
 export interface UserActionFeedbackDetail {
   message: string
-  setupSurface?: 'settings-video-performance' | 'settings-ai-transcription'
+  setupSurface?: 'settings-video-performance' | 'settings-ai-transcription' | 'settings-services-integrations'
 }
 
 export function publishUserActionMessage(message: string): void {
@@ -21,8 +21,10 @@ export function publishUserActionMessage(message: string): void {
 
 const SETUP_SURFACE: Partial<Record<VerbName, UserActionFeedbackDetail['setupSurface']>> = {
   'audio.cleanup_voice': 'settings-video-performance',
+  'audio.dub': 'settings-services-integrations',
   'edit.redact': 'settings-ai-transcription',
   'edit.stabilize': 'settings-video-performance',
+  'media.diarize': 'settings-services-integrations',
 }
 
 export function userVerbFailureMessage(result: VerbResult, fallback: string): string | null {

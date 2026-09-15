@@ -46,6 +46,8 @@ import sys
 import tempfile
 from contextlib import suppress
 
+import provider_child_launch
+
 SCHEMA = "shellx-cut/generate-storyboard-result/1"
 STORYBOARD_SCHEMA = "shellx-cut/generate-storyboard/1"
 AUTO_ORDER = ["claude", "codex", "grok"]
@@ -105,6 +107,24 @@ def pick_agents(req):
     choice returns exactly that one - no silent substitution."""
     pref = (req.get("agent") or "auto").strip() or "auto"
     agents = req.get("agents") or {}
+    if isinstance(agents, dict) and "schema" in agents:
+        try:
+            admitted = provider_child_launch.launches(agents, set(AUTO_ORDER))
+        except ValueError as error:
+            emit("error", reason=f"invalid admitted storyboard provider handoff: {error}")
+        order = AUTO_ORDER if pref == "auto" else [pref]
+        found = [(name, admitted[name]) for name in order if name in admitted]
+        if found:
+            return found
+        if pref != "auto":
+            emit(
+                "error",
+                reason=f"selected storyboard provider '{pref}' is absent from the admitted provider handoff",
+            )
+        emit(
+            "not_run",
+            reason="no admitted provider supports storyboard planning - honest not_run, no fabricated storyboard",
+        )
     if not isinstance(agents, dict):
         agents = {}
     order = AUTO_ORDER if pref == "auto" else [pref]
@@ -274,13 +294,22 @@ def extract_json(text):
 
 def spawn_cli(name, path, prompt, timeout_s):
     """Run the CLI; return (answer_text, model_hint, error_reason)."""
+    launch = path if isinstance(path, dict) else None
+    child_env = provider_child_launch.environment(launch) if launch else None
+
+    def command(arguments):
+        if launch:
+            return provider_child_launch.command(launch, arguments)
+        return [path] + arguments
+
     try:
         if name == "claude":
             proc = subprocess.run(
-                [path, "-p", "--output-format", "json", "--tools", ""],
+                command(["-p", "--output-format", "json", "--tools", ""]),
                 input=prompt.encode("utf-8"),
                 capture_output=True,
                 timeout=timeout_s,
+                env=child_env,
             )
             raw = proc.stdout.decode("utf-8", "replace")
             if proc.returncode != 0:
@@ -297,8 +326,7 @@ def spawn_cli(name, path, prompt, timeout_s):
                 last_path = last.name
             try:
                 proc = subprocess.run(
-                    [
-                        path,
+                    command([
                         "exec",
                         "-",
                         "--skip-git-repo-check",
@@ -309,10 +337,11 @@ def spawn_cli(name, path, prompt, timeout_s):
                         "never",
                         "-o",
                         last_path,
-                    ],
+                    ]),
                     input=prompt.encode("utf-8"),
                     capture_output=True,
                     timeout=timeout_s,
+                    env=child_env,
                 )
                 if proc.returncode != 0:
                     tail = proc.stderr.decode("utf-8", "replace").strip()[-400:]
@@ -326,9 +355,10 @@ def spawn_cli(name, path, prompt, timeout_s):
             if len(prompt) > GROK_ARGV_PROMPT_LIMIT:
                 return None, None, "prompt too large for grok argv transport"
             proc = subprocess.run(
-                [path, "-p", prompt, "--output-format", "json"],
+                command(["-p", prompt, "--output-format", "json"]),
                 capture_output=True,
                 timeout=timeout_s,
+                env=child_env,
             )
             raw = proc.stdout.decode("utf-8", "replace")
             if proc.returncode != 0:

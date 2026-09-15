@@ -18,7 +18,10 @@ import sys
 
 _JUDGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _JUDGE_DIR)
+_PY_ROOT = os.path.dirname(_JUDGE_DIR)
+sys.path.insert(0, _PY_ROOT)
 import judge  # noqa: E402
+import provider_child_launch  # noqa: E402
 
 _ADAPTERS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ADAPTERS_DIR)
@@ -35,13 +38,13 @@ AVAILABILITY_REASON = (
 _extract_json = codex_judge._extract_json
 
 
-def detect() -> dict:
+def detect(launch: dict | None = None) -> dict:
     """Report ``agy`` binary presence separately from render-judge admission.
 
     The only subprocess is ``agy --version``. Authentication remains
     provider-owned and is not inspected by this adapter.
     """
-    path = shutil.which("agy")
+    path = launch["executable"] if launch else shutil.which("agy")
     entry: dict = {
         "provider": DEFAULT_PROVIDER,
         "binary": "agy",
@@ -54,8 +57,9 @@ def detect() -> dict:
     if path:
         try:
             completed = subprocess.run(
-                [path, "--version"], capture_output=True, text=True,
-                encoding="utf-8", timeout=15)
+                provider_child_launch.command(launch, ["--version"]) if launch else [path, "--version"],
+                capture_output=True, text=True, encoding="utf-8", timeout=15,
+                env=provider_child_launch.environment(launch) if launch else None)
             entry["version"] = completed.stdout.strip() or completed.stderr.strip()
         except (subprocess.TimeoutExpired, OSError) as error:
             entry["version_error"] = str(error)
@@ -114,10 +118,22 @@ def main() -> int:
     ap.add_argument("--out")
     ap.add_argument("--bundle-dir")
     ap.add_argument("--keep-bundle", action="store_true")
+    ap.add_argument("--provider-child-stdin", action="store_true",
+                    help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    try:
+        launch = (provider_child_launch.launches_from_stdin({DEFAULT_PROVIDER})
+                  .get(DEFAULT_PROVIDER) if args.provider_child_stdin else None)
+    except ValueError as error:
+        print(f"invalid admitted Antigravity provider handoff: {error}", file=sys.stderr)
+        return 2
+    if args.provider_child_stdin and launch is None:
+        print("admitted Antigravity provider handoff is missing Antigravity", file=sys.stderr)
+        return 2
+
     if args.command == "detect":
-        print(json.dumps(detect(), indent=2))
+        print(json.dumps(detect(launch), indent=2))
         return 0
 
     envelope = _not_run_envelope(args)

@@ -122,7 +122,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "not_applicable",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "inspect",
     "risk": "none",
     "facets": []
@@ -356,7 +356,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "not_applicable",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "inspect",
     "risk": "none",
     "facets": []
@@ -2174,7 +2174,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -2192,7 +2192,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -2210,7 +2210,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -2390,7 +2390,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "request_key",
     "replayability": "not_replayable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "reversible",
     "facets": []
@@ -3442,7 +3442,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -3460,7 +3460,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -4018,7 +4018,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "not_applicable",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "none",
     "facets": []
@@ -4504,7 +4504,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "not_applicable",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "none",
     "facets": []
@@ -4558,7 +4558,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "request_key",
     "replayability": "not_replayable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "reversible",
     "facets": []
@@ -4702,7 +4702,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -4720,7 +4720,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "none",
-    "ui_exposure": "internal",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -4738,7 +4738,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "setup",
-    "ui_exposure": "internal",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -4756,7 +4756,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "setup",
-    "ui_exposure": "rig_only",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -4774,7 +4774,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "none",
     "replayability": "not_applicable",
     "async_job": "setup",
-    "ui_exposure": "rig_only",
+    "ui_exposure": "human",
     "agent_chat": "deny",
     "risk": "external",
     "facets": []
@@ -4828,7 +4828,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "request_key",
     "replayability": "replayable",
     "async_job": "motion",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "reversible",
     "facets": []
@@ -5044,7 +5044,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "idempotency": "request_key",
     "replayability": "replayable",
     "async_job": "motion",
-    "ui_exposure": "internal",
+    "ui_exposure": "agent_only",
     "agent_chat": "deny",
     "risk": "reversible",
     "facets": []

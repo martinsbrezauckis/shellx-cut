@@ -44,15 +44,22 @@ fn test_actor() -> Actor {
     }
 }
 
+mod assemble_apply;
+mod assemble_broll_import_failure;
+mod assemble_broll_revision_transition;
+mod assemble_broll_transition;
 mod assets_fetch_transition;
 mod caption_bulk;
 mod caption_track_resolution;
 mod captions_kinetic_regression;
 mod detach_audio;
+mod generate_project_transition;
 mod generation_cli;
 mod group_review_request_idempotency;
 mod jobs_retry;
 mod linked_insert;
+#[cfg(unix)]
+mod motion_project_transition;
 mod nest_media_io;
 mod output_contract;
 mod output_path_fencing;
@@ -74,6 +81,7 @@ mod screen_record_terminal;
 mod sequence_index;
 mod smart_bins;
 mod system_tools;
+mod transition_test_support;
 mod ui_command_confirmation;
 
 #[test]

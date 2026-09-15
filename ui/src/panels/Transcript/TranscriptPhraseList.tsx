@@ -64,6 +64,7 @@ function PhraseRow({
     <article
       className={`tpx__phrase${active ? ' tpx__phrase--active' : ''}`}
       data-cut-transcript-phrase={phrase.id}
+      data-cut-transcript-phrase-asset={phrase.asset}
       {...(active ? { 'data-cut-transcript-phrase-active': '' } : {})}
       data-cut-transcript-phrase-range={`${phrase.startMs}-${phrase.endMs}`}
       data-cut-transcript-occurrence={occurrence}

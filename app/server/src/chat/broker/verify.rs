@@ -5,14 +5,15 @@ use std::path::Path;
 
 async fn probe(
     agent: &str,
-    executable: &Path,
+    executable: &crate::gen::ProviderChildCommand,
     arguments: &[String],
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<String, String> {
-    let mut command = crate::gen::agent_tokio_command(executable, arguments)
+    let mut command = executable
+        .tokio_command(arguments)
         .map_err(|error| format!("cannot probe {agent} CLI: {error}"))?;
-    environment.apply(&mut command);
+    environment.apply_with_admitted_environment(&mut command, executable.admitted_environment());
     command.current_dir(workspace);
     let output = crate::jobs::run_owned(
         &mut command,
@@ -47,7 +48,7 @@ async fn probe(
 async fn verify_capability_contract(
     agent: &str,
     display_name: &str,
-    executable: &Path,
+    executable: &crate::gen::ProviderChildCommand,
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<(), String> {
@@ -59,7 +60,7 @@ async fn verify_capability_contract(
 
 pub(super) async fn installed_agent(
     agent: &str,
-    executable: &Path,
+    executable: &crate::gen::ProviderChildCommand,
     environment: &LaunchEnvironment,
     workspace: &Path,
 ) -> Result<(), String> {

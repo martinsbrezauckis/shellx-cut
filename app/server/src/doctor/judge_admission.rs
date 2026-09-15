@@ -5,6 +5,7 @@
 //! boundary, and rejects missing or malformed affirmative readiness.
 
 use super::{run_doctor_command, CardStatus};
+use cut_media::ffmpeg::{run_owned_command_with_input, OwnedProcessControl};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -13,6 +14,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const DETECT_TIMEOUT: Duration = Duration::from_secs(12);
+const JUDGE_PROVIDERS: &[&str] = &["claude", "codex", "antigravity", "grok"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProviderAdmission {
@@ -107,29 +109,51 @@ pub(super) fn resolve(
     }
 }
 
+fn admitted_probe_input(
+    launches: &BTreeMap<String, crate::provider_runtime::ProviderChildLaunch>,
+) -> String {
+    crate::provider_runtime::python_child_launches_value(launches, JUDGE_PROVIDERS).to_string()
+}
+
 /// Run the configured ladder's no-model `detect` protocol once. Its stdout and
 /// stderr inherit the doctor's owned 512 KiB output cap, and its child tree is
-/// reaped on the fixed timeout. The supplied PATH is the same augmented PATH
-/// used by a real judge invocation, so off-PATH resolved CLIs do not disappear
-/// between doctor and review.
+/// reaped on the fixed timeout. With selected Runner context, Python receives
+/// only its validated handoff and never discovers a provider through PATH.
+/// Without context, preserve the ordinary augmented-PATH route.
 pub(super) fn probe(
     adapter: &Path,
     python: &Path,
     judge_cli_path: Option<&OsStr>,
 ) -> JudgeAdmissions {
+    let provider_launches_input =
+        match crate::provider_runtime::provider_launches_from_process_environment() {
+            Ok(Some(launches)) => Some(admitted_probe_input(&launches)),
+            Ok(None) => None,
+            Err(_) => return JudgeAdmissions::Unverified,
+        };
     let mut command = Command::new(python);
-    command
-        .arg(adapter)
-        .arg("detect")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(path) = judge_cli_path {
-        command.env("PATH", path);
-    }
-
-    let Ok(output) = run_doctor_command(&mut command, DETECT_TIMEOUT, "judge admission probe")
-    else {
+    command.arg(adapter).arg("detect");
+    let output = if let Some(input) = provider_launches_input {
+        command.arg("--provider-launches-stdin");
+        let control = OwnedProcessControl::bounded(DETECT_TIMEOUT, || false);
+        run_owned_command_with_input(
+            &mut command,
+            input.as_bytes(),
+            &control,
+            "judge admission probe",
+            None,
+        )
+    } else {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(path) = judge_cli_path {
+            command.env("PATH", path);
+        }
+        run_doctor_command(&mut command, DETECT_TIMEOUT, "judge admission probe")
+    };
+    let Ok(output) = output else {
         return JudgeAdmissions::Unverified;
     };
     if !output.status.success() {
@@ -187,72 +211,5 @@ fn bounded_reason(reason: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_provider_admission_without_inferring_readiness() {
-        let admissions = parse_detect_output(
-            br#"{"rungs":[
-                {"provider":"claude","found":true,"judge_ready":false,
-                 "restricted_read_reason":"restricted Read capability is unavailable"},
-                {"provider":"codex","found":true,"judge_ready":false,
-                 "availability_reason":"render judge unavailable until restricted tool/file access is verified"},
-                {"provider":"antigravity","found":true},
-                {"provider":"grok","found":false,"judge_ready":true}
-            ]}"#,
-        )
-        .expect("valid detect response");
-
-        assert!(!admissions["claude"].judge_ready);
-        assert_eq!(
-            admissions["claude"].availability_reason.as_deref(),
-            Some("restricted Read capability is unavailable")
-        );
-        assert!(!admissions["codex"].judge_ready);
-        assert_eq!(
-            admissions["codex"].availability_reason.as_deref(),
-            Some("render judge unavailable until restricted tool/file access is verified")
-        );
-        assert!(!admissions["antigravity"].judge_ready);
-        assert!(!admissions["grok"].judge_ready);
-    }
-
-    #[test]
-    fn resolve_keeps_installed_but_unready_provider_out_of_ok() {
-        let admissions = JudgeAdmissions::Verified(BTreeMap::from([(
-            "codex".into(),
-            ProviderAdmission {
-                found: true,
-                judge_ready: false,
-                availability_reason: Some(
-                    "render judge unavailable until restricted tool/file access is verified".into(),
-                ),
-            },
-        )]));
-        let codex = resolve("codex", true, true, &admissions);
-        assert_eq!(codex.status, CardStatus::Degraded);
-        assert!(!codex.judge_ready);
-        assert_eq!(
-            codex.availability_reason.as_deref(),
-            Some("render judge unavailable until restricted tool/file access is verified")
-        );
-
-        let unverified = resolve("claude", true, true, &JudgeAdmissions::Unverified);
-        assert_eq!(unverified.status, CardStatus::Unknown);
-        assert!(!unverified.judge_ready);
-    }
-
-    #[test]
-    fn rejects_missing_or_duplicate_provider_protocol_entries() {
-        assert!(parse_detect_output(br#"{"rungs":[{"found":true}]}"#).is_err());
-        assert!(parse_detect_output(
-            br#"{"rungs":[
-                {"provider":"claude","found":true,"judge_ready":false,
-                 "restricted_read_reason":"restricted Read capability is unavailable"},
-                {"provider":"claude","found":true,"judge_ready":true}
-            ]}"#,
-        )
-        .is_err());
-    }
-}
+#[path = "judge_admission_tests.rs"]
+mod tests;

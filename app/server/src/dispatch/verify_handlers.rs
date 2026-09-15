@@ -532,7 +532,10 @@ pub(super) fn find_judge_adapter() -> Option<PathBuf> {
 #[cfg(test)]
 mod judge_adapter_contract_tests {
     use super::{judge_adapter_from, validate_judge_envelope, JUDGE_SCHEMA};
+    use crate::provider_runtime::{python_child_launches_value, ProviderChildLaunch};
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     #[test]
     fn bundled_adapter_is_discovered_beside_perception_entrypoint() {
@@ -586,6 +589,61 @@ mod judge_adapter_contract_tests {
         assert!(validate_judge_envelope(&invalid)
             .unwrap_err()
             .contains("no review object"));
+    }
+
+    #[test]
+    fn admitted_judge_handoff_keeps_each_child_environment_separate() {
+        let launches = BTreeMap::from([
+            (
+                "claude".to_string(),
+                ProviderChildLaunch {
+                    executable: PathBuf::from("/runner/claude"),
+                    entrypoint: Some(PathBuf::from("/runner/claude.mjs")),
+                    environment: BTreeMap::from([
+                        ("HOME".to_string(), "/runner/claude-home".to_string()),
+                        ("PATH".to_string(), "/runner/claude-bin".to_string()),
+                    ]),
+                },
+            ),
+            (
+                "grok".to_string(),
+                ProviderChildLaunch {
+                    executable: PathBuf::from("/runner/grok"),
+                    entrypoint: None,
+                    environment: BTreeMap::from([
+                        ("HOME".to_string(), "/runner/grok-home".to_string()),
+                        ("PATH".to_string(), "/runner/grok-bin".to_string()),
+                    ]),
+                },
+            ),
+            (
+                "unrelated".to_string(),
+                ProviderChildLaunch {
+                    executable: PathBuf::from("/runner/other"),
+                    entrypoint: None,
+                    environment: BTreeMap::from([(
+                        "HOME".to_string(),
+                        "/runner/other-home".to_string(),
+                    )]),
+                },
+            ),
+        ]);
+        let handoff: serde_json::Value =
+            python_child_launches_value(&launches, &["claude", "codex", "antigravity", "grok"]);
+        assert_eq!(handoff["schema"], "shellx-cut/provider-child-launches/1");
+        assert_eq!(
+            handoff["launches"]["claude"]["entrypoint"],
+            "/runner/claude.mjs"
+        );
+        assert_eq!(
+            handoff["launches"]["claude"]["environment"]["HOME"],
+            "/runner/claude-home"
+        );
+        assert_eq!(
+            handoff["launches"]["grok"]["environment"]["HOME"],
+            "/runner/grok-home"
+        );
+        assert!(handoff["launches"].get("unrelated").is_none());
     }
 }
 
@@ -756,6 +814,9 @@ async fn run_judge_adapter(
     intent: &str,
     bundle_dir: &Path,
     provider: &str,
+    provider_launches: Option<
+        &std::collections::BTreeMap<String, crate::provider_runtime::ProviderChildLaunch>,
+    >,
 ) -> JudgeRun {
     // Adapter path is resolved at VERB time (find_judge_adapter) and passed
     // in — env/config must be read where the verb runs, not inside the
@@ -818,9 +879,17 @@ async fn run_judge_adapter(
         .arg(&out_file)
         .arg("--timeout")
         .arg(inner_s.to_string())
-        .current_dir(bundle_dir)
-        .stdin(std::process::Stdio::null());
-    if let Some(path) = judge_cli_path() {
+        .current_dir(bundle_dir);
+    let provider_launches_input = provider_launches.map(|launches| {
+        crate::provider_runtime::python_child_launches_value(
+            launches,
+            &["claude", "codex", "antigravity", "grok"],
+        )
+        .to_string()
+    });
+    if provider_launches_input.is_some() {
+        cmd.arg("--provider-launches-stdin");
+    } else if let Some(path) = judge_cli_path() {
         // Doctor and the adapter must agree about CLIs installed outside the
         // inherited PATH (for example ~/.grok/bin or Finder-launched macOS).
         cmd.env("PATH", path);
@@ -829,7 +898,13 @@ async fn run_judge_adapter(
         cmd.arg("--perception").arg(p);
     }
     let control = ProcessControl::for_operation(std::time::Duration::from_secs(outer_s));
-    let output = match run_owned(&mut cmd, None, &control).await {
+    let output = match run_owned(
+        &mut cmd,
+        provider_launches_input.as_deref().map(str::as_bytes),
+        &control,
+    )
+    .await
+    {
         Ok(output) => output,
         Err(error) if error.io_kind() == Some(std::io::ErrorKind::NotFound) => {
             return JudgeRun {
@@ -1003,6 +1078,25 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
         }
     };
     let provider = provider.to_string();
+    let provider_launches = crate::provider_runtime::provider_launches_from_process_environment()
+        .map_err(|reason| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "judge provider context is unavailable",
+            reason,
+        )
+    })?;
+    if provider != "auto"
+        && provider_launches
+            .as_ref()
+            .is_some_and(|launches| !launches.contains_key(&provider))
+    {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("selected judge provider '{provider}' is absent from the admitted provider runtime context"),
+            "the selected context forbids discovery or a fallback provider",
+        ));
+    }
     // Resolve everything the job needs UNDER the read lock, then release it —
     // the review takes minutes and must not block the verb loop (the background-job contract).
     let (receipts_dir, receipt_path, render_id, render_abs, perception_arg, intent, bundle_dir) = {
@@ -1067,6 +1161,7 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
             &intent,
             &bundle_dir,
             &provider,
+            provider_launches.as_ref(),
         )
         .await;
         st.jobs

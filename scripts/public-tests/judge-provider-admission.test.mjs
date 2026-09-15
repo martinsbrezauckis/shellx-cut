@@ -153,8 +153,8 @@ expect(grok_ladder["auto_selected"] == "grok", repr(grok_ladder))
 # A forced unsupported provider retains the explicit selection. It may emit its
 # own not_run receipt but cannot fall through to Grok/Claude.
 selected = []
-def explicit_adapter(provider, passthrough):
-    selected.append((provider, passthrough))
+def explicit_adapter(provider, passthrough, launches=None):
+    selected.append((provider, passthrough, launches))
     return 0, {"status": "not_run", "not_run_reason": REASON}
 with (
     mock.patch.object(ladder_judge, "detect_ladder", return_value=grok_ladder),
@@ -163,7 +163,8 @@ with (
     argv(["ladder_judge.py", "review", "--provider", "codex", "--render", "/fixture/missing-render.mp4"]),
 ):
     code = ladder_judge.main()
-expect(code == 0 and [provider for provider, _ in selected] == ["codex"], repr(selected))
+expect(code == 0 and [provider for provider, _, _ in selected] == ["codex"], repr(selected))
+expect(selected[0][2] is None, repr(selected))
 
 print("PASS render-judge provider admission boundary")
 `;

@@ -395,17 +395,32 @@ route to the same surface registry.
   fallback.
 - Perception: speech words, silences, scenes, beats, face detection, OCR,
   subject tracking, matte runners, and reusable media facts.
-- Speaker diarization: `media.diarize` labels who spoke when through the
-  configured Sortformer v2 service and refreshes transcript speaker labels.
-  Multicam switching can use those labels with `mode:"speaker"`.
-- Dubbing and translation: `audio.dub` creates a new translated voice track
-  through the configured OmniVoice service; text translation uses the CLI agent
-  first, then local translation only as fallback.
+- Speaker diarization: **Transcript Tools > Label speakers** checks the
+  configured Sortformer v2 Doctor card, binds the selected current-project
+  asset, and polls the exact returned job/receipt before refreshing transcript
+  speaker labels. Multicam switching can use those labels with `mode:"speaker"`.
+- Dubbing and translation: **Transcript Tools > Dub audio** checks the
+  configured OmniVoice Doctor card, binds the selected asset and target
+  language, then accepts only the matching track and receipt before refreshing
+  the project. `audio.dub` creates a new translated voice track; text translation
+  uses the CLI agent first, then local translation only as fallback.
 - Assemble: the human-visible `assemble` drawer turns existing footage into
   highlights/repurposed edits, plans vertical shorts, matches a script to
   footage, or fills a b-roll slot. `assemble.repurpose`, `assemble.shorts`,
-  `assemble.from_script`, and `assemble.broll` return normal reviewable timeline
-  operations rather than an opaque generated movie.
+  and `assemble.from_script` return a revision- and transcript-bound review
+  plan first. The
+  visible **Add reviewed plan to timeline** action commits approved ranges as
+  one editable, normal-Undo operation; `assemble.shorts` also applies its
+  planned source crop and transcript-derived captions only when the open
+  project already has the requested aspect. If the reviewed transcript word
+  spans change without a timeline revision, Cut refuses Apply and asks for a
+  new review.
+  `assemble.broll` remains its
+  direct retrieve-and-place workflow. If a delayed search finds that the selected
+  project or revision changed, it returns the origin identity, last accepted revision,
+  and checkpoint as a partial result; verify the identity, compare the current
+  revision, and review intervening changes before restore. It
+  never directs a revert at the now-current project. None produces an opaque generated movie.
 - Repurpose / Clip candidates: the `clips` drawer uses `clip.candidates` plus
   model-free `score.clip` explanations to rank standalone moments, then hands
   selected windows to social delivery without changing the source edit.
@@ -435,6 +450,10 @@ route to the same surface registry.
   project identity, and marks interrupted turns honestly. A categorized
   prompt library pre-fills eight common Polish, Repurpose, Speech, and Review
   outcomes without sending or spending an agent turn until the user presses Send.
+  Each preset advertises only the contained Chat inspect/edit verbs. Presets that
+  need an external speech service, rendering, delivery, or verification tell the
+  user to open the relevant Transcript Tools, Clips, or Review > QC surface;
+  pre-filling text does not grant or execute those capabilities.
   Agent Chat launches the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses
   Cut's contained capability route in a disposable cwd with native CLI tools
   disabled. Provider version text is informational only and each route's required
@@ -704,10 +723,12 @@ route to the same surface registry.
   Stop reports the verified final dimensions, cadence, and libx264 encoder under
   Advanced facts. Other recorder backends omit the control and refuse a direct
   request rather than silently changing or pretending to honor output quality.
-- **Test microphone** opens the current OS-default input for a bounded sample
+- **Test microphone** opens the selected input or System Default for a bounded sample
   window, reports a real peak without inventing a silence floor, and keeps the
-  Start action unavailable until the test finishes. The device name is
-  display-only; individual stable device selection is not yet claimed.
+  Start action unavailable until the test finishes. Where selection is supported,
+  Cut keeps the resolved endpoint private and exposes only safe labels and
+  expiring tokens; an unavailable saved selection refuses microphone-enabled
+  Start instead of falling back.
 - **Timeline voiceover** is a compact control on each unlocked audio track. It
   stays disabled unless the current Record Doctor explicitly admits native
   capture; selecting a microphone, a playhead or In–Out range, and Record does

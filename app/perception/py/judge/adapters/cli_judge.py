@@ -23,9 +23,12 @@ import tempfile
 # Single source of truth for prompts/schema/digest lives in ../judge.py.
 _JUDGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _JUDGE_DIR)
+_PY_ROOT = os.path.dirname(_JUDGE_DIR)
+sys.path.insert(0, _PY_ROOT)
 import judge  # noqa: E402
 from diagnostics import failed_preflight_reason, process_failure_detail  # noqa: E402
 import restricted_claude  # noqa: E402
+import provider_child_launch  # noqa: E402
 
 ADAPTER_NAME = "cli"
 DEFAULT_PROVIDER = "claude"          # codex / gemini adapters slot in later
@@ -436,10 +439,10 @@ def build_cli_prompts(mode: str, perception: dict, duration_s: float,
 # ---------------------------------------------------------------------------
 
 
-def detect_providers() -> dict:
+def detect_providers(launch: dict | None = None) -> dict:
     """Detect Claude and whether it can enforce restricted file reads."""
-    cli, reason = restricted_claude.resolve_restricted_claude("claude")
-    path = cli["path"] if cli else shutil.which("claude")
+    cli, reason = restricted_claude.resolve_restricted_claude("claude", launch)
+    path = cli["path"] if cli else (launch["executable"] if launch else shutil.which("claude"))
     entry: dict = {
         "binary": "claude",
         "found": bool(path),
@@ -474,7 +477,8 @@ def preflight_read_probe(claude_cli: dict, model: str, bundle: str,
         claude_cli, model, json_schema=None)
     try:
         cp = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
-                            cwd=bundle, timeout=timeout_s)
+                            cwd=bundle, timeout=timeout_s,
+                            env=restricted_claude.child_environment(claude_cli))
     except subprocess.TimeoutExpired:
         return False, f"probe exceeded {timeout_s}s timeout"
     except OSError as exc:
@@ -529,7 +533,8 @@ def invoke_claude(claude_bin: str, sys_p: str, user_p: str, model: str,
     cmd += ["--system-prompt", sys_p]
     try:
         cp = subprocess.run(cmd, input=user_p, capture_output=True, text=True, encoding="utf-8",
-                            cwd=cwd, timeout=timeout_s)
+                            cwd=cwd, timeout=timeout_s,
+                            env=restricted_claude.child_environment(claude_cli))
     except subprocess.TimeoutExpired:
         return None, {"available": True, "timed_out": True,
                       "restricted_read_capable": True,
@@ -627,10 +632,22 @@ def main() -> int:
     ap.add_argument("--bundle-dir", help="workspace for frames (default: tmp)")
     ap.add_argument("--keep-bundle", action="store_true",
                     help="keep the frames workspace after the run")
+    ap.add_argument("--provider-child-stdin", action="store_true",
+                    help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    try:
+        launch = (provider_child_launch.launches_from_stdin({DEFAULT_PROVIDER})
+                  .get(DEFAULT_PROVIDER) if args.provider_child_stdin else None)
+    except ValueError as error:
+        print(f"invalid admitted Claude provider handoff: {error}", file=sys.stderr)
+        return 2
+    if args.provider_child_stdin and launch is None:
+        print("admitted Claude provider handoff is missing Claude", file=sys.stderr)
+        return 2
+
     if args.command == "detect":
-        print(json.dumps(detect_providers(), indent=2))
+        print(json.dumps(detect_providers(launch), indent=2))
         return 0
 
     if not args.render:
@@ -724,7 +741,7 @@ def main() -> int:
     # bundle below is always ours and contains only validated copied frames.
     bundle = staging_bundle
     claude_cli, capability_reason = restricted_claude.resolve_restricted_claude(
-        args.claude_bin)
+        args.claude_bin, launch)
     preparation_meta: dict | None = None
     skip_reason: str | None = None
     if claude_cli is not None:

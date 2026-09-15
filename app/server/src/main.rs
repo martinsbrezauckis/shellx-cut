@@ -27,9 +27,7 @@ mod motion_discovery;
 mod motion_discovery_contract;
 mod motion_edit_return;
 mod motion_editable_import;
-// Structural generic adapter is compiled in every server build. The later
-// authenticated coordinator binding will call it; this tranche intentionally
-// publishes no unauthenticated Cut verb.
+// Compile the adapter while its authenticated binding remains deferred; expose no verb.
 #[allow(dead_code)]
 mod motion_generic_consumer;
 mod motion_jobs;
@@ -45,7 +43,9 @@ mod output_paths;
 mod paste_attributes;
 mod perception_setup;
 mod plugins;
+mod project_materialization;
 mod projects_index;
+mod provider_runtime;
 mod providers;
 mod recipes;
 mod registry;

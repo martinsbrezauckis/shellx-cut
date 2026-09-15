@@ -230,25 +230,79 @@ fn version_line(prog: &std::ffi::OsStr, args: &[&str], timeout: Duration) -> Opt
     }
 }
 
-/// Run a capability probe to successful completion and retain its complete
-/// output. Unlike the informational version banner, this is a policy input:
-/// callers must inspect the advertised capability tokens before reporting ready.
-fn successful_command_output(
-    prog: &std::ffi::OsStr,
+/// Create one disposable provider-child directory beneath Runner's isolated
+/// attempt temporary root.  A selected provider receives this directory for all
+/// three platform temp locators; the application itself remains isolated.
+fn admitted_provider_temporary_directory() -> Result<tempfile::TempDir, String> {
+    let root = ["TMPDIR", "TEMP", "TMP"]
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
+        .find(|path| path.is_absolute() && path.is_dir())
+        .ok_or_else(|| {
+            "admitted Doctor provider requires an absolute Runner temporary directory".to_string()
+        })?;
+    tempfile::Builder::new()
+        .prefix("cutd-doctor-provider-")
+        .tempdir_in(root)
+        .map_err(|error| {
+            format!("could not create admitted Doctor provider temporary directory: {error}")
+        })
+}
+
+/// Run a Doctor probe through the provider command selected for this child. It
+/// carries the explicit entrypoint and admitted environment, so a visible
+/// process-PATH discovery never substitutes for an enrolled provider route.
+fn provider_command_output(
+    provider: &crate::gen::ProviderChildCommand,
     args: &[String],
     timeout: Duration,
-) -> Option<String> {
-    let mut command = crate::gen::agent_std_command(Path::new(prog), args).ok()?;
-    let output = run_doctor_command(&mut command, timeout, "doctor capability probe").ok()?;
-    if !output.status.success() {
-        return None;
+    context: &str,
+) -> Option<(bool, String)> {
+    let temporary_directory = if provider.admitted_environment().is_some() {
+        Some(admitted_provider_temporary_directory().ok()?)
+    } else {
+        None
+    };
+    let mut command = provider.std_command(args).ok()?;
+    if let Some(directory) = &temporary_directory {
+        provider
+            .apply_admitted_std_environment(&mut command, directory.path())
+            .ok()?;
     }
+    let output = run_doctor_command(&mut command, timeout, context).ok()?;
     let text = if !output.stdout.is_empty() {
         String::from_utf8_lossy(&output.stdout).into_owned()
     } else {
         String::from_utf8_lossy(&output.stderr).into_owned()
     };
-    (!text.trim().is_empty()).then_some(text)
+    Some((output.status.success(), text))
+}
+
+fn provider_version_line(
+    provider: &crate::gen::ProviderChildCommand,
+    args: &[&str],
+    timeout: Duration,
+) -> Option<String> {
+    let arguments: Vec<String> = args
+        .iter()
+        .map(|argument| (*argument).to_string())
+        .collect();
+    let (_success, text) =
+        provider_command_output(provider, &arguments, timeout, "doctor version probe")?;
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(String::from)
+}
+
+fn successful_provider_command_output(
+    provider: &crate::gen::ProviderChildCommand,
+    args: &[String],
+    timeout: Duration,
+) -> Option<String> {
+    let (success, text) =
+        provider_command_output(provider, args, timeout, "doctor capability probe")?;
+    (success && !text.trim().is_empty()).then_some(text)
 }
 
 /// Probe whether a runnable ffmpeg has the OPTIONAL filters three ShellX Cut features
@@ -809,6 +863,18 @@ fn run_capture(prog: &std::ffi::OsStr, args: &[&str], timeout: Duration) -> Opti
     Some((out.status.success(), text))
 }
 
+fn run_capture_provider(
+    provider: &crate::gen::ProviderChildCommand,
+    args: &[&str],
+    timeout: Duration,
+) -> Option<(bool, String)> {
+    let arguments: Vec<String> = args
+        .iter()
+        .map(|argument| (*argument).to_string())
+        .collect();
+    provider_command_output(provider, &arguments, timeout, "check agent authentication")
+}
+
 /// Auth-file / env-key fallback when the live status probe could not run (agent
 /// absent, or the probe spawn failed/timed out). Credentials PRESENT but
 /// unverified → "unknown" (honest: present ≠ a valid session); nothing found →
@@ -839,57 +905,70 @@ fn auth_file_fallback(
     }
 }
 
+fn claude_auth_status(output: &str) -> Option<(&'static str, String)> {
+    if let Ok(value) = serde_json::from_str::<Value>(output) {
+        match value.get("loggedIn").and_then(|entry| entry.as_bool()) {
+            Some(true) => {
+                let who = value
+                    .get("subscriptionType")
+                    .and_then(|entry| entry.as_str())
+                    .or_else(|| value.get("authMethod").and_then(|entry| entry.as_str()))
+                    .unwrap_or("account");
+                return Some((
+                    "yes",
+                    format!("`claude auth status` reports logged in ({who})."),
+                ));
+            }
+            Some(false) => {
+                return Some((
+                    "no",
+                    "`claude auth status` reports not logged in — run `claude auth login`.".into(),
+                ));
+            }
+            None => {}
+        }
+    }
+    let lower = output.to_lowercase();
+    if lower.contains("not logged in") || lower.contains("logged out") {
+        Some((
+            "no",
+            "claude reports not logged in — run `claude auth login`.".into(),
+        ))
+    } else if lower.contains("logged in") {
+        Some(("yes", "claude reports logged in.".into()))
+    } else {
+        None
+    }
+}
+
+fn codex_auth_status(output: &str) -> Option<(&'static str, String)> {
+    let lower = output.to_lowercase();
+    if lower.contains("not logged in") || lower.contains("not authenticated") {
+        Some((
+            "no",
+            "`codex login status` reports not logged in — run `codex login`.".into(),
+        ))
+    } else if lower.contains("logged in") {
+        Some(("yes", "`codex login status` reports logged in.".into()))
+    } else {
+        None
+    }
+}
+
 /// BEST-EFFORT, non-interactive auth state for a chat agent: `("yes"|"no"|"unknown",
 /// detail)`. NEVER prompts or hangs — each path is either a cheap LOCAL status
-/// subcommand (bounded, stdin closed) or a pure file-presence check:
-///   - claude → `claude auth status` (JSON `{"loggedIn":…}`, ~270 ms, local) — a
-///     DEFINITIVE yes/no.
-///   - codex  → `codex login status` ("Logged in using …" / "Not logged in", ~50 ms,
-///     local) — a definitive yes/no.
-///   - grok   → has NO safe non-interactive status subcommand AND its token expires
-///     while ~/.grok/auth.json persists, so presence is reported as "unknown"
-///     (honest: a stale token reads identically to a fresh one off the filesystem).
-/// On any probe miss it degrades to `auth_file_fallback` rather than guessing.
+/// subcommand (bounded, stdin closed) or a pure file-presence check.  On any
+/// ordinary-route probe miss it degrades to `auth_file_fallback` rather than
+/// guessing.
 fn chat_auth_state(agent: &str, resolved: Option<&Path>) -> (&'static str, String) {
     match agent {
         "claude" => {
-            if let Some(p) = resolved {
-                if let Some((_ok, out)) =
-                    run_capture(p.as_os_str(), &["auth", "status"], Duration::from_secs(8))
+            if let Some(path) = resolved {
+                if let Some((_ok, output)) =
+                    run_capture(path.as_os_str(), &["auth", "status"], Duration::from_secs(8))
                 {
-                    if let Ok(v) = serde_json::from_str::<Value>(&out) {
-                        match v.get("loggedIn").and_then(|x| x.as_bool()) {
-                            Some(true) => {
-                                let who = v
-                                    .get("subscriptionType")
-                                    .and_then(|x| x.as_str())
-                                    .or_else(|| v.get("authMethod").and_then(|x| x.as_str()))
-                                    .unwrap_or("account");
-                                return (
-                                    "yes",
-                                    format!("`claude auth status` reports logged in ({who})."),
-                                );
-                            }
-                            Some(false) => {
-                                return (
-                                    "no",
-                                    "`claude auth status` reports not logged in — run \
-                                     `claude auth login`."
-                                        .into(),
-                                )
-                            }
-                            None => {}
-                        }
-                    }
-                    let low = out.to_lowercase();
-                    if low.contains("not logged in") || low.contains("logged out") {
-                        return (
-                            "no",
-                            "claude reports not logged in — run `claude auth login`.".into(),
-                        );
-                    }
-                    if low.contains("logged in") {
-                        return ("yes", "claude reports logged in.".into());
+                    if let Some(status) = claude_auth_status(&output) {
+                        return status;
                     }
                 }
             }
@@ -900,37 +979,20 @@ fn chat_auth_state(agent: &str, resolved: Option<&Path>) -> (&'static str, Strin
             )
         }
         "codex" => {
-            if let Some(p) = resolved {
-                if let Some((_ok, out)) =
-                    run_capture(p.as_os_str(), &["login", "status"], Duration::from_secs(8))
+            if let Some(path) = resolved {
+                if let Some((_ok, output)) =
+                    run_capture(path.as_os_str(), &["login", "status"], Duration::from_secs(8))
                 {
-                    let low = out.to_lowercase();
-                    if low.contains("not logged in") || low.contains("not authenticated") {
-                        return (
-                            "no",
-                            "`codex login status` reports not logged in — run `codex login`."
-                                .into(),
-                        );
-                    }
-                    // Require an EXPLICIT authenticated marker. A bare exit-0 is NOT
-                    // proof of a live session (some codex builds exit 0 from `login
-                    // status` regardless of auth, and a timed-out probe never reaches
-                    // here at all). Without the marker we fall through to the file/env
-                    // fallback, which reports "unknown" (honest: creds present but
-                    // unverified) rather than a false "yes" that flips the card to a
-                    // confident "Ready" for the Codex judge.
-                    if low.contains("logged in") {
-                        return ("yes", "`codex login status` reports logged in.".into());
+                    if let Some(status) = codex_auth_status(&output) {
+                        return status;
                     }
                 }
             }
             auth_file_fallback("codex", &[".codex/auth.json"], &["OPENAI_API_KEY"])
         }
         "grok" => {
-            // No safe non-interactive status subcommand; the token expires while the
-            // file persists → presence is "unknown", absence is "no".
             let present = home_join(".grok/auth.json")
-                .map(|p| p.exists())
+                .map(|path| path.exists())
                 .unwrap_or(false)
                 || std::env::var_os("GROK_API_KEY").is_some()
                 || std::env::var_os("XAI_API_KEY").is_some();
@@ -949,12 +1011,46 @@ fn chat_auth_state(agent: &str, resolved: Option<&Path>) -> (&'static str, Strin
                 )
             }
         }
-        // Antigravity has no stable, non-interactive auth-status contract and
-        // its canonical credential layout is provider-owned. Do not pin Doctor
-        // readiness to one historical token-file path. A resolved, capable CLI
-        // is reported as unconfirmed; the bounded real turn remains the only
-        // authentication validator and surfaces an auth error if relogin is
-        // actually needed.
+        "antigravity" => (
+            "unknown",
+            "Antigravity authentication cannot be confirmed non-interactively; the existing canonical CLI session is validated by the real turn."
+                .into(),
+        ),
+        _ => ("unknown", "no auth probe for this agent.".into()),
+    }
+}
+
+/// Read a provider's non-interactive status through its admitted command.  A
+/// failed admitted probe stays unknown; Doctor must not inspect the app's HOME
+/// as a substitute for the provider environment selected by the Runner.
+fn admitted_chat_auth_state(
+    agent: &str,
+    provider: &crate::gen::ProviderChildCommand,
+) -> (&'static str, String) {
+    match agent {
+        "claude" => run_capture_provider(provider, &["auth", "status"], Duration::from_secs(8))
+            .and_then(|(_ok, output)| claude_auth_status(&output))
+            .unwrap_or_else(|| {
+                (
+                    "unknown",
+                    "Claude authentication could not be verified through the admitted provider environment."
+                        .into(),
+                )
+            }),
+        "codex" => run_capture_provider(provider, &["login", "status"], Duration::from_secs(8))
+            .and_then(|(_ok, output)| codex_auth_status(&output))
+            .unwrap_or_else(|| {
+                (
+                    "unknown",
+                    "Codex authentication could not be verified through the admitted provider environment."
+                        .into(),
+                )
+            }),
+        "grok" => (
+            "unknown",
+            "Grok authentication has no safe non-interactive status probe in the admitted provider environment."
+                .into(),
+        ),
         "antigravity" => (
             "unknown",
             "Antigravity authentication cannot be confirmed non-interactively; the existing canonical CLI session is validated by the real turn."
@@ -971,6 +1067,8 @@ fn chat_agent_block(
     provider: &str,
     found: bool,
     resolved: Option<&Path>,
+    selected: Option<&crate::gen::ProviderChildCommand>,
+    context_error: Option<&str>,
     capability_verified: bool,
 ) -> Value {
     if !crate::chat::CHAT_AGENTS.contains(&provider) {
@@ -979,7 +1077,19 @@ fn chat_agent_block(
     // Every version banner stays informational. Readiness is earned only by a
     // successful required-help probe that advertises every provider flag.
     let wired = crate::chat::is_wired(provider) && capability_verified;
-    let (authenticated, auth_detail) = chat_auth_state(provider, resolved);
+    let (authenticated, auth_detail) = if let Some(error) = context_error {
+        (
+            "unknown",
+            format!(
+                "provider runtime context did not admit {provider}: {error}. Doctor did not run an unadmitted status probe or inspect credential locations."
+            ),
+        )
+    } else {
+        match selected.filter(|command| command.admitted_environment().is_some()) {
+            Some(command) => admitted_chat_auth_state(provider, command),
+            None => chat_auth_state(provider, resolved),
+        }
+    };
     // READY = installed && wired containment route && CONFIRMED auth. An
     // An installed CLI without verified required flags remains disabled.
     let ready = found && wired && authenticated == "yes";
@@ -1016,26 +1126,37 @@ fn judge_card(
     let adapter_runtime_ready = adapter.is_some() && adapter_python.is_some();
     // bin is the binary stem; for grok it equals "grok", which keys the
     // grok-only ~/.grok/bin rung inside the resolver.
-    let resolved = crate::gen::resolve_agent(bin);
-    let found = resolved.is_some();
+    let discovered = crate::gen::resolve_agent(bin);
+    let selected_result = crate::chat::provider_child_command(provider);
+    let context_error = selected_result.as_ref().err().cloned();
+    let selected = selected_result
+        .as_ref()
+        .ok()
+        .filter(|command| command.available());
+    // In ordinary mode this is the current Cut resolver result.  Under an
+    // admitted Runner context it is the exact selected child, and discovery is
+    // retained only as diagnostic display information below.
+    let found = selected.is_some();
     let admission = judge_admission::resolve(provider, found, adapter_runtime_ready, admissions);
     // Version is display-only. Never let an informational banner consume the
     // capability scan's budget or decide whether the provider is admitted.
-    let version = resolved
-        .as_ref()
-        .and_then(|p| version_line(p.as_os_str(), &[vflag], Duration::from_secs(2)));
-    let capability_verified = resolved
-        .as_ref()
+    let version = selected
+        .and_then(|command| provider_version_line(command, &[vflag], Duration::from_secs(2)));
+    let capability_verified = selected
         .and_then(|path| {
             crate::chat::broker::capability_probe_args(provider, Path::new(".")).and_then(
                 |arguments| {
-                    successful_command_output(path.as_os_str(), &arguments, Duration::from_secs(15))
+                    successful_provider_command_output(path, &arguments, Duration::from_secs(15))
                 },
             )
         })
         .map(|output| crate::chat::broker::verify_agent_capability_probe(provider, &output).is_ok())
         .unwrap_or(false);
-    let hint = if !found {
+    let hint = if let Some(error) = context_error.as_deref() {
+        Some(format!(
+            "{provider} was not admitted by the provider runtime context: {error}. Repair the enrolled provider selection, then re-scan."
+        ))
+    } else if !found {
         Some(format!(
             "{provider} CLI ({bin}) not found on PATH or in the standard \
                      install dirs. Install + log in to enable verify.judge via your \
@@ -1069,7 +1190,22 @@ fn judge_card(
                 .unwrap_or("the adapter did not affirmatively report readiness")
         ))
     };
-    let chat = chat_agent_block(provider, found, resolved.as_deref(), capability_verified);
+    let resolved = selected
+        .map(|command| command.executable().to_path_buf())
+        .or_else(|| {
+            context_error
+                .is_none()
+                .then_some(discovered.clone())
+                .flatten()
+        });
+    let chat = chat_agent_block(
+        provider,
+        found,
+        resolved.as_deref(),
+        selected,
+        context_error.as_deref(),
+        capability_verified,
+    );
     Card {
         id: format!("judge.{provider}"),
         kind: "judge".into(),
@@ -1098,6 +1234,8 @@ fn judge_card(
             // Where it resolved (e.g. ~/.grok/bin/grok) — null when absent.
             // Lets the UI/agent (and the agent-dropdown) see the path.
             "resolved": resolved.as_ref().map(|p| p.display().to_string()),
+            "discovered": discovered.as_ref().map(|p| p.display().to_string()),
+            "provider_context_error": context_error,
             "role": "render judge (verify.judge) — drives the user's own coding-agent CLI as a vision reviewer; NO API key, NO model call during admission detection",
             // The agent-chat dropdown state (3-level: absent / present-but-
             // unauthenticated / ready) + the security-posture badge — folded
@@ -1874,6 +2012,79 @@ mod tests {
         let (state, detail) = chat_auth_state("antigravity", Some(std::path::Path::new("agy")));
         assert_eq!(state, "unknown");
         assert!(detail.contains("real turn"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_provider_context_skips_legacy_status_and_auth_fallback() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::Builder::new()
+            .prefix("doctor-rejected-provider-")
+            .tempdir_in(crate::provider_runtime::test_fixture_root())
+            .unwrap();
+        let marker = fixture.path().join("status-probe-ran");
+        let executable = fixture.path().join("unadmitted-claude");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nprintf 'logged in\\n'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+
+        let home = fixture.path().join("canonical-home");
+        let document = serde_json::json!({
+            "schema": "release-runner.provider-runtime/v1",
+            "admission": {
+                "schema": "release-runner.provider-runtime/v1",
+                "resourceLease": "provider-login:test:antigravity",
+                "enrollment": {
+                    "id": "doctor-antigravity",
+                    "provider": "antigravity",
+                    "userIdentity": "uid:1000",
+                    "executable": {
+                        "path": fixture.path().join("selected-antigravity"),
+                        "sha256": "a".repeat(64)
+                    },
+                    "runtimeCode": [],
+                    "canonicalEnvironment": { "home": home }
+                }
+            },
+            "effectiveEnvironment": {
+                "HOME": fixture.path().join("canonical-home"),
+                "PATH": fixture.path().join("provider-bin")
+            }
+        });
+        let mut context = tempfile::NamedTempFile::new_in(fixture.path()).unwrap();
+        context
+            .write_all(serde_json::to_string(&document).unwrap().as_bytes())
+            .unwrap();
+        context.flush().unwrap();
+        let _context =
+            crate::provider_runtime::install_test_provider_context(context.path().as_os_str());
+        let context_error = crate::chat::provider_child_command("claude")
+            .expect_err("selected Claude must be absent from the valid Antigravity context");
+
+        let block = chat_agent_block(
+            "claude",
+            false,
+            Some(&executable),
+            None,
+            Some(&context_error),
+            false,
+        );
+        assert_eq!(block["authenticated"], "unknown");
+        assert!(block["auth_detail"]
+            .as_str()
+            .unwrap()
+            .contains("did not admit claude"));
+        assert!(!marker.exists(), "unadmitted status executable was invoked");
     }
 
     #[test]

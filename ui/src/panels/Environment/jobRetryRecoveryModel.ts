@@ -9,6 +9,10 @@ import type { JobRecord } from '../../lib/clientModel'
 export interface JobRetryRecoveryView {
   jobId: string
   kind: string
+  state: string
+  eligible: boolean
+  rootJobId: string
+  attempt: number
   label: string
   terminalLabel: 'Failed' | 'Cancelled' | 'Superseded' | 'Interrupted'
   canRetry: boolean
@@ -59,6 +63,10 @@ export function failedJobRetryViews(records: JobRecord[]): JobRetryRecoveryView[
       return {
         jobId: job.job_id,
         kind: job.kind,
+        state: job.state,
+        eligible: engineEligible,
+        rootJobId: job.retry?.root_job_id ?? job.job_id,
+        attempt: job.retry?.attempt ?? 0,
         label: jobLabel(job.kind),
         terminalLabel: terminal,
         canRetry,

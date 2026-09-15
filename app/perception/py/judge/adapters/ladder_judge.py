@@ -25,9 +25,12 @@ import sys
 
 _ADAPTERS_DIR = os.path.dirname(os.path.abspath(__file__))
 _JUDGE_DIR = os.path.dirname(_ADAPTERS_DIR)
+_PY_ROOT = os.path.dirname(_JUDGE_DIR)
 sys.path.insert(0, _JUDGE_DIR)
+sys.path.insert(0, _PY_ROOT)
 sys.path.insert(0, _ADAPTERS_DIR)
 import judge              # noqa: E402  (SCHEMA, now_iso)
+import provider_child_launch  # noqa: E402
 import cli_judge          # noqa: E402  (claude detect)
 import codex_judge        # noqa: E402  (codex detect)
 import antigravity_judge  # noqa: E402  (antigravity detect)
@@ -46,23 +49,39 @@ LADDER: list[tuple[str, str]] = [
 VALID_PROVIDERS = {p for p, _ in LADDER}
 
 
-def detect_ladder() -> dict:
+def detect_ladder(launches: dict | None = None) -> dict:
     """Detect every rung (cheap, no model call) and pick the auto winner.
 
     Returns {rungs: [<per-provider detect dict>...], order: [...],
              auto_selected: provider|None}. The claude rung reuses
     cli_judge.detect_providers()['claude']; codex/antigravity/grok use their own
-    detect.
+    detect. When Rust supplied an admitted mapping, absent rungs are reported
+    unavailable without PATH discovery.
     """
-    claude = cli_judge.detect_providers().get("claude", {"found": False})
+    admitted_only = launches is not None
+    launches = launches or {}
+
+    def unavailable(provider: str) -> dict:
+        return {
+            "provider": provider,
+            "found": False,
+            "judge_ready": False,
+            "availability_reason": "provider is absent from the admitted provider handoff",
+        }
+
+    claude = (cli_judge.detect_providers(launches.get("claude")).get("claude", {"found": False})
+              if not admitted_only or "claude" in launches else unavailable("claude"))
     # Normalize the claude entry to the {provider, found, ...} shape the others
     # use (cli_judge keys it under the name; add the provider field).
     claude = {"provider": "claude", **claude}
     rungs = {
         "claude": claude,
-        "codex": codex_judge.detect(),
-        "antigravity": antigravity_judge.detect(),
-        "grok": grok_judge.detect(),
+        "codex": (codex_judge.detect(launches.get("codex"))
+                  if not admitted_only or "codex" in launches else unavailable("codex")),
+        "antigravity": (antigravity_judge.detect(launches.get("antigravity"))
+                        if not admitted_only or "antigravity" in launches else unavailable("antigravity")),
+        "grok": (grok_judge.detect(launches.get("grok"))
+                 if not admitted_only or "grok" in launches else unavailable("grok")),
     }
     # Presence and admission are distinct. Claude has a restricted-Read gate;
     # every other rung must affirmatively declare its own judge-ready boundary.
@@ -186,7 +205,8 @@ def _envelope_cause(env: dict) -> str:
             or f"status={env.get('status')}")[:400]
 
 
-def run_adapter(provider: str, passthrough: list[str]) -> tuple[int, dict | None]:
+def run_adapter(provider: str, passthrough: list[str],
+                launches: dict | None = None) -> tuple[int, dict | None]:
     """Run the chosen rung's adapter as a subprocess, then splice the ladder
     trace into its emitted envelope.
 
@@ -199,11 +219,21 @@ def run_adapter(provider: str, passthrough: list[str]) -> tuple[int, dict | None
     """
     script = os.path.join(_ADAPTERS_DIR, dict(LADDER)[provider])
     # Map the generic --cli-model passthrough to each adapter (all accept
-    # --cli-model). The provider-specific bin flag is left at its default
-    # (claude/codex/antigravity/grok on PATH); override via the adapter directly if
-    # needed. Pass the python interpreter through for consistency.
+    # --cli-model). Without an admitted mapping the existing provider-specific
+    # bin defaults remain intact. With one, the nested adapter receives its
+    # exact command/env handoff over stdin and must not resolve PATH. Pass the
+    # Python interpreter through for consistency.
+    launch = (launches or {}).get(provider)
     cmd = [sys.executable, script, "review"] + passthrough
-    cp = subprocess.run(cmd)
+    if launch:
+        cmd.append("--provider-child-stdin")
+        handoff = json.dumps({
+            "schema": provider_child_launch.SCHEMA,
+            "launches": {provider: launch},
+        }).encode("utf-8")
+        cp = subprocess.run(cmd, input=handoff)
+    else:
+        cp = subprocess.run(cmd)
     # Splice the ladder block into the envelope the adapter wrote (best effort —
     # never fail the run because the trace splice failed).
     env: dict | None = None
@@ -212,7 +242,7 @@ def run_adapter(provider: str, passthrough: list[str]) -> tuple[int, dict | None
         try:
             with open(out_path) as f:
                 env = json.load(f)
-            env["ladder"] = {**detect_ladder(), "selected": provider,
+            env["ladder"] = {**detect_ladder(launches), "selected": provider,
                              "skipped": False}
             with open(out_path, "w") as f:
                 json.dump(env, f, indent=2)
@@ -223,7 +253,7 @@ def run_adapter(provider: str, passthrough: list[str]) -> tuple[int, dict | None
 
 
 def run_auto_with_stepdown(ladder: dict, passthrough: list[str],
-                           out_path: str | None) -> int:
+                           out_path: str | None, launches: dict | None) -> int:
     """AUTO-mode ladder walk with infrastructure-class step-down (the judge-status contract).
 
     Runs the first detected rung; if it fails infrastructure-class, steps to the
@@ -244,7 +274,7 @@ def run_auto_with_stepdown(ladder: dict, passthrough: list[str],
     attempted: list[dict] = []
     last_rc = 0
     for idx, provider in enumerate(detected):
-        rc, env = run_adapter(provider, passthrough)
+        rc, env = run_adapter(provider, passthrough, launches)
         last_rc = rc
         # If the adapter produced no parseable envelope (rc!=0 bad input, or a
         # write failure), treat it as a terminal result for this rung — do NOT
@@ -345,14 +375,23 @@ def main() -> int:
              "provider.")
     ap.add_argument("--out", help="envelope JSON destination (also passed "
                                   "through to the adapter)")
+    ap.add_argument("--provider-launches-stdin", action="store_true",
+                    help=argparse.SUPPRESS)
     known, passthrough = ap.parse_known_args()
+
+    try:
+        launches = (provider_child_launch.launches_from_stdin(VALID_PROVIDERS)
+                    if known.provider_launches_stdin else None)
+    except ValueError as error:
+        print(f"invalid admitted judge provider handoff: {error}", file=sys.stderr)
+        return 2
 
     if known.provider != "auto" and known.provider not in VALID_PROVIDERS:
         print(f"unknown --provider {known.provider!r}; valid: auto, "
               + ", ".join(sorted(VALID_PROVIDERS)), file=sys.stderr)
         return 2
 
-    ladder = detect_ladder()
+    ladder = detect_ladder(launches)
 
     if known.command == "detect":
         print(json.dumps(ladder, indent=2))
@@ -371,7 +410,13 @@ def main() -> int:
         # run; substituting another would lie about which judge ran). the judge-status contract:
         # step-down is an AUTO-mode-only behavior, by contract.
         selected = known.provider
-        rc, _env = run_adapter(selected, passthrough)
+        if launches is not None and selected not in launches:
+            print(
+                f"selected judge provider {selected!r} is absent from the admitted provider handoff",
+                file=sys.stderr,
+            )
+            return 2
+        rc, _env = run_adapter(selected, passthrough, launches)
         return rc
 
     # Auto: first detected rung wins; none -> honest skip envelope.
@@ -388,7 +433,7 @@ def main() -> int:
     # Auto walk WITH infrastructure-class step-down (the judge-status contract): the selected rung
     # runs; an infra-class failure steps down to the next detected rung, the
     # trail is recorded, all-rungs-failed yields an honest error envelope.
-    return run_auto_with_stepdown(ladder, passthrough, known.out)
+    return run_auto_with_stepdown(ladder, passthrough, known.out, launches)
 
 
 if __name__ == "__main__":

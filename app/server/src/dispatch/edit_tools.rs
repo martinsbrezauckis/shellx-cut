@@ -43,6 +43,8 @@ pub(super) use track_markers::{
 
 mod audio;
 pub(super) use audio::{assemble_broll, audio_add_music, audio_cleanup_voice, edit_duck, edit_eq};
+#[cfg(test)]
+pub(in crate::dispatch) use audio::{install_assemble_broll_search_gate, AssembleBrollSearchGate};
 
 mod speed;
 pub(super) use speed::{edit_speed, edit_speed_ramp};
