@@ -43,10 +43,32 @@ for (const relative of REQUIRED) {
 const tauri = JSON.parse(
   readFileSync(join(ROOT, "app", "desktop", "src-tauri", "tauri.conf.json"), "utf8"),
 );
+const JUDGE_RESOURCES = {
+  "../../perception/py/judge/judge.py": "perception/judge/judge.py",
+  "../../perception/py/judge/adapters/antigravity_judge.py": "perception/judge/adapters/antigravity_judge.py",
+  "../../perception/py/judge/adapters/cli_judge.py": "perception/judge/adapters/cli_judge.py",
+  "../../perception/py/judge/adapters/codex_judge.py": "perception/judge/adapters/codex_judge.py",
+  "../../perception/py/judge/adapters/diagnostics.py": "perception/judge/adapters/diagnostics.py",
+  "../../perception/py/judge/adapters/grok_judge.py": "perception/judge/adapters/grok_judge.py",
+  "../../perception/py/judge/adapters/grok_tool_policy.py": "perception/judge/adapters/grok_tool_policy.py",
+  "../../perception/py/judge/adapters/ladder_judge.py": "perception/judge/adapters/ladder_judge.py",
+  "../../perception/py/judge/adapters/restricted_claude.py": "perception/judge/adapters/restricted_claude.py",
+  "../../perception/py/judge/adapters/restricted_claude_windows.py": "perception/judge/adapters/restricted_claude_windows.py",
+};
+const judgeResources = Object.fromEntries(
+  Object.entries(tauri.bundle?.resources ?? {}).filter(([source]) =>
+    source.startsWith("../../perception/py/judge"),
+  ),
+);
+assert.deepEqual(
+  judgeResources,
+  JUDGE_RESOURCES,
+  "the installed app must carry the complete judge ladder from an exact source allowlist",
+);
 assert.equal(
-  tauri.bundle?.resources?.["../../perception/py/judge"],
-  "perception/judge",
-  "the installed app must carry the complete judge ladder in its perception payload",
+  Object.keys(judgeResources).some((source) => source.includes("__pycache__") || source.endsWith(".pyc")),
+  false,
+  "the judge resource allowlist must refuse generated Python bytecode",
 );
 
 const pythonProbe = spawnSync(
