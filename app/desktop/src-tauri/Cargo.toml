@@ -93,6 +93,11 @@ custom-protocol = ["tauri/custom-protocol"]
 # release artifacts; packaging validates this setting before producing bundles.
 webdriver-test = ["dep:tauri-plugin-wdio-webdriver", "dep:tauri-plugin-wdio"]
 
+[patch.crates-io]
+# Keep the diagnostic WebDriver plugin's reviewed native-input overlay in source,
+# rather than relying on a mutable registry cache during test-variant builds.
+tauri-plugin-wdio-webdriver = { path = "test-support/tauri-plugin-wdio-webdriver" }
+
 # Release profile tuned for a small native binary.
 [profile.release]
 panic = "abort"   # smaller binary; no unwinding tables

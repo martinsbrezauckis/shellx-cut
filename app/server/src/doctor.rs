@@ -646,6 +646,53 @@ fn ffmpeg_missing_hint(stem: &str) -> String {
 // Perception (python sidecar) card — tier probe
 // ---------------------------------------------------------------------------
 
+const DEFAULT_STT_MODEL: &str = "nemo-parakeet-tdt-0.6b-v3";
+
+fn persisted_stt_preference(
+    stt_model: Option<String>,
+    stt_language: Option<String>,
+) -> (String, bool, Option<String>) {
+    let stt_model_default = stt_model.is_none();
+    (
+        stt_model.unwrap_or_else(|| DEFAULT_STT_MODEL.into()),
+        stt_model_default,
+        stt_language,
+    )
+}
+
+fn missing_perception_card(
+    python: Value,
+    python_configured: Option<bool>,
+    hint: &str,
+    stt_model: String,
+    stt_model_default: bool,
+    stt_language: Option<String>,
+) -> Card {
+    let mut details = json!({
+        "tier": "none",
+        "python": python,
+        "stt_model": stt_model,
+        "stt_model_default": stt_model_default,
+        "stt_language": stt_language,
+        "unlocks": {
+            "instruments-capable": "silence/scene/loudness instruments (ffmpeg-based)",
+            "full-stt": "word-level transcription, filler/silence-by-words, captions"
+        }
+    });
+    if let Some(python_configured) = python_configured {
+        details["python_configured"] = json!(python_configured);
+    }
+    Card {
+        id: "perception".into(),
+        kind: "perception".into(),
+        status: CardStatus::Missing,
+        source: None,
+        version: None,
+        hint: Some(hint.into()),
+        details,
+    }
+}
+
 /// Perception capability tier, cheapest→fullest.
 /// - none: no python interpreter resolvable at all.
 /// - instruments-capable: python runs, but the STT stack is not
@@ -654,54 +701,34 @@ fn ffmpeg_missing_hint(stem: &str) -> String {
 /// - full-stt: onnx-asr or whisperX imports — the full AI tier (transcription,
 ///   filler/silence-by-words, captions) is available.
 fn perception_card() -> Card {
+    let stt_setting = cut_perception::read_stt_setting();
+    let (stt_model, stt_model_default, stt_language) =
+        persisted_stt_preference(stt_setting.0, stt_setting.1);
     let Some(python) = cut_perception::configured_sidecar_python() else {
-        return Card {
-            id: "perception".into(),
-            kind: "perception".into(),
-            status: CardStatus::Missing,
-            source: None,
-            version: None,
-            hint: Some(
-                "Captions and transcription are not installed yet. Core editing and render still work. Choose Install captions when you need transcripts, captions, or word-based cleanup."
-                    .into(),
-            ),
-            details: json!({
-                "tier": "none",
-                "python": null,
-                "python_configured": false,
-                "unlocks": {
-                    "instruments-capable": "silence/scene/loudness instruments (ffmpeg-based)",
-                    "full-stt": "word-level transcription, filler/silence-by-words, captions"
-                }
-            }),
-        };
+        return missing_perception_card(
+            json!(null),
+            Some(false),
+            "Captions and transcription are not installed yet. Core editing and render still work. Choose Install captions when you need transcripts, captions, or word-based cleanup.",
+            stt_model,
+            stt_model_default,
+            stt_language,
+        );
     };
     let py_str = python.to_string_lossy().into_owned();
     // Is the interpreter itself runnable? (bounded)
     let py_version = version_line(python.as_os_str(), &["--version"], Duration::from_secs(8));
     if py_version.is_none() {
-        return Card {
-            id: "perception".into(),
-            kind: "perception".into(),
-            status: CardStatus::Missing,
-            source: None,
-            version: None,
-            hint: Some(
-                "No Python interpreter for the perception sidecar. \
-                 Transcription, word-level silence/filler removal, captions, and \
-                 receipt facts need it — optional; core editing + render work \
-                 without it. Choose Install captions when you need captions or transcripts."
-                    .into(),
-            ),
-            details: json!({
-                "tier": "none",
-                "python": py_str,
-                "unlocks": {
-                    "instruments-capable": "silence/scene/loudness instruments (ffmpeg-based)",
-                    "full-stt": "word-level transcription, filler/silence-by-words, captions"
-                }
-            }),
-        };
+        return missing_perception_card(
+            json!(py_str),
+            None,
+            "No Python interpreter for the perception sidecar. \
+             Transcription, word-level silence/filler removal, captions, and \
+             receipt facts need it — optional; core editing + render work \
+             without it. Choose Install captions when you need captions or transcripts.",
+            stt_model,
+            stt_model_default,
+            stt_language,
+        );
     }
     // Python runs — probe the STT engine. The PRIMARY words engine is onnx-asr
     // Parakeet-TDT is primary; whisperX is only the compatibility fallback.
@@ -741,10 +768,6 @@ fn perception_card() -> Card {
             ),
         )
     };
-    // Report the ACTIVE STT model/language (the user-chosen transcription
-    // model that the next perception run will use), defaulting to parakeet v3
-    // (the ~25-language multilingual checkpoint — the friction-free default).
-    let (stt_model, stt_language) = cut_perception::read_stt_setting();
     Card {
         id: "perception".into(),
         kind: "perception".into(),
@@ -759,8 +782,8 @@ fn perception_card() -> Card {
             "stt_engine": stt_engine,
             "onnx_asr_importable": onnx_ok,
             "whisperx_importable": whisper_ok,
-            "stt_model": stt_model.unwrap_or_else(|| "nemo-parakeet-tdt-0.6b-v3".into()),
-            "stt_model_default": stt_model_is_default(),
+            "stt_model": stt_model,
+            "stt_model_default": stt_model_default,
             "stt_language": stt_language,
             "unlocks": {
                 "instruments-capable": "silence/scene/loudness instruments (ffmpeg-based)",
@@ -768,12 +791,6 @@ fn perception_card() -> Card {
             }
         }),
     }
-}
-
-/// True when no STT model override is set (the perception run uses the built-in
-/// Parakeet-TDT v3 default).
-fn stt_model_is_default() -> bool {
-    cut_perception::read_stt_setting().0.is_none()
 }
 
 /// Cheap import check: `python -c "import <module>"` with a bounded timeout.
@@ -1856,6 +1873,83 @@ pub fn scan_minimal() -> DoctorReport {
 mod tests {
     use super::service_cards::service_card;
     use super::*;
+
+    #[test]
+    fn persisted_stt_preference_keeps_default_and_explicit_language() {
+        let (model, is_default, language) = persisted_stt_preference(None, None);
+        assert_eq!(model, DEFAULT_STT_MODEL);
+        assert!(is_default);
+        assert_eq!(language, None);
+
+        let (model, is_default, language) =
+            persisted_stt_preference(Some("nemo-canary-1b-v2".into()), Some("lv".into()));
+        assert_eq!(model, "nemo-canary-1b-v2");
+        assert!(!is_default);
+        assert_eq!(language.as_deref(), Some("lv"));
+    }
+
+    #[test]
+    fn missing_perception_card_retains_stt_preferences() {
+        let default = missing_perception_card(
+            json!(null),
+            Some(false),
+            "missing Python",
+            DEFAULT_STT_MODEL.into(),
+            true,
+            None,
+        );
+        assert_eq!(default.status, CardStatus::Missing);
+        assert_eq!(
+            default.details.get("stt_model").and_then(Value::as_str),
+            Some(DEFAULT_STT_MODEL)
+        );
+        assert_eq!(
+            default
+                .details
+                .get("stt_model_default")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(default
+            .details
+            .get("stt_language")
+            .is_some_and(Value::is_null));
+        assert_eq!(
+            default
+                .details
+                .get("python_configured")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let configured = missing_perception_card(
+            json!("C:/owned/missing-python.exe"),
+            None,
+            "unusable Python",
+            "nemo-canary-1b-v2".into(),
+            false,
+            Some("lv".into()),
+        );
+        assert_eq!(
+            configured.details.get("stt_model").and_then(Value::as_str),
+            Some("nemo-canary-1b-v2")
+        );
+        assert_eq!(
+            configured
+                .details
+                .get("stt_model_default")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            configured
+                .details
+                .get("stt_language")
+                .and_then(Value::as_str),
+            Some("lv")
+        );
+        assert!(configured.details.get("python_configured").is_none());
+    }
 
     /// The capability note names exactly the missing feature(s), frames ffmpeg
     /// as the user's external tool, states the license type, and never gates on it.
