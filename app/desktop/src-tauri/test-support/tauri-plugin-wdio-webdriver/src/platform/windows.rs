@@ -25,7 +25,8 @@ use windows_core::BOOL;
 
 use crate::platform::alert_state::{AlertState, AlertStateManager, AlertType, PendingAlert};
 use crate::platform::{
-    wrap_script_for_frame_context, FrameId, PlatformExecutor, PointerEventType, PrintOptions,
+    wrap_script_for_frame_context, FrameId, ModifierState, PlatformExecutor, PointerEventType,
+    PrintOptions,
 };
 use crate::server::response::WebDriverErrorResponse;
 use crate::webdriver::Timeouts;
@@ -113,6 +114,190 @@ impl SendableComPtr {
     }
 }
 
+fn modifier_bits(m: &ModifierState) -> u32 {
+    u32::from(m.alt) | u32::from(m.ctrl) * 2 | u32::from(m.meta) * 4 | u32::from(m.shift) * 8
+}
+fn mouse_parameters(
+    kind: PointerEventType,
+    x: i32,
+    y: i32,
+    button: u32,
+    buttons: u32,
+    m: &ModifierState,
+) -> Result<Value, WebDriverErrorResponse> {
+    if button > 2 || buttons & !7 != 0 {
+        return Err(WebDriverErrorResponse::unsupported_operation(
+            "unsupported native mouse button",
+        ));
+    }
+    let kind = match kind {
+        PointerEventType::Move => "mouseMoved",
+        PointerEventType::Down => "mousePressed",
+        PointerEventType::Up => "mouseReleased",
+        PointerEventType::Click => {
+            return Err(WebDriverErrorResponse::unsupported_operation(
+                "native down/up generates click",
+            ))
+        }
+    };
+    let name = if kind == "mouseMoved" {
+        if buttons & 1 != 0 {
+            "left"
+        } else if buttons & 2 != 0 {
+            "right"
+        } else if buttons & 4 != 0 {
+            "middle"
+        } else {
+            "none"
+        }
+    } else {
+        match button {
+            0 => "left",
+            1 => "middle",
+            _ => "right",
+        }
+    };
+    Ok(
+        serde_json::json!({"type":kind,"x":x,"y":y,"button":name,"buttons":buttons,"clickCount":if kind=="mouseMoved"{0}else{1},"pointerType":"mouse","modifiers":modifier_bits(m)}),
+    )
+}
+fn key_parameters(
+    value: &str,
+    down: bool,
+    m: &ModifierState,
+) -> Result<Value, WebDriverErrorResponse> {
+    let mut chars = value.chars();
+    let c = chars
+        .next()
+        .ok_or_else(|| WebDriverErrorResponse::invalid_argument("empty key"))?;
+    if chars.next().is_some() {
+        return Err(WebDriverErrorResponse::invalid_argument(
+            "key must be one scalar",
+        ));
+    }
+    let (key, code, vk, text) = match c {
+        '\u{E003}' => ("Backspace".into(), "Backspace".into(), 8, String::new()),
+        '\u{E004}' => ("Tab".into(), "Tab".into(), 9, String::new()),
+        '\u{E006}' | '\u{E007}' => ("Enter".into(), "Enter".into(), 13, "\r".into()),
+        '\u{E008}' => ("Shift".into(), "ShiftLeft".into(), 16, String::new()),
+        '\u{E009}' => ("Control".into(), "ControlLeft".into(), 17, String::new()),
+        '\u{E00A}' => ("Alt".into(), "AltLeft".into(), 18, String::new()),
+        '\u{E03D}' => ("Meta".into(), "MetaLeft".into(), 91, String::new()),
+        '\u{E00C}' => ("Escape".into(), "Escape".into(), 27, String::new()),
+        '\u{E00D}' => (" ".into(), "Space".into(), 32, " ".into()),
+        '\u{E00E}'..='\u{E017}' => {
+            let names = [
+                "PageUp",
+                "PageDown",
+                "End",
+                "Home",
+                "ArrowLeft",
+                "ArrowUp",
+                "ArrowRight",
+                "ArrowDown",
+                "Insert",
+                "Delete",
+            ];
+            let i = c as usize - 0xe00e;
+            (
+                names[i].into(),
+                names[i].into(),
+                33 + i as u32,
+                String::new(),
+            )
+        }
+        '\u{E031}'..='\u{E03C}' => {
+            let n = c as u32 - 0xe031 + 1;
+            (format!("F{n}"), format!("F{n}"), 111 + n, String::new())
+        }
+        _ if !c.is_control() && !(('\u{E000}'..='\u{F8FF}').contains(&c)) => {
+            let key = if m.shift && c.is_ascii_lowercase() {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
+            let (code, vk) = if c.is_ascii_alphabetic() {
+                (
+                    format!("Key{}", c.to_ascii_uppercase()),
+                    c.to_ascii_uppercase() as u32,
+                )
+            } else if c.is_ascii_digit() {
+                (format!("Digit{c}"), c as u32)
+            } else {
+                match c {
+                    ' ' => ("Space".into(), 32),
+                    '-' | '_' => ("Minus".into(), 189),
+                    '=' | '+' => ("Equal".into(), 187),
+                    '[' | '{' => ("BracketLeft".into(), 219),
+                    ']' | '}' => ("BracketRight".into(), 221),
+                    '\\' | '|' => ("Backslash".into(), 220),
+                    ';' | ':' => ("Semicolon".into(), 186),
+                    '\'' | '"' => ("Quote".into(), 222),
+                    ',' | '<' => ("Comma".into(), 188),
+                    '.' | '>' => ("Period".into(), 190),
+                    '/' | '?' => ("Slash".into(), 191),
+                    '`' | '~' => ("Backquote".into(), 192),
+                    _ => ("Unidentified".into(), 0),
+                }
+            };
+            (key.to_string(), code, vk, key.to_string())
+        }
+        _ => {
+            return Err(WebDriverErrorResponse::unsupported_operation(
+                "unsupported native key",
+            ))
+        }
+    };
+    let text = if down && !m.ctrl && !m.alt && !m.meta {
+        text
+    } else {
+        String::new()
+    };
+    Ok(
+        serde_json::json!({"type":if down {if text.is_empty(){"rawKeyDown"}else{"keyDown"}}else{"keyUp"},"key":key,"code":code,"windowsVirtualKeyCode":vk,"text":text,"unmodifiedText":text,"modifiers":modifier_bits(m)}),
+    )
+}
+
+#[cfg(test)]
+mod native_input_mapping_tests {
+    use super::*;
+    #[test]
+    fn held_right_button_and_shift_are_preserved() {
+        let v = mouse_parameters(
+            PointerEventType::Move,
+            3,
+            4,
+            0,
+            2,
+            &ModifierState {
+                shift: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(v["buttons"], 2);
+        assert_eq!(v["button"], "right");
+        assert_eq!(v["modifiers"], 8);
+    }
+    #[test]
+    fn unicode_text_and_control_chord_take_native_paths() {
+        let v = key_parameters("é", true, &ModifierState::default()).unwrap();
+        assert_eq!(v["text"], "é");
+        let v = key_parameters(
+            "a",
+            true,
+            &ModifierState {
+                ctrl: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(v["type"], "rawKeyDown");
+        assert_eq!(v["text"], "");
+        assert_eq!(v["windowsVirtualKeyCode"], 65);
+    }
+}
+
 /// Windows `WebView2` executor
 #[derive(Clone)]
 pub struct WindowsExecutor<R: Runtime> {
@@ -132,6 +317,106 @@ impl<R: Runtime> WindowsExecutor<R> {
 }
 
 impl<R: Runtime + 'static> WindowsExecutor<R> {
+    async fn native_cdp(
+        &self,
+        method: &'static str,
+        parameters: Value,
+    ) -> Result<(), WebDriverErrorResponse> {
+        if !self.frame_context.is_empty() {
+            return Err(WebDriverErrorResponse::unsupported_operation(
+                "native input supports top-level frames only",
+            ));
+        }
+        let locks = self.window.state::<ScriptExecutionLocks>();
+        let lock = locks.get(self.window.label());
+        let _guard = lock.lock().await;
+        let parameters = parameters.to_string();
+        let (tx, rx) = oneshot::channel();
+        let tx = Arc::new(Mutex::new(Some(tx)));
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pending = cancelled.clone();
+        let queued = self.window.with_webview({
+            let tx = tx.clone();
+            move |webview| unsafe {
+                let response = (|| -> Result<(), String> {
+                    if pending.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err("native input expired before dispatch".into());
+                    }
+                    let core = webview
+                        .controller()
+                        .CoreWebView2()
+                        .map_err(|e| format!("owned CoreWebView2 unavailable: {e:?}"))?;
+                    let handler: ICoreWebView2CallDevToolsProtocolMethodCompletedHandler =
+                        handlers::NativeInputHandler { tx: tx.clone() }.into();
+                    let method = HSTRING::from(method);
+                    let args = HSTRING::from(parameters);
+                    core.CallDevToolsProtocolMethod(
+                        PCWSTR(method.as_ptr()),
+                        PCWSTR(args.as_ptr()),
+                        &handler,
+                    )
+                    .map_err(|e| format!("native input dispatch failed: {e:?}"))?;
+                    Ok(())
+                })();
+                if let Err(error) = response {
+                    if let Ok(mut guard) = tx.lock() {
+                        if let Some(tx) = guard.take() {
+                            let _ = tx.send(Err(error));
+                        }
+                    }
+                }
+            }
+        });
+        if let Err(error) = queued {
+            cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Err(WebDriverErrorResponse::unknown_error(&error.to_string()));
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(self.timeouts.script_ms),
+            rx,
+        )
+        .await
+        {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(error))) => Err(WebDriverErrorResponse::unknown_error(&error)),
+            Ok(Err(_)) => Err(WebDriverErrorResponse::unknown_error(
+                "native input completion channel closed",
+            )),
+            Err(_) => {
+                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(WebDriverErrorResponse::script_timeout())
+            }
+        }
+    }
+    async fn native_viewport(&self, x: i32, y: i32) -> Result<(), WebDriverErrorResponse> {
+        if !self.frame_context.is_empty() {
+            return Err(WebDriverErrorResponse::unsupported_operation(
+                "native input supports top-level frames only",
+            ));
+        }
+        let viewport=self.evaluate_js("({width:innerWidth,height:innerHeight,scale:visualViewport?visualViewport.scale:1,x:visualViewport?visualViewport.offsetLeft:0,y:visualViewport?visualViewport.offsetTop:0})").await?;
+        let v = &viewport["value"];
+        let width = v["width"].as_f64().unwrap_or(0.);
+        let height = v["height"].as_f64().unwrap_or(0.);
+        if !width.is_finite()
+            || !height.is_finite()
+            || width <= 0.
+            || height <= 0.
+            || x < 0
+            || y < 0
+            || f64::from(x) >= width
+            || f64::from(y) >= height
+            || v["scale"].as_f64() != Some(1.)
+            || v["x"].as_f64() != Some(0.)
+            || v["y"].as_f64() != Some(0.)
+        {
+            return Err(WebDriverErrorResponse::element_not_interactable(
+                "native pointer requires an unzoomed in-bounds viewport",
+            ));
+        }
+        Ok(())
+    }
+
     /// Core WebView2 script execution — no per-webview lock.
     /// Callers that need serialization must acquire the lock from
     /// `ScriptExecutionLocks` before calling this method.
@@ -266,119 +551,46 @@ impl<R: Runtime + 'static> PlatformExecutor<R> for WindowsExecutor<R> {
         self.evaluate_js_inner(script).await
     }
 
-    /// Deliver input to the owned WebView2, without a remote debugging listener.
-    /// Await each native completion before permitting the next dispatch.
     async fn dispatch_pointer_event(
         &self,
         event_type: PointerEventType,
         x: i32,
         y: i32,
         button: u32,
+        buttons: u32,
+        modifiers: &ModifierState,
     ) -> Result<(), WebDriverErrorResponse> {
-        if !self.frame_context.is_empty() || button != 0 {
-            return Err(WebDriverErrorResponse::unsupported_operation(
-                "Windows native input supports top-level primary mouse input only",
-            ));
+        // Release must remain possible after a viewport resize or rejected movement.
+        // Ownership is still checked by native_cdp against the retained WebView.
+        if !matches!(event_type, PointerEventType::Up) {
+            self.native_viewport(x, y).await?;
         }
-        let (kind, native_button, buttons, clicks) = match event_type {
-            PointerEventType::Move => ("mouseMoved", "none", 0, 0),
-            PointerEventType::Down => ("mousePressed", "left", 1, 1),
-            PointerEventType::Up => ("mouseReleased", "left", 0, 1),
-            PointerEventType::Click => {
-                return Err(WebDriverErrorResponse::unsupported_operation(
-                    "native down/up generates click; synthetic click dispatch is forbidden",
-                ))
-            }
-        };
-        let locks = self.window.state::<ScriptExecutionLocks>();
-        let lock = locks.get(self.window.label());
-        let _guard = lock.lock().await;
-        let viewport = self.evaluate_js_inner(
-            "({width:innerWidth,height:innerHeight,scale:visualViewport?visualViewport.scale:1,x:visualViewport?visualViewport.offsetLeft:0,y:visualViewport?visualViewport.offsetTop:0})",
-        ).await?;
-        let view = &viewport["value"];
-        let width = view["width"].as_f64().unwrap_or(0.0);
-        let height = view["height"].as_f64().unwrap_or(0.0);
-        // CDP uses main-frame CSS viewport pixels, not Windows device pixels.
-        // Refuse unsupported zoom/pan rather than guessing a coordinate transform.
-        if !width.is_finite()
-            || !height.is_finite()
-            || width <= 0.0
-            || height <= 0.0
-            || x < 0
-            || y < 0
-            || f64::from(x) >= width
-            || f64::from(y) >= height
-            || view["scale"].as_f64() != Some(1.0)
-            || view["x"].as_f64() != Some(0.0)
-            || view["y"].as_f64() != Some(0.0)
-        {
-            return Err(WebDriverErrorResponse::element_not_interactable(
-                "native pointer requires an unzoomed in-bounds viewport",
-            ));
-        }
-        let parameters = serde_json::json!({
-            "type": kind, "x": x, "y": y, "button": native_button,
-            "buttons": buttons, "clickCount": clicks, "pointerType": "mouse",
-            "modifiers": 0,
-        })
-        .to_string();
-        let (tx, rx) = oneshot::channel();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let pending = cancelled.clone();
-        let queued = self.window.with_webview({
-            let tx = tx.clone();
-            move |webview| unsafe {
-                let response = (|| -> Result<(), String> {
-                    if pending.load(std::sync::atomic::Ordering::SeqCst) {
-                        return Err("native input expired before dispatch".into());
-                    }
-                    let core = webview
-                        .controller()
-                        .CoreWebView2()
-                        .map_err(|e| format!("owned CoreWebView2 unavailable: {e:?}"))?;
-                    let handler: ICoreWebView2CallDevToolsProtocolMethodCompletedHandler =
-                        handlers::NativeInputHandler { tx: tx.clone() }.into();
-                    let method = HSTRING::from("Input.dispatchMouseEvent");
-                    let args = HSTRING::from(parameters);
-                    core.CallDevToolsProtocolMethod(
-                        PCWSTR(method.as_ptr()),
-                        PCWSTR(args.as_ptr()),
-                        &handler,
-                    )
-                    .map_err(|e| format!("native mouse dispatch failed: {e:?}"))?;
-                    Ok(())
-                })();
-                if let Err(error) = response {
-                    if let Ok(mut guard) = tx.lock() {
-                        if let Some(tx) = guard.take() {
-                            let _ = tx.send(Err(error));
-                        }
-                    }
-                }
-            }
-        });
-        if let Err(error) = queued {
-            cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-            return Err(WebDriverErrorResponse::unknown_error(&error.to_string()));
-        }
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(self.timeouts.script_ms),
-            rx,
+        let parameters = mouse_parameters(event_type, x, y, button, buttons, modifiers)?;
+        self.native_cdp("Input.dispatchMouseEvent", parameters)
+            .await
+    }
+    async fn dispatch_scroll_event(
+        &self,
+        x: i32,
+        y: i32,
+        delta_x: i32,
+        delta_y: i32,
+        modifiers: &ModifierState,
+    ) -> Result<(), WebDriverErrorResponse> {
+        self.native_viewport(x, y).await?;
+        self.native_cdp("Input.dispatchMouseEvent",serde_json::json!({"type":"mouseWheel","x":x,"y":y,"deltaX":delta_x,"deltaY":delta_y,"modifiers":modifier_bits(modifiers)})).await
+    }
+    async fn dispatch_key_event(
+        &self,
+        key: &str,
+        is_down: bool,
+        modifiers: &ModifierState,
+    ) -> Result<(), WebDriverErrorResponse> {
+        self.native_cdp(
+            "Input.dispatchKeyEvent",
+            key_parameters(key, is_down, modifiers)?,
         )
         .await
-        {
-            Ok(Ok(Ok(()))) => Ok(()),
-            Ok(Ok(Err(error))) => Err(WebDriverErrorResponse::unknown_error(&error)),
-            Ok(Err(_)) => Err(WebDriverErrorResponse::unknown_error(
-                "native input completion channel closed",
-            )),
-            Err(_) => {
-                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-                Err(WebDriverErrorResponse::script_timeout())
-            }
-        }
     }
 
     // =========================================================================

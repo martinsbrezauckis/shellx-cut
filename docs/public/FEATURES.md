@@ -395,10 +395,11 @@ route to the same surface registry.
   fallback.
 - Perception: speech words, silences, scenes, beats, face detection, OCR,
   subject tracking, matte runners, and reusable media facts.
-- Speaker diarization: **Transcript Tools > Label speakers** checks the
-  configured Sortformer v2 Doctor card, binds the selected current-project
-  asset, and polls the exact returned job/receipt before refreshing transcript
-  speaker labels. Multicam switching can use those labels with `mode:"speaker"`.
+- Speaker diarization: **Transcript Tools > Label speakers** runs
+  `media.diarize` after checking the configured Sortformer v2 Doctor card,
+  binds the selected current-project asset, and polls the exact returned
+  job/receipt before refreshing transcript speaker labels. Multicam switching
+  can use those labels with `mode:"speaker"`.
 - Dubbing and translation: **Transcript Tools > Dub audio** checks the
   configured OmniVoice Doctor card, binds the selected asset and target
   language, then accepts only the matching track and receipt before refreshing

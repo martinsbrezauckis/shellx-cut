@@ -46,7 +46,7 @@
     },
     {
       "path": "scripts/public-tests/judge-adapter.test.mjs",
-      "resources": ["scripts/public-tests/judge-adapter.test.mjs", "scripts/public-tests/judge-adapter-validation.py", "scripts/public-tests/restricted-claude-adapter-validation.py", "app/perception/py/judge/judge.py", "app/perception/py/judge/adapters/ladder_judge.py", "app/perception/py/judge/adapters/cli_judge.py", "app/perception/py/judge/adapters/restricted_claude.py", "app/perception/py/judge/adapters/restricted_claude_windows.py", "app/perception/py/judge/adapters/diagnostics.py", "app/perception/py/judge/adapters/codex_judge.py", "app/perception/py/judge/adapters/antigravity_judge.py", "app/perception/py/judge/adapters/grok_judge.py", "app/perception/py/judge/adapters/grok_tool_policy.py", "app/desktop/src-tauri/tauri.conf.json"],
+      "resources": ["scripts/public-tests/judge-adapter.test.mjs", "scripts/lib/judge-resource-map.mjs", "scripts/public-tests/judge-adapter-validation.py", "scripts/public-tests/restricted-claude-adapter-validation.py", "app/perception/py/judge/judge.py", "app/perception/py/judge/adapters/ladder_judge.py", "app/perception/py/judge/adapters/cli_judge.py", "app/perception/py/judge/adapters/restricted_claude.py", "app/perception/py/judge/adapters/restricted_claude_windows.py", "app/perception/py/judge/adapters/diagnostics.py", "app/perception/py/judge/adapters/codex_judge.py", "app/perception/py/judge/adapters/antigravity_judge.py", "app/perception/py/judge/adapters/grok_judge.py", "app/perception/py/judge/adapters/grok_tool_policy.py", "app/desktop/src-tauri/tauri.conf.json"],
       "requires": ["python", "ffmpeg", "ffprobe"]
     },
     {

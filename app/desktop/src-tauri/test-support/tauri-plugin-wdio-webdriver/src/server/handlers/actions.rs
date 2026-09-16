@@ -19,11 +19,7 @@ pub struct ActionsRequest {
 #[serde(tag = "type")]
 pub enum ActionSequence {
     #[serde(rename = "key")]
-    Key {
-        #[serde(rename = "id")]
-        _id: String,
-        actions: Vec<KeyAction>,
-    },
+    Key { id: String, actions: Vec<KeyAction> },
     #[serde(rename = "pointer")]
     Pointer {
         id: String,
@@ -33,14 +29,12 @@ pub enum ActionSequence {
     },
     #[serde(rename = "wheel")]
     Wheel {
-        #[serde(rename = "id")]
-        _id: String,
+        id: String,
         actions: Vec<WheelAction>,
     },
     #[serde(rename = "none")]
     None {
-        #[serde(rename = "id")]
-        _id: String,
+        id: String,
         actions: Vec<PauseAction>,
     },
 }
@@ -100,6 +94,8 @@ pub enum WheelAction {
     Scroll {
         x: i32,
         y: i32,
+        #[serde(default)]
+        origin: Option<Origin>,
         #[serde(rename = "deltaX")]
         delta_x: i32,
         #[serde(rename = "deltaY")]
@@ -119,47 +115,177 @@ pub enum PauseAction {
 }
 
 fn unsupported() -> WebDriverErrorResponse {
-    WebDriverErrorResponse::unsupported_operation("overlay Actions supports one mouse source, instantaneous moves and balanced primary clicks only; no held state, drag, wheel, keyboard or parallel ticks")
+    WebDriverErrorResponse::unsupported_operation("native input supports bounded top-level mouse, keyboard and wheel actions; touch/pen and multiple sources of one type are unsupported")
 }
 
-fn validate(request: &ActionsRequest) -> Result<(), WebDriverErrorResponse> {
-    let [ActionSequence::Pointer {
-        parameters,
-        actions,
-        ..
-    }] = request.actions.as_slice()
-    else {
-        return Err(unsupported());
+fn key_supported(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(c) = chars.next() else {
+        return false;
     };
-    if let Some(p) = parameters {
-        if p.as_object().is_none()
-            || p.get("pointerType")
-                .is_some_and(|v| v.as_str() != Some("mouse"))
+    chars.next().is_none()
+        && ((!c.is_control() && !(('\u{E000}'..='\u{F8FF}').contains(&c)))
+            || matches!(
+                c,
+                '\u{E003}'
+                    | '\u{E004}'
+                    | '\u{E006}'
+                    | '\u{E007}'
+                    | '\u{E008}'
+                    | '\u{E009}'
+                    | '\u{E00A}'
+                    | '\u{E00C}'
+                    | '\u{E00D}'
+                    | '\u{E00E}'
+                    | '\u{E00F}'
+                    | '\u{E010}'
+                    | '\u{E011}'
+                    | '\u{E012}'
+                    | '\u{E013}'
+                    | '\u{E014}'
+                    | '\u{E015}'
+                    | '\u{E016}'
+                    | '\u{E017}'
+                    | '\u{E03D}'
+            )
+            || ('\u{E031}'..='\u{E03C}').contains(&c))
+}
+impl ActionSequence {
+    fn identity(&self) -> (&str, &'static str) {
+        match self {
+            Self::Key { id, .. } => (id, "key"),
+            Self::Pointer { id, .. } => (id, "pointer"),
+            Self::Wheel { id, .. } => (id, "wheel"),
+            Self::None { id, .. } => (id, "none"),
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Self::Key { actions, .. } => actions.len(),
+            Self::Pointer { actions, .. } => actions.len(),
+            Self::Wheel { actions, .. } => actions.len(),
+            Self::None { actions, .. } => actions.len(),
+        }
+    }
+    fn duration(&self, tick: usize) -> u64 {
+        match self {
+            Self::Key { actions, .. } => match actions.get(tick) {
+                Some(KeyAction::Pause { duration }) => duration.unwrap_or(0),
+                _ => 0,
+            },
+            Self::Pointer { actions, .. } => match actions.get(tick) {
+                Some(
+                    PointerAction::Pause { duration } | PointerAction::PointerMove { duration, .. },
+                ) => duration.unwrap_or(0),
+                _ => 0,
+            },
+            Self::Wheel { actions, .. } => match actions.get(tick) {
+                Some(WheelAction::Pause { duration } | WheelAction::Scroll { duration, .. }) => {
+                    duration.unwrap_or(0)
+                }
+                _ => 0,
+            },
+            Self::None { actions, .. } => match actions.get(tick) {
+                Some(PauseAction::Pause { duration }) => duration.unwrap_or(0),
+                _ => 0,
+            },
+        }
+    }
+}
+fn valid_origin(origin: &Option<Origin>, pointer: bool) -> bool {
+    match origin {
+        None => true,
+        Some(Origin::Named(n)) => n == "viewport" || (pointer && n == "pointer"),
+        Some(Origin::Element(r)) => r.len() == 1 && r.contains_key(ELEMENT_KEY),
+    }
+}
+pub(crate) fn validate(request: &ActionsRequest) -> Result<(), WebDriverErrorResponse> {
+    if request.actions.is_empty() || request.actions.len() > 4 {
+        return Err(unsupported());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut kinds = std::collections::HashSet::new();
+    for source in &request.actions {
+        let (id, kind) = source.identity();
+        if id.is_empty()
+            || id.len() > 128
+            || !ids.insert(id)
+            || !kinds.insert(kind)
+            || source.len() > 8192
         {
             return Err(unsupported());
         }
-    }
-    if actions.len() > 1024 {
-        return Err(unsupported());
-    }
-    let mut down = false;
-    for action in actions {
-        match action {
-            PointerAction::PointerDown { button: 0 } if !down => down = true,
-            PointerAction::PointerUp { button: 0 } if down => down = false,
-            PointerAction::PointerMove {
-                duration, origin, ..
-            } if !down && duration.unwrap_or(0) == 0 => match origin {
-                None => {}
-                Some(Origin::Named(n)) if n == "viewport" || n == "pointer" => {}
-                Some(Origin::Element(r)) if r.len() == 1 && r.contains_key(ELEMENT_KEY) => {}
-                _ => return Err(unsupported()),
-            },
-            PointerAction::Pause { duration } if !down && duration.unwrap_or(0) <= 1000 => {}
-            _ => return Err(unsupported()),
+        match source {
+            ActionSequence::Key { actions, .. } => {
+                for a in actions {
+                    if let KeyAction::KeyDown { value } | KeyAction::KeyUp { value } = a {
+                        if !key_supported(value) {
+                            return Err(unsupported());
+                        }
+                    }
+                }
+            }
+            ActionSequence::Pointer {
+                parameters,
+                actions,
+                ..
+            } => {
+                if parameters.as_ref().is_some_and(|p| {
+                    p.as_object().is_none()
+                        || p.get("pointerType")
+                            .is_some_and(|v| v.as_str() != Some("mouse"))
+                }) {
+                    return Err(unsupported());
+                }
+                for a in actions {
+                    match a {
+                        PointerAction::PointerDown { button }
+                        | PointerAction::PointerUp { button }
+                            if *button > 2 =>
+                        {
+                            return Err(unsupported())
+                        }
+                        PointerAction::PointerMove { origin, .. }
+                            if !valid_origin(origin, true) =>
+                        {
+                            return Err(unsupported())
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ActionSequence::Wheel { actions, .. } => {
+                for a in actions {
+                    if let WheelAction::Scroll { origin, .. } = a {
+                        if !valid_origin(origin, false) {
+                            return Err(unsupported());
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    if down {
+    let ticks = request
+        .actions
+        .iter()
+        .map(ActionSequence::len)
+        .max()
+        .unwrap_or(0);
+    let mut total = 0u64;
+    for tick in 0..ticks {
+        let duration = request
+            .actions
+            .iter()
+            .map(|s| s.duration(tick))
+            .max()
+            .unwrap_or(0);
+        if duration > 10_000 {
+            return Err(unsupported());
+        }
+        total = total.checked_add(duration).ok_or_else(unsupported)?;
+    }
+    if total > 30_000 {
         return Err(unsupported());
     }
     Ok(())
@@ -170,171 +296,400 @@ pub async fn perform<R: Runtime + 'static>(
     Path(session_id): Path<String>,
     Json(request): Json<ActionsRequest>,
 ) -> WebDriverResult {
-    let _input_guard = crate::platform::native_input_guard()?;
-    validate(&request)?; // Validate the complete sequence before any native side effect.
-    let (window, timeouts, frames, mut position) = {
+    let _guard = crate::platform::native_input_guard()?;
+    perform_inner(&state, &session_id, request).await
+}
+
+pub(crate) async fn perform_inner<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    session_id: &str,
+    request: ActionsRequest,
+) -> WebDriverResult {
+    validate(&request)?;
+    if state
+        .sessions
+        .read()
+        .await
+        .get(session_id)?
+        .action_state
+        .input_failed
+    {
+        return Err(WebDriverErrorResponse::unsupported_operation(
+            "release prior failed native input before continuing",
+        ));
+    }
+    let result = perform_sequence(state, session_id, request).await;
+    if result.is_err() {
+        state
+            .sessions
+            .write()
+            .await
+            .get_mut(session_id)?
+            .action_state
+            .input_failed = true;
+    }
+    result
+}
+
+async fn perform_sequence<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    session_id: &str,
+    request: ActionsRequest,
+) -> WebDriverResult {
+    validate(&request)?;
+    let (window, timeouts, frames, mut input) = {
         let sessions = state.sessions.read().await;
-        let session = sessions.get(&session_id)?;
-        if !session.action_state.pressed_keys.is_empty()
-            || session
-                .action_state
-                .pressed_buttons
-                .values()
-                .any(|b| !b.is_empty())
+        let s = sessions.get(session_id)?;
+        (
+            s.current_window.clone(),
+            s.timeouts.clone(),
+            s.frame_context.clone(),
+            s.action_state.clone(),
+        )
+    };
+    input.bind_owner(&window, &frames)?;
+    for source in &request.actions {
+        let (id, kind) = source.identity();
+        if input.source_types.get(id).is_some_and(|old| old != kind)
+            || input.source_types.len() >= 32 && !input.source_types.contains_key(id)
         {
             return Err(unsupported());
         }
-        (
-            session.current_window.clone(),
-            session.timeouts.clone(),
-            session.frame_context.clone(),
-            session.action_state.pointer_position,
-        )
-    };
+        if kind == "pointer"
+            && input
+                .pressed_buttons
+                .iter()
+                .any(|(old, b)| old != id && !b.is_empty())
+        {
+            return Err(unsupported());
+        }
+        if kind == "key" && !input.accepts_keyboard_source(id) {
+            return Err(unsupported());
+        }
+        input.source_types.insert(id.into(), kind.into());
+    }
     let executor = state.get_executor_for_window(&window, timeouts, frames.clone())?;
-    let ActionSequence::Pointer { id, actions, .. } = &request.actions[0] else {
-        unreachable!()
-    };
-    for action in actions {
-        match action {
-            PointerAction::PointerMove { x, y, origin, .. } => {
-                let base = match origin {
-                    None => (0, 0),
-                    Some(Origin::Named(n)) if n == "viewport" => (0, 0),
-                    Some(Origin::Named(_)) => position,
-                    Some(Origin::Element(refs)) => {
-                        let js = {
-                            let sessions = state.sessions.read().await;
-                            sessions
-                                .get(&session_id)?
-                                .elements
-                                .get(&refs[ELEMENT_KEY])
-                                .ok_or_else(WebDriverErrorResponse::no_such_element)?
-                                .js_ref
-                                .clone()
-                        };
-                        executor.get_element_center(&js).await?
+    let ticks = request
+        .actions
+        .iter()
+        .map(ActionSequence::len)
+        .max()
+        .unwrap_or(0);
+    for tick in 0..ticks {
+        let start = tokio::time::Instant::now();
+        let duration = request
+            .actions
+            .iter()
+            .map(|s| s.duration(tick))
+            .max()
+            .unwrap_or(0);
+        // Resolve all targets before this tick changes input state.
+        let mut pointer_target = None;
+        let mut wheel_target = None;
+        for source in &request.actions {
+            match source {
+                ActionSequence::Pointer { actions, .. } => {
+                    if let Some(PointerAction::PointerMove { x, y, origin, .. }) = actions.get(tick)
+                    {
+                        let base = origin_base(
+                            state,
+                            session_id,
+                            &*executor,
+                            origin,
+                            input.pointer_position,
+                        )
+                        .await?;
+                        pointer_target = Some((
+                            base.0.checked_add(*x).ok_or_else(unsupported)?,
+                            base.1.checked_add(*y).ok_or_else(unsupported)?,
+                        ));
                     }
-                };
-                let target = (
-                    base.0.checked_add(*x).ok_or_else(unsupported)?,
-                    base.1.checked_add(*y).ok_or_else(unsupported)?,
-                );
-                if target.0 < 0 || target.1 < 0 {
-                    return Err(WebDriverErrorResponse::invalid_argument(
-                        "negative viewport coordinates",
-                    ));
                 }
-                executor
-                    .dispatch_pointer_event(PointerEventType::Move, target.0, target.1, 0)
-                    .await?;
-                position = target;
-                state
-                    .sessions
-                    .write()
-                    .await
-                    .get_mut(&session_id)?
-                    .action_state
-                    .pointer_position = position;
-            }
-            PointerAction::PointerDown { .. } => {
-                state
-                    .sessions
-                    .write()
-                    .await
-                    .get_mut(&session_id)?
-                    .action_state
-                    .retain_primary_down(id, &window, &frames, position);
-                executor
-                    .dispatch_pointer_event(PointerEventType::Down, position.0, position.1, 0)
-                    .await?;
-            }
-            PointerAction::PointerUp { .. } => {
-                executor
-                    .dispatch_pointer_event(PointerEventType::Up, position.0, position.1, 0)
-                    .await?;
-                state
-                    .sessions
-                    .write()
-                    .await
-                    .get_mut(&session_id)?
-                    .action_state
-                    .primary_released(id);
-            }
-            PointerAction::Pause { duration } => {
-                tokio::time::sleep(std::time::Duration::from_millis(duration.unwrap_or(0))).await
+                ActionSequence::Wheel { actions, .. } => {
+                    if let Some(WheelAction::Scroll { x, y, origin, .. }) = actions.get(tick) {
+                        let base =
+                            origin_base(state, session_id, &*executor, origin, (0, 0)).await?;
+                        wheel_target = Some((
+                            base.0.checked_add(*x).ok_or_else(unsupported)?,
+                            base.1.checked_add(*y).ok_or_else(unsupported)?,
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
+        for source in &request.actions {
+            if let ActionSequence::Key { id, actions, .. } = source {
+                match actions.get(tick) {
+                    Some(KeyAction::KeyDown { value }) => {
+                        input.bind_owner(&window, &frames)?;
+                        input.keyboard_source = Some(id.clone());
+                        input.retain_key(value);
+                        save_input(state, session_id, &input).await?;
+                        executor
+                            .dispatch_key_event(value, true, &input.modifiers())
+                            .await?;
+                    }
+                    Some(KeyAction::KeyUp { value }) if input.pressed_keys.contains(value) => {
+                        let mut next = input.clone();
+                        next.released(&crate::webdriver::session::NativeRelease::Key(
+                            value.clone(),
+                        ));
+                        executor
+                            .dispatch_key_event(value, false, &next.modifiers())
+                            .await?;
+                        input = next;
+                        save_input(state, session_id, &input).await?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for source in &request.actions {
+            if let ActionSequence::Pointer { id, actions, .. } = source {
+                match actions.get(tick) {
+                    Some(PointerAction::PointerDown { button }) => {
+                        if input
+                            .pressed_buttons
+                            .get(id)
+                            .is_some_and(|b| b.contains(button))
+                        {
+                            continue;
+                        }
+                        input.bind_owner(&window, &frames)?;
+                        input.retain_button(id, *button);
+                        save_input(state, session_id, &input).await?;
+                        executor
+                            .dispatch_pointer_event(
+                                PointerEventType::Down,
+                                input.pointer_position.0,
+                                input.pointer_position.1,
+                                *button,
+                                input.buttons(),
+                                &input.modifiers(),
+                            )
+                            .await?;
+                    }
+                    Some(PointerAction::PointerUp { button }) => {
+                        if !input
+                            .pressed_buttons
+                            .get(id)
+                            .is_some_and(|b| b.contains(button))
+                        {
+                            continue;
+                        }
+                        let mut next = input.clone();
+                        next.released(&crate::webdriver::session::NativeRelease::Button(
+                            id.clone(),
+                            *button,
+                        ));
+                        executor
+                            .dispatch_pointer_event(
+                                PointerEventType::Up,
+                                input.pointer_position.0,
+                                input.pointer_position.1,
+                                *button,
+                                next.buttons(),
+                                &next.modifiers(),
+                            )
+                            .await?;
+                        input = next;
+                        save_input(state, session_id, &input).await?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let from = input.pointer_position;
+        let steps = if pointer_target.is_some() || wheel_target.is_some() {
+            (duration / 16).max(1)
+        } else {
+            0
+        };
+        let mut wheel_sent = (0i32, 0i32);
+        for step in 1..=steps {
+            if duration > 0 {
+                tokio::time::sleep_until(
+                    start + std::time::Duration::from_millis(duration * step / steps),
+                )
+                .await;
+            }
+            if let Some(target) = pointer_target {
+                let point = (
+                    interpolate(from.0, target.0, step, steps),
+                    interpolate(from.1, target.1, step, steps),
+                );
+                // Failed or rejected movement must not replace the last admitted release coordinates.
+                executor
+                    .dispatch_pointer_event(
+                        PointerEventType::Move,
+                        point.0,
+                        point.1,
+                        0,
+                        input.buttons(),
+                        &input.modifiers(),
+                    )
+                    .await?;
+                input.moved(point);
+                save_input(state, session_id, &input).await?;
+            }
+            if let Some(point) = wheel_target {
+                for source in &request.actions {
+                    if let ActionSequence::Wheel { actions, .. } = source {
+                        if let Some(WheelAction::Scroll {
+                            delta_x, delta_y, ..
+                        }) = actions.get(tick)
+                        {
+                            let total = (
+                                interpolate(0, *delta_x, step, steps),
+                                interpolate(0, *delta_y, step, steps),
+                            );
+                            executor
+                                .dispatch_scroll_event(
+                                    point.0,
+                                    point.1,
+                                    total.0 - wheel_sent.0,
+                                    total.1 - wheel_sent.1,
+                                    &input.modifiers(),
+                                )
+                                .await?;
+                            wheel_sent = total;
+                        }
+                    }
+                }
+            }
+        }
+        if duration > 0 {
+            tokio::time::sleep_until(start + std::time::Duration::from_millis(duration)).await;
+        }
     }
+    save_input(state, session_id, &input).await?;
     Ok(WebDriverResponse::null())
+}
+fn interpolate(from: i32, to: i32, step: u64, steps: u64) -> i32 {
+    (i64::from(from) + (i64::from(to) - i64::from(from)) * step as i64 / steps as i64) as i32
+}
+async fn save_input<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    id: &str,
+    input: &crate::webdriver::session::ActionState,
+) -> Result<(), WebDriverErrorResponse> {
+    state.sessions.write().await.get_mut(id)?.action_state = input.clone();
+    Ok(())
+}
+async fn origin_base<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    id: &str,
+    executor: &dyn crate::platform::PlatformExecutor<R>,
+    origin: &Option<Origin>,
+    position: (i32, i32),
+) -> Result<(i32, i32), WebDriverErrorResponse> {
+    match origin {
+        None => Ok((0, 0)),
+        Some(Origin::Named(n)) if n == "pointer" => Ok(position),
+        Some(Origin::Named(_)) => Ok((0, 0)),
+        Some(Origin::Element(r)) => {
+            let js = state
+                .sessions
+                .read()
+                .await
+                .get(id)?
+                .elements
+                .get(&r[ELEMENT_KEY])
+                .ok_or_else(WebDriverErrorResponse::no_such_element)?
+                .js_ref
+                .clone();
+            executor.get_element_center(&js).await
+        }
+    }
 }
 
 pub async fn release<R: Runtime + 'static>(
     State(state): State<Arc<AppState<R>>>,
-    Path(session_id): Path<String>,
+    Path(id): Path<String>,
 ) -> WebDriverResult {
-    let _input_guard = crate::platform::native_input_guard()?;
-    let (owner, timeouts, buttons) = {
+    let _guard = crate::platform::native_input_guard()?;
+    release_inner(&state, &id).await
+}
+
+pub(crate) async fn release_inner<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    id: &str,
+) -> WebDriverResult {
+    let (mut input, timeouts) = {
         let sessions = state.sessions.read().await;
-        let session = sessions.get(&session_id)?;
-        if !session.action_state.pressed_keys.is_empty() {
-            return Err(unsupported());
-        }
-        (
-            session.action_state.release_owner()?,
-            session.timeouts.clone(),
-            session.action_state.pressed_buttons.clone(),
-        )
+        let s = sessions.get(&id)?;
+        (s.action_state.clone(), s.timeouts.clone())
     };
-    let Some(owner) = owner else {
+    let Some(owner) = input.release_owner()? else {
+        input.input_failed = false;
+        save_input(&state, &id, &input).await?;
         return Ok(WebDriverResponse::null());
     };
     let executor = state.get_executor_for_window(&owner.window, timeouts, owner.frames)?;
-    let position = owner.position;
-    for (id, held) in buttons {
-        for button in held {
-            executor
-                .dispatch_pointer_event(PointerEventType::Up, position.0, position.1, button)
-                .await?;
-            // Clear only after the native release succeeds; failed release remains retryable.
-            state
-                .sessions
-                .write()
-                .await
-                .get_mut(&session_id)?
-                .action_state
-                .primary_released(&id);
+    for item in input.release_order.clone().into_iter().rev() {
+        let mut next = input.clone();
+        next.released(&item);
+        match &item {
+            crate::webdriver::session::NativeRelease::Key(key) => {
+                executor
+                    .dispatch_key_event(key, false, &next.modifiers())
+                    .await?
+            }
+            crate::webdriver::session::NativeRelease::Button(_, button) => {
+                executor
+                    .dispatch_pointer_event(
+                        PointerEventType::Up,
+                        owner.position.0,
+                        owner.position.1,
+                        *button,
+                        next.buttons(),
+                        &next.modifiers(),
+                    )
+                    .await?
+            }
         }
+        input = next;
+        save_input(&state, &id, &input).await?;
     }
+    input.input_failed = false;
+    save_input(&state, &id, &input).await?;
     Ok(WebDriverResponse::null())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn admitted(value: serde_json::Value) -> bool {
-        validate(&serde_json::from_value::<ActionsRequest>(value).unwrap()).is_ok()
+    fn admitted(v: serde_json::Value) -> bool {
+        validate(&serde_json::from_value(v).unwrap()).is_ok()
     }
     #[test]
-    fn balanced_mouse_and_unsupported_preflight() {
-        use serde_json::json;
+    fn accepts_required_ticks_and_rejects_unknown_sources() {
         assert!(admitted(
-            json!({"actions":[{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","x":2,"y":3},{"type":"pointerDown","button":0},{"type":"pointerUp","button":0}]}]})
+            serde_json::json!({"actions":[{"type":"key","id":"keys","actions":[{"type":"keyDown","value":"\\uE009".replace("\\uE009","\u{E009}")}]},{"type":"pointer","id":"mouse","actions":[{"type":"pointerDown","button":2}]}]})
         ));
-        for actions in [
-            json!([{"type":"pointerDown","button":0}]),
-            json!([{"type":"pointerDown","button":0},{"type":"pointerMove","x":3,"y":4},{"type":"pointerUp","button":0}]),
-            json!([{"type":"pointerMove","x":1,"y":1,"duration":10}]),
-        ] {
-            assert!(!admitted(
-                json!({"actions":[{"type":"pointer","id":"mouse","actions":actions}]})
-            ));
-        }
-        assert!(!admitted(
-            json!({"actions":[{"type":"key","id":"key","actions":[]}]})
+        assert!(admitted(
+            serde_json::json!({"actions":[{"type":"pointer","id":"mouse","actions":[{"type":"pointerMove","x":40,"y":50,"duration":120},{"type":"pointerDown","button":0}]}]})
         ));
         assert!(!admitted(
-            json!({"actions":[{"type":"pointer","id":"touch","parameters":{"pointerType":"touch"},"actions":[]}]})
+            serde_json::json!({"actions":[{"type":"pointer","id":"mouse","parameters":{"pointerType":"pen"},"actions":[]}]})
+        ));
+        assert!(!admitted(
+            serde_json::json!({"actions":[{"type":"pointer","id":"mouse","actions":[{"type":"pointerDown","button":3}]}]})
+        ));
+    }
+    #[test]
+    fn interpolation_exact_endpoint_without_overflow() {
+        assert_eq!(interpolate(i32::MIN, i32::MAX, 10, 10), i32::MAX);
+        assert_eq!(interpolate(20, -20, 1, 2), 0);
+    }
+    #[test]
+    fn keys_and_durations_are_bounded() {
+        assert!(key_supported("é"));
+        assert!(!key_supported("ab"));
+        assert!(!key_supported("\u{E050}"));
+        assert!(!admitted(
+            serde_json::json!({"actions":[{"type":"none","id":"pause","actions":[{"type":"pause","duration":10001}]}]})
         ));
     }
 }

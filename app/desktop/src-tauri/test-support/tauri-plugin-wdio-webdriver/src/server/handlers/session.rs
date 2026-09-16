@@ -150,6 +150,12 @@ pub async fn create<R: Runtime + 'static>(
     State(state): State<Arc<AppState<R>>>,
     Json(request): Json<CreateSessionRequest>,
 ) -> WebDriverResult {
+    let _guard = crate::platform::native_input_guard()?;
+    if state.sessions.read().await.has_session() {
+        return Err(WebDriverErrorResponse::unsupported_operation(
+            "one active embedded session is allowed; delete it before creating a successor",
+        ));
+    }
     // Extract window label from capabilities if provided
     let target_window = extract_window_label(&request.capabilities);
 
@@ -203,15 +209,14 @@ pub async fn create<R: Runtime + 'static>(
 }
 
 /// DELETE `/session/{session_id}` - Delete a session
-pub async fn delete<R: Runtime>(
+pub async fn delete<R: Runtime + 'static>(
     State(state): State<Arc<AppState<R>>>,
     Path(session_id): Path<String>,
 ) -> WebDriverResult {
+    let _guard = crate::platform::native_input_guard()?;
+    super::actions::release_inner(&state, &session_id).await?;
     let mut sessions = state.sessions.write().await;
 
-    if sessions.delete(&session_id) {
-        Ok(WebDriverResponse::null())
-    } else {
-        Err(WebDriverErrorResponse::invalid_session_id(&session_id))
-    }
+    sessions.delete_released(&session_id)?;
+    Ok(WebDriverResponse::null())
 }

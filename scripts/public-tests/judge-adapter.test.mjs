@@ -12,6 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  hasGeneratedJudgeBytecode,
+  JUDGE_RESOURCE_FILES,
+  JUDGE_RESOURCES,
+  judgeResourcesFromBundle,
+} from "../lib/judge-resource-map.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const JUDGE = join(ROOT, "app", "perception", "py", "judge");
@@ -19,20 +25,7 @@ const LADDER = join(JUDGE, "adapters", "ladder_judge.py");
 const VALIDATION = join(ROOT, "scripts", "public-tests", "judge-adapter-validation.py");
 const RESTRICTED_VALIDATION = join(ROOT, "scripts", "public-tests", "restricted-claude-adapter-validation.py");
 const RESTRICTED_WINDOWS_VALIDATION = join(ROOT, "scripts", "public-tests", "restricted-claude-windows-validation.py");
-const REQUIRED = [
-  "judge.py",
-  "adapters/ladder_judge.py",
-  "adapters/cli_judge.py",
-  "adapters/restricted_claude.py",
-  "adapters/restricted_claude_windows.py",
-  "adapters/diagnostics.py",
-  "adapters/codex_judge.py",
-  "adapters/antigravity_judge.py",
-  "adapters/grok_judge.py",
-  "adapters/grok_tool_policy.py",
-];
-
-for (const relative of REQUIRED) {
+for (const relative of JUDGE_RESOURCE_FILES) {
   assert.equal(
     existsSync(join(JUDGE, relative)),
     true,
@@ -43,30 +36,14 @@ for (const relative of REQUIRED) {
 const tauri = JSON.parse(
   readFileSync(join(ROOT, "app", "desktop", "src-tauri", "tauri.conf.json"), "utf8"),
 );
-const JUDGE_RESOURCES = {
-  "../../perception/py/judge/judge.py": "perception/judge/judge.py",
-  "../../perception/py/judge/adapters/antigravity_judge.py": "perception/judge/adapters/antigravity_judge.py",
-  "../../perception/py/judge/adapters/cli_judge.py": "perception/judge/adapters/cli_judge.py",
-  "../../perception/py/judge/adapters/codex_judge.py": "perception/judge/adapters/codex_judge.py",
-  "../../perception/py/judge/adapters/diagnostics.py": "perception/judge/adapters/diagnostics.py",
-  "../../perception/py/judge/adapters/grok_judge.py": "perception/judge/adapters/grok_judge.py",
-  "../../perception/py/judge/adapters/grok_tool_policy.py": "perception/judge/adapters/grok_tool_policy.py",
-  "../../perception/py/judge/adapters/ladder_judge.py": "perception/judge/adapters/ladder_judge.py",
-  "../../perception/py/judge/adapters/restricted_claude.py": "perception/judge/adapters/restricted_claude.py",
-  "../../perception/py/judge/adapters/restricted_claude_windows.py": "perception/judge/adapters/restricted_claude_windows.py",
-};
-const judgeResources = Object.fromEntries(
-  Object.entries(tauri.bundle?.resources ?? {}).filter(([source]) =>
-    source.startsWith("../../perception/py/judge"),
-  ),
-);
+const judgeResources = judgeResourcesFromBundle(tauri.bundle?.resources);
 assert.deepEqual(
   judgeResources,
   JUDGE_RESOURCES,
   "the installed app must carry the complete judge ladder from an exact source allowlist",
 );
 assert.equal(
-  Object.keys(judgeResources).some((source) => source.includes("__pycache__") || source.endsWith(".pyc")),
+  hasGeneratedJudgeBytecode(judgeResources),
   false,
   "the judge resource allowlist must refuse generated Python bytecode",
 );

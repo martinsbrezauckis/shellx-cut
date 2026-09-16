@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 
 interface ContextMenuFrameProps {
   x: number
@@ -61,6 +61,13 @@ export default function ContextMenuFrame({
   ariaLabel = 'Context menu',
 }: ContextMenuFrameProps) {
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const setMenuRef = useCallback((el: HTMLDivElement | null) => {
+    menuRef.current = el
+    if (el) {
+      clampMenu(el, x, y)
+      el.focus({ preventScroll: true })
+    }
+  }, [x, y])
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
@@ -147,13 +154,7 @@ export default function ContextMenuFrame({
         {...{ [menuId]: '' }}
         {...menuAttributes}
         style={{ left: x, top: y }}
-        ref={(el) => {
-          menuRef.current = el
-          if (el) {
-            clampMenu(el, x, y)
-            el.focus({ preventScroll: true })
-          }
-        }}
+        ref={setMenuRef}
         onClick={onMenuClick}
         onKeyDown={onMenuKeyDown}
       >

@@ -116,9 +116,34 @@ pub async fn click<R: Runtime + 'static>(
     Path((session_id, element_id)): Path<(String, String)>,
 ) -> WebDriverResult {
     let _input_guard = crate::platform::native_input_guard()?;
+    click_inner(&state, &session_id, &element_id).await
+}
+
+async fn click_inner<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    session_id: &str,
+    element_id: &str,
+) -> WebDriverResult {
+    let result = click_sequence(state, session_id, element_id).await;
+    if result.is_err() {
+        let mut sessions = state.sessions.write().await;
+        let input = &mut sessions.get_mut(session_id)?.action_state;
+        if input.has_held_input() {
+            input.input_failed = true;
+        }
+    }
+    result
+}
+
+async fn click_sequence<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    session_id: &str,
+    element_id: &str,
+) -> WebDriverResult {
     let sessions = state.sessions.read().await;
-    let session = sessions.get(&session_id)?;
-    if !session.action_state.pressed_keys.is_empty()
+    let session = sessions.get(session_id)?;
+    if session.action_state.input_failed
+        || !session.action_state.pressed_keys.is_empty()
         || session
             .action_state
             .pressed_buttons
@@ -132,7 +157,7 @@ pub async fn click<R: Runtime + 'static>(
 
     let element = session
         .elements
-        .get(&element_id)
+        .get(element_id)
         .ok_or_else(WebDriverErrorResponse::no_such_element)?;
 
     let js_var = element.js_ref.clone();
@@ -146,26 +171,47 @@ pub async fn click<R: Runtime + 'static>(
     use crate::platform::PointerEventType;
     let (x, y) = executor.get_element_center(&js_var).await?;
     executor
-        .dispatch_pointer_event(PointerEventType::Move, x, y, 0)
+        .dispatch_pointer_event(
+            PointerEventType::Move,
+            x,
+            y,
+            0,
+            0,
+            &crate::platform::ModifierState::default(),
+        )
         .await?;
     {
         let mut sessions = state.sessions.write().await;
-        let state = &mut sessions.get_mut(&session_id)?.action_state;
+        let state = &mut sessions.get_mut(session_id)?.action_state;
         state.pointer_position = (x, y);
         // Retain intent even if native down delivery returns uncertain.
         state.retain_primary_down("element-click", &current_window, &frame_context, (x, y));
     }
     executor
-        .dispatch_pointer_event(PointerEventType::Down, x, y, 0)
+        .dispatch_pointer_event(
+            PointerEventType::Down,
+            x,
+            y,
+            0,
+            1,
+            &crate::platform::ModifierState::default(),
+        )
         .await?;
     executor
-        .dispatch_pointer_event(PointerEventType::Up, x, y, 0)
+        .dispatch_pointer_event(
+            PointerEventType::Up,
+            x,
+            y,
+            0,
+            0,
+            &crate::platform::ModifierState::default(),
+        )
         .await?;
     state
         .sessions
         .write()
         .await
-        .get_mut(&session_id)?
+        .get_mut(session_id)?
         .action_state
         .primary_released("element-click");
 
@@ -177,51 +223,92 @@ pub async fn clear<R: Runtime + 'static>(
     State(state): State<Arc<AppState<R>>>,
     Path((session_id, element_id)): Path<(String, String)>,
 ) -> WebDriverResult {
-    let sessions = state.sessions.read().await;
-    let session = sessions.get(&session_id)?;
-
-    let element = session
-        .elements
-        .get(&element_id)
-        .ok_or_else(WebDriverErrorResponse::no_such_element)?;
-
-    let js_var = element.js_ref.clone();
-    let current_window = session.current_window.clone();
-    let timeouts = session.timeouts.clone();
-    let frame_context = session.frame_context.clone();
-    drop(sessions);
-
-    let executor = state.get_executor_for_window(&current_window, timeouts, frame_context)?;
-    executor.clear_element(&js_var).await?;
-
-    Ok(WebDriverResponse::null())
+    edit_input(&state, &session_id, &element_id, None).await
 }
 
-/// POST `/session/{session_id}/element/{element_id}/value` - Send keys to element
+/// POST element value: native keyboard input only, no DOM value setter.
 pub async fn send_keys<R: Runtime + 'static>(
     State(state): State<Arc<AppState<R>>>,
     Path((session_id, element_id)): Path<(String, String)>,
     Json(request): Json<SendKeysRequest>,
 ) -> WebDriverResult {
-    let sessions = state.sessions.read().await;
-    let session = sessions.get(&session_id)?;
+    edit_input(&state, &session_id, &element_id, Some(&request.text)).await
+}
 
-    let element = session
-        .elements
-        .get(&element_id)
-        .ok_or_else(WebDriverErrorResponse::no_such_element)?;
-
-    let js_var = element.js_ref.clone();
-    let current_window = session.current_window.clone();
-    let timeouts = session.timeouts.clone();
-    let frame_context = session.frame_context.clone();
-    drop(sessions);
-
-    let executor = state.get_executor_for_window(&current_window, timeouts, frame_context)?;
-    executor
-        .send_keys_to_element(&js_var, &request.text)
-        .await?;
-
+async fn edit_input<R: Runtime + 'static>(
+    state: &Arc<AppState<R>>,
+    session_id: &str,
+    element_id: &str,
+    text: Option<&str>,
+) -> WebDriverResult {
+    let _guard = crate::platform::native_input_guard()?;
+    if text.is_some_and(|t| t.chars().count() > 4096) {
+        return Err(WebDriverErrorResponse::invalid_argument(
+            "text input exceeds 4096 characters",
+        ));
+    }
+    let (window, timeouts, frames, js) = {
+        let sessions = state.sessions.read().await;
+        let session = sessions.get(session_id)?;
+        (
+            session.current_window.clone(),
+            session.timeouts.clone(),
+            session.frame_context.clone(),
+            session
+                .elements
+                .get(element_id)
+                .ok_or_else(WebDriverErrorResponse::no_such_element)?
+                .js_ref
+                .clone(),
+        )
+    };
+    let executor = state.get_executor_for_window(&window, timeouts, frames)?;
+    let editable=executor.evaluate_js(&format!("(function(){{var e=window.{js};return !!(e&&e.isConnected&&!e.disabled&&!e.readOnly&&(e.isContentEditable||e.tagName==='TEXTAREA'||(e.tagName==='INPUT'&&!['file','checkbox','radio','button','submit','reset','range','color','hidden'].includes(e.type))));}})()")).await?;
+    if editable["value"].as_bool() != Some(true) {
+        return Err(WebDriverErrorResponse::element_not_interactable(
+            "element is not an editable native text target",
+        ));
+    }
+    let mut actions = Vec::new();
+    let mut tap = |key: &str| {
+        actions.push(serde_json::json!({"type":"keyDown","value":key}));
+        actions.push(serde_json::json!({"type":"keyUp","value":key}));
+    };
+    if let Some(text) = text {
+        for ch in text.chars() {
+            let key = match ch {
+                '\n' | '\r' => "\u{E007}".into(),
+                '\t' => "\u{E004}".into(),
+                _ => ch.to_string(),
+            };
+            tap(&key);
+        }
+    } else {
+        let select = if cfg!(target_os = "macos") {
+            "\u{E03D}"
+        } else {
+            "\u{E009}"
+        };
+        actions.push(serde_json::json!({"type":"keyDown","value":select}));
+        actions.push(serde_json::json!({"type":"keyDown","value":"a"}));
+        actions.push(serde_json::json!({"type":"keyUp","value":"a"}));
+        actions.push(serde_json::json!({"type":"keyUp","value":select}));
+        actions.push(serde_json::json!({"type":"keyDown","value":"\u{E003}"}));
+        actions.push(serde_json::json!({"type":"keyUp","value":"\u{E003}"}));
+        // Native focus traversal commits change; no synthetic blur/change event.
+        actions.push(serde_json::json!({"type":"keyDown","value":"\u{E004}"}));
+        actions.push(serde_json::json!({"type":"keyUp","value":"\u{E004}"}));
+    }
+    let request: super::actions::ActionsRequest = serde_json::from_value(
+        serde_json::json!({"actions":[{"type":"key","id":"element-text","actions":actions}]}),
+    )
+    .map_err(|_| WebDriverErrorResponse::invalid_argument("invalid native text sequence"))?;
+    super::actions::validate(&request)?;
+    click_inner(state, session_id, element_id).await?;
+    super::actions::perform_inner(state, session_id, request).await?;
+    if text.is_none() {
+        click_inner(state, session_id, element_id).await?;
+    }
     Ok(WebDriverResponse::null())
 }
 

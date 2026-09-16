@@ -83,6 +83,7 @@ test('published test inventory requires the POSIX media sampler instead of accep
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
   const judgeAdapter = inventory.tests.find((entry) => entry.path === 'scripts/public-tests/judge-adapter.test.mjs')
   assert.deepEqual(judgeAdapter.requires, ['python', 'ffmpeg', 'ffprobe'])
+  assert.equal(judgeAdapter.resources.includes('scripts/lib/judge-resource-map.mjs'), true)
   assert.throws(
     () => resolvePublishedPrerequisites(inventory, { environment: {}, probe: (command) => ({ ok: command !== 'ffprobe' }) }),
     new RegExp(`${PUBLISHED_TEST_INVENTORY_GUARD}: required prerequisite ffprobe is unavailable`),

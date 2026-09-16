@@ -7,11 +7,13 @@ use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{
-    NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
+use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSScreen};
+use objc2_core_graphics::{
+    CGEvent, CGEventField, CGEventFlags, CGEventType, CGMouseButton, CGPreflightPostEventAccess,
+    CGScrollEventUnit,
 };
 use objc2_foundation::{
-    NSData, NSDictionary, NSError, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSString,
+    NSData, NSDictionary, NSError, NSObject, NSObjectProtocol, NSPoint, NSString,
 };
 use objc2_web_kit::{
     WKContentWorld, WKFrameInfo, WKPDFConfiguration, WKSnapshotConfiguration, WKUIDelegate,
@@ -23,7 +25,8 @@ use tokio::sync::oneshot;
 
 use crate::platform::alert_state::{AlertState, AlertStateManager, AlertType, PendingAlert};
 use crate::platform::{
-    wrap_script_for_frame_context, FrameId, PlatformExecutor, PointerEventType, PrintOptions,
+    wrap_script_for_frame_context, FrameId, ModifierState, PlatformExecutor, PointerEventType,
+    PrintOptions,
 };
 use crate::server::response::WebDriverErrorResponse;
 use crate::webdriver::Timeouts;
@@ -45,6 +48,262 @@ impl<R: Runtime> MacOSExecutor<R> {
             window,
             timeouts,
             frame_context,
+        }
+    }
+}
+
+// Native posting is intentionally process-directed. Never fall back to a global
+// event tap or assume another executable's Accessibility grant applies here.
+enum NativeInput {
+    Pointer {
+        event_type: PointerEventType,
+        button: u32,
+        buttons: u32,
+    },
+    Key {
+        code: u16,
+        text: Option<String>,
+        down: bool,
+    },
+    Wheel {
+        dx: i32,
+        dy: i32,
+    },
+}
+
+fn native_flags(m: ModifierState) -> CGEventFlags {
+    let mut flags = CGEventFlags::empty();
+    if m.ctrl {
+        flags |= CGEventFlags::MaskControl;
+    }
+    if m.shift {
+        flags |= CGEventFlags::MaskShift;
+    }
+    if m.alt {
+        flags |= CGEventFlags::MaskAlternate;
+    }
+    if m.meta {
+        flags |= CGEventFlags::MaskCommand;
+    }
+    flags
+}
+
+fn native_key(
+    key: &str,
+    modifiers: &ModifierState,
+) -> Result<(u16, Option<String>), WebDriverErrorResponse> {
+    // Public macOS virtual key positions; Unicode text is supplied separately.
+    let special = match key {
+        "\u{E003}" => Some(51),
+        "\u{E004}" => Some(48),
+        "\u{E006}" | "\u{E007}" => Some(36),
+        "\u{E008}" => Some(56),
+        "\u{E009}" => Some(59),
+        "\u{E00A}" => Some(58),
+        "\u{E03D}" => Some(55),
+        "\u{E00C}" => Some(53),
+        "\u{E00D}" => Some(49),
+        "\u{E00E}" => Some(116),
+        "\u{E00F}" => Some(121),
+        "\u{E010}" => Some(119),
+        "\u{E011}" => Some(115),
+        "\u{E012}" => Some(123),
+        "\u{E013}" => Some(126),
+        "\u{E014}" => Some(124),
+        "\u{E015}" => Some(125),
+        "\u{E017}" => Some(117),
+        _ => None,
+    };
+    if let Some(code) = special {
+        return Ok((code, None));
+    }
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() != 1 || chars[0].is_control() || ('\u{E000}'..='\u{F8FF}').contains(&chars[0]) {
+        return Err(WebDriverErrorResponse::unsupported_operation(
+            "unsupported native key",
+        ));
+    }
+    let c = chars[0].to_ascii_lowercase();
+    let code = match c {
+        'a' => Some(0),
+        's' => Some(1),
+        'd' => Some(2),
+        'f' => Some(3),
+        'h' => Some(4),
+        'g' => Some(5),
+        'z' => Some(6),
+        'x' => Some(7),
+        'c' => Some(8),
+        'v' => Some(9),
+        'b' => Some(11),
+        'q' => Some(12),
+        'w' => Some(13),
+        'e' => Some(14),
+        'r' => Some(15),
+        'y' => Some(16),
+        't' => Some(17),
+        '1' => Some(18),
+        '2' => Some(19),
+        '3' => Some(20),
+        '4' => Some(21),
+        '6' => Some(22),
+        '5' => Some(23),
+        '=' => Some(24),
+        '9' => Some(25),
+        '7' => Some(26),
+        '-' => Some(27),
+        '8' => Some(28),
+        '0' => Some(29),
+        ']' => Some(30),
+        'o' => Some(31),
+        'u' => Some(32),
+        '[' => Some(33),
+        'i' => Some(34),
+        'p' => Some(35),
+        'l' => Some(37),
+        'j' => Some(38),
+        '\'' => Some(39),
+        'k' => Some(40),
+        ';' => Some(41),
+        '\\' => Some(42),
+        ',' => Some(43),
+        '/' => Some(44),
+        'n' => Some(45),
+        'm' => Some(46),
+        '.' => Some(47),
+        ' ' => Some(49),
+        '`' => Some(50),
+        _ => None,
+    };
+    if code.is_none() && (modifiers.ctrl || modifiers.alt || modifiers.meta) {
+        return Err(WebDriverErrorResponse::unsupported_operation(
+            "modified non-ASCII native key is unsupported",
+        ));
+    }
+    Ok((code.unwrap_or(0), Some(key.to_string())))
+}
+
+impl<R: Runtime + 'static> MacOSExecutor<R> {
+    async fn post_native(
+        &self,
+        input: NativeInput,
+        coords: Option<(i32, i32)>,
+        modifiers: ModifierState,
+    ) -> Result<(), WebDriverErrorResponse> {
+        if !self.frame_context.is_empty() {
+            return Err(WebDriverErrorResponse::unsupported_operation(
+                "nested frame native input is unsupported",
+            ));
+        }
+        if !CGPreflightPostEventAccess() {
+            return Err(WebDriverErrorResponse::unsupported_operation(&format!(
+                "native input posting unavailable: CGPreflightPostEventAccess=false pid={} executable={}",
+                std::process::id(), std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default())));
+        }
+        // An Up may release the original owned press after the view shrank.
+        // Common state supplies the last successfully admitted point, never a failed move.
+        let releasing = matches!(
+            &input,
+            NativeInput::Pointer {
+                event_type: PointerEventType::Up,
+                ..
+            }
+        );
+        let viewport = if let Some((x, y)) = coords {
+            let value = self.evaluate_js("({width:innerWidth,height:innerHeight,scale:visualViewport?visualViewport.scale:1,x:visualViewport?visualViewport.offsetLeft:0,y:visualViewport?visualViewport.offsetTop:0})").await?;
+            let v = &value["value"];
+            let w = v["width"].as_f64().unwrap_or(0.0);
+            let h = v["height"].as_f64().unwrap_or(0.0);
+            if w <= 0.0
+                || h <= 0.0
+                || (!releasing && (x < 0 || y < 0 || f64::from(x) >= w || f64::from(y) >= h))
+                || v["scale"].as_f64() != Some(1.0)
+                || v["x"].as_f64() != Some(0.0)
+                || v["y"].as_f64() != Some(0.0)
+            {
+                return Err(WebDriverErrorResponse::element_not_interactable(
+                    "native input requires unzoomed in-bounds viewport",
+                ));
+            }
+            Some((x, y, w, h))
+        } else {
+            None
+        };
+        let (tx, rx) = oneshot::channel();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pending = cancelled.clone();
+        self.window.with_webview(move |webview| unsafe {
+            let response = (|| -> Result<(),String> {
+                let mtm=MainThreadMarker::new().ok_or("native input requires main thread")?;
+                let wk: &WKWebView=&*webview.inner().cast();
+                let window=wk.window().ok_or("owned webview has no native window")?;
+                if !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {
+                    return Err("owned view/window must be visible and not minimized".into());
+                }
+                let location = if let Some((x,y,width,height))=viewport {
+                    let b=wk.bounds();let i=wk.safeAreaInsets();
+                    let full=(b.size.width-width).abs()<=1.0 && (b.size.height-height).abs()<=1.0;
+                    let inset=[i.left,i.right,i.top,i.bottom].iter().all(|n|n.is_finite() && *n>=0.0)
+                        && (b.size.width-i.left-i.right-width).abs()<=1.0 && (b.size.height-i.top-i.bottom-height).abs()<=1.0;
+                    if wk.pageZoom()!=1.0 || (!full && !inset) { return Err(format!("native/DOM viewport mismatch bounds={b:?} dom={width}x{height} insets={i:?}")); }
+                    let left=if full{0.0}else{i.left};let top=if full{0.0}else{i.top};
+                    let p=NSPoint::new(b.origin.x+left+f64::from(x),b.origin.y+if wk.isFlipped(){top+f64::from(y)}else{b.size.height-top-f64::from(y)});
+                    let screen=window.convertPointToScreen(wk.convertPoint_toView(p,None));
+                    let screens=NSScreen::screens(mtm);let primary=screens.firstObject().ok_or("primary screen unavailable")?;
+                    let frame=primary.frame();
+                    NSPoint::new(screen.x,frame.origin.y+frame.size.height-screen.y)
+                } else { NSPoint::new(0.0,0.0) };
+                if pending.load(std::sync::atomic::Ordering::SeqCst) || !CGPreflightPostEventAccess() { return Err("native posting request expired or permission unavailable".into()); }
+                let event=match input {
+                    NativeInput::Pointer{event_type,button,buttons} => {
+                        let active=if matches!(event_type,PointerEventType::Move) {
+                            if buttons&1!=0{0}else if buttons&2!=0{2}else if buttons&4!=0{1}else{button}
+                        } else {button};
+                        let native_button=match active{0=>CGMouseButton::Left,1=>CGMouseButton::Center,_=>CGMouseButton::Right};
+                        let kind=match event_type {
+                            PointerEventType::Down=>match active{0=>CGEventType::LeftMouseDown,1=>CGEventType::OtherMouseDown,_=>CGEventType::RightMouseDown},
+                            PointerEventType::Up=>match active{0=>CGEventType::LeftMouseUp,1=>CGEventType::OtherMouseUp,_=>CGEventType::RightMouseUp},
+                            PointerEventType::Move if buttons!=0=>match active{0=>CGEventType::LeftMouseDragged,1=>CGEventType::OtherMouseDragged,_=>CGEventType::RightMouseDragged},
+                            PointerEventType::Move=>CGEventType::MouseMoved,
+                            PointerEventType::Click=>return Err("synthetic click forbidden".into()),
+                        };
+                        let e=CGEvent::new_mouse_event(None,kind,location,native_button).ok_or("native mouse event unavailable")?;
+                        CGEvent::set_integer_value_field(Some(&e),CGEventField::MouseEventClickState,if matches!(event_type,PointerEventType::Move){0}else{1});
+                        e
+                    },
+                    NativeInput::Key{code,text,down} => {
+                        if !window.makeFirstResponder(Some(wk)) { return Err("owned webview refuses first responder".into()); }
+                        let e=CGEvent::new_keyboard_event(None,code,down).ok_or("native keyboard event unavailable")?;
+                        if let Some(text)=text { let units:Vec<u16>=text.encode_utf16().collect();CGEvent::keyboard_set_unicode_string(Some(&e),units.len() as _,units.as_ptr()); }
+                        e
+                    },
+                    NativeInput::Wheel{dx,dy} => {
+                        let e=CGEvent::new_scroll_wheel_event2(None,CGScrollEventUnit::Pixel,2,dy,dx,0).ok_or("native wheel event unavailable")?;
+                        CGEvent::set_location(Some(&e),location);e
+                    },
+                };
+                CGEvent::set_flags(Some(&event),native_flags(modifiers));
+                CGEvent::post_to_pid(std::process::id() as i32,Some(&event));
+                Ok(())
+            })();let _=tx.send(response);
+        }).map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(self.timeouts.script_ms),
+            rx,
+        )
+        .await
+        {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(e))) => Err(WebDriverErrorResponse::element_not_interactable(&e)),
+            Ok(Err(_)) => Err(WebDriverErrorResponse::unknown_error(
+                "native posting channel closed",
+            )),
+            Err(_) => {
+                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                Err(WebDriverErrorResponse::unknown_error(
+                    "native posting timed out; delivery may be unknown",
+                ))
+            }
         }
     }
 }
@@ -96,118 +355,67 @@ impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
         self.timeouts.script_ms
     }
 
-    /// Deliver native events to the exact WKWebView's public NSResponder methods on its main thread.
-    /// The common executor owns element hit-testing and balanced Actions validation.
-    /// This acknowledges responder dispatch, not a product action or DOM result.
     async fn dispatch_pointer_event(
         &self,
         event_type: PointerEventType,
         x: i32,
         y: i32,
         button: u32,
+        buttons: u32,
+        modifiers: &ModifierState,
     ) -> Result<(), WebDriverErrorResponse> {
-        if !self.frame_context.is_empty() || button != 0 {
+        if button > 2 || buttons & !7 != 0 || matches!(event_type, PointerEventType::Click) {
             return Err(WebDriverErrorResponse::unsupported_operation(
-                "macOS native input currently supports top-level primary mouse input only",
+                "unsupported native mouse button or synthetic click",
             ));
         }
-        let (native_type, click_count) = match event_type {
-            PointerEventType::Down => (NSEventType::LeftMouseDown, 1),
-            PointerEventType::Up => (NSEventType::LeftMouseUp, 1),
-            PointerEventType::Move => (NSEventType::MouseMoved, 0),
-            PointerEventType::Click => {
-                return Err(WebDriverErrorResponse::unsupported_operation(
-                    "native down/up generates click; synthetic click dispatch is forbidden",
-                ))
-            }
-        };
-        // CSS viewport coordinates map to AppKit logical points, never device pixels.
-        // Initially refuse zoom/pan instead of guessing a transform across frames.
-        let viewport = self.evaluate_js(
-            "({width:innerWidth,height:innerHeight,scale:visualViewport?visualViewport.scale:1,x:visualViewport?visualViewport.offsetLeft:0,y:visualViewport?visualViewport.offsetTop:0})",
-        ).await?;
-        let view = &viewport["value"];
-        let width = view["width"].as_f64().unwrap_or(0.0);
-        let height = view["height"].as_f64().unwrap_or(0.0);
-        if width <= 0.0
-            || height <= 0.0
-            || x < 0
-            || y < 0
-            || f64::from(x) >= width
-            || f64::from(y) >= height
-            || view["scale"].as_f64() != Some(1.0)
-            || view["x"].as_f64() != Some(0.0)
-            || view["y"].as_f64() != Some(0.0)
-        {
-            return Err(WebDriverErrorResponse::element_not_interactable(
-                "native pointer requires an unzoomed in-bounds viewport",
-            ));
-        }
-        let (tx, rx) = oneshot::channel();
-        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let pending = cancelled.clone();
-        self.window.with_webview(move |webview| unsafe {
-            let response = (|| -> Result<(), String> {
-                if pending.load(std::sync::atomic::Ordering::SeqCst) { return Err("native input request expired before responder dispatch".into()); }
-                let _mtm = MainThreadMarker::new().ok_or("native input must run on the AppKit main thread")?;
-                let wk: &WKWebView = &*webview.inner().cast();
-                let window = wk.window().ok_or("owned webview has no native window")?;
-                if !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {
-                    return Err("owned native view/window must be visible and not minimized".into());
-                }
-                let bounds = wk.bounds();
-                let insets = wk.safeAreaInsets();
-                let inset_width = bounds.size.width - insets.left - insets.right;
-                let inset_height = bounds.size.height - insets.top - insets.bottom;
-                let full_viewport = (bounds.size.width - width).abs() <= 1.0 && (bounds.size.height - height).abs() <= 1.0;
-                let inset_viewport = [insets.left, insets.right, insets.top, insets.bottom].iter().all(|n| n.is_finite() && *n >= 0.0)
-                    && (inset_width - width).abs() <= 1.0 && (inset_height - height).abs() <= 1.0;
-                if wk.pageZoom() != 1.0 || (!full_viewport && !inset_viewport) {
-                    return Err(format!("native view/DOM viewport dimensions differ; bounds={:?}, dom={}x{}, pageZoom={}, backingScale={}, flipped={}, safeAreaInsets={:?}, visibleRect={:?}, contentLayoutRect={:?}", bounds, width, height, wk.pageZoom(), window.backingScaleFactor(), wk.isFlipped(), insets, wk.visibleRect(), window.contentLayoutRect()));
-                }
-                // Public safe-area insets account for content under window chrome only
-                // when the resulting native rectangle exactly matches the CSS viewport.
-                let left = if full_viewport { 0.0 } else { insets.left };
-                let top = if full_viewport { 0.0 } else { insets.top };
-                let point = NSPoint::new(bounds.origin.x + left + f64::from(x),
-                    bounds.origin.y + if wk.isFlipped() { top + f64::from(y) } else { bounds.size.height - top - f64::from(y) });
-                let location = wk.convertPoint_toView(point, None);
-                let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                    native_type, location, NSEventModifierFlags::empty(), NSProcessInfo::processInfo().systemUptime(),
-                    window.windowNumber(), None, 0, click_count, 0.0,
-                ).ok_or("AppKit refused native mouse event creation")?;
-                if pending.load(std::sync::atomic::Ordering::SeqCst) { return Err("native input request expired before responder dispatch".into()); }
-                // Public NSResponder entry points. WKWebView forwards the supplied NSEvent
-                // through WebKit's native mouse path; no NSWindow.sendEvent/private SPI,
-                // foreground activation, DOM dispatchEvent, or currentEvent substitution.
-                match event_type {
-                    PointerEventType::Down => wk.mouseDown(&event),
-                    PointerEventType::Up => wk.mouseUp(&event),
-                    PointerEventType::Move => wk.mouseMoved(&event),
-                    PointerEventType::Click => return Err("synthetic click dispatch is forbidden".into()),
-                }
-                Ok(())
-            })();
-            let _ = tx.send(response);
-        }).map_err(|e| WebDriverErrorResponse::unknown_error(&e.to_string()))?;
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(self.timeouts.script_ms),
-            rx,
+        self.post_native(
+            NativeInput::Pointer {
+                event_type,
+                button,
+                buttons,
+            },
+            Some((x, y)),
+            *modifiers,
         )
         .await
-        {
-            Ok(Ok(Ok(()))) => Ok(()),
-            Ok(Ok(Err(error))) => Err(WebDriverErrorResponse::element_not_interactable(&error)),
-            Ok(Err(_)) => Err(WebDriverErrorResponse::unknown_error(
-                "native input responder channel closed",
-            )),
-            Err(_) => {
-                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-                Err(WebDriverErrorResponse::unknown_error(
-                    "native input responder dispatch timed out; delivery may be unknown",
-                ))
-            }
-        }
+    }
+
+    async fn dispatch_key_event(
+        &self,
+        key: &str,
+        is_down: bool,
+        modifiers: &ModifierState,
+    ) -> Result<(), WebDriverErrorResponse> {
+        let (code, text) = native_key(key, modifiers)?;
+        self.post_native(
+            NativeInput::Key {
+                code,
+                text,
+                down: is_down,
+            },
+            None,
+            *modifiers,
+        )
+        .await
+    }
+
+    async fn dispatch_scroll_event(
+        &self,
+        x: i32,
+        y: i32,
+        delta_x: i32,
+        delta_y: i32,
+        modifiers: &ModifierState,
+    ) -> Result<(), WebDriverErrorResponse> {
+        let dx = delta_x
+            .checked_neg()
+            .ok_or_else(|| WebDriverErrorResponse::invalid_argument("wheel delta out of range"))?;
+        let dy = delta_y
+            .checked_neg()
+            .ok_or_else(|| WebDriverErrorResponse::invalid_argument("wheel delta out of range"))?;
+        self.post_native(NativeInput::Wheel { dx, dy }, Some((x, y)), *modifiers)
+            .await
     }
 
     // =========================================================================
@@ -802,5 +1010,48 @@ impl WebDriverUIDelegate {
         let this = Self::alloc(mtm);
         let this = this.set_ivars(WebDriverUIDelegateIvars { alert_state });
         msg_send![super(this), init]
+    }
+}
+
+#[cfg(test)]
+mod native_input_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_specials_and_unicode_are_distinct() {
+        assert_eq!(
+            native_key("\u{E003}", &ModifierState::default()).unwrap(),
+            (51, None)
+        );
+        assert_eq!(
+            native_key("é", &ModifierState::default()).unwrap(),
+            (0, Some("é".into()))
+        );
+        assert!(native_key("\u{E099}", &ModifierState::default()).is_err());
+        assert!(native_key("ab", &ModifierState::default()).is_err());
+    }
+
+    #[test]
+    fn modified_unknown_position_is_refused() {
+        let m = ModifierState {
+            ctrl: true,
+            ..Default::default()
+        };
+        assert!(native_key("é", &m).is_err());
+        assert_eq!(native_key("k", &m).unwrap().0, 40);
+    }
+
+    #[test]
+    fn native_flags_preserve_only_declared_modifiers() {
+        let m = ModifierState {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            native_flags(m),
+            CGEventFlags::MaskControl | CGEventFlags::MaskShift
+        );
+        assert!(native_flags(ModifierState::default()).is_empty());
     }
 }

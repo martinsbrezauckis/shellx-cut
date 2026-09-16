@@ -118,6 +118,7 @@ features = [
     "NSGraphicsContext",
     "NSView",
     "NSWindow",
+    "NSScreen",
     "NSResponder",
     "NSImage",
     "NSImageRep",
@@ -160,3 +161,8 @@ features = [
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-core]
 version = "0.61"
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-core-graphics]
+version = "0.3"
+default-features = false
+features = ["std", "libc", "CGEvent", "CGEventSource", "CGEventTypes", "CGGeometry", "CGRemoteOperation"]

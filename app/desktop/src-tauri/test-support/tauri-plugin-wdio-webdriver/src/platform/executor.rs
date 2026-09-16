@@ -564,11 +564,25 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
     /// Click on element
     async fn click_element(&self, js_var: &str) -> Result<(), WebDriverErrorResponse> {
         let (x, y) = self.get_element_center(js_var).await?;
-        self.dispatch_pointer_event(PointerEventType::Move, x, y, 0)
-            .await?;
-        self.dispatch_pointer_event(PointerEventType::Down, x, y, 0)
-            .await?;
-        self.dispatch_pointer_event(PointerEventType::Up, x, y, 0)
+        self.dispatch_pointer_event(
+            PointerEventType::Move,
+            x,
+            y,
+            0,
+            0,
+            &ModifierState::default(),
+        )
+        .await?;
+        self.dispatch_pointer_event(
+            PointerEventType::Down,
+            x,
+            y,
+            0,
+            1,
+            &ModifierState::default(),
+        )
+        .await?;
+        self.dispatch_pointer_event(PointerEventType::Up, x, y, 0, 0, &ModifierState::default())
             .await
     }
 
@@ -1025,6 +1039,8 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
         _x: i32,
         _y: i32,
         _button: u32,
+        _buttons: u32,
+        _modifiers: &ModifierState,
     ) -> Result<(), WebDriverErrorResponse> {
         Err(WebDriverErrorResponse::unsupported_operation(
             "native pointer input is unavailable on this platform",
@@ -1037,6 +1053,7 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
         _y: i32,
         _delta_x: i32,
         _delta_y: i32,
+        _modifiers: &ModifierState,
     ) -> Result<(), WebDriverErrorResponse> {
         Err(WebDriverErrorResponse::unsupported_operation(
             "native wheel input is not supported by this overlay",
