@@ -471,6 +471,37 @@ function applyOp(newOp: OpRecord): void {
   liveSocket?.push({ type: 'op_applied', op: newOp })
 }
 
+/** The offline demo still renders Settings > Video. Keep this exact read-only
+ * envelope complete: an empty successful result would crash the Motion card
+ * before the mock Environment scenario can exercise its conditional GPU state. */
+export function mockMotionManagementStatus() {
+  const unavailableAction = { available: false, prerequisite: 'MOTION-DIST-01' as const }
+  return {
+    schema: 'shellx-cut/motion-management-status@1' as const,
+    readOnly: true as const,
+    runtime: {
+      status: 'not-discovered' as const,
+      engine: null, cli: null, platform: null, provenance: null,
+    },
+    connector: {
+      catalog: 'not-verified' as const, descriptor: 'not-verified' as const,
+      capabilityId: 'motion.template-to-cut', descriptorRevision: null, descriptorFingerprint: null,
+      availability: null, availableOnRuntime: false, execution: 'not-executed' as const,
+    },
+    distribution: {
+      status: 'blocked' as const,
+      blocker: {
+        id: 'MOTION-DIST-01' as const,
+        message: 'A verified immutable Motion distribution manifest and matching platform artifact are not available to Cut.',
+      },
+      manifest: { status: 'absent' as const, candidate: null, version: null },
+      artifact: { platform: 'mock', status: 'absent' as const, version: null },
+      installed: { status: 'not-managed' as const, candidate: null, version: null },
+      actions: { install: unavailableAction, repair: unavailableAction, update: unavailableAction, remove: unavailableAction },
+    },
+  }
+}
+
 function handleVerb(name: string, args: Record<string, unknown>): unknown {
   if (MOCK_EMBEDDED_MANUAL_READ_ONLY && !MANUAL_READ_ONLY_VERBS.has(name)) {
     return {
@@ -683,6 +714,8 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
           result: mockJobs.get(String(args.job_id ?? '')) ?? {},
         },
       }
+    case 'system.motion_status':
+      return { ok: true, result: mockMotionManagementStatus() }
     case 'system.doctor':
       return {
         ok: true,

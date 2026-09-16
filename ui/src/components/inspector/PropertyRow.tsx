@@ -31,7 +31,7 @@
 // inspector.css import — these primitives reuse the `pr-*` token-based classes).
 // Callers: panels/Inspector (Transform section + future Crop/Speed/Audio rows).
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /** Props for one Inspector property row. */
 export interface PropertyRowProps {
@@ -72,12 +72,27 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 /**
+ * Parse text from the editable numeric field without treating an unfinished
+ * sign or decimal as a value. `type="number"` sanitizes `-` and `-.` before
+ * React can retain them, so the field is text-backed while it is being edited.
+ */
+export function propertyRowNumericDraft(text: string, min: number, max: number): number | null {
+  // Keep the browser number-field grammar without its eager sanitization. This
+  // rejects Number-only spellings such as `0x10` while retaining normal decimal
+  // and exponent entry (`-.5`, `1.`, `1e-3`).
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) return null
+  const value = Number(text)
+  return Number.isFinite(value) ? clamp(value, min, max) : null
+}
+
+/**
  * One uniform property row. MODULE SCOPE — see the file header for why moving this
  * inside a component freezes the slider mid-drag.
  *
  * Side effects: none beyond invoking the `onChange`/`onCommit` callbacks the
- * caller supplies. Holds a local `draft` so the slider/input stay
- * smooth between commits; re-syncs to `value` whenever the committed value changes.
+ * caller supplies. Holds a local numeric `draft` for the slider plus an editing
+ * text draft for the field, so a human can type a signed or decimal value without
+ * formatting it away before the one blur/Enter commit.
  */
 export default function PropertyRow({
   label,
@@ -96,27 +111,74 @@ export default function PropertyRow({
   // truth; we re-seed the draft whenever it changes externally (selection change,
   // verb result, reset from elsewhere) so the row reflects reality between drags.
   const [draft, setDraft] = useState<number>(value)
+  const [inputDraft, setInputDraft] = useState<string | null>(null)
+  const inputPreviewValue = useRef<number | null>(null)
+  const editingInput = useRef(false)
+  const hasValueEffect = useRef(false)
   useEffect(() => {
+    const firstValueEffect = !hasValueEffect.current
+    hasValueEffect.current = true
     setDraft(value)
+    // A live preview can feed the same value back through the parent while the
+    // user is still completing (for example) `-6.`. Keep that text intact; a
+    // different external value replaces the edit draft. The first effect can
+    // arrive after the initial browser focus, so it must not erase that input.
+    if (!firstValueEffect && (!editingInput.current || inputPreviewValue.current !== value)) setInputDraft(null)
   }, [value])
 
   // Mirror live changes out (optional preview); does NOT fire the verb.
-  const live = (n: number) => {
+  const live = (n: number, retainInputDraft = false) => {
     const c = clamp(n, min, max)
     setDraft(c)
+    if (!retainInputDraft) {
+      inputPreviewValue.current = null
+      setInputDraft(null)
+    }
     onChange?.(c)
   }
   // Commit-on-release: the ONE place the verb is asked to fire.
   const commit = (n: number) => {
     const c = clamp(n, min, max)
+    inputPreviewValue.current = null
+    setInputDraft(null)
     setDraft(c)
     onCommit(c)
+  }
+
+  const previewInput = (text: string) => {
+    setInputDraft(text)
+    const next = propertyRowNumericDraft(text, min, max)
+    if (next === null) return
+    inputPreviewValue.current = next
+    live(next, true)
+  }
+
+  const commitInput = (text: string) => {
+    const next = propertyRowNumericDraft(text, min, max)
+    if (next !== null) {
+      commit(next)
+      return
+    }
+    // An unfinished sign/decimal is not a numeric edit. Restore the last
+    // committed source value and issue no verb.
+    inputPreviewValue.current = null
+    setInputDraft(null)
+    setDraft(value)
   }
 
   // Display value — round to the step's decimal precision so e.g. 0.10 reads "0.1"
   // not "0.10000000000000009".
   const decimals = step < 1 ? Math.max(0, -Math.floor(Math.log10(step))) : 0
   const shown = Number.isFinite(draft) ? draft.toFixed(decimals) : ''
+  const inputValue = inputDraft ?? shown
+
+  const stepInput = (direction: 1 | -1) => {
+    const current = propertyRowNumericDraft(inputValue, min, max) ?? draft
+    const next = clamp(Number((current + direction * step).toFixed(decimals)), min, max)
+    inputPreviewValue.current = next
+    setInputDraft(next.toFixed(decimals))
+    live(next, true)
+  }
 
   return (
     <div className="pr" data-cut-prop={propKey} aria-disabled={disabled || undefined}>
@@ -128,15 +190,30 @@ export default function PropertyRow({
           id={`pr-${propKey}`}
           className="pr__num"
           data-cut-prop-input={propKey}
-          type="number"
-          min={min}
-          max={max}
-          step={step}
-          value={shown}
+          type="text"
+          inputMode="decimal"
+          role="spinbutton"
+          aria-valuemin={min}
+          aria-valuemax={max}
+          aria-valuenow={draft}
+          aria-valuetext={inputValue}
+          value={inputValue}
           disabled={disabled}
-          onChange={(e) => live(Number(e.target.value))}
-          onBlur={(e) => commit(Number(e.target.value))}
+          onFocus={() => {
+            editingInput.current = true
+            inputPreviewValue.current = null
+          }}
+          onChange={(e) => previewInput(e.target.value)}
+          onBlur={(e) => {
+            editingInput.current = false
+            commitInput(inputDraft ?? e.target.value)
+          }}
           onKeyDown={(e) => {
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+              e.preventDefault()
+              stepInput(e.key === 'ArrowUp' ? 1 : -1)
+              return
+            }
             if (e.key === 'Enter') {
               // Pointer regression: blur commits because onBlur is the
               // SOLE committer. The old code called commit() AND blur(), and the
@@ -163,7 +240,11 @@ export default function PropertyRow({
         onChange={(e) => live(Number(e.target.value))}
         onMouseUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
         onTouchEnd={(e) => commit(Number((e.target as HTMLInputElement).value))}
-        onKeyUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+        onKeyUp={(e) => {
+          if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+            commit(Number((e.target as HTMLInputElement).value))
+          }
+        }}
         aria-label={label}
       />
 

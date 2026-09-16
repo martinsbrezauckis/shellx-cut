@@ -7,13 +7,18 @@ use block2::{DynBlock, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSScreen};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationOptions, NSBitmapImageFileType, NSBitmapImageRep,
+    NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSRunningApplication,
+    NSScreen, NSView, NSWindow, NSWorkspace,
+};
 use objc2_core_graphics::{
-    CGEvent, CGEventField, CGEventFlags, CGEventType, CGMouseButton, CGPreflightPostEventAccess,
-    CGScrollEventUnit,
+    CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
+    CGEventType, CGMouseButton, CGPreflightPostEventAccess, CGScrollEventUnit,
 };
 use objc2_foundation::{
-    NSData, NSDictionary, NSError, NSObject, NSObjectProtocol, NSPoint, NSString,
+    NSData, NSDictionary, NSError, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint,
+    NSProcessInfo, NSString,
 };
 use objc2_web_kit::{
     WKContentWorld, WKFrameInfo, WKPDFConfiguration, WKSnapshotConfiguration, WKUIDelegate,
@@ -52,8 +57,8 @@ impl<R: Runtime> MacOSExecutor<R> {
     }
 }
 
-// Native posting is intentionally process-directed. Never fall back to a global
-// event tap or assume another executable's Accessibility grant applies here.
+// Standard HID posting is the explicit Mac input route. It requires observed
+// owned foreground/key-window readiness and actual posting permission, never a fallback.
 enum NativeInput {
     Pointer {
         event_type: PointerEventType,
@@ -61,6 +66,7 @@ enum NativeInput {
         buttons: u32,
     },
     Key {
+        key: String,
         code: u16,
         text: Option<String>,
         down: bool,
@@ -69,6 +75,15 @@ enum NativeInput {
         dx: i32,
         dy: i32,
     },
+}
+
+fn native_buttons_held() -> bool {
+    (0..32).any(|button| {
+        CGEventSource::button_state(
+            CGEventSourceStateID::CombinedSessionState,
+            CGMouseButton(button),
+        )
+    })
 }
 
 fn native_flags(m: ModifierState) -> CGEventFlags {
@@ -180,10 +195,101 @@ fn native_key(
             "modified non-ASCII native key is unsupported",
         ));
     }
-    Ok((code.unwrap_or(0), Some(key.to_string())))
+    // Shortcut characters must be translated by AppKit from virtual keycode
+    // and modifiers. Unicode override is only the plain-text insertion route.
+    let text = if modifiers.ctrl || modifiers.alt || modifiers.meta {
+        None
+    } else {
+        Some(key.to_string())
+    };
+    Ok((code.unwrap_or(0), text))
 }
 
 impl<R: Runtime + 'static> MacOSExecutor<R> {
+    async fn complete_key_release(
+        &self,
+        owner: (isize, String),
+    ) -> Result<(), WebDriverErrorResponse> {
+        let (tx, rx) = oneshot::channel();
+        self.window
+            .with_webview(move |view| unsafe {
+                let wk: &WKWebView = &*view.inner().cast();
+                let result = if wk
+                    .window()
+                    .is_some_and(|window| window.windowNumber() == owner.0)
+                {
+                    KEY_REPRESENTATIONS.with(|keys| keys.borrow_mut().remove(&owner));
+                    Ok(())
+                } else {
+                    Err("native release owner changed before completion")
+                };
+                let _ = tx.send(result);
+            })
+            .map_err(|error| WebDriverErrorResponse::unknown_error(&error.to_string()))?;
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(message))) => Err(WebDriverErrorResponse::unknown_error(message)),
+            _ => Err(WebDriverErrorResponse::unknown_error(
+                "native key release bookkeeping completion unknown",
+            )),
+        }
+    }
+
+    async fn ensure_owned_foreground(&self) -> Result<(), WebDriverErrorResponse> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut request_activation = true;
+        let mut expected_window = None;
+        let mut last = String::from("not observed");
+        loop {
+            let (tx, rx) = oneshot::channel();
+            self.window.with_webview(move |view| unsafe {
+                let result=(|| -> Result<(isize,bool,String),String> {
+                    let mtm=MainThreadMarker::new().ok_or("focus requires main thread")?;
+                    let wk: &WKWebView=&*view.inner().cast();
+                    let window=wk.window().ok_or("owned window absent")?;
+                    let app=NSApplication::sharedApplication(mtm);
+                    if expected_window.is_some_and(|id|id!=window.windowNumber()) {return Err("owned window changed during activation".into());}
+                    if !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {return Err("hidden/minimized window cannot receive input".into());}
+                    let mut accepted=None;
+                    if request_activation && !(app.isActive() && window.isKeyWindow()) && std::time::Instant::now()<deadline {
+                        accepted=Some(NSRunningApplication::currentApplication().activateWithOptions(NSApplicationActivationOptions::empty()));
+                        window.makeKeyAndOrderFront(None);
+                    }
+                    let frontmost=NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| (
+                        a.processIdentifier(),a.bundleIdentifier().map(|s|s.to_string()),a.localizedName().map(|s|s.to_string())));
+                    let detail=format!("pid={} window={} policy={:?} active={} key={} canBecomeKey={} currentKey={:?} activationRequestAccepted={:?} frontmostPidBundleName={:?}",std::process::id(),window.windowNumber(),app.activationPolicy(),app.isActive(),window.isKeyWindow(),window.canBecomeKeyWindow(),app.keyWindow().map(|w|w.windowNumber()),accepted,frontmost);
+                    if request_activation {eprintln!("ST14A_NATIVE_FOCUS {detail}");}
+                    if accepted==Some(false) {return Err(format!("owned app activation refused: {detail}"));}
+                    Ok((window.windowNumber(),app.isActive() && window.isKeyWindow(),detail))
+                })();let _=tx.send(result);
+            }).map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
+            let result = tokio::time::timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                rx,
+            )
+            .await
+            .map_err(|_| {
+                WebDriverErrorResponse::element_not_interactable(&format!(
+                    "owned foreground deadline: {last}"
+                ))
+            })?
+            .map_err(|_| WebDriverErrorResponse::unknown_error("owned foreground channel closed"))?
+            .map_err(|e| WebDriverErrorResponse::element_not_interactable(&e))?;
+            expected_window = Some(result.0);
+            last = result.2;
+            if result.1 {
+                return Ok(());
+            }
+            request_activation = false;
+            if std::time::Instant::now() >= deadline {
+                return Err(WebDriverErrorResponse::element_not_interactable(&format!(
+                    "owned foreground not ready: {last}"
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     async fn post_native(
         &self,
         input: NativeInput,
@@ -200,6 +306,7 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 "native input posting unavailable: CGPreflightPostEventAccess=false pid={} executable={}",
                 std::process::id(), std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default())));
         }
+        self.ensure_owned_foreground().await?;
         // An Up may release the original owned press after the view shrank.
         // Common state supplies the last successfully admitted point, never a failed move.
         let releasing = matches!(
@@ -230,6 +337,18 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
             None
         };
         let (tx, rx) = oneshot::channel();
+        // macOS consumes Command key equivalents at application/system level;
+        // their keyUp need not reach an NSEvent local monitor. Acknowledge that
+        // particular release using native session key state, never a DOM claim.
+        let command_release = Arc::new(std::sync::Mutex::new(None::<(isize, String, u16)>));
+        let command_posted = command_release.clone();
+        let released_owner = Arc::new(std::sync::Mutex::new(None::<(isize, String)>));
+        let completed_release = released_owner.clone();
+        let release_was_held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_proof = release_was_held.clone();
+        let completion = Arc::new(std::sync::Mutex::new(Some(tx)));
+        let marker = DELIVERY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let posted_completion = completion.clone();
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let pending = cancelled.clone();
         self.window.with_webview(move |webview| unsafe {
@@ -237,7 +356,8 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 let mtm=MainThreadMarker::new().ok_or("native input requires main thread")?;
                 let wk: &WKWebView=&*webview.inner().cast();
                 let window=wk.window().ok_or("owned webview has no native window")?;
-                if !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {
+                let app=NSApplication::sharedApplication(mtm);
+                if !app.isActive() || !window.isKeyWindow() || !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {
                     return Err("owned view/window must be visible and not minimized".into());
                 }
                 let location = if let Some((x,y,width,height))=viewport {
@@ -249,11 +369,51 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                     let left=if full{0.0}else{i.left};let top=if full{0.0}else{i.top};
                     let p=NSPoint::new(b.origin.x+left+f64::from(x),b.origin.y+if wk.isFlipped(){top+f64::from(y)}else{b.size.height-top-f64::from(y)});
                     let screen=window.convertPointToScreen(wk.convertPoint_toView(p,None));
+                    if !releasing && NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen,0,mtm)!=window.windowNumber() {
+                        return Err("owned window is not frontmost at native input point".into());
+                    }
                     let screens=NSScreen::screens(mtm);let primary=screens.firstObject().ok_or("primary screen unavailable")?;
                     let frame=primary.frame();
                     NSPoint::new(screen.x,frame.origin.y+frame.size.height-screen.y)
                 } else { NSPoint::new(0.0,0.0) };
                 if pending.load(std::sync::atomic::Ordering::SeqCst) || !CGPreflightPostEventAccess() { return Err("native posting request expired or permission unavailable".into()); }
+                if matches!(&input,NativeInput::Wheel{..}|NativeInput::Pointer{event_type:PointerEventType::Move,buttons:0,..}) && native_buttons_held() {
+                    return Err("native no-button move/wheel requires no held mouse buttons".into());
+                }
+                let mut input=input;
+                if let NativeInput::Key{key,code,text,down}=&mut input {
+                    let owner=(window.windowNumber(),key.clone());
+                    let previous=KEY_REPRESENTATIONS.with(|keys|keys.borrow().get(&owner).copied());
+                    if !*down && previous.is_none() { return Err("key release has no retained native representation; no event posted".into()); }
+                    let plain=!(modifiers.ctrl || modifiers.shift || modifiers.alt || modifiers.meta);
+                    let character_route=use_character_route(previous,*down,plain,text.is_some());
+                    if *down && KEY_REPRESENTATIONS.with(|keys|keys.borrow().len()>=256) { return Err("native held key representations exceed bound".into()); }
+                    if character_route {
+                        let responder=window.firstResponder();
+                        if !responder.as_ref().and_then(|r|r.downcast_ref::<NSView>()).is_some_and(|view|view.isDescendantOf(wk)) {
+                            return Err("native character key requires owned webview responder".into());
+                        }
+                        let characters=NSString::from_str(key);
+                        let event=NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                            if *down { NSEventType::KeyDown } else { NSEventType::KeyUp }, NSPoint::new(0.0,0.0),NSEventModifierFlags(native_flags(modifiers).0 as usize),NSProcessInfo::processInfo().systemUptime(),window.windowNumber(),None,&characters,&characters,false,*code
+                        ).ok_or("native character key event unavailable")?;
+                        // Pin the representation before dispatch; common owns the
+                        // original window and key lifecycle across requests.
+                        if *down { KEY_REPRESENTATIONS.with(|keys|keys.borrow_mut().insert(owner.clone(),KeyRepresentation::Character)); }
+                        if *down { wk.keyDown(&event); } else { wk.keyUp(&event); *completed_release.lock().unwrap()=Some(owner); }
+                        eprintln!("ST14A_NATIVE_DELIVERY route=character-responder down={down} ownerWindow={}",window.windowNumber());
+                        if let Some(tx)=posted_completion.lock().unwrap().take() { let _=tx.send(Ok(())); }
+                        return Ok(());
+                    }
+                    if let Some(KeyRepresentation::Hardware{code:original,..})=previous { *code=original; *text=None; }
+                    if *down && previous.is_none() {
+                        let mapped=native_key(key,&modifiers).map_err(|error|error.message)?;
+                        *code=mapped.0;*text=mapped.1;
+                        KEY_REPRESENTATIONS.with(|keys|keys.borrow_mut().insert(owner,KeyRepresentation::Hardware{code:*code,held:false}));
+                    }
+                }
+                let keyboard=matches!(&input,NativeInput::Key{..});
+                let keyboard_transition=match &input { NativeInput::Key{key,code,down,..}=>Some((key.clone(),*code,*down)), _=>None };
                 let event=match input {
                     NativeInput::Pointer{event_type,button,buttons} => {
                         let active=if matches!(event_type,PointerEventType::Move) {
@@ -271,8 +431,13 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                         CGEvent::set_integer_value_field(Some(&e),CGEventField::MouseEventClickState,if matches!(event_type,PointerEventType::Move){0}else{1});
                         e
                     },
-                    NativeInput::Key{code,text,down} => {
-                        if !window.makeFirstResponder(Some(wk)) { return Err("owned webview refuses first responder".into()); }
+                    NativeInput::Key{code,text,down,..} => {
+                        let responder=window.firstResponder();
+                        let already_owned=responder.as_ref().and_then(|r|r.downcast_ref::<NSView>()).is_some_and(|view|view.isDescendantOf(wk));
+                        eprintln!("ST14A_NATIVE_RESPONDER ownedDescendant={already_owned} class={:?}",responder.as_ref().map(|r|r.class().name()));
+                        // Reassigning the WK wrapper while its content/editor
+                        // view already owns focus can disturb a live selection.
+                        if !already_owned && !window.makeFirstResponder(Some(wk)) { return Err("owned webview refuses first responder".into()); }
                         let e=CGEvent::new_keyboard_event(None,code,down).ok_or("native keyboard event unavailable")?;
                         if let Some(text)=text { let units:Vec<u16>=text.encode_utf16().collect();CGEvent::keyboard_set_unicode_string(Some(&e),units.len() as _,units.as_ptr()); }
                         e
@@ -283,29 +448,157 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                     },
                 };
                 CGEvent::set_flags(Some(&event),native_flags(modifiers));
-                CGEvent::post_to_pid(std::process::id() as i32,Some(&event));
+                // This is the selected standard native route, not a fallback. The
+                // caller holds the Runner desktop lease and common original-owner pin.
+                eprintln!("ST14A_NATIVE_POST route=hid pid={} type={:?} point={:?} window={} active=true key=true postAccess=true",
+                    std::process::id(),CGEvent::r#type(Some(&event)),location,window.windowNumber());
+                CGEvent::set_integer_value_field(Some(&event),CGEventField::EventSourceUserData,marker);
+                if let Some((key,code,false))=keyboard_transition.as_ref().filter(|_|modifiers.meta) {
+                    let code=*code;
+                    let held_pin=KEY_REPRESENTATIONS.with(|keys|matches!(keys.borrow().get(&(window.windowNumber(),key.clone())),Some(KeyRepresentation::Hardware{held:true,..})));
+                    *command_posted.lock().unwrap()=Some((window.windowNumber(),key.clone(),code));
+                    // Always allow one owner-bound release attempt, even if
+                    // Down acknowledgement failed. Missing evidence must keep
+                    // common held intent unknown, not prevent cleanup posting.
+                    release_proof.store(held_pin && CGEventSource::key_state(CGEventSourceStateID::CombinedSessionState,code),std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("ST14A_NATIVE_RELEASE beforeHeld={} ownerWindow={expected_window}",CGEventSource::key_state(CGEventSourceStateID::CombinedSessionState,code),expected_window=window.windowNumber());
+                    CGEvent::post(CGEventTapLocation::HIDEventTap,Some(&event));
+                    if let Some(tx)=posted_completion.lock().unwrap().take() { let _=tx.send(Ok(())); }
+                    return Ok(());
+                }
+                let expected_window=window.windowNumber();
+                let delivered=posted_completion.clone();
+                let native_release=completed_release.clone();
+                let seen=Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let handler=RcBlock::new(move |pointer: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+                    let incoming=pointer.as_ref();
+                    let marked=incoming.CGEvent().is_some_and(|cg|
+                        CGEvent::integer_value_field(Some(&cg),CGEventField::EventSourceUserData)==marker);
+                    let actual_window=incoming.windowNumber();
+                    if marked { eprintln!("ST14A_NATIVE_DELIVERY marker={marker} eventType={:?} window={actual_window} expectedWindow={expected_window}",incoming.r#type()); }
+                    // Key equivalents are application events and may have no
+                    // event window. Bind those to the still-active original key
+                    // window; mouse events must identify that window directly.
+                    let owner_key=MainThreadMarker::new().is_some_and(|mtm| {
+                        let app=NSApplication::sharedApplication(mtm);
+                        app.isActive() && app.keyWindow().is_some_and(|w|w.windowNumber()==expected_window)
+                    });
+                    let matched=marked && (actual_window==expected_window || (keyboard && actual_window==0 && owner_key));
+                    if matched && !seen.swap(true,std::sync::atomic::Ordering::SeqCst) {
+                        let delivered=delivered.clone();
+                        let keyboard_transition=keyboard_transition.clone();
+                        let native_release=native_release.clone();
+                        let after_dispatch=RcBlock::new(move || {
+                            remove_delivery_monitor(marker);
+                            let result=if let Some((key,code,down))=&keyboard_transition {
+                                let held=CGEventSource::key_state(CGEventSourceStateID::CombinedSessionState,*code);
+                                if *down && !held { Err("acknowledged key Down lacks native session held state".into()) }
+                                else { KEY_REPRESENTATIONS.with(|keys| { if *down { keys.borrow_mut().insert((expected_window,key.clone()),KeyRepresentation::Hardware{code:*code,held}); } else { *native_release.lock().unwrap()=Some((expected_window,key.clone())); } }); Ok(()) }
+                            } else { Ok(()) };
+                            if let Some(tx)=delivered.lock().unwrap().take() { let _=tx.send(result); }
+                        });
+                        NSOperationQueue::mainQueue().addOperationWithBlock(&after_dispatch);
+                    }
+                    pointer.as_ptr()
+                });
+                let monitor=NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::Any,&handler)
+                    .ok_or("owned event delivery monitor unavailable")?;
+                DELIVERY_MONITORS.with(|items|items.borrow_mut().insert(marker,monitor));
+                CGEvent::post(CGEventTapLocation::HIDEventTap,Some(&event));
                 Ok(())
-            })();let _=tx.send(response);
+            })();
+            if let Err(error)=response {
+                remove_delivery_monitor(marker);
+                if let Some(tx)=posted_completion.lock().unwrap().take() { let _=tx.send(Err(error)); }
+            }
         }).map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
         match tokio::time::timeout(
-            std::time::Duration::from_millis(self.timeouts.script_ms),
+            std::time::Duration::from_millis(self.timeouts.script_ms.min(2000)),
             rx,
         )
         .await
         {
-            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Ok(()))) => {
+                let release_record = command_release.lock().unwrap().clone();
+                if let Some((owner_window, key, code)) = release_record {
+                    if !release_was_held.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(WebDriverErrorResponse::unknown_error("owned Command key release posted, but prior held state is unproven; release remains unknown"));
+                    }
+                    let deadline =
+                        tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+                    loop {
+                        if !CGEventSource::key_state(
+                            CGEventSourceStateID::CombinedSessionState,
+                            code,
+                        ) {
+                            eprintln!("ST14A_NATIVE_DELIVERY commandKeyRelease=session-state-transition-down-to-up");
+                            *released_owner.lock().unwrap() = Some((owner_window, key));
+                            break;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(WebDriverErrorResponse::unknown_error(
+                                "native Command key release remained held",
+                            ));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    }
+                }
+                let release_owner = { released_owner.lock().unwrap().take() };
+                if let Some(owner) = release_owner {
+                    self.complete_key_release(owner).await?;
+                }
+                Ok(())
+            }
             Ok(Ok(Err(e))) => Err(WebDriverErrorResponse::element_not_interactable(&e)),
             Ok(Err(_)) => Err(WebDriverErrorResponse::unknown_error(
                 "native posting channel closed",
             )),
             Err(_) => {
                 cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+                // Main-thread cleanup also handles a queued post that timed out
+                // before execution; the cancellation flag prevents that post.
+                let _ = self
+                    .window
+                    .with_webview(move |_| remove_delivery_monitor(marker));
                 Err(WebDriverErrorResponse::unknown_error(
-                    "native posting timed out; delivery may be unknown",
+                    "native event dispatch acknowledgement timed out; delivery may be unknown",
                 ))
             }
         }
     }
+}
+
+// A monitor is only an acknowledgement of our marked event entering AppKit.
+// Queue completion after that dispatch so a following Up cannot change the HID
+// button state before WebKit constructs the preceding Down event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyRepresentation {
+    Character,
+    Hardware { code: u16, held: bool },
+}
+fn use_character_route(
+    previous: Option<KeyRepresentation>,
+    down: bool,
+    plain: bool,
+    printable: bool,
+) -> bool {
+    match previous {
+        Some(KeyRepresentation::Character) => true,
+        Some(KeyRepresentation::Hardware { .. }) => false,
+        None => down && plain && printable,
+    }
+}
+thread_local! {
+    static KEY_REPRESENTATIONS: std::cell::RefCell<std::collections::HashMap<(isize,String),KeyRepresentation>> = Default::default();
+    static DELIVERY_MONITORS: std::cell::RefCell<std::collections::HashMap<i64, Retained<AnyObject>>> = Default::default();
+}
+static DELIVERY_SEQUENCE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+fn remove_delivery_monitor(marker: i64) {
+    DELIVERY_MONITORS.with(|items| {
+        if let Some(monitor) = items.borrow_mut().remove(&marker) {
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+    });
 }
 
 /// Register `WKWebView` handlers at webview creation time.
@@ -387,9 +680,12 @@ impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
         is_down: bool,
         modifiers: &ModifierState,
     ) -> Result<(), WebDriverErrorResponse> {
-        let (code, text) = native_key(key, modifiers)?;
+        // Up resolves its original native representation on the owned main
+        // thread; modifiers may have changed since Down.
+        let (code, text) = native_key(key, &ModifierState::default())?;
         self.post_native(
             NativeInput::Key {
+                key: key.to_owned(),
                 code,
                 text,
                 down: is_down,
@@ -414,6 +710,25 @@ impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
         let dy = delta_y
             .checked_neg()
             .ok_or_else(|| WebDriverErrorResponse::invalid_argument("wheel delta out of range"))?;
+        // Quartz wheel delivery follows the native pointer location. Establish
+        // that location through the same acknowledged owned move before scroll.
+        // The scroll API has no held-button mask; refuse rather than turn this
+        // positioning move into an unrequested drag or release.
+        if native_buttons_held() {
+            return Err(WebDriverErrorResponse::unsupported_operation(
+                "native wheel while mouse buttons are held is unsupported",
+            ));
+        }
+        self.post_native(
+            NativeInput::Pointer {
+                event_type: PointerEventType::Move,
+                button: 0,
+                buttons: 0,
+            },
+            Some((x, y)),
+            *modifiers,
+        )
+        .await?;
         self.post_native(NativeInput::Wheel { dx, dy }, Some((x, y)), *modifiers)
             .await
     }
@@ -1038,7 +1353,47 @@ mod native_input_mapping_tests {
             ..Default::default()
         };
         assert!(native_key("é", &m).is_err());
-        assert_eq!(native_key("k", &m).unwrap().0, 40);
+        assert_eq!(native_key("k", &m).unwrap(), (40, None));
+        assert_eq!(
+            native_key(
+                "a",
+                &ModifierState {
+                    meta: true,
+                    ..Default::default()
+                }
+            )
+            .unwrap(),
+            (0, None)
+        );
+    }
+
+    #[test]
+    fn original_key_representation_survives_modifier_changes_and_repeat() {
+        for down in [true, false] {
+            assert!(use_character_route(
+                Some(KeyRepresentation::Character),
+                down,
+                false,
+                true
+            ));
+            assert!(!use_character_route(
+                Some(KeyRepresentation::Hardware {
+                    code: 0,
+                    held: true
+                }),
+                down,
+                true,
+                true
+            ));
+        }
+    }
+
+    #[test]
+    fn new_character_pair_requires_plain_printable_down() {
+        assert!(use_character_route(None, true, true, true));
+        assert!(!use_character_route(None, false, true, true));
+        assert!(!use_character_route(None, true, false, true));
+        assert!(!use_character_route(None, true, true, false));
     }
 
     #[test]

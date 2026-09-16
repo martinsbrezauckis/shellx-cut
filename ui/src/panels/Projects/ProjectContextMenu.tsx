@@ -33,7 +33,7 @@ function Item({ action, disabled = false, title, danger = false, children, onCli
   children: ReactNode
   onClick: () => void
 }) {
-  return <button className={`tl-ctx__item${danger ? ' tl-ctx__item--danger' : ''}`} data-cut-project-ctx={action} role="menuitem" disabled={disabled} title={title} onClick={onClick}>{children}</button>
+  return <button className={`tl-ctx__item${danger ? ' tl-ctx__item--danger' : ''}`} data-cut-action="project-ctx" data-cut-project-ctx={action} role="menuitem" disabled={disabled} title={title} onClick={onClick}>{children}</button>
 }
 
 /** The row id is retained through every callback: a context menu never acts on

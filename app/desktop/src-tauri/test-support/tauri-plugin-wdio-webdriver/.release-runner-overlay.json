@@ -25,10 +25,10 @@
       "sha256": "74c76ec5f738533d3dc11d85b5d30f2c8ce7e129a90b6724c46b395cb665caf5"
     },
     {
-      "bytes": 3568,
+      "bytes": 3596,
       "mode": 420,
       "path": "Cargo.toml",
-      "sha256": "80fb1d85c35dcdab30f450ec8eaa9d4efe66ff9180bba319480584cbfc762d7f"
+      "sha256": "ff35cb149f956b28c89175e70d48015b7e1c249c46b261c6066ae58bad4e4c8b"
     },
     {
       "bytes": 1978,
@@ -139,10 +139,10 @@
       "sha256": "80f155d9f88cc8dd11cb2a32425dc76e0eb93f470e23f2f60a886c7e082547b2"
     },
     {
-      "bytes": 41415,
+      "bytes": 62746,
       "mode": 420,
       "path": "src/platform/macos.rs",
-      "sha256": "ea67fa5852a001ba130cd2e0e7cad0b564e6ff3c7987cd40d9bf1b4f66994dd9"
+      "sha256": "09d9972d3e939418e062c8330ab45b878719707c9789a90d16e32748794f2e18"
     },
     {
       "bytes": 2886,
@@ -346,11 +346,11 @@
   "schema": "shellx-cut.embedded-webdriver-vendor/v1",
   "sharedMaterialization": {
     "files": 48,
-    "manifestSha256": "b1d10e90f30b910096d5e42168407e1bb8481ac700c0272d1ea00cb914587e9d",
+    "manifestSha256": "cbb2f7cbcd7dc4e5cfc2bb94af8e33a938f5b3f1d5f5bb2cfb14a556d8cc53ae",
     "overlay": [
       {
         "path": "Cargo.toml",
-        "sha256": "80fb1d85c35dcdab30f450ec8eaa9d4efe66ff9180bba319480584cbfc762d7f"
+        "sha256": "ff35cb149f956b28c89175e70d48015b7e1c249c46b261c6066ae58bad4e4c8b"
       },
       {
         "path": "src/platform/executor.rs",
@@ -358,7 +358,7 @@
       },
       {
         "path": "src/platform/macos.rs",
-        "sha256": "ea67fa5852a001ba130cd2e0e7cad0b564e6ff3c7987cd40d9bf1b4f66994dd9"
+        "sha256": "09d9972d3e939418e062c8330ab45b878719707c9789a90d16e32748794f2e18"
       },
       {
         "path": "src/platform/windows.rs",

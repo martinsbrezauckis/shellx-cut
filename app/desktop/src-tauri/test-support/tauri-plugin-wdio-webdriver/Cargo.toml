@@ -114,6 +114,7 @@ version = "0.6"
 version = "0.3"
 features = [
     "NSApplication",
+    "NSRunningApplication",
     "NSEvent",
     "NSGraphicsContext",
     "NSView",
