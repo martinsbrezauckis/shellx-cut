@@ -534,6 +534,7 @@ const boundedSources = [
   "ui/private-tests/lib/fullCoverageAssembleMaterializationWitness.mjs",
   "ui/private-tests/lib/fullCoverageNativePathPickerActions.mjs",
   "ui/private-tests/lib/runnerNativeUiDialogAdapter.mjs",
+  "ui/private-tests/lib/runnerNativeUiDialogButtons.mjs",
   "ui/private-tests/lib/fullCoverageScenarioSelection.mjs",
   "ui/private-tests/lib/fullCoverageInspectorRealActions.mjs",
   "ui/private-tests/lib/fullCoverageMacosMotionEditWitness.mjs",
