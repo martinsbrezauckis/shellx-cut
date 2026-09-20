@@ -95,7 +95,7 @@ pub(in crate::dispatch) async fn edit_track(
     let every = a.every_ms.unwrap_or(100).max(1);
 
     let (src_path, _hash) = asset_info(state, &asset_id).await?;
-    let rt = crate::track::runtime().ok_or_else(|| {
+    let rt = crate::track::runtime()?.ok_or_else(|| {
         CutError::new(
             error_codes::NOT_FOUND,
             "motion tracking needs the perception sidecar (python + cv2), which is not installed",

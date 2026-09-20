@@ -546,6 +546,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
+name = "cut-native-runtime-context"
+version = "0.6.114"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3275,6 +3284,7 @@ version = "0.6.114"
 dependencies = [
  "base64 0.22.1",
  "cc",
+ "cut-native-runtime-context",
  "getrandom 0.3.4",
  "gio",
  "libc",

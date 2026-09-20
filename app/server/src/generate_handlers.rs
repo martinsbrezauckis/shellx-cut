@@ -3,9 +3,12 @@
 //! Keep dispatcher glue thin: domain catalog/IR lives in generate.rs, while
 //! public verb handlers live in this owning module.
 
+use crate::dispatch::adapter_python::{
+    apply_adapter_python_policy, resolve_adapter_runtime, AdapterRuntime,
+};
 use crate::dispatch::{
-    build_shape_spec, build_title_spec, configured_adapter_python, dispatch_send, no_project,
-    ShapeArgs, TitleArgs, ENV_ADAPTER_PYTHON,
+    build_shape_spec, build_title_spec, dispatch_send, no_project, ShapeArgs, TitleArgs,
+    ENV_ADAPTER_PYTHON,
 };
 use crate::generate;
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
@@ -853,10 +856,16 @@ fn find_generate_prompt_adapter() -> Option<PathBuf> {
 }
 
 async fn run_generate_prompt_adapter(
-    adapter: Option<&Path>,
+    runtime: AdapterRuntime,
     context: &Value,
     timeout_ms: u64,
 ) -> Value {
+    let AdapterRuntime {
+        python,
+        script: adapter,
+        native_context,
+    } = runtime;
+    let adapter = adapter.as_deref();
     let Some(adapter) = adapter else {
         return json!({
             "schema": "shellx-cut/generate-plan/1",
@@ -867,7 +876,7 @@ async fn run_generate_prompt_adapter(
         });
     };
 
-    let Some(python) = configured_adapter_python() else {
+    let Some(python) = python else {
         return json!({
             "schema": "shellx-cut/generate-plan/1",
             "status": "not_run",
@@ -879,6 +888,7 @@ async fn run_generate_prompt_adapter(
 
     let input = context.to_string();
     let mut cmd = tokio::process::Command::new(python);
+    apply_adapter_python_policy(&mut cmd, native_context);
     cmd.arg(adapter).arg("plan");
     let control = ProcessControl::for_operation(std::time::Duration::from_millis(timeout_ms));
     let out = match run_owned(&mut cmd, Some(input.as_bytes()), &control).await {
@@ -1166,8 +1176,9 @@ pub(crate) async fn generate_from_prompt(
         "context": a.context.unwrap_or_else(|| json!({})),
         "rationale": a.rationale,
     });
-    let adapter = find_generate_prompt_adapter();
-    let envelope = run_generate_prompt_adapter(adapter.as_deref(), &request, timeout_ms).await;
+    let runtime =
+        resolve_adapter_runtime("generate_prompt_adapter.py", find_generate_prompt_adapter)?;
+    let envelope = run_generate_prompt_adapter(runtime, &request, timeout_ms).await;
     let status = envelope
         .get("status")
         .and_then(|s| s.as_str())
@@ -1397,10 +1408,16 @@ fn find_generate_storyboard_adapter() -> Option<PathBuf> {
 }
 
 async fn run_generate_storyboard_adapter(
-    adapter: Option<&Path>,
+    runtime: AdapterRuntime,
     context: &Value,
     timeout_ms: u64,
 ) -> Value {
+    let AdapterRuntime {
+        python,
+        script: adapter,
+        native_context,
+    } = runtime;
+    let adapter = adapter.as_deref();
     let Some(adapter) = adapter else {
         return json!({
             "schema": "shellx-cut/generate-storyboard-result/1",
@@ -1412,7 +1429,7 @@ async fn run_generate_storyboard_adapter(
         });
     };
 
-    let Some(python) = configured_adapter_python() else {
+    let Some(python) = python else {
         return json!({
             "schema": "shellx-cut/generate-storyboard-result/1",
             "status": "not_run",
@@ -1425,6 +1442,7 @@ async fn run_generate_storyboard_adapter(
 
     let input = context.to_string();
     let mut cmd = tokio::process::Command::new(python);
+    apply_adapter_python_policy(&mut cmd, native_context);
     cmd.arg(adapter).arg("plan");
     let control = ProcessControl::for_operation(std::time::Duration::from_millis(timeout_ms));
     let out = match run_owned(&mut cmd, Some(input.as_bytes()), &control).await {
@@ -2263,8 +2281,11 @@ pub(crate) async fn generate_storyboard(
         "skill_path": GENERATE_STORYBOARD_SKILL_PATH,
         "rationale": a.rationale,
     });
-    let adapter = find_generate_storyboard_adapter();
-    let envelope = run_generate_storyboard_adapter(adapter.as_deref(), &request, timeout_ms).await;
+    let runtime = resolve_adapter_runtime(
+        "generate_storyboard_adapter.py",
+        find_generate_storyboard_adapter,
+    )?;
+    let envelope = run_generate_storyboard_adapter(runtime, &request, timeout_ms).await;
     let status = envelope
         .get("status")
         .and_then(|s| s.as_str())

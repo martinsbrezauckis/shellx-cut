@@ -2336,6 +2336,7 @@ async fn media_index_status_reports_persisted_visual_search_indexes() {
                     v: vec![0.0, 1.0],
                 },
             ],
+            native_runtime: None,
         },
     )
     .expect("seed visual-search index");

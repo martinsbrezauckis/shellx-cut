@@ -201,7 +201,7 @@ async fn direct_motion_materialization_pins_a(
     let a_ops = dispatch(&state, "project.ops", json!({}), test_actor()).await;
     let a_ops = a_ops
         .ok
-        .then(|| a_ops.result)
+        .then_some(a_ops.result)
         .flatten()
         .and_then(|result| result["ops"].as_array().cloned())
         .expect("A operation log must be readable");

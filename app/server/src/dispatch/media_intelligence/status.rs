@@ -48,6 +48,23 @@ pub(super) fn status_value(
     selected: Option<&[String]>,
 ) -> Result<Value, CutError> {
     let current = current_bindings(snapshot, selected)?;
+    status_value_from_bindings(snapshot, current)
+}
+
+#[cfg(test)]
+pub(super) fn status_value_for_visual_runtime(
+    snapshot: &ProjectSnapshot,
+    selected: Option<&[String]>,
+    visual_runtime: &crate::vissearch::VisualCacheRuntime,
+) -> Result<Value, CutError> {
+    let current = current_bindings_for_visual_runtime(snapshot, selected, visual_runtime)?;
+    status_value_from_bindings(snapshot, current)
+}
+
+fn status_value_from_bindings(
+    snapshot: &ProjectSnapshot,
+    current: Vec<SourceBinding>,
+) -> Result<Value, CutError> {
     let index = load_index(&snapshot.dir);
     let indexed_by_asset: BTreeMap<&str, &SourceBinding> = index
         .as_ref()

@@ -3,6 +3,7 @@
 //! Kept as a child module of `dispatch` so this extraction is behavior-preserving:
 //! handlers still share the same commit, draft, library, event, and error helpers.
 
+use super::adapter_python::{apply_adapter_python_policy, resolve_adapter_runtime, AdapterRuntime};
 use super::*;
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 
@@ -1361,7 +1362,13 @@ async fn draft_transcript_context(
 /// envelope (mirrors run_judge_adapter; stdin PIPED for the request). A missing
 /// adapter / spawn failure / timeout / unparseable output all become an honest
 /// envelope (status not_run | error) — never a fabricated draft.
-async fn run_draft_adapter(adapter: Option<&Path>, context: &Value) -> Value {
+async fn run_draft_adapter(runtime: AdapterRuntime, context: &Value) -> Value {
+    let AdapterRuntime {
+        python,
+        script: adapter,
+        native_context,
+    } = runtime;
+    let adapter = adapter.as_deref();
     let Some(adapter) = adapter else {
         return json!({
             "status": "not_run",
@@ -1369,7 +1376,7 @@ async fn run_draft_adapter(adapter: Option<&Path>, context: &Value) -> Value {
             "draft": Value::Null,
         });
     };
-    let Some(python) = configured_adapter_python() else {
+    let Some(python) = python else {
         return json!({
             "status": "not_run",
             "reason": format!("no adapter Python configured (set {ENV_ADAPTER_PYTHON} or install the ShellX Cut perception runtime) - honest not_run, no drafting backend"),
@@ -1379,6 +1386,7 @@ async fn run_draft_adapter(adapter: Option<&Path>, context: &Value) -> Value {
 
     let input = context.to_string();
     let mut cmd = tokio::process::Command::new(python);
+    apply_adapter_python_policy(&mut cmd, native_context);
     cmd.arg(adapter).arg("draft");
     let control = ProcessControl::for_operation(std::time::Duration::from_secs(DRAFT_TIMEOUT_S));
     let out = match run_owned(&mut cmd, Some(input.as_bytes()), &control).await {
@@ -1485,8 +1493,8 @@ pub(super) async fn comment_draft(
     };
 
     // Spawn the drafting agent (read-guard released — the CLI call is slow).
-    let adapter = find_draft_adapter();
-    let envelope = run_draft_adapter(adapter.as_deref(), &context).await;
+    let runtime = resolve_adapter_runtime("comment-draft-adapter.py", find_draft_adapter)?;
+    let envelope = run_draft_adapter(runtime, &context).await;
     let status = envelope
         .get("status")
         .and_then(|s| s.as_str())

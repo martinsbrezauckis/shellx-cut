@@ -72,6 +72,8 @@ import unicodedata
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from native_runtime_models import NativeRuntimeModelError, context_requested, parakeet_directory
+
 # on a cold install ffmpeg/ffprobe are NOT on
 # PATH — they live in the app's bundled/app-data tools dir. The Rust sidecar
 # orchestrator forwards that dir as SHELLX_CUT_FFMPEG_DIR; prepend it to PATH
@@ -615,7 +617,14 @@ def _words_via_parakeet(media_path: str, asset_id: str, model_override: str | No
     _emit_progress(0.05, "transcribe:loading-model")
     log(f"words: parakeet onnx-asr model={model_id} provider="
         f"{'cpu(macos)' if sys.platform == 'darwin' else 'auto'}")
-    model = onnx_asr.load_model(model_id, **load_kwargs).with_timestamps()
+    local_model = parakeet_directory(model_id)
+    if local_model is not None:
+        # A generic type has no remote repository fallback in onnx-asr 0.11.0.
+        # The existing directory selects its offline local resolver. Runtime
+        # preparation binds every file, including the ONNX external data.
+        model = onnx_asr.load_model("nemo-conformer-tdt", path=local_model, **load_kwargs).with_timestamps()
+    else:
+        model = onnx_asr.load_model(model_id, **load_kwargs).with_timestamps()
 
     # Decode to the same mono 16 kHz the rest of the sidecar uses, then read it
     # as a float32 array so chunking is in-memory (one ffmpeg call, not N).
@@ -685,6 +694,14 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
     fallback chain instead of returning empty words."""
     selected = (os.environ.get("SHELLX_CUT_STT_MODEL") or "").strip()
     lang_hint = (os.environ.get("SHELLX_CUT_STT_LANG") or "").strip().lower() or None
+    if context_requested():
+        # An admitted runtime must not silently substitute another engine or
+        # download its model. Keep the ordinary installed-app ladder below.
+        if not selected and lang_hint in PARAKEET_WEAK_LANGS:
+            raise NativeRuntimeModelError("the preferred Canary/MMS_FA language route needs a prepared local consumer")
+        if selected and selected not in {"nemo-parakeet-tdt-0.6b-v2", "nemo-parakeet-tdt-0.6b-v3"}:
+            raise NativeRuntimeModelError(f"STT model has no prepared local consumer: {selected}")
+        return _words_via_parakeet(media_path, asset_id, model_override=selected or STT_MODEL_DEFAULT)
     force_whisper = False
     explicit_whisper = False
     canary_failed = False

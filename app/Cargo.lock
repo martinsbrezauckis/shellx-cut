@@ -796,11 +796,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cut-native-runtime-context"
+version = "0.6.114"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "cut-perception"
 version = "0.6.114"
 dependencies = [
  "cut-core",
  "cut-media",
+ "cut-native-runtime-context",
  "serde",
  "serde_json",
  "tempfile",
@@ -2859,6 +2870,7 @@ dependencies = [
  "cut-core",
  "cut-export",
  "cut-media",
+ "cut-native-runtime-context",
  "cut-perception",
  "embed-resource",
  "fs2",

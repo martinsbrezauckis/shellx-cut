@@ -94,6 +94,29 @@ export function manualPublicationBrowserBinding(environment = process.env) {
   }
 }
 
+/**
+ * The producer and every consumer of its receipt use this one normalization
+ * boundary. A passing receipt must contain each real native Manual action and
+ * its exact visible outcome; a row-shaped placeholder is not evidence.
+ */
+export function validateManualPublicationBrowserRows(rows) {
+  if (!Array.isArray(rows) || rows.length !== ACTION_IDS.length) {
+    throw new Error('Manual browser receipt must contain both delegated action rows')
+  }
+  const normalizedRows = rows.map((row) => {
+    exactKeys(row, `Manual browser row ${row?.id || 'unknown'}`, ['id', 'interaction', 'outcome', 'visible'])
+    if (!ACTION_IDS.includes(row.id) || row.interaction !== 'native') {
+      throw new Error('Manual browser receipt action row is invalid')
+    }
+    const visible = row.id === 'manual-search' ? visibleSearch(row.visible) : visibleFeature(row.visible)
+    return { id: row.id, interaction: 'native', outcome: descriptive(row.outcome, `Manual browser row ${row.id} outcome`), visible }
+  }).sort((left, right) => left.id.localeCompare(right.id))
+  if (normalizedRows.some((row, index) => row.id !== ACTION_IDS[index])) {
+    throw new Error('Manual browser receipt action rows must be unique and sorted')
+  }
+  return normalizedRows
+}
+
 export function buildManualPublicationBrowserReceipt({ binding, publicationManifest, publicationManifestBytes, rows, generatedAt = new Date().toISOString() }) {
   if (!binding) throw new Error('Manual browser receipt binding is required')
   const parsedPublicationManifest = parsePublicationManifestBytes(publicationManifestBytes)
@@ -115,16 +138,7 @@ export function buildManualPublicationBrowserReceipt({ binding, publicationManif
   if (publicationManifest.identity?.artifactClosureSha256 === undefined || !SHA256.test(publicationManifest.identity.artifactClosureSha256)) {
     throw new Error('Manual publication artifact closure hash is invalid')
   }
-  if (!Array.isArray(rows) || rows.length !== ACTION_IDS.length) throw new Error('Manual browser receipt must contain both delegated action rows')
-  const normalizedRows = rows.map((row) => {
-    exactKeys(row, `Manual browser row ${row?.id || 'unknown'}`, ['id', 'interaction', 'outcome', 'visible'])
-    if (!ACTION_IDS.includes(row.id) || row.interaction !== 'native') {
-      throw new Error('Manual browser receipt action row is invalid')
-    }
-    const visible = row.id === 'manual-search' ? visibleSearch(row.visible) : visibleFeature(row.visible)
-    return { id: row.id, interaction: 'native', outcome: descriptive(row.outcome, `Manual browser row ${row.id} outcome`), visible }
-  }).sort((left, right) => left.id.localeCompare(right.id))
-  if (normalizedRows.some((row, index) => row.id !== ACTION_IDS[index])) throw new Error('Manual browser receipt action rows must be unique and sorted')
+  const normalizedRows = validateManualPublicationBrowserRows(rows)
   return {
     schema: MANUAL_PUBLICATION_BROWSER_RECEIPT_SCHEMA,
     status: 'pass',

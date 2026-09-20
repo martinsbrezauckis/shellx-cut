@@ -22,16 +22,17 @@
 //!   (Apache-2.0, 419 langs incl. Latvian, ~3B) is the universal-but-heavy
 //!   alternative, selectable via `model`. A perception-venv python sidecar
 //!   (`translate_runner.py`) mirrors the STT/matte/face runner pattern
-//!   (`TRANSLATE_RUNNER_PY` / `TRANSLATE_RUNNER_SCRIPT` overrides). The model
-//!   DOWNLOAD is gated behind first-use (the runner fetches on first run; an
-//!   offline+uncached run fails honestly) — NOT bundled. NLLB-200 is FORBIDDEN
+//!   (`TRANSLATE_RUNNER_PY` / `TRANSLATE_RUNNER_SCRIPT` overrides). On ordinary
+//!   installs the model DOWNLOAD is gated behind first-use. A supplied native
+//!   context instead selects a sealed local model group and forbids cache lookup
+//!   or download. NLLB-200 is FORBIDDEN
 //!   (CC-BY-NC, non-commercial).
 //! - Selection: `backend:"auto"` (default) = CLI if available, else local;
 //!   `"cli"` / `"local"` force one.
 
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 use cut_core::{error_codes, CutError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The agents the translator can route to, in preference order — the same CLIs
 /// the agent chat box uses (detection is shared with gen.rs / chat.rs).
@@ -43,6 +44,7 @@ pub const TRANSLATE_AGENTS: &[&str] = &["claude", "codex", "grok"];
 pub struct Runtime {
     pub python: PathBuf,
     pub script: PathBuf,
+    native_context: bool,
 }
 
 /// The one-shot translate script (ships beside `instruments.py` in the sidecar
@@ -58,17 +60,69 @@ pub fn runner_script() -> PathBuf {
 /// `Some` when the perception python + the translate script both exist (so the
 /// LOCAL backend is wired). `None` → the local backend reports a setup hint.
 /// The runner surfaces a crisp error if transformers/sentencepiece is missing
-/// or the model cannot be fetched offline. `TRANSLATE_RUNNER_PY` /
-/// `TRANSLATE_RUNNER_SCRIPT` override the python / script (dev → the venv +
-/// repo script).
-pub fn runtime() -> Option<Runtime> {
-    let python = std::env::var_os("TRANSLATE_RUNNER_PY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cut_perception::sidecar_paths().0);
-    let script = std::env::var_os("TRANSLATE_RUNNER_SCRIPT")
-        .map(PathBuf::from)
-        .unwrap_or_else(runner_script);
-    (python.exists() && script.exists()).then_some(Runtime { python, script })
+/// or the selected model cannot load. A supplied native context is
+/// authoritative and ignores `TRANSLATE_RUNNER_PY` / `TRANSLATE_RUNNER_SCRIPT`.
+/// Ordinary runs retain those development overrides.
+pub fn runtime() -> Result<Option<Runtime>, CutError> {
+    let sidecar = cut_perception::sidecar_runtime()?;
+    runtime_from_parts(
+        sidecar.python,
+        sidecar.script,
+        sidecar.native_context.is_some(),
+        std::env::var_os("TRANSLATE_RUNNER_PY").map(PathBuf::from),
+        std::env::var_os("TRANSLATE_RUNNER_SCRIPT").map(PathBuf::from),
+    )
+}
+
+fn runtime_from_parts(
+    sidecar_python: PathBuf,
+    sidecar_script: PathBuf,
+    native_context: bool,
+    override_python: Option<PathBuf>,
+    override_script: Option<PathBuf>,
+) -> Result<Option<Runtime>, CutError> {
+    let (python, script) = if native_context {
+        let script = sidecar_script
+            .parent()
+            .map(|directory| directory.join("translate_runner.py"))
+            .unwrap_or_else(|| PathBuf::from("translate_runner.py"));
+        (sidecar_python, script)
+    } else {
+        (
+            override_python.unwrap_or(sidecar_python),
+            override_script.unwrap_or_else(runner_script),
+        )
+    };
+    if native_context {
+        native_regular_file(&python, "admitted Python")?;
+        native_regular_file(&script, "bundled translate_runner.py")?;
+        return Ok(Some(Runtime {
+            python,
+            script,
+            native_context,
+        }));
+    }
+    Ok((python.exists() && script.exists()).then_some(Runtime {
+        python,
+        script,
+        native_context,
+    }))
+}
+
+/// Native bundles name a regular payload file. A directory or symlink cannot
+/// stand in for the application-owned runner selected beside instruments.py.
+fn native_regular_file(path: &Path, resource: &str) -> Result<(), CutError> {
+    if std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    Err(CutError::new(
+        error_codes::SIDECAR,
+        format!("prepared native runtime requires regular {resource}"),
+        format!("the installed application payload is missing {resource}"),
+    ))
 }
 
 /// Which translation backend will run.
@@ -267,7 +321,7 @@ async fn run_translation_once(
 ) -> Result<TranslateOutcome, CutError> {
     let selected_context_agents = selected_context_cli_agents()?;
     let cli_agents = selected_context_agents.unwrap_or_else(available_cli_agents);
-    let runtime = runtime();
+    let runtime = runtime()?;
     let backend = select_backend(backend_req, !cli_agents.is_empty(), runtime.is_some())?;
 
     match backend {
@@ -338,49 +392,43 @@ async fn run_translation_once(
             let timeout = std::time::Duration::from_millis(
                 timeout_ms.unwrap_or(1_800_000).clamp(10_000, 3_600_000),
             );
-            let mut command = tokio::process::Command::new(&rt.python);
-            command
-                .arg(&rt.script)
-                .arg("--src")
-                .arg(src)
-                .arg("--tgt")
-                .arg(target_lang);
-            if let Some(m) = model.filter(|m| !m.is_empty()) {
-                command.arg("--model").arg(m);
-            }
-            command
-                .env("PYTHONIOENCODING", "utf-8")
-                .env("PYTHONUTF8", "1");
+            let mut command = local_translation_command(&rt, src, target_lang, model);
             let stdin_payload = serde_json::json!({ "segments": segments }).to_string();
             let control = ProcessControl::for_operation(timeout);
-            let out =
-                match run_owned(&mut command, Some(stdin_payload.as_bytes()), &control).await {
-                    Ok(output) => output,
-                    Err(error) => match error.termination() {
-                        Some(ProcessTermination::DeadlineExceeded) => return Err(CutError::new(
+            let out = match run_owned(&mut command, Some(stdin_payload.as_bytes()), &control).await
+            {
+                Ok(output) => output,
+                Err(error) => match error.termination() {
+                    Some(ProcessTermination::DeadlineExceeded) => {
+                        return Err(CutError::new(
                             error_codes::SIDECAR,
                             format!(
                                 "local translation timed out after {}ms",
                                 timeout.as_millis()
                             ),
-                            "the first run downloads the model; raise timeout_ms or pre-fetch it",
-                        )),
-                        Some(ProcessTermination::Cancelled(reason)) => {
-                            return Err(CutError::new(
-                                "job_cancelled",
-                                format!("local translation cancelled ({})", reason.label()),
-                                "the owning background job stopped this external worker",
-                            ))
-                        }
-                        None => {
-                            return Err(CutError::new(
-                                error_codes::IO,
-                                format!("the local translate runner errored: {error}"),
-                                "local MT failed",
-                            ))
-                        }
-                    },
-                };
+                            if rt.native_context {
+                                "the prepared local model did not complete; native runs never download or fall back to a provider"
+                            } else {
+                                "the first run downloads the model; raise timeout_ms or pre-fetch it"
+                            },
+                        ))
+                    }
+                    Some(ProcessTermination::Cancelled(reason)) => {
+                        return Err(CutError::new(
+                            "job_cancelled",
+                            format!("local translation cancelled ({})", reason.label()),
+                            "the owning background job stopped this external worker",
+                        ))
+                    }
+                    None => {
+                        return Err(CutError::new(
+                            error_codes::IO,
+                            format!("the local translate runner errored: {error}"),
+                            "local MT failed",
+                        ))
+                    }
+                },
+            };
             if out.diagnostics_truncated() {
                 tracing::warn!(
                     "local translation runner diagnostics exceeded the retained output cap"
@@ -391,9 +439,13 @@ async fn run_translation_once(
                 return Err(CutError::new(
                     error_codes::SIDECAR,
                     format!("local translation failed: {}", stderr.trim()),
-                    "the local MT model could not be loaded/run (offline + uncached, or an unsupported pair)",
+                    "the local MT model could not be loaded or run",
                 )
-                .with_suggested_action("install transformers+sentencepiece in the perception venv and allow the first-use model download, or use the CLI backend"));
+                .with_suggested_action(if rt.native_context {
+                    "repair the prepared local model group or its admitted runtime; native runs do not download or fall back to a provider"
+                } else {
+                    "install transformers+sentencepiece in the perception venv and allow the first-use model download, or use the CLI backend"
+                }));
             }
             let stdout = String::from_utf8_lossy(&out.stdout);
             let parsed = parse_runner_json(&stdout).ok_or_else(|| {
@@ -428,6 +480,38 @@ async fn run_translation_once(
             })
         }
     }
+}
+
+/// Build the exact local sidecar command. The caller owns its bounded process
+/// lifetime, while this helper keeps the native command policy testable.
+fn local_translation_command(
+    runtime: &Runtime,
+    source_language: &str,
+    target_language: &str,
+    model: Option<&str>,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(&runtime.python);
+    command
+        .args(cut_perception::sidecar::python_command_args(
+            runtime.native_context,
+        ))
+        .arg(&runtime.script)
+        .arg("--src")
+        .arg(source_language)
+        .arg("--tgt")
+        .arg(target_language)
+        .env(cut_perception::sidecar::PYTHONDONTWRITEBYTECODE_ENV, "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
+    if let Some(model) = model.filter(|model| !model.is_empty()) {
+        command.arg("--model").arg(model);
+    }
+    if runtime.native_context {
+        command
+            .env("HF_HUB_OFFLINE", "1")
+            .env("TRANSFORMERS_OFFLINE", "1");
+    }
+    command
 }
 
 async fn run_translation_cli_agent(
@@ -987,6 +1071,146 @@ mod tests {
         );
         assert!(select_backend(Some("local"), true, false).is_err());
         assert!(select_backend(Some("nope"), true, true).is_err());
+    }
+
+    #[test]
+    fn prepared_runtime_ignores_translate_overrides_and_requires_bundled_runner() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("bundled");
+        let native = temp.path().join("native");
+        let override_dir = temp.path().join("overrides");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::create_dir_all(&override_dir).unwrap();
+        let instruments = bundled.join("instruments.py");
+        let bundled_runner = bundled.join("translate_runner.py");
+        let pinned_python = native.join("python");
+        let override_python = override_dir.join("python");
+        let override_runner = override_dir.join("translate_runner.py");
+        for file in [
+            &instruments,
+            &bundled_runner,
+            &pinned_python,
+            &override_python,
+            &override_runner,
+        ] {
+            std::fs::write(file, b"fixture").unwrap();
+        }
+
+        let prepared = runtime_from_parts(
+            pinned_python.clone(),
+            instruments.clone(),
+            true,
+            Some(override_python.clone()),
+            Some(override_runner.clone()),
+        )
+        .unwrap()
+        .expect("bundled native runtime");
+        assert_eq!(prepared.python, pinned_python);
+        assert_eq!(prepared.script, bundled_runner);
+        assert!(prepared.native_context);
+
+        let ordinary = runtime_from_parts(
+            native.join("unused-python"),
+            instruments,
+            false,
+            Some(override_python.clone()),
+            Some(override_runner.clone()),
+        )
+        .unwrap()
+        .expect("ordinary override runtime");
+        assert_eq!(ordinary.python, override_python);
+        assert_eq!(ordinary.script, override_runner);
+        assert!(!ordinary.native_context);
+
+        std::fs::remove_file(&bundled_runner).unwrap();
+        let missing = runtime_from_parts(
+            pinned_python.clone(),
+            bundled.join("instruments.py"),
+            true,
+            Some(override_python),
+            Some(override_runner),
+        )
+        .expect_err("missing bundled runner must reject the supplied native runtime");
+        assert_eq!(missing.code, error_codes::SIDECAR);
+        assert!(
+            missing
+                .message
+                .contains("regular bundled translate_runner.py"),
+            "missing native resource must be typed: {missing:?}"
+        );
+
+        std::fs::create_dir(&bundled_runner).unwrap();
+        let directory = runtime_from_parts(
+            pinned_python,
+            bundled.join("instruments.py"),
+            true,
+            None,
+            None,
+        )
+        .expect_err("a bundled runner directory cannot substitute for the file");
+        assert_eq!(directory.code, error_codes::SIDECAR);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_runtime_refuses_symlinked_bundled_runner() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.py");
+        let link = temp.path().join("translate_runner.py");
+        std::fs::write(&target, b"fixture").unwrap();
+        symlink(&target, &link).unwrap();
+        let error = native_regular_file(&link, "bundled translate_runner.py")
+            .expect_err("native bundles may not route the runner through a link");
+        assert_eq!(error.code, error_codes::SIDECAR);
+    }
+
+    #[test]
+    fn prepared_runtime_command_uses_isolated_python_and_offline_model_policy() {
+        let runtime = Runtime {
+            python: PathBuf::from("/prepared/python"),
+            script: PathBuf::from("/bundle/translate_runner.py"),
+            native_context: true,
+        };
+        let command =
+            local_translation_command(&runtime, "en", "es", Some("jbochi/madlad400-3b-mt"));
+        assert_eq!(
+            command
+                .as_std()
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "-E",
+                "-s",
+                "-B",
+                "/bundle/translate_runner.py",
+                "--src",
+                "en",
+                "--tgt",
+                "es",
+                "--model",
+                "jbochi/madlad400-3b-mt",
+            ]
+        );
+        for (name, expected) in [
+            ("PYTHONDONTWRITEBYTECODE", "1"),
+            ("HF_HUB_OFFLINE", "1"),
+            ("TRANSFORMERS_OFFLINE", "1"),
+        ] {
+            assert_eq!(
+                command
+                    .as_std()
+                    .get_envs()
+                    .find(|(key, _)| *key == name)
+                    .and_then(|(_, value)| value)
+                    .and_then(|value| value.to_str()),
+                Some(expected),
+                "missing native command policy {name}"
+            );
+        }
     }
 
     #[test]

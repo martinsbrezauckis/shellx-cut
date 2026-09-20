@@ -25,6 +25,13 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+
+from native_runtime_models import (
+    SIGLIP_MODEL_ID,
+    NativeRuntimeModelError,
+    siglip_directory,
+)
 
 # Cold Windows installs keep ffmpeg/ffprobe in the app tools dir, not PATH.
 # cutd forwards that directory as SHELLX_CUT_FFMPEG_DIR; mirror instruments.py.
@@ -41,6 +48,21 @@ FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
 
 def log(msg: str) -> None:
     print(f"[siglip_index] {msg}", file=sys.stderr, flush=True)
+
+
+def resolve_model_source(requested: str, model_id: str) -> tuple[str, dict, str]:
+    """Keep ordinary HF selection, but make a supplied context fully offline.
+
+    The Rust consumer supplies the exact admitted directory and stable model ID.
+    A native invocation cannot replace either with a host cache, an alternate
+    path, or a provider/download route.
+    """
+    prepared = siglip_directory()
+    if prepared is None:
+        return requested, {}, requested.split("/")[-1]
+    if Path(requested) != prepared or model_id != SIGLIP_MODEL_ID:
+        raise NativeRuntimeModelError("prepared SigLIP invocation does not match the admitted model")
+    return str(prepared), {"local_files_only": True}, SIGLIP_MODEL_ID
 
 
 def ffprobe_dims(path: str) -> tuple[int, int]:
@@ -96,6 +118,7 @@ def main() -> int:
     ap.add_argument("inp", nargs="?", default="")
     ap.add_argument("out", nargs="?", default="")
     ap.add_argument("--model", required=True, help="SigLIP2 model path or HF id")
+    ap.add_argument("--model-id", default="", help=argparse.SUPPRESS)
     ap.add_argument("--fps", type=float, default=1.0)
     ap.add_argument("--asset", default="")
     ap.add_argument("--size", type=int, default=224, help="fixed encoder input size")
@@ -104,15 +127,17 @@ def main() -> int:
                          "tower and print {\"v\":[...]} to stdout (no indexing).")
     args = ap.parse_args()
 
+    source, source_options, index_model = resolve_model_source(args.model, args.model_id)
+
     # transformers SiglipModel handles preprocessing + the image/text towers. (An
     # ONNX path is the deployment optimization; this is the faithful reference.)
     import torch  # noqa: PLC0415
     from transformers import AutoModel, AutoProcessor  # noqa: PLC0415
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    log(f"loading {args.model} on {device}")
-    model = AutoModel.from_pretrained(args.model).to(device).eval()
-    processor = AutoProcessor.from_pretrained(args.model)
+    log(f"loading {index_model} on {device}")
+    model = AutoModel.from_pretrained(source, **source_options).to(device).eval()
+    processor = AutoProcessor.from_pretrained(source, **source_options)
 
     # TEXT-QUERY mode (media.search): embed the query → stdout, then exit. The
     # vector is L2-normalized to match the indexed (also-normalized) frames.
@@ -143,7 +168,7 @@ def main() -> int:
 
     index = {
         "schema": "shellx-cut/vissearch/1",
-        "model": args.model.split("/")[-1],
+        "model": index_model,
         "dim": dim,
         "asset": args.asset,
         "frames": frames,

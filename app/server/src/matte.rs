@@ -21,7 +21,17 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "matte_native_runtime.rs"]
+pub(crate) mod native_runtime;
+#[path = "matte_premium_runtime.rs"]
+pub(crate) mod premium_runtime;
+#[path = "matte_prepared.rs"]
+pub(crate) mod prepared;
+
 use cut_core::{error_codes, ClipMatte, CutError, MatteModel, MatteQuality, MatteSeed};
+use native_runtime::{
+    prepared_matte_runtime, PreparedMatteBinding, PreparedMatteRuntime, RVM_MODEL_SHA256,
+};
 use serde::{Deserialize, Serialize};
 
 /// The matte quality receipt (computed by the sidecar from the alpha
@@ -56,6 +66,10 @@ pub struct MatteStats {
     /// True when this came from the content-addressed cache (no re-bake).
     #[serde(default)]
     pub cached: bool,
+    /// Present only when this alpha was baked through the admitted prepared
+    /// matte runtime. An ordinary cache receipt cannot satisfy a prepared-context bake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) native_runtime: Option<PreparedMatteBinding>,
 }
 
 /// The matting sidecar endpoint (loopback). Override with `CUT_MATTE_ENDPOINT`.
@@ -81,16 +95,22 @@ pub fn ensure_baked(
     asset_hash: &str,
     m: &ClipMatte,
 ) -> Result<MatteStats, CutError> {
+    let prepared_runtime = prepared_matte_runtime(&m.model)?;
+    let expected_runtime = prepared_runtime.as_ref().map(PreparedMatteRuntime::binding);
     let dir = project_dir.join("cache").join("matte");
     let alpha = dir.join(m.cache_filename(asset_hash));
     let stats_path = alpha.with_extension("json");
 
-    // Cache hit: alpha + its receipt both present → no network.
+    // A prepared cache must name the exact runner receipt, inventory and model
+    // group. This prevents an ordinary or older prepared bake from being
+    // accepted as proof for the current immutable runtime.
     if alpha.exists() && stats_path.exists() {
         if let Ok(txt) = std::fs::read_to_string(&stats_path) {
             if let Ok(mut s) = serde_json::from_str::<MatteStats>(&txt) {
-                s.cached = true;
-                return Ok(s);
+                if cache_matches_prepared_runtime(&s, expected_runtime.as_ref()) {
+                    s.cached = true;
+                    return Ok(s);
+                }
             }
         }
     }
@@ -100,18 +120,40 @@ pub fn ensure_baked(
     // Transport, by model:
     //  - `matanyone` (PREMIUM, opt-in): the local torch runtime; the bake first
     //    seeds a first-frame subject mask via RVM (zero-click) then propagates it
-    //    with MatAnyone2. Requires both the premium runtime AND the RVM runtime.
+    //    with MatAnyone2. A prepared context binds that entire runtime/model group.
     //  - `rvm` (DEFAULT): prefer the LOCAL onnxruntime runner (shippable, cutd-
     //    managed, invisible) when installed; else the HTTP sidecar
     //    (CUT_MATTE_ENDPOINT — dev / a remote GPU box). The doctor detects + reports
     //    each runtime (the ffmpeg pattern: autodetect → setup_matte fetch / browse).
-    let mut stats = match m.model {
-        MatteModel::Matanyone => bake_matanyone(&dir, asset_path, asset_hash, &alpha, m)?,
-        MatteModel::Rvm => match runtime() {
-            Some(rt) => bake_local(&rt, asset_path, &alpha, m)?,
+    let mut stats = match (m.model, prepared_runtime) {
+        (MatteModel::Matanyone, Some(PreparedMatteRuntime::Matanyone(runtime))) => {
+            prepared::bake_matanyone(&dir, asset_path, asset_hash, &alpha, m, &runtime)?
+        }
+        (MatteModel::Matanyone, None) => bake_matanyone(&dir, asset_path, asset_hash, &alpha, m)?,
+        (MatteModel::Rvm, Some(PreparedMatteRuntime::Rvm(runtime))) => bake_local(
+            &runtime.python,
+            &runtime.script,
+            &runtime.model,
+            asset_path,
+            &alpha,
+            m,
+            true,
+        )?,
+        (MatteModel::Rvm, None) => match runtime() {
+            Some(rt) => bake_local(
+                &rt.python, &rt.script, &rt.model, asset_path, &alpha, m, false,
+            )?,
             None => bake_http(asset_path, &alpha, m)?,
         },
+        // The resolver selects exactly the requested model before returning.
+        _ => {
+            return Err(io_err(
+                "select prepared matte runtime",
+                "model selection mismatch",
+            ))
+        }
     };
+    stats.native_runtime = expected_runtime;
 
     // Persist the receipt next to the alpha so a cache hit can return it.
     let _ = std::fs::write(
@@ -127,17 +169,18 @@ pub fn ensure_baked(
 /// `alpha_out` and prints ONE JSON stats line on stdout. No network, no second
 /// window — one app.
 fn bake_local(
-    rt: &MatteRuntime,
+    python: &Path,
+    script: &Path,
+    model: &Path,
     in_path: &Path,
     alpha_out: &Path,
     m: &ClipMatte,
+    native_context: bool,
 ) -> Result<MatteStats, CutError> {
-    let mut cmd = std::process::Command::new(&rt.python);
-    cmd.arg(&rt.script)
-        .arg(in_path)
-        .arg(alpha_out)
-        .arg("--model")
-        .arg(&rt.model);
+    let mut cmd = matte_runner_command(python, script, native_context);
+    cmd.arg(in_path).arg(alpha_out);
+    // Keep the model after paths to retain the runner's published CLI grammar.
+    cmd.arg("--model").arg(model);
     if matches!(m.quality, MatteQuality::Fast) {
         cmd.arg("--downsample").arg("0.25");
     }
@@ -175,6 +218,46 @@ fn bake_local(
             "the runner must print one JSON stats line on stdout",
         )
     })
+}
+
+pub(crate) fn matte_runner_command(
+    python: &Path,
+    script: &Path,
+    native_context: bool,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(python);
+    cut_perception::apply_python_command_policy(&mut command, native_context);
+    if native_context {
+        // The prepared binding supplies the executable, runners, and model group.
+        // Remove legacy per-user switches and hub locations so the Python runner
+        // cannot inherit a mutable model/provider route while the context is active.
+        for variable in [
+            "MATTE_RUNNER_PY",
+            "MATTE_RUNNER_SCRIPT",
+            "MATTE_MODEL",
+            "MATTE_PROVIDERS",
+            "MATANYONE_PY",
+            "MATANYONE_RUNNER",
+            "MATANYONE_MODEL",
+            "CUT_MATTE_ENDPOINT",
+            "HF_HOME",
+            "HUGGINGFACE_HUB_CACHE",
+        ] {
+            command.env_remove(variable);
+        }
+    }
+    command.arg(script);
+    command
+}
+
+pub(crate) fn cache_matches_prepared_runtime(
+    stats: &MatteStats,
+    expected: Option<&PreparedMatteBinding>,
+) -> bool {
+    match expected {
+        Some(expected) => stats.native_runtime.as_ref() == Some(expected),
+        None => true,
+    }
 }
 
 /// Bake via the HTTP sidecar (`matte_service.py` at `CUT_MATTE_ENDPOINT`) — the
@@ -243,7 +326,6 @@ fn bake_http(asset_path: &Path, alpha: &Path, m: &ClipMatte) -> Result<MatteStat
 /// 14 MB, opset 12). We ship integration; the USER fetches the model on consent.
 const RVM_URL: &str =
     "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx";
-const RVM_SHA256: &str = "88d4531297118f595bf2fd60f6f566aec2e559393802d1f436c380f0cbbd2828";
 
 /// The resolved local matte runtime (the one-shot CLI): a python carrying
 /// onnxruntime, the runner script (ships beside the perception payload), and the
@@ -335,7 +417,7 @@ pub fn install_model(progress: &dyn Fn(f32, &str)) -> Result<PathBuf, CutError> 
     let dest = dir.join("rvm.onnx");
     if dest.exists() {
         if let Ok(bytes) = std::fs::read(&dest) {
-            if hex_sha256(&bytes) == RVM_SHA256 {
+            if hex_sha256(&bytes) == RVM_MODEL_SHA256 {
                 progress(1.0, "model already installed");
                 return Ok(dest);
             }
@@ -354,7 +436,7 @@ pub fn install_model(progress: &dyn Fn(f32, &str)) -> Result<PathBuf, CutError> 
     std::io::Read::read_to_end(&mut resp.into_body().into_reader(), &mut bytes)
         .map_err(|e| io_err("read model", e))?;
     let got = hex_sha256(&bytes);
-    if got != RVM_SHA256 {
+    if got != RVM_MODEL_SHA256 {
         return Err(CutError::new(
             error_codes::IO,
             format!("model checksum mismatch (got {got})"),

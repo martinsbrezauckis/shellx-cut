@@ -1,3 +1,4 @@
+use super::adapter_python::{apply_adapter_python_policy, resolve_adapter_runtime, AdapterRuntime};
 use super::*;
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 
@@ -808,7 +809,7 @@ struct JudgeRun {
 /// captured into failure diagnostics because a CLI error envelope may be on
 /// stdout rather than stderr.
 async fn run_judge_adapter(
-    adapter: Option<&Path>,
+    runtime: AdapterRuntime,
     render: &Path,
     perception: Option<&Path>,
     intent: &str,
@@ -818,9 +819,15 @@ async fn run_judge_adapter(
         &std::collections::BTreeMap<String, crate::provider_runtime::ProviderChildLaunch>,
     >,
 ) -> JudgeRun {
-    // Adapter path is resolved at VERB time (find_judge_adapter) and passed
-    // in — env/config must be read where the verb runs, not inside the
-    // detached job task (deterministic, and the test seam stays race-free).
+    // The adapter runtime is resolved at VERB time and passed in — env/config
+    // must not be read inside the detached job task. A supplied native runtime
+    // has already rejected script/Python overrides and cwd discovery.
+    let AdapterRuntime {
+        python,
+        script: adapter,
+        native_context,
+    } = runtime;
+    let adapter = adapter.as_deref();
     let Some(adapter) = adapter else {
         return JudgeRun {
             envelope: synth_judge_envelope(
@@ -851,7 +858,7 @@ async fn run_judge_adapter(
     // The adapter imports stdlib only, but on clean macOS a bare python spawn
     // opens Apple's Command Line Tools installer prompt. Use an explicit or
     // managed runtime there; Linux/Windows may still use PATH Python.
-    let Some(python) = configured_adapter_python() else {
+    let Some(python) = python else {
         return JudgeRun {
             envelope: synth_judge_envelope(
                 "not_run",
@@ -864,6 +871,7 @@ async fn run_judge_adapter(
         };
     };
     let mut cmd = tokio::process::Command::new(python);
+    apply_adapter_python_policy(&mut cmd, native_context);
     cmd.arg(adapter)
         .arg("review")
         .arg("--provider") // judge backend: auto|claude|codex|antigravity|grok
@@ -1138,9 +1146,11 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
             bundle_dir,
         )
     };
-    // Resolve the adapter NOW (env override / repo discovery) — the job task
-    // must not read process env after the verb returned (test-seam race).
-    let adapter = find_judge_adapter();
+    // Resolve the adapter runtime NOW. In prepared mode this binds the
+    // admitted interpreter plus the bundled ladder script; normal runs retain
+    // the established override and discovery route. The job task must not read
+    // adapter environment after the verb returned.
+    let runtime = resolve_adapter_runtime("judge/adapters/ladder_judge.py", find_judge_adapter)?;
 
     let job = state.jobs.create("judge");
     let job_id = job.job_id.clone();
@@ -1155,7 +1165,7 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
             Some("judge: subscription-CLI review (frames + instrument facts)".into()),
         );
         let run = run_judge_adapter(
-            adapter.as_deref(),
+            runtime,
             &render_abs,
             perception_arg.as_deref(),
             &intent,

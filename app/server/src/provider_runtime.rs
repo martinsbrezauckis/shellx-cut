@@ -584,7 +584,7 @@ pub(crate) fn test_fixture_root() -> PathBuf {
 
 #[cfg(test)]
 thread_local! {
-    static TEST_PROVIDER_CONTEXT: RefCell<Option<OsString>> = RefCell::new(None);
+    static TEST_PROVIDER_CONTEXT: RefCell<Option<OsString>> = const { RefCell::new(None) };
 }
 
 /// Override Runner context only for the current source-test thread.
@@ -735,13 +735,10 @@ mod tests {
             launch.environment.get("HOME").map(String::as_str),
             document["effectiveEnvironment"]["HOME"].as_str()
         );
-        assert_eq!(
-            launch
-                .environment
-                .keys()
-                .all(|key| ALLOWED_ENVIRONMENT_KEYS.contains(&key.as_str())),
-            true
-        );
+        assert!(launch
+            .environment
+            .keys()
+            .all(|key| ALLOWED_ENVIRONMENT_KEYS.contains(&key.as_str())));
 
         let mut without_entrypoint = document;
         without_entrypoint["admission"]["enrollment"]["entrypoint"] = Value::Null;

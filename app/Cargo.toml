@@ -8,6 +8,7 @@ resolver = "2"
 members = [
     "core",
     "media",
+    "native-runtime-context",
     "perception",
     "server",
     "export",

@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 pub struct Runtime {
     pub python: PathBuf,
     pub script: PathBuf,
+    native_context: bool,
 }
 
 /// The one-shot OCR script (ships beside `instruments.py` in the sidecar payload).
@@ -45,16 +46,56 @@ pub fn runner_script() -> PathBuf {
 }
 
 /// `Some` when the perception python + the OCR script exist. `None` → `ocr_auto`
-/// returns a setup hint. The runner itself surfaces a crisp error if rapidocr is
-/// not installed in the venv.
-pub fn runtime() -> Option<Runtime> {
-    let python = std::env::var_os("OCR_RUNNER_PY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cut_perception::sidecar_paths().0);
-    let script = std::env::var_os("OCR_RUNNER_SCRIPT")
-        .map(PathBuf::from)
-        .unwrap_or_else(runner_script);
-    (python.exists() && script.exists()).then_some(Runtime { python, script })
+/// returns a setup hint. A supplied native context is authoritative and selects
+/// only the bundled script beside its admitted `instruments.py`.
+pub fn runtime() -> Result<Option<Runtime>, CutError> {
+    let sidecar = cut_perception::sidecar_runtime()?;
+    Ok(runtime_from_sidecar(
+        sidecar,
+        std::env::var_os("OCR_RUNNER_PY").map(PathBuf::from),
+        std::env::var_os("OCR_RUNNER_SCRIPT").map(PathBuf::from),
+    ))
+}
+
+fn runtime_from_sidecar(
+    sidecar: cut_perception::SidecarRuntime,
+    override_python: Option<PathBuf>,
+    override_script: Option<PathBuf>,
+) -> Option<Runtime> {
+    let native_context = sidecar.native_context.is_some();
+    runtime_from_parts(
+        sidecar.python,
+        sidecar.script,
+        native_context,
+        override_python,
+        override_script,
+    )
+}
+
+fn runtime_from_parts(
+    sidecar_python: PathBuf,
+    sidecar_script: PathBuf,
+    native_context: bool,
+    override_python: Option<PathBuf>,
+    override_script: Option<PathBuf>,
+) -> Option<Runtime> {
+    let (python, script) = if native_context {
+        let script = sidecar_script
+            .parent()
+            .map(|dir| dir.join("ocr_runner.py"))
+            .unwrap_or_else(|| PathBuf::from("ocr_runner.py"));
+        (sidecar_python, script)
+    } else {
+        (
+            override_python.unwrap_or(sidecar_python),
+            override_script.unwrap_or_else(runner_script),
+        )
+    };
+    (python.exists() && script.exists()).then_some(Runtime {
+        python,
+        script,
+        native_context,
+    })
 }
 
 /// One OCR text box: the text + centre/size as FRACTIONS of the frame + confidence.
@@ -83,6 +124,7 @@ pub struct OcrResult {
 /// the matte / track runners). Parses the single JSON line.
 pub fn run_ocr(rt: &Runtime, video: &Path, at_ms: u64) -> Result<OcrResult, CutError> {
     let mut command = std::process::Command::new(&rt.python);
+    cut_perception::apply_python_command_policy(&mut command, rt.native_context);
     command
         .arg(&rt.script)
         .arg(video)
@@ -122,6 +164,56 @@ pub fn run_ocr(rt: &Runtime, video: &Path, at_ms: u64) -> Result<OcrResult, CutE
             "the runner must print one JSON line on stdout",
         )
     })
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn native_selection_uses_bundled_ocr_and_normal_selection_keeps_overrides() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("bundled");
+        std::fs::create_dir_all(&bundled).unwrap();
+        let python = temp.path().join("native-python");
+        let instruments = bundled.join("instruments.py");
+        let runner = bundled.join("ocr_runner.py");
+        let override_python = temp.path().join("override-python");
+        let override_script = temp.path().join("override-ocr.py");
+        for path in [
+            &python,
+            &instruments,
+            &runner,
+            &override_python,
+            &override_script,
+        ] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+
+        let native = runtime_from_parts(
+            python.clone(),
+            instruments.clone(),
+            true,
+            Some(override_python.clone()),
+            Some(override_script.clone()),
+        )
+        .unwrap();
+        assert_eq!(native.python, python);
+        assert_eq!(native.script, runner);
+        assert!(native.native_context);
+
+        let normal = runtime_from_parts(
+            temp.path().join("unused-python"),
+            instruments,
+            false,
+            Some(override_python.clone()),
+            Some(override_script.clone()),
+        )
+        .unwrap();
+        assert_eq!(normal.python, override_python);
+        assert_eq!(normal.script, override_script);
+        assert!(!normal.native_context);
+    }
 }
 
 /// The redaction region chosen from the matched PII boxes: the UNION rect (centre +

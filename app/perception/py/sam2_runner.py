@@ -15,18 +15,20 @@ a single person). Proven: a single click anywhere on the subject → clean full-
 mask.
 
 License: SAM2 is Apache-2.0 (commercial-OK) — unlike MatAnyone2's non-commercial
-weights. Model: facebook/sam2-hiera-base-plus (HF, ~80 MB), loaded at a pinned
-revision via from_pretrained with HF_HOME pointed at the matanyone appdata dir
-(offline after the one-time setup_matte pre-fetch).
+weights. Ordinary installs select the pinned snapshot locally; a prepared native
+runtime instead passes its context-verified checkpoint directly. Neither path
+uses SAM2's `from_pretrained` helper, which otherwise selects a default CUDA
+device and performs its own hub lookup.
 
 Contract:
   python sam2_runner.py <in_video> <out_mask.png> --frame N
         ( --point X,Y [--point X,Y ...] | --box X,Y,W,H )
-        [--hf-home DIR] [--hf-id ID] [--hf-revision REV] [--neg X,Y ...]
+        [--hf-home DIR] [--hf-id ID] [--hf-revision REV]
+        [--checkpoint FILE] [--neg X,Y ...]
   → writes a BINARY mask PNG (255=subject, the largest multimask) at SOURCE res;
     prints ONE JSON stats line {width,height,frame,coverage,score} to STDOUT.
 
-Dependencies: sam-2 (Apache-2.0), torch+torchvision (CUDA), numpy, Pillow,
+Dependencies: sam-2 (Apache-2.0), torch+torchvision, numpy, Pillow,
 ffmpeg/ffprobe on PATH. Primary caller: server/matte.rs (the matte seed for
 edit.matte{model:matanyone, seed}).
 """
@@ -87,6 +89,35 @@ def parse_xy(vals: list[str]) -> list[list[int]]:
     return pts
 
 
+SAM2_CONFIG = "configs/sam2/sam2_hiera_b+.yaml"
+
+
+def checkpoint_from_pinned_snapshot(hf_home: str | None, hf_id: str, revision: str) -> str:
+    """Resolve the ordinary setup_matte snapshot without contacting the hub."""
+    from huggingface_hub import hf_hub_download
+
+    # setup_matte sets HF_HOME, whose default hub cache is `<HF_HOME>/hub`.
+    # `cache_dir` itself is the hub cache, rather than HF_HOME, so preserve the
+    # pre-fetched ordinary-install location exactly.
+    cache_dir = str(Path(hf_home) / "hub") if hf_home else None
+    return hf_hub_download(
+        repo_id=hf_id,
+        filename="sam2_hiera_base_plus.pt",
+        revision=revision,
+        cache_dir=cache_dir,
+        local_files_only=True,
+    )
+
+
+def predictor_from_checkpoint(checkpoint: str, device: str):
+    """Build the selected SAM2 model with an explicit device and local weights."""
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+    model = build_sam2(SAM2_CONFIG, ckpt_path=checkpoint, device=device)
+    return SAM2ImagePredictor(model)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("in_video")
@@ -103,24 +134,32 @@ def main() -> int:
         default="98efa66555fceff5f74ad281fb8003536dcfb6ff",
         help="pinned HF model revision fetched by system.setup_matte",
     )
+    ap.add_argument(
+        "--checkpoint",
+        default=None,
+        help="context-verified local SAM2 checkpoint (prepared native runtime)",
+    )
     a = ap.parse_args()
     if not Path(a.in_video).is_file():
         print(f"sam2_runner: input not found: {a.in_video}", file=sys.stderr)
         return 2
-    if a.hf_home:
-        os.environ["HF_HOME"] = a.hf_home  # MUST precede the SAM2 import/load
     if not a.point and not a.box:
         print("sam2_runner: need --point X,Y or --box X,Y,W,H", file=sys.stderr)
         return 2
+    if a.checkpoint and not Path(a.checkpoint).is_file():
+        print(f"sam2_runner: checkpoint not found: {a.checkpoint}", file=sys.stderr)
+        return 2
 
     import torch
-    from sam2.sam2_image_predictor import SAM2ImagePredictor
 
     w, h, fps = ffprobe_whf(a.in_video)
     frame = a.frame if a.at_ms is None else int(round(a.at_ms / 1000.0 * fps))
     img = frame_rgb(a.in_video, frame, w, h)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    predictor = SAM2ImagePredictor.from_pretrained(a.hf_id, revision=a.hf_revision)
+    checkpoint = a.checkpoint or checkpoint_from_pinned_snapshot(
+        a.hf_home, a.hf_id, a.hf_revision
+    )
+    predictor = predictor_from_checkpoint(checkpoint, device)
 
     pos = parse_xy(a.point)
     neg = parse_xy(a.neg)

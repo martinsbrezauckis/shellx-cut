@@ -531,6 +531,47 @@ pub(super) async fn system_setup_matte(
     let model = a.model.unwrap_or_default();
     let browse = a.path.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
+    // A supplied prepared runtime owns the standard RVM path. It is already
+    // hash-verified by Cut, so setup must report readiness without writing into
+    // the immutable tree or consulting a mutable browse/app-data/download path.
+    if let Some(runtime) = crate::matte::native_runtime::prepared_rvm_runtime()? {
+        if matches!(model, cut_core::MatteModel::Matanyone) {
+            return Err(CutError::new(
+                error_codes::SIDECAR,
+                "prepared native runtime does not admit the MatAnyone2/SAM2 matte stack",
+                "use the standard RVM model supplied by the prepared runtime",
+            ));
+        }
+        if browse.is_some() {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "prepared native runtime fixes the RVM model identity",
+                "remove path; the prepared runtime does not accept a mutable matte model override",
+            ));
+        }
+        let report = state.doctor_rescan().await;
+        let ready = report
+            .cards
+            .iter()
+            .find(|card| card.id == "matte")
+            .map(|card| matches!(card.status, crate::doctor::CardStatus::Ok))
+            .unwrap_or(false);
+        return Ok(VerbResult::ok(json!({
+            "model": "rvm",
+            "source": "prepared-native-runtime",
+            "path": runtime.model.display().to_string(),
+            "matte_ready": ready,
+            "prepared_runtime": {
+                "contract": runtime.binding.contract,
+                "manifest_sha256": runtime.binding.manifest_sha256,
+                "receipt_sha256": runtime.binding.receipt_sha256,
+                "model_id": runtime.binding.model_id,
+                "model_sha256": runtime.binding.model_sha256,
+            },
+            "doctor": serde_json::to_value(report)?,
+        })));
+    }
+
     match model {
         // ---- the PREMIUM tier: MatAnyone2 (NVIDIA, non-commercial) -----------
         cut_core::MatteModel::Matanyone => {

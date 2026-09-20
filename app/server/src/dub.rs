@@ -50,6 +50,7 @@ pub fn secret() -> Option<String> {
 pub struct Runtime {
     pub python: PathBuf,
     pub script: PathBuf,
+    native_context: bool,
 }
 
 /// The one-shot dub script (ships beside `instruments.py` in the sidecar payload
@@ -63,17 +64,56 @@ pub fn runner_script() -> PathBuf {
 }
 
 /// `Some` when the python + the dub script both exist (so the synth bridge is
-/// wired). `DUB_RUNNER_PY` / `DUB_RUNNER_SCRIPT` override the python / script
-/// (dev → the venv + repo script). The python only needs the stdlib + ffmpeg on
-/// PATH (the runner is stdlib-only), so the perception sidecar python is reused.
-pub fn runtime() -> Option<Runtime> {
-    let python = std::env::var_os("DUB_RUNNER_PY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cut_perception::sidecar_paths().0);
-    let script = std::env::var_os("DUB_RUNNER_SCRIPT")
-        .map(PathBuf::from)
-        .unwrap_or_else(runner_script);
-    (python.exists() && script.exists()).then_some(Runtime { python, script })
+/// wired). A supplied native context is authoritative and uses the bundled runner
+/// beside its admitted `instruments.py`; normal runs retain `DUB_RUNNER_*` overrides.
+pub fn runtime() -> Result<Option<Runtime>, CutError> {
+    let sidecar = cut_perception::sidecar_runtime()?;
+    Ok(runtime_from_sidecar(
+        sidecar,
+        std::env::var_os("DUB_RUNNER_PY").map(PathBuf::from),
+        std::env::var_os("DUB_RUNNER_SCRIPT").map(PathBuf::from),
+    ))
+}
+
+fn runtime_from_sidecar(
+    sidecar: cut_perception::SidecarRuntime,
+    override_python: Option<PathBuf>,
+    override_script: Option<PathBuf>,
+) -> Option<Runtime> {
+    let native_context = sidecar.native_context.is_some();
+    runtime_from_parts(
+        sidecar.python,
+        sidecar.script,
+        native_context,
+        override_python,
+        override_script,
+    )
+}
+
+fn runtime_from_parts(
+    sidecar_python: PathBuf,
+    sidecar_script: PathBuf,
+    native_context: bool,
+    override_python: Option<PathBuf>,
+    override_script: Option<PathBuf>,
+) -> Option<Runtime> {
+    let (python, script) = if native_context {
+        let script = sidecar_script
+            .parent()
+            .map(|dir| dir.join("dub_runner.py"))
+            .unwrap_or_else(|| PathBuf::from("dub_runner.py"));
+        (sidecar_python, script)
+    } else {
+        (
+            override_python.unwrap_or(sidecar_python),
+            override_script.unwrap_or_else(runner_script),
+        )
+    };
+    (python.exists() && script.exists()).then_some(Runtime {
+        python,
+        script,
+        native_context,
+    })
 }
 
 /// audio.dub{asset, target_lang, voice?, source_lang?, backend?, model?,
@@ -159,7 +199,7 @@ pub(crate) async fn audio_dub(
     };
 
     // The synth bridge must be wired BEFORE we spend time translating.
-    let rt = runtime().ok_or_else(|| {
+    let rt = runtime()?.ok_or_else(|| {
         CutError::new(
             error_codes::SIDECAR,
             "the dubbing synth bridge is not available",
@@ -587,7 +627,11 @@ pub async fn synthesize_track(
 
     let mut command = tokio::process::Command::new(&rt.python);
     command
+        .args(cut_perception::sidecar::python_command_args(
+            rt.native_context,
+        ))
         .arg(&rt.script)
+        .env(cut_perception::sidecar::PYTHONDONTWRITEBYTECODE_ENV, "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1");
     let control = ProcessControl::for_operation(timeout);
@@ -651,6 +695,51 @@ pub async fn synthesize_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_selection_uses_bundled_dub_and_normal_selection_keeps_overrides() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("bundled");
+        std::fs::create_dir_all(&bundled).unwrap();
+        let python = temp.path().join("native-python");
+        let instruments = bundled.join("instruments.py");
+        let runner = bundled.join("dub_runner.py");
+        let override_python = temp.path().join("override-python");
+        let override_script = temp.path().join("override-dub.py");
+        for path in [
+            &python,
+            &instruments,
+            &runner,
+            &override_python,
+            &override_script,
+        ] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+
+        let native = runtime_from_parts(
+            python.clone(),
+            instruments.clone(),
+            true,
+            Some(override_python.clone()),
+            Some(override_script.clone()),
+        )
+        .unwrap();
+        assert_eq!(native.python, python);
+        assert_eq!(native.script, runner);
+        assert!(native.native_context);
+
+        let normal = runtime_from_parts(
+            temp.path().join("unused-python"),
+            instruments,
+            false,
+            Some(override_python.clone()),
+            Some(override_script.clone()),
+        )
+        .unwrap();
+        assert_eq!(normal.python, override_python);
+        assert_eq!(normal.script, override_script);
+        assert!(!normal.native_context);
+    }
 
     fn seg(i: usize, start: u64, slot: u64, text: &str) -> DubSegment {
         DubSegment {

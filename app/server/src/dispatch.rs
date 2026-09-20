@@ -43,10 +43,10 @@ use cut_core::{
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-mod adapter_python;
+pub(crate) mod adapter_python;
+pub(crate) use adapter_python::ENV_ADAPTER_PYTHON;
 #[cfg(test)]
 use adapter_python::{adapter_python_for_platform, find_python_on_path};
-pub(crate) use adapter_python::{configured_adapter_python, ENV_ADAPTER_PYTHON};
 
 /// Dispatch one verb. `actor` records who/which surface for the op-log.
 /// Returns the universal envelope; never panics on bad input.

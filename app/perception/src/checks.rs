@@ -2208,6 +2208,7 @@ mod tests {
             subject_track: None,
             speaker_turns: vec![],
             diarization: None,
+            runtime_context: None,
         }
     }
 

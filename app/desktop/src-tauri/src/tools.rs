@@ -21,6 +21,7 @@
 //   resolution fixed now + guided env fetch later).
 // ─────────────────────────────────────────────────────────────────────────────
 
+use cut_native_runtime_context::{RuntimeContext, CONTEXT_ENV};
 use std::path::{Path, PathBuf};
 
 /// Env var the engine's ffmpeg/ffprobe resolver reads (cut-media toolpath).
@@ -36,6 +37,82 @@ pub const ENV_SIDECAR_DIR: &str = "SHELLX_CUT_SIDECAR_DIR";
 /// installed ffmpeg (so GPU "just works" — no user step). The desktop shell always
 /// enables it; a user's explicit `SHELLX_CUT_FFMPEG` override still wins.
 pub const ENV_FFMPEG_AUTO: &str = "SHELLX_CUT_FFMPEG_AUTO";
+
+/// The desktop's independent observation of the Runner-provided runtime.
+/// The shell retains it with its normal tool resolution so it can refuse a
+/// present but malformed locator before spawning cutd.
+#[derive(Debug, Clone, Default)]
+pub enum NativeRuntimeResolution {
+    #[default]
+    Absent,
+    Accepted {
+        locator: PathBuf,
+        interpreter: PathBuf,
+    },
+    Rejected {
+        reason: String,
+    },
+}
+
+impl NativeRuntimeResolution {
+    pub fn locator(&self) -> Option<&Path> {
+        match self {
+            Self::Accepted { locator, .. } => Some(locator),
+            Self::Absent | Self::Rejected { .. } => None,
+        }
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            Self::Rejected { reason } => Some(reason),
+            Self::Absent | Self::Accepted { .. } => None,
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::Absent => serde_json::json!({"status":"absent"}),
+            Self::Accepted {
+                locator,
+                interpreter,
+            } => serde_json::json!({
+                "status":"accepted",
+                "locator": locator.display().to_string(),
+                "interpreter": interpreter.display().to_string(),
+            }),
+            Self::Rejected { reason } => serde_json::json!({"status":"rejected", "reason":reason}),
+        }
+    }
+}
+
+fn native_runtime_resolution() -> NativeRuntimeResolution {
+    let locator = std::env::var_os(CONTEXT_ENV).map(PathBuf::from);
+    match RuntimeContext::from_env() {
+        Ok(None) => NativeRuntimeResolution::Absent,
+        Ok(Some(context)) => match context
+            .verify_interpreter()
+            .and_then(|()| context.verify_imports())
+        {
+            Ok(()) => NativeRuntimeResolution::Accepted {
+                locator: locator.expect("context locator exists when context was loaded"),
+                interpreter: context.interpreter.path,
+            },
+            Err(reason) => NativeRuntimeResolution::Rejected { reason },
+        },
+        Err(reason) => NativeRuntimeResolution::Rejected { reason },
+    }
+}
+
+fn selected_sidecar_dir(
+    native_runtime: &NativeRuntimeResolution,
+    bundled: Option<PathBuf>,
+    legacy: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match native_runtime {
+        NativeRuntimeResolution::Accepted { .. } => bundled,
+        NativeRuntimeResolution::Absent | NativeRuntimeResolution::Rejected { .. } => legacy,
+    }
+}
 
 /// Platform exe name for a tool stem.
 fn exe_name(stem: &str) -> String {
@@ -253,6 +330,8 @@ pub struct ToolResolution {
     pub sidecar_dir: Option<PathBuf>,
     /// True when a python venv for the sidecar exists (bundled or app-data).
     pub sidecar_ok: bool,
+    /// Typed native runtime state independently resolved by the desktop.
+    pub native_runtime: NativeRuntimeResolution,
 }
 
 impl ToolResolution {
@@ -320,14 +399,19 @@ impl ToolResolution {
         // ── sidecar: beside-exe `perception/` → app-data perception/ ─────────
         // "ok" requires a venv python, since instruments.py alone can't run the
         // whisper/torch stack. The script itself ships beside the exe.
-        let mut sc_dirs = vec![exe_dir.join("perception")];
+        let mut bundled_sc_dirs = vec![exe_dir.join("perception")];
         if resource_dir != exe_dir {
-            sc_dirs.push(resource_dir.join("perception"));
+            bundled_sc_dirs.push(resource_dir.join("perception"));
         }
+        let bundled_sidecar_dir = bundled_sc_dirs
+            .iter()
+            .find(|dir| dir.join("instruments.py").is_file())
+            .cloned();
+        let mut sc_dirs = bundled_sc_dirs;
         if let Some(s) = appdata_sidecar_dir() {
             sc_dirs.push(s);
         }
-        let sidecar_dir = sc_dirs
+        let legacy_sidecar_dir = sc_dirs
             .iter()
             .find(|d| d.join("instruments.py").is_file())
             .cloned();
@@ -340,7 +424,15 @@ impl ToolResolution {
                 )
             })
             .cloned();
-        let sidecar_ok = sidecar_dir.is_some() && sidecar_python_dir.is_some();
+        let native_runtime = native_runtime_resolution();
+        let sidecar_dir =
+            selected_sidecar_dir(&native_runtime, bundled_sidecar_dir, legacy_sidecar_dir);
+        let sidecar_ok = match &native_runtime {
+            NativeRuntimeResolution::Accepted { .. } => sidecar_dir.is_some(),
+            NativeRuntimeResolution::Absent | NativeRuntimeResolution::Rejected { .. } => {
+                sidecar_dir.is_some() && sidecar_python_dir.is_some()
+            }
+        };
 
         Self {
             ffmpeg_dir,
@@ -348,6 +440,7 @@ impl ToolResolution {
             ffmpeg_source,
             sidecar_dir,
             sidecar_ok,
+            native_runtime,
         }
     }
 
@@ -369,6 +462,7 @@ impl ToolResolution {
                 "dir": self.sidecar_dir.as_ref().map(|p| p.display().to_string()),
                 "source": if self.sidecar_ok { "bundled-or-appdata" } else { "missing" },
             },
+            "nativeRuntime": self.native_runtime.to_json(),
             "hint": self.bootstrap_hint(),
         })
     }
@@ -410,6 +504,9 @@ impl ToolResolution {
                     .to_string(),
             );
         }
+        if let Some(reason) = self.native_runtime.error() {
+            lines.push(format!("Prepared native runtime rejected: {reason}"));
+        }
         lines.join("\n\n")
     }
 }
@@ -417,8 +514,87 @@ impl ToolResolution {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn sha256(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn native_runtime_resolution_accepts_pins_and_rejects_a_present_bad_locator() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture(&[CONTEXT_ENV]);
+        let temp = std::env::temp_dir().join(format!(
+            "scut-native-runtime-resolution-{}",
+            std::process::id()
+        ));
+        let root = temp.join("runtime");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("python"), b"python").unwrap();
+        std::fs::write(root.join("onnx_asr.py"), b"import").unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let interpreter = root.join("python");
+        let import = root.join("onnx_asr.py");
+        let context = serde_json::json!({
+            "schema": cut_native_runtime_context::CONTEXT_CONTRACT,
+            "root": root,
+            "manifestSha256": "a".repeat(64),
+            "receiptSha256": "b".repeat(64),
+            "interpreter": {
+                "path": interpreter,
+                "sha256": sha256(b"python"),
+                "version": "3.12.13",
+            },
+            "imports": [{
+                "module": "onnx_asr",
+                "path": import,
+                "sha256": sha256(b"import"),
+            }],
+            "models": [],
+            "files": 2,
+            "totalBytes": 12,
+        });
+        let locator = temp.join("native-runtime-context.json");
+
+        std::env::remove_var(CONTEXT_ENV);
+        assert!(matches!(
+            native_runtime_resolution(),
+            NativeRuntimeResolution::Absent
+        ));
+
+        std::fs::write(&locator, serde_json::to_vec(&context).unwrap()).unwrap();
+        std::env::set_var(CONTEXT_ENV, &locator);
+        assert!(matches!(
+            native_runtime_resolution(),
+            NativeRuntimeResolution::Accepted { .. }
+        ));
+
+        std::fs::write(&locator, b"not json").unwrap();
+        assert!(matches!(
+            native_runtime_resolution(),
+            NativeRuntimeResolution::Rejected { .. }
+        ));
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn accepted_native_runtime_does_not_select_the_legacy_appdata_sidecar() {
+        let native = NativeRuntimeResolution::Accepted {
+            locator: PathBuf::from("/runtime/context.json"),
+            interpreter: PathBuf::from("/runtime/python"),
+        };
+        let bundled = Some(PathBuf::from("/app/resources/perception"));
+        let appdata = Some(PathBuf::from("/user/perception"));
+        assert_eq!(
+            selected_sidecar_dir(&native, bundled.clone(), appdata),
+            bundled
+        );
+        assert!(
+            selected_sidecar_dir(&native, None, Some(PathBuf::from("/user/perception"))).is_none()
+        );
+    }
 
     #[test]
     fn exe_name_platform() {

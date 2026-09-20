@@ -276,6 +276,26 @@ pub struct SubjectTrack {
     pub frames: Vec<SubjectFrame>,
 }
 
+/// Prepared-runtime identity retained with a perception report. A cache hit
+/// under a supplied Runner context must prove the same immutable runtime, and
+/// words additionally bind the selected product STT route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeContextProvenance {
+    pub contract: String,
+    pub manifest_sha256: String,
+    pub receipt_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stt: Option<SttRuntimeBinding>,
+}
+
+/// Model and language setting that a prepared words pass gave to Python.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SttRuntimeBinding {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
 /// The full instrument run for one media file —
 /// `receipts/<asset>.perception.json` (perception contract output).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -331,11 +351,33 @@ pub struct PerceptionReport {
     /// `media.diarize` ran. Additive — pre-diarization reports load unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diarization: Option<Diarization>,
+    /// Present only when this report ran under a supplied prepared runtime. Legacy
+    /// reports remain compatible and cannot satisfy a prepared-context cache hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_context: Option<RuntimeContextProvenance>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SubjectTrack;
+    use super::{PerceptionReport, SubjectTrack};
+
+    #[test]
+    fn legacy_report_defaults_prepared_runtime_provenance() {
+        let report: PerceptionReport = serde_json::from_value(serde_json::json!({
+            "schema": "shellx-cut/perception/1",
+            "asset_hash": "sha256:test",
+            "source_path": "/x.mp4"
+        }))
+        .expect("legacy perception reports must remain readable");
+        assert_eq!(report.runtime_context, None);
+        assert!(
+            serde_json::to_value(report)
+                .unwrap()
+                .get("runtime_context")
+                .is_none(),
+            "absent provenance must not rewrite normal receipts"
+        );
+    }
 
     #[test]
     fn subject_track_preserves_fps_fallback_provenance() {

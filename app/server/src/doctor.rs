@@ -34,6 +34,7 @@
 //! serde_json, chrono. Primary callers: dispatch.rs (system.doctor), main.rs
 //! (startup scan), fetch.rs (re-scan after install).
 
+use crate::dispatch::adapter_python::{resolve_adapter_runtime, AdapterRuntime};
 use cut_core::CutError;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -648,7 +649,7 @@ fn ffmpeg_missing_hint(stem: &str) -> String {
 
 const DEFAULT_STT_MODEL: &str = "nemo-parakeet-tdt-0.6b-v3";
 
-fn persisted_stt_preference(
+fn stt_preference(
     stt_model: Option<String>,
     stt_language: Option<String>,
 ) -> (String, bool, Option<String>) {
@@ -658,6 +659,19 @@ fn persisted_stt_preference(
         stt_model_default,
         stt_language,
     )
+}
+
+fn doctor_stt_preference(
+    native_context: bool,
+    persisted: (Option<String>, Option<String>),
+    effective: cut_perception::EffectiveSttSelection,
+) -> (String, bool, Option<String>) {
+    let (model, language) = if native_context {
+        (effective.model, effective.language)
+    } else {
+        persisted
+    };
+    stt_preference(model, language)
 }
 
 fn missing_perception_card(
@@ -702,18 +716,62 @@ fn missing_perception_card(
 ///   filler/silence-by-words, captions) is available.
 fn perception_card() -> Card {
     let stt_setting = cut_perception::read_stt_setting();
-    let (stt_model, stt_model_default, stt_language) =
-        persisted_stt_preference(stt_setting.0, stt_setting.1);
-    let Some(python) = cut_perception::configured_sidecar_python() else {
-        return missing_perception_card(
-            json!(null),
-            Some(false),
-            "Captions and transcription are not installed yet. Core editing and render still work. Choose Install captions when you need transcripts, captions, or word-based cleanup.",
-            stt_model,
-            stt_model_default,
-            stt_language,
-        );
+    let native_context = match cut_perception::native_runtime_context() {
+        Ok(context) => context,
+        Err(error) => {
+            let (stt_model, stt_model_default, stt_language) =
+                stt_preference(stt_setting.0, stt_setting.1);
+            let hint = format!("Prepared native runtime was rejected: {}", error.message);
+            return missing_perception_card(
+                json!(null),
+                None,
+                &hint,
+                stt_model,
+                stt_model_default,
+                stt_language,
+            );
+        }
     };
+    let (stt_model, stt_model_default, stt_language) = doctor_stt_preference(
+        native_context.is_some(),
+        stt_setting,
+        native_context
+            .is_some()
+            .then(cut_perception::effective_stt_selection)
+            .unwrap_or_default(),
+    );
+    let python = match cut_perception::configured_sidecar_python() {
+        Ok(Some(python)) => python,
+        Ok(None) => {
+            return missing_perception_card(
+                json!(null),
+                Some(false),
+                "Captions and transcription are not installed yet. Core editing and render still work. Choose Install captions when you need transcripts, captions, or word-based cleanup.",
+                stt_model,
+                stt_model_default,
+                stt_language,
+            );
+        }
+        Err(error) => {
+            let hint = format!("Prepared native runtime was rejected: {}", error.message);
+            return missing_perception_card(
+                json!(null),
+                None,
+                &hint,
+                stt_model,
+                stt_model_default,
+                stt_language,
+            );
+        }
+    };
+    let prepared_stt = native_context.as_ref().map(|context| {
+        cut_perception::prepared_stt_model(
+            context,
+            &stt_model,
+            stt_model_default,
+            stt_language.as_deref(),
+        )
+    });
     let py_str = python.to_string_lossy().into_owned();
     // Is the interpreter itself runnable? (bounded)
     let py_version = version_line(python.as_os_str(), &["--version"], Duration::from_secs(8));
@@ -740,56 +798,128 @@ fn perception_card() -> Card {
     let onnx_ok = import_check(&python, "onnx_asr", Duration::from_secs(15));
     // Only fall back to the whisperX probe when onnx-asr is absent (saves a slow
     // import on the common, healthy path).
-    let whisper_ok = if onnx_ok {
+    let whisper_ok = if onnx_ok || native_context.is_some() {
         false
     } else {
         import_check(&python, "whisperx", Duration::from_secs(15))
     };
-    let stt_ready = onnx_ok || whisper_ok;
-    let stt_engine = if onnx_ok {
-        "onnx-asr (Parakeet-TDT)"
-    } else if whisper_ok {
-        "whisperX (fallback)"
-    } else {
-        "none"
-    };
-    let (tier, status, hint) = if stt_ready {
-        ("full", CardStatus::Ok, None)
-    } else {
-        (
-            "instruments-capable",
-            CardStatus::Degraded,
-            Some(
+    let readiness = perception_stt_readiness(prepared_stt.as_ref(), onnx_ok, whisper_ok);
+    Card {
+        id: "perception".into(),
+        kind: "perception".into(),
+        status: readiness.status,
+        source: None,
+        version: py_version.clone(),
+        hint: readiness.hint,
+        details: json!({
+            "tier": readiness.tier,
+            "python": py_str,
+            "stt_ready": readiness.ready,
+            "stt_engine": readiness.engine,
+            "onnx_asr_importable": onnx_ok,
+            "whisperx_importable": whisper_ok,
+            "stt_model": stt_model,
+            "stt_model_default": stt_model_default,
+            "stt_language": stt_language,
+            "prepared_stt": prepared_stt_details(prepared_stt.as_ref()),
+            "unlocks": {
+                "instruments-capable": "silence/scene/loudness instruments (ffmpeg-based)",
+                "full": "word-level transcription (Parakeet/Canary/Whisper), filler/silence-by-words, captions",
+                "prepared-stt-structurally-admitted": "selected Parakeet assets are structurally admitted; Doctor did not load the model or run inference"
+            }
+        }),
+    }
+}
+
+struct PerceptionSttReadiness {
+    ready: bool,
+    engine: &'static str,
+    tier: &'static str,
+    status: CardStatus,
+    hint: Option<String>,
+}
+
+fn perception_stt_readiness(
+    prepared_stt: Option<&Result<cut_perception::PreparedSttModel, String>>,
+    onnx_ok: bool,
+    whisper_ok: bool,
+) -> PerceptionSttReadiness {
+    match prepared_stt {
+        Some(Err(reason)) => PerceptionSttReadiness {
+            ready: false,
+            engine: "none",
+            tier: "prepared-stt-unavailable",
+            status: CardStatus::Degraded,
+            hint: Some(format!(
+                "Prepared native runtime cannot supply the selected local STT model: {reason}. \
+                 Word-level transcription and captions are unavailable."
+            )),
+        },
+        Some(Ok(_)) if onnx_ok => PerceptionSttReadiness {
+            ready: true,
+            engine: "onnx-asr (Parakeet-TDT)",
+            tier: "prepared-stt-structurally-admitted",
+            status: CardStatus::Ok,
+            hint: None,
+        },
+        Some(Ok(_)) => PerceptionSttReadiness {
+            ready: false,
+            engine: "none",
+            tier: "prepared-stt-structurally-admitted",
+            status: CardStatus::Degraded,
+            hint: Some(
+                "The selected prepared STT model is structurally admitted, but onnx-asr \
+                 does not import. Word-level transcription and captions are unavailable."
+                    .to_string(),
+            ),
+        },
+        None if onnx_ok => PerceptionSttReadiness {
+            ready: true,
+            engine: "onnx-asr (Parakeet-TDT)",
+            tier: "full",
+            status: CardStatus::Ok,
+            hint: None,
+        },
+        None if whisper_ok => PerceptionSttReadiness {
+            ready: true,
+            engine: "whisperX (fallback)",
+            tier: "full",
+            status: CardStatus::Ok,
+            hint: None,
+        },
+        None => PerceptionSttReadiness {
+            ready: false,
+            engine: "none",
+            tier: "instruments-capable",
+            status: CardStatus::Degraded,
+            hint: Some(
                 "Python is present but no speech-to-text engine imports (onnx-asr / \
                  whisperX) — the ffmpeg-based instruments work, but word-level \
                  transcription / captions do not. Choose Install captions to \
                  install the speech-to-text tools."
                     .to_string(),
             ),
-        )
-    };
-    Card {
-        id: "perception".into(),
-        kind: "perception".into(),
-        status,
-        source: None,
-        version: py_version.clone(),
-        hint,
-        details: json!({
-            "tier": tier,
-            "python": py_str,
-            "stt_ready": stt_ready,
-            "stt_engine": stt_engine,
-            "onnx_asr_importable": onnx_ok,
-            "whisperx_importable": whisper_ok,
-            "stt_model": stt_model,
-            "stt_model_default": stt_model_default,
-            "stt_language": stt_language,
-            "unlocks": {
-                "instruments-capable": "silence/scene/loudness instruments (ffmpeg-based)",
-                "full": "word-level transcription (Parakeet/Canary/Whisper), filler/silence-by-words, captions"
-            }
+        },
+    }
+}
+
+fn prepared_stt_details(
+    prepared_stt: Option<&Result<cut_perception::PreparedSttModel, String>>,
+) -> Value {
+    match prepared_stt {
+        Some(Ok(admission)) => json!({
+            "status": "structurally-admitted",
+            "selected_model": admission.model,
+            "model_loaded": false,
+            "inference_not_run": true,
         }),
+        Some(Err(reason)) => json!({
+            "status": "unavailable",
+            "reason": reason,
+            "model_loaded": false,
+            "inference_not_run": true,
+        }),
+        None => Value::Null,
     }
 }
 
@@ -803,6 +933,10 @@ fn import_check(python: &Path, module: &str, timeout: Duration) -> bool {
         None => return false,
     };
     let mut command = Command::new(python);
+    let native_context = cut_perception::native_runtime_context()
+        .map(|context| context.is_some())
+        .unwrap_or(false);
+    cut_perception::apply_python_command_policy(&mut command, native_context);
     command.args(["-c", &snippet]);
     run_doctor_command(&mut command, timeout, "check Python import")
         .map(|output| output.status.success())
@@ -1183,7 +1317,7 @@ fn judge_card(
     } else if adapter.is_none() {
         Some(
             "The bundled render-review adapter is missing. Reinstall ShellX Cut, \
-                     or correct CUTD_JUDGE_ADAPTER if you set an override. Agent chat can \
+                     or, in an ordinary development run, correct CUTD_JUDGE_ADAPTER if you set an override. Prepared native context only accepts the bundled adapter. Agent chat can \
                      still use this CLI, but Get AI review cannot run yet."
                 .into(),
         )
@@ -1264,16 +1398,29 @@ fn judge_card(
 }
 
 fn judge_cards() -> Vec<Card> {
-    let adapter = crate::dispatch::configured_judge_adapter();
-    let adapter_python = crate::dispatch::configured_adapter_python().filter(|python| {
-        version_line(python.as_os_str(), &["--version"], Duration::from_secs(8)).is_some()
-    });
+    let (adapter, adapter_python, native_context) = match resolve_adapter_runtime(
+        "judge/adapters/ladder_judge.py",
+        crate::dispatch::configured_judge_adapter,
+    ) {
+        Ok(AdapterRuntime {
+            script,
+            python,
+            native_context,
+        }) => (
+            script,
+            python.filter(|python| {
+                version_line(python.as_os_str(), &["--version"], Duration::from_secs(8)).is_some()
+            }),
+            native_context,
+        ),
+        Err(_) => (None, None, false),
+    };
     // The adapter owns provider-specific eligibility; invoke its cheap detect
     // protocol only once, before the per-card display/chat probes fan out.
     let judge_cli_path = crate::dispatch::configured_judge_cli_path();
     let admissions = match (adapter.as_deref(), adapter_python.as_deref()) {
         (Some(adapter), Some(python)) => {
-            judge_admission::probe(adapter, python, judge_cli_path.as_deref())
+            judge_admission::probe(adapter, python, judge_cli_path.as_deref(), native_context)
         }
         _ => judge_admission::JudgeAdmissions::Unverified,
     };
@@ -1625,7 +1772,21 @@ fn human_bytes(n: u64) -> String {
 /// rvm `.onnx` the user already has. OPTIONAL — core editing + render work
 /// without it.
 fn matte_card() -> Card {
-    let perc_py = cut_perception::configured_sidecar_python();
+    let native_context = match cut_perception::native_runtime_context() {
+        Ok(context) => context,
+        Err(error) => return prepared_matte_card_failure(&error.message),
+    };
+    if native_context.is_some() {
+        return match crate::matte::native_runtime::prepared_rvm_runtime() {
+            Ok(Some(runtime)) => prepared_matte_card(&runtime),
+            Ok(None) => prepared_matte_card_failure(
+                "the prepared native-runtime context disappeared while Doctor was checking RVM",
+            ),
+            Err(error) => prepared_matte_card_failure(&error.message),
+        };
+    }
+
+    let perc_py = cut_perception::configured_sidecar_python().ok().flatten();
     let ort_ok = perc_py
         .as_deref()
         .is_some_and(|p| import_check(p, "onnxruntime", Duration::from_secs(10)));
@@ -1676,6 +1837,65 @@ fn matte_card() -> Card {
             "pillow": pillow_ok,
             "model_present": model_present,
             "model_path": model.map(|p| p.display().to_string()),
+            "unlocks": "AI background removal/replace (edit.matte) — no green screen",
+        }),
+    }
+}
+
+fn prepared_matte_card(runtime: &crate::matte::native_runtime::PreparedRvmRuntime) -> Card {
+    let ort_ok = import_check(&runtime.python, "onnxruntime", Duration::from_secs(10));
+    let numpy_ok = import_check(&runtime.python, "numpy", Duration::from_secs(10));
+    let pillow_ok = import_check(&runtime.python, "PIL", Duration::from_secs(10));
+    let ready = ort_ok && numpy_ok && pillow_ok;
+    Card {
+        id: "matte".into(),
+        kind: "matte".into(),
+        status: if ready {
+            CardStatus::Ok
+        } else {
+            CardStatus::Degraded
+        },
+        source: None,
+        version: None,
+        hint: (!ready).then(|| {
+            "The admitted RVM model is present, but its immutable Python runtime cannot import all background-removal dependencies. Repair the prepared runtime inventory."
+                .to_string()
+        }),
+        details: json!({
+            "onnxruntime": ort_ok,
+            "numpy": numpy_ok,
+            "pillow": pillow_ok,
+            "model_present": true,
+            "model_path": runtime.model.display().to_string(),
+            "prepared_runtime": {
+                "contract": runtime.binding.contract,
+                "manifest_sha256": runtime.binding.manifest_sha256,
+                "receipt_sha256": runtime.binding.receipt_sha256,
+                "model_id": runtime.binding.model_id,
+                "model_sha256": runtime.binding.model_sha256,
+            },
+            "unlocks": "AI background removal/replace (edit.matte) — no green screen",
+        }),
+    }
+}
+
+fn prepared_matte_card_failure(reason: &str) -> Card {
+    Card {
+        id: "matte".into(),
+        kind: "matte".into(),
+        status: CardStatus::Degraded,
+        source: None,
+        version: None,
+        hint: Some(format!(
+            "Prepared native runtime cannot supply the pinned RVM model: {reason}. Doctor did not fall back to user settings, app-data, a download, or HTTP."
+        )),
+        details: json!({
+            "onnxruntime": false,
+            "numpy": false,
+            "pillow": false,
+            "model_present": false,
+            "model_path": Value::Null,
+            "prepared_runtime": { "rejected": true, "reason": reason },
             "unlocks": "AI background removal/replace (edit.matte) — no green screen",
         }),
     }
@@ -1875,17 +2095,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persisted_stt_preference_keeps_default_and_explicit_language() {
-        let (model, is_default, language) = persisted_stt_preference(None, None);
+    fn stt_preference_keeps_default_and_explicit_language() {
+        let (model, is_default, language) = stt_preference(None, None);
         assert_eq!(model, DEFAULT_STT_MODEL);
         assert!(is_default);
         assert_eq!(language, None);
 
         let (model, is_default, language) =
-            persisted_stt_preference(Some("nemo-canary-1b-v2".into()), Some("lv".into()));
+            stt_preference(Some("nemo-canary-1b-v2".into()), Some("lv".into()));
         assert_eq!(model, "nemo-canary-1b-v2");
         assert!(!is_default);
         assert_eq!(language.as_deref(), Some("lv"));
+    }
+
+    #[test]
+    fn native_stt_preference_uses_the_effective_child_selection() {
+        let persisted = (Some(DEFAULT_STT_MODEL.into()), Some("fr".into()));
+        let inherited = cut_perception::EffectiveSttSelection {
+            model: Some("nemo-canary-1b-v2".into()),
+            language: Some("lv".into()),
+        };
+        let (model, is_default, language) =
+            doctor_stt_preference(true, persisted.clone(), inherited.clone());
+        assert_eq!(model, "nemo-canary-1b-v2");
+        assert!(!is_default);
+        assert_eq!(language.as_deref(), Some("lv"));
+
+        let (model, is_default, language) = doctor_stt_preference(false, persisted, inherited);
+        assert_eq!(model, DEFAULT_STT_MODEL);
+        assert!(!is_default);
+        assert_eq!(language.as_deref(), Some("fr"));
+
+        let (model, is_default, language) = doctor_stt_preference(
+            true,
+            (None, None),
+            cut_perception::EffectiveSttSelection {
+                model: None,
+                language: Some("lv".into()),
+            },
+        );
+        assert_eq!(model, DEFAULT_STT_MODEL);
+        assert!(
+            is_default,
+            "weak language must retain the default-route signal"
+        );
+        assert_eq!(language.as_deref(), Some("lv"));
+    }
+
+    #[test]
+    fn prepared_stt_readiness_requires_admission_and_onnx_not_whisper_fallback() {
+        let admitted = Ok(cut_perception::PreparedSttModel {
+            model: DEFAULT_STT_MODEL.into(),
+        });
+        let ready = perception_stt_readiness(Some(&admitted), true, false);
+        assert!(ready.ready);
+        assert_eq!(ready.status, CardStatus::Ok);
+        assert_eq!(ready.tier, "prepared-stt-structurally-admitted");
+
+        let whisper_only = perception_stt_readiness(Some(&admitted), false, true);
+        assert!(!whisper_only.ready);
+        assert_eq!(whisper_only.status, CardStatus::Degraded);
+
+        let unavailable = Err("prepared STT model is incomplete".to_string());
+        let unavailable = perception_stt_readiness(Some(&unavailable), true, false);
+        assert!(!unavailable.ready);
+        assert_eq!(unavailable.tier, "prepared-stt-unavailable");
+    }
+
+    #[test]
+    fn prepared_stt_details_do_not_claim_model_load_or_inference() {
+        let admitted = Ok(cut_perception::PreparedSttModel {
+            model: DEFAULT_STT_MODEL.into(),
+        });
+        let details = prepared_stt_details(Some(&admitted));
+        assert_eq!(details["status"], "structurally-admitted");
+        assert_eq!(details["model_loaded"], false);
+        assert_eq!(details["inference_not_run"], true);
     }
 
     #[test]

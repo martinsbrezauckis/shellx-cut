@@ -85,7 +85,7 @@ pub(super) fn dub_card() -> Card {
         "audio.dub",
         "CUT_DUB_ENDPOINT",
         "OmniVoice TTS",
-        crate::dub::runtime().is_some(),
+        crate::dub::runtime().ok().flatten().is_some(),
     )
 }
 
@@ -99,6 +99,6 @@ pub(super) fn diarize_card() -> Card {
         "media.diarize",
         "CUT_DIARIZE_ENDPOINT",
         "Sortformer v2",
-        crate::diarize::runtime().is_some(),
+        crate::diarize::runtime().ok().flatten().is_some(),
     )
 }

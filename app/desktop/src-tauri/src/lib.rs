@@ -330,6 +330,7 @@ fn tools_doctor(state: tauri::State<'_, ToolResolutionState>) -> serde_json::Val
             "dir": r.sidecar_dir.as_ref().map(|p| p.display().to_string()),
             "source": if r.sidecar_ok { "bundled-or-appdata" } else { "missing" },
         },
+        "nativeRuntime": r.native_runtime.to_json(),
         "hint": r.bootstrap_hint(),
     })
 }
@@ -498,6 +499,11 @@ fn spawn_engine(
     ),
     String,
 > {
+    if let Some(reason) = tools.native_runtime.error() {
+        return Err(format!(
+            "engine unavailable: prepared native runtime rejected: {reason}"
+        ));
+    }
     let (addr, reuse) = pick_engine_addr()?;
     let url = format!("http://{addr}/");
     if reuse {
@@ -553,6 +559,11 @@ fn spawn_engine(
     }
     if let Some(sc) = &tools.sidecar_dir {
         cmd.env(tools::ENV_SIDECAR_DIR, sc);
+    }
+    if let Some(locator) = tools.native_runtime.locator() {
+        cmd.env(cut_native_runtime_context::CONTEXT_ENV, locator);
+    } else {
+        cmd.env_remove(cut_native_runtime_context::CONTEXT_ENV);
     }
     #[cfg(target_os = "linux")]
     if ui_present {

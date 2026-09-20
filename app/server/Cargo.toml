@@ -24,6 +24,7 @@ embed-resource = "3.0.11"
 cut-core = { path = "../core" }
 cut-media = { path = "../media" }
 cut-perception = { path = "../perception" }
+cut-native-runtime-context = { path = "../native-runtime-context" }
 # NLE interchange serializers (export.xml / export.srt verbs), structurally
 # checked against app/export/tests/fixtures/nle-xml and frame-quantized by
 # construction.

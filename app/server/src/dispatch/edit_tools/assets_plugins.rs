@@ -97,33 +97,29 @@ pub(in crate::dispatch) async fn media_search(
     // Resolve the query vector: a raw vector (advanced / no model needed) wins;
     // a text query needs the SigLIP2 text encoder (not available without the
     // indexer model) — fail with a clear, honest pointer instead of guessing.
-    let qvec: Vec<f32> = if let Some(v) = a.query_vector {
-        v
+    let (qvec, cache_runtime): (Vec<f32>, Option<crate::vissearch::Runtime>) = if let Some(v) =
+        a.query_vector
+    {
+        // A prepared context has to validate its selected model before an
+        // advanced caller can reuse a saved vector index.
+        (v, crate::vissearch::native_runtime()?)
     } else if let Some(text) = a.query.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         // Embed the TEXT query with the SigLIP2 text tower (the same encoder the
         // index used) via the indexer's --embed-text mode. Needs the perception
         // runtime; absent → an honest setup pointer (or pass query_vector).
-        let rt = crate::vissearch::runtime().ok_or_else(|| {
+        let rt = crate::vissearch::runtime()?.ok_or_else(|| {
             CutError::new(
                 error_codes::UNIMPLEMENTED,
                 "a TEXT query needs the SigLIP2 text encoder",
                 "set up perception (its venv carries the encoder), or pass `query_vector` for an already-embedded query",
             )
         })?;
-        let (py, script, model, q) = (
-            rt.python.clone(),
-            rt.script.clone(),
-            rt.model.clone(),
-            text.to_string(),
-        );
+        let (rt, q) = (rt, text.to_string());
+        let run_rt = rt.clone();
         let outp = tokio::task::spawn_blocking(move || {
-            let mut command = std::process::Command::new(&py);
-            command
-                .arg(&script)
-                .arg("--model")
-                .arg(&model)
-                .arg("--embed-text")
-                .arg(&q);
+            let mut command = std::process::Command::new(&run_rt.python);
+            run_rt.configure_command(&mut command);
+            command.arg("--embed-text").arg(&q);
             crate::dispatch::run_bounded_foreground_command(&mut command, "SigLIP2 text encoder")
         })
         .await
@@ -166,7 +162,7 @@ pub(in crate::dispatch) async fn media_search(
                 e.to_string(),
             )
         })?;
-        parsed
+        let vector = parsed
             .get("v")
             .and_then(|x| x.as_array())
             .map(|arr| {
@@ -181,7 +177,8 @@ pub(in crate::dispatch) async fn media_search(
                     "text encoder returned no vector",
                     "expected {\"v\":[...]}",
                 )
-            })?
+            })?;
+        (vector, Some(rt))
     } else {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
@@ -209,7 +206,9 @@ pub(in crate::dispatch) async fn media_search(
     let mut hits: Vec<Value> = Vec::new();
     let mut indexed_any = false;
     for aid in &targets {
-        let Some(index) = crate::vissearch::load_index(&proj_dir, aid) else {
+        let Some(index) =
+            crate::vissearch::load_index_for_runtime(&proj_dir, aid, cache_runtime.as_ref())
+        else {
             continue;
         };
         indexed_any = true;
@@ -273,9 +272,12 @@ pub(in crate::dispatch) async fn media_index_status(
         }
         None => all_assets,
     };
+    let prepared_runtime = crate::vissearch::native_runtime()?;
     let mut assets = Vec::new();
     for aid in targets {
-        let Some(index) = crate::vissearch::load_index(&proj_dir, &aid) else {
+        let Some(index) =
+            crate::vissearch::load_index_for_runtime(&proj_dir, &aid, prepared_runtime.as_ref())
+        else {
             continue;
         };
         assets.push(json!({
@@ -326,7 +328,7 @@ pub(in crate::dispatch) async fn media_index(
         })?;
         (store.dir.clone(), PathBuf::from(&asset.path))
     };
-    let rt = crate::vissearch::runtime().ok_or_else(|| {
+    let rt = crate::vissearch::runtime()?.ok_or_else(|| {
         CutError::new(
             error_codes::SIDECAR,
             "the visual-search indexer is not installed",
@@ -340,16 +342,14 @@ pub(in crate::dispatch) async fn media_index(
     }
     // One-shot indexer: python siglip_index.py <in> <out.json> --model M --fps F
     // --asset ID. Runs off the async runtime (frame extract + ONNX inference).
-    let (py, script, model) = (rt.python.clone(), rt.script.clone(), rt.model.clone());
     let (in_s, out_s, asset_id) = (src_path.clone(), out.clone(), a.asset.clone());
+    let run_rt = rt.clone();
     let status = tokio::task::spawn_blocking(move || {
-        let mut command = std::process::Command::new(&py);
+        let mut command = std::process::Command::new(&run_rt.python);
+        run_rt.configure_command(&mut command);
         command
-            .arg(&script)
             .arg(&in_s)
             .arg(&out_s)
-            .arg("--model")
-            .arg(&model)
             .arg("--fps")
             .arg(format!("{fps}"))
             .arg("--asset")
@@ -372,13 +372,29 @@ pub(in crate::dispatch) async fn media_index(
             format!("siglip_index.py exited with {}", status.status),
         ));
     }
-    let index = crate::vissearch::load_index(&proj_dir, &a.asset).ok_or_else(|| {
+    let mut index = crate::vissearch::load_index(&proj_dir, &a.asset).ok_or_else(|| {
         CutError::new(
             error_codes::SIDECAR,
             "the indexer did not write a valid index",
             "check the perception venv has onnxruntime + the SigLIP2 model",
         )
     })?;
+    if rt.is_native_context() {
+        rt.stamp_index(&mut index).map_err(|error| {
+            CutError::new(
+                error_codes::SIDECAR,
+                "native visual index provenance failed",
+                error,
+            )
+        })?;
+        crate::vissearch::save_index(&proj_dir, &index).map_err(|error| {
+            CutError::new(
+                error_codes::IO,
+                "persist native visual index provenance",
+                error.to_string(),
+            )
+        })?;
+    }
     Ok(VerbResult::ok(json!({
         "asset": a.asset,
         "indexed_frames": index.frames.len(),

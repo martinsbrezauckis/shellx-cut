@@ -124,6 +124,7 @@ pub(super) fn probe(
     adapter: &Path,
     python: &Path,
     judge_cli_path: Option<&OsStr>,
+    native_context: bool,
 ) -> JudgeAdmissions {
     let provider_launches_input =
         match crate::provider_runtime::provider_launches_from_process_environment() {
@@ -132,6 +133,7 @@ pub(super) fn probe(
             Err(_) => return JudgeAdmissions::Unverified,
         };
     let mut command = Command::new(python);
+    cut_perception::apply_python_command_policy(&mut command, native_context);
     command.arg(adapter).arg("detect");
     let output = if let Some(input) = provider_launches_input {
         command.arg("--provider-launches-stdin");

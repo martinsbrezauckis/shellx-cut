@@ -20,6 +20,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod runtime;
+#[cfg(test)]
+mod runtime_tests;
+pub use runtime::{native_runtime, runtime, NativeRuntimeProvenance, Runtime};
+pub(crate) use runtime::{visual_cache_runtime, VisualCacheRuntime};
+
 /// One frame's embedding at a timeline/source instant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameEmbedding {
@@ -44,6 +50,10 @@ pub struct EmbeddingIndex {
     pub asset: String,
     /// Per-frame embeddings, ascending by `ms` (the indexer guarantees order).
     pub frames: Vec<FrameEmbedding>,
+    /// Prepared runtime identity when the index was built through the admitted
+    /// native context. Existing installed indexes deliberately omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_runtime: Option<NativeRuntimeProvenance>,
 }
 
 fn default_schema() -> String {
@@ -191,61 +201,6 @@ pub fn search(
     Ok(hits)
 }
 
-// ---------------------------------------------------------------------------
-// Indexer runtime detection (the SigLIP2 image encoder — fetch-on-consent, the
-// matte pattern). The indexer (py/siglip_index.py) needs the perception python
-// + onnxruntime + a SigLIP2 ONNX model; it is OPTIONAL (core editing + search of
-// an already-built index work without re-indexing).
-// ---------------------------------------------------------------------------
-
-/// Resolved indexer runtime: the perception python + the one-shot script + the
-/// model id/path the encoder loads.
-#[derive(Debug, Clone)]
-pub struct Runtime {
-    pub python: PathBuf,
-    pub script: PathBuf,
-    /// SigLIP2 model — a HF id (transformers downloads + caches it, like onnx-asr
-    /// does for the STT model) or a local path.
-    pub model: String,
-}
-
-/// The SigLIP2 model id/path. Override with `SHELLX_CUT_VISSEARCH_MODEL`; the
-/// default is a fixed-resolution multilingual SigLIP 2 model suited to
-/// on-device use. The search engine remains encoder-agnostic.
-pub fn model_id() -> String {
-    std::env::var("SHELLX_CUT_VISSEARCH_MODEL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "google/siglip2-base-patch16-224".to_string())
-}
-
-/// The one-shot indexer / text-embed script (ships beside `instruments.py`).
-pub fn runner_script() -> PathBuf {
-    let (_py, instruments) = cut_perception::sidecar_paths();
-    instruments
-        .parent()
-        .map(|d| d.join("siglip_index.py"))
-        .unwrap_or_else(|| PathBuf::from("siglip_index.py"))
-}
-
-/// `Some` when the perception python + the indexer script exist — i.e. the box
-/// can run the SigLIP2 encoder (the model itself is fetched/cached by
-/// transformers on first use). `None` → `media.index`/the text query return a
-/// setup hint. The script surfaces a clear error if the venv lacks transformers.
-pub fn runtime() -> Option<Runtime> {
-    let (python, _instruments) = cut_perception::sidecar_paths();
-    let script = runner_script();
-    if python.exists() && script.exists() {
-        Some(Runtime {
-            python,
-            script,
-            model: model_id(),
-        })
-    } else {
-        None
-    }
-}
-
 /// The embeddings index path for an asset under a project dir.
 pub fn index_path(proj_dir: &Path, asset_id: &str) -> PathBuf {
     proj_dir.join("embeddings").join(format!("{asset_id}.json"))
@@ -258,15 +213,28 @@ pub fn load_index(proj_dir: &Path, asset_id: &str) -> Option<EmbeddingIndex> {
     serde_json::from_str(&txt).ok()
 }
 
-/// Persist an asset's embedding index (creates the embeddings/ dir). Used by the
-/// tests; the production indexer writes the same JSON directly.
-#[cfg(test)]
+/// Load a cache only when the prepared runtime that produced it remains exact.
+/// Normal installed mode retains its historical model-agnostic cache behavior.
+pub fn load_index_for_runtime(
+    proj_dir: &Path,
+    asset_id: &str,
+    runtime: Option<&Runtime>,
+) -> Option<EmbeddingIndex> {
+    let index = load_index(proj_dir, asset_id)?;
+    runtime
+        .is_none_or(|runtime| runtime.accepts_index(&index))
+        .then_some(index)
+}
+
+/// Persist an asset's embedding index (creates the embeddings/ dir). The native
+/// caller uses this after it stamps its selected runtime identity.
 pub fn save_index(proj_dir: &Path, index: &EmbeddingIndex) -> std::io::Result<PathBuf> {
     let p = index_path(proj_dir, &index.asset);
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&p, serde_json::to_string(index).unwrap_or_default())?;
+    let payload = serde_json::to_vec(index).map_err(std::io::Error::other)?;
+    std::fs::write(&p, payload)?;
     Ok(p)
 }
 
@@ -284,6 +252,7 @@ mod tests {
                 .into_iter()
                 .map(|(ms, v)| FrameEmbedding { ms, v })
                 .collect(),
+            native_runtime: None,
         }
     }
 
@@ -403,6 +372,7 @@ mod tests {
             dim: 2,
             asset: "a".into(),
             frames: vec![],
+            native_runtime: None,
         };
         assert!(search(&empty, &[1.0, 0.0], 3, 1000).is_err());
     }

@@ -16,6 +16,7 @@ pub mod candidates;
 pub mod checks;
 pub mod diarize;
 pub mod output_checks;
+pub mod prepared_stt;
 pub mod sidecar;
 pub mod types;
 
@@ -29,13 +30,16 @@ pub use checks::{
 };
 pub use diarize::{apply_diarization, assign_word_speakers, ASSIGN_TOL_MS};
 pub use output_checks::{output_checks_with_profile, OutputChecks};
+pub use prepared_stt::{prepared_stt_model, PreparedSttModel};
 pub use sidecar::{
-    appdata_sidecar_dir, build_contact_sheet, build_contact_sheet_owned, build_qc_sheet,
-    build_qc_sheet_owned, configured_sidecar_python, load_report, read_stt_setting,
+    appdata_sidecar_dir, apply_python_command_policy, build_contact_sheet,
+    build_contact_sheet_owned, build_qc_sheet, build_qc_sheet_owned, configured_sidecar_python,
+    effective_stt_selection, load_report, native_runtime_context, read_stt_setting,
     run_instruments, run_instruments_owned, run_instruments_owned_ephemeral,
     run_instruments_owned_progress, run_instruments_progress, run_subject, run_subject_owned,
-    sidecar_paths, stt_settings_path, transcribe, transcribe_owned_progress, transcribe_progress,
-    write_stt_setting, InstrumentSet, SidecarProgress,
+    sidecar_paths, sidecar_runtime, stt_settings_path, transcribe, transcribe_owned_progress,
+    transcribe_progress, write_stt_setting, EffectiveSttSelection, InstrumentSet, SidecarProgress,
+    SidecarRuntime,
 };
 pub use types::{
     BeatGrid, ContentBbox, Diarization, Loudness, LoudnessWindow, PerceptionReport, SceneCut,

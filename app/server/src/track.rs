@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 pub struct Runtime {
     pub python: PathBuf,
     pub script: PathBuf,
+    native_context: bool,
 }
 
 /// The one-shot tracker script (ships beside `instruments.py` in the sidecar payload).
@@ -41,17 +42,57 @@ pub fn runner_script() -> PathBuf {
 }
 
 /// `Some` when the perception python + the tracker script exist — i.e. the box can
-/// run cv2 tracking. `TRACK_RUNNER_PY` / `TRACK_RUNNER_SCRIPT` override the python /
-/// script (dev points them at the repo venv). `None` → `edit.track` returns a setup
-/// hint (the runner surfaces a clear error if the venv lacks cv2).
-pub fn runtime() -> Option<Runtime> {
-    let python = std::env::var_os("TRACK_RUNNER_PY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cut_perception::sidecar_paths().0);
-    let script = std::env::var_os("TRACK_RUNNER_SCRIPT")
-        .map(PathBuf::from)
-        .unwrap_or_else(runner_script);
-    (python.exists() && script.exists()).then_some(Runtime { python, script })
+/// run cv2 tracking. A supplied native context is authoritative and selects only the
+/// bundled tracker beside its admitted `instruments.py`; normal runs retain the
+/// `TRACK_RUNNER_*` override ladder.
+pub fn runtime() -> Result<Option<Runtime>, CutError> {
+    let sidecar = cut_perception::sidecar_runtime()?;
+    Ok(runtime_from_sidecar(
+        sidecar,
+        std::env::var_os("TRACK_RUNNER_PY").map(PathBuf::from),
+        std::env::var_os("TRACK_RUNNER_SCRIPT").map(PathBuf::from),
+    ))
+}
+
+fn runtime_from_sidecar(
+    sidecar: cut_perception::SidecarRuntime,
+    override_python: Option<PathBuf>,
+    override_script: Option<PathBuf>,
+) -> Option<Runtime> {
+    let native_context = sidecar.native_context.is_some();
+    runtime_from_parts(
+        sidecar.python,
+        sidecar.script,
+        native_context,
+        override_python,
+        override_script,
+    )
+}
+
+fn runtime_from_parts(
+    sidecar_python: PathBuf,
+    sidecar_script: PathBuf,
+    native_context: bool,
+    override_python: Option<PathBuf>,
+    override_script: Option<PathBuf>,
+) -> Option<Runtime> {
+    let (python, script) = if native_context {
+        let script = sidecar_script
+            .parent()
+            .map(|dir| dir.join("track_runner.py"))
+            .unwrap_or_else(|| PathBuf::from("track_runner.py"));
+        (sidecar_python, script)
+    } else {
+        (
+            override_python.unwrap_or(sidecar_python),
+            override_script.unwrap_or_else(runner_script),
+        )
+    };
+    (python.exists() && script.exists()).then_some(Runtime {
+        python,
+        script,
+        native_context,
+    })
 }
 
 /// One sampled box: centre (cx,cy) + size (w,h) as FRACTIONS of the frame, at SOURCE
@@ -99,6 +140,7 @@ pub fn run_tracker(
     engine: &str,
 ) -> Result<TrackResult, CutError> {
     let mut cmd = std::process::Command::new(&rt.python);
+    cut_perception::apply_python_command_policy(&mut cmd, rt.native_context);
     cmd.arg(&rt.script).arg(video);
     match seed {
         Seed::Bbox(b) => {
@@ -218,6 +260,51 @@ pub fn to_keyframes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_selection_uses_bundled_tracker_and_normal_selection_keeps_overrides() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("bundled");
+        std::fs::create_dir_all(&bundled).unwrap();
+        let python = temp.path().join("native-python");
+        let instruments = bundled.join("instruments.py");
+        let runner = bundled.join("track_runner.py");
+        let override_python = temp.path().join("override-python");
+        let override_script = temp.path().join("override-track.py");
+        for path in [
+            &python,
+            &instruments,
+            &runner,
+            &override_python,
+            &override_script,
+        ] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+
+        let native = runtime_from_parts(
+            python.clone(),
+            instruments.clone(),
+            true,
+            Some(override_python.clone()),
+            Some(override_script.clone()),
+        )
+        .unwrap();
+        assert_eq!(native.python, python);
+        assert_eq!(native.script, runner);
+        assert!(native.native_context);
+
+        let normal = runtime_from_parts(
+            temp.path().join("unused-python"),
+            instruments,
+            false,
+            Some(override_python.clone()),
+            Some(override_script.clone()),
+        )
+        .unwrap();
+        assert_eq!(normal.python, override_python);
+        assert_eq!(normal.script, override_script);
+        assert!(!normal.native_context);
+    }
 
     fn res(points: Vec<(u64, f64, f64, f64, f64, bool)>) -> TrackResult {
         TrackResult {

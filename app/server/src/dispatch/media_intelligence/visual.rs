@@ -4,8 +4,8 @@ use super::status::index_kind_current;
 use super::*;
 use std::collections::BTreeSet;
 
-fn embed_text(query: &str) -> Result<Vec<f32>, CutError> {
-    let runtime = crate::vissearch::runtime().ok_or_else(|| {
+fn embed_text(query: &str) -> Result<(Vec<f32>, crate::vissearch::Runtime), CutError> {
+    let runtime = crate::vissearch::runtime()?.ok_or_else(|| {
         CutError::new(
             error_codes::UNIMPLEMENTED,
             "visual query encoder is unavailable",
@@ -13,12 +13,8 @@ fn embed_text(query: &str) -> Result<Vec<f32>, CutError> {
         )
     })?;
     let mut command = std::process::Command::new(&runtime.python);
-    command
-        .arg(&runtime.script)
-        .arg("--model")
-        .arg(&runtime.model)
-        .arg("--embed-text")
-        .arg(query);
+    runtime.configure_command(&mut command);
+    command.arg("--embed-text").arg(query);
     let output = run_bounded_foreground_command(&mut command, "media intelligence text encoder")?;
     if !output.status.success() {
         return Err(CutError::new(
@@ -44,7 +40,7 @@ fn embed_text(query: &str) -> Result<Vec<f32>, CutError> {
             error.to_string(),
         )
     })?;
-    value
+    let vector = value
         .get("v")
         .and_then(Value::as_array)
         .map(|values| {
@@ -60,7 +56,8 @@ fn embed_text(query: &str) -> Result<Vec<f32>, CutError> {
                 "visual query encoder returned no vector",
                 "expected a non-empty v array",
             )
-        })
+        })?;
+    Ok((vector, runtime))
 }
 
 pub(super) fn visual_candidates(
@@ -83,10 +80,14 @@ pub(super) fn visual_candidates(
     if eligible.is_empty() {
         return Ok(Vec::new());
     }
-    let vector = embed_text(query)?;
+    let (vector, runtime) = embed_text(query)?;
     let mut candidates = Vec::new();
     for binding in eligible {
-        let Some(visual) = crate::vissearch::load_index(&snapshot.dir, &binding.asset_id) else {
+        let Some(visual) = crate::vissearch::load_index_for_runtime(
+            &snapshot.dir,
+            &binding.asset_id,
+            Some(&runtime),
+        ) else {
             continue;
         };
         for hit in crate::vissearch::search(&visual, &vector, limit, 2_000).map_err(|error| {

@@ -17,18 +17,31 @@ use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod native_runtime;
 mod owned;
+mod runtime_cache;
+#[cfg(test)]
+mod runtime_cache_tests;
+pub use native_runtime::{
+    apply_python_command_policy, configured_sidecar_python, native_runtime_context,
+    python_command_args, sidecar_runtime, SidecarRuntime, PYTHONDONTWRITEBYTECODE_ENV,
+};
 pub use owned::{
     build_contact_sheet_owned, build_qc_sheet_owned, run_instruments_owned,
     run_instruments_owned_ephemeral, run_instruments_owned_progress, run_subject_owned,
     transcribe_owned_progress,
 };
+use runtime_cache::{cache_matches_runtime_context, runtime_context_provenance};
+pub use runtime_cache::{effective_stt_selection, EffectiveSttSelection};
 
 /// Progress sink the sidecar drives from the python child's stderr `PROGRESS`
 /// lines. `f` is 0.0..1.0 within the CURRENT instrument run; `label` is a
 /// short stage string (e.g. "transcribe:chunk 2/7"). Callers retain it in an
 /// [`Arc`] because the bounded child owner drains stderr on its worker thread.
 pub type SidecarProgress = dyn Fn(f32, &str) + Send + Sync;
+
+#[cfg(test)]
+pub(super) static NATIVE_RUNTIME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Parse a python `[instruments] PROGRESS <frac> <label>` stderr line into
 /// `(frac, label)`. Returns None for any other line. The contract is emitted by
@@ -121,6 +134,7 @@ pub const ENV_SIDECAR_DIR: &str = "SHELLX_CUT_SIDECAR_DIR";
 /// `instruments.py`'s bare `ffmpeg`/`ffprobe` calls hit the SAME binary the
 /// Rust engine resolved — one ffmpeg for the whole app on a cold install.
 pub const ENV_FFMPEG_DIR: &str = "SHELLX_CUT_FFMPEG_DIR";
+
 const STALE_PACKAGE_CLEANUP_MARKER: &str = ".shellx-cut-stale-package-cleanup-v1";
 const STALE_SIDECARENV_PACKAGES: &[&str] = &["torchcodec"];
 
@@ -437,21 +451,6 @@ pub fn sidecar_paths() -> (PathBuf, PathBuf) {
     )
 }
 
-/// Resolve only an app-managed or explicitly configured sidecar Python.
-///
-/// `system.doctor` runs on launch. On clean macOS, spawning bare `python3`
-/// opens Apple's Command Line Tools installer prompt, so passive environment
-/// scans must not use the PATH fallback or the build machine's checkout unless
-/// this process is actually a repo-launched dev binary.
-pub fn configured_sidecar_python() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(ENV_PYTHON) {
-        if !p.is_empty() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    sidecar_python_from_bases(&sidecar_base_dirs())
-}
-
 fn sidecar_python_from_bases(bases: &[PathBuf]) -> Option<PathBuf> {
     sidecar_python_from_bases_for_platform(bases, cfg!(target_os = "macos"))
 }
@@ -561,6 +560,12 @@ fn run_instruments_with_owner(
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
     persist: bool,
 ) -> Result<PerceptionReport, CutError> {
+    // Resolve the context before considering a cached report. A supplied malformed
+    // locator is authoritative and must not be hidden by a legacy cache hit.
+    let runtime = sidecar_runtime()?;
+    let stt_selection = effective_stt_selection();
+    let runtime_context = runtime_context_provenance(&runtime, set, &stt_selection)?;
+
     // ---- cache check -----------------------------------------------------
     if persist {
         if let Some(cached) = load_report(receipts_dir, asset_id)? {
@@ -568,7 +573,10 @@ fn run_instruments_with_owner(
                 .names()
                 .iter()
                 .all(|n| cached.instruments_run.iter().any(|r| r == n));
-            if cached.asset_hash == asset_hash && covers {
+            if cached.asset_hash == asset_hash
+                && covers
+                && cache_matches_runtime_context(&cached, runtime_context.as_ref())
+            {
                 tracing::debug!(asset_id, "perception cache hit");
                 return Ok(cached);
             }
@@ -584,10 +592,16 @@ fn run_instruments_with_owner(
         "whisper_model": model.unwrap_or("small"),
     });
     tracing::info!(asset_id, instruments = ?set.names(), "running perception sidecar");
-    let stdout = spawn_sidecar_streaming(&request, progress, control)?;
+    let stdout = spawn_sidecar_streaming_with_runtime(
+        &request,
+        progress,
+        control,
+        &runtime,
+        &stt_selection,
+    )?;
 
     // ---- validate --------------------------------------------------------
-    let report: PerceptionReport = serde_json::from_str(stdout.trim()).map_err(|e| {
+    let mut report: PerceptionReport = serde_json::from_str(stdout.trim()).map_err(|e| {
         CutError::new(
             error_codes::SIDECAR,
             "sidecar emitted invalid PerceptionReport JSON",
@@ -611,6 +625,7 @@ fn run_instruments_with_owner(
             format!("sent '{asset_hash}', got '{}'", report.asset_hash),
         ));
     }
+    report.runtime_context = runtime_context;
 
     // ---- persist ---------------------------------------------------------
     // ProjectStore creates receipts/ before any perception job starts. Do not
@@ -663,7 +678,21 @@ fn spawn_sidecar_streaming(
     progress: Option<Arc<SidecarProgress>>,
     control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
 ) -> Result<String, CutError> {
-    let (python, script) = sidecar_paths();
+    let runtime = sidecar_runtime()?;
+    let stt_selection = effective_stt_selection();
+    spawn_sidecar_streaming_with_runtime(request, progress, control, &runtime, &stt_selection)
+}
+
+fn spawn_sidecar_streaming_with_runtime(
+    request: &serde_json::Value,
+    progress: Option<Arc<SidecarProgress>>,
+    control: Option<&cut_media::ffmpeg::OwnedProcessControl>,
+    runtime: &SidecarRuntime,
+    stt_selection: &EffectiveSttSelection,
+) -> Result<String, CutError> {
+    let native_context = runtime.native_context.is_some();
+    let python = &runtime.python;
+    let script = &runtime.script;
     if !script.exists() {
         return Err(CutError::new(
             error_codes::SIDECAR,
@@ -672,20 +701,23 @@ fn spawn_sidecar_streaming(
         )
         .with_suggested_action("check the app/perception/py checkout"));
     }
-    match cleanup_stale_managed_venv_packages(&python) {
-        Ok(removed) if removed > 0 => {
-            tracing::info!(
-                removed,
-                "removed stale packages from managed perception venv"
-            );
-        }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::warn!(error = %e, "could not remove stale packages from managed perception venv");
+    if !native_context {
+        match cleanup_stale_managed_venv_packages(python) {
+            Ok(removed) if removed > 0 => {
+                tracing::info!(
+                    removed,
+                    "removed stale packages from managed perception venv"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "could not remove stale packages from managed perception venv");
+            }
         }
     }
-    let mut cmd = Command::new(&python);
-    cmd.arg(&script);
+    let mut cmd = Command::new(python);
+    apply_python_command_policy(&mut cmd, native_context);
+    cmd.arg(script);
     if let Some(ffdir) = std::env::var_os(ENV_FFMPEG_DIR) {
         if !ffdir.is_empty() {
             cmd.env(ENV_FFMPEG_DIR, &ffdir);
@@ -706,8 +738,11 @@ fn spawn_sidecar_streaming(
     // transcribes with it (the python reads SHELLX_CUT_STT_MODEL; the whisperX
     // fallback reads SHELLX_CUT_STT_LANG). Unset → the python's built-in default.
     {
-        let (model, language) = read_stt_setting();
-        apply_stt_env(&mut cmd, model.as_deref(), language.as_deref());
+        apply_stt_env(
+            &mut cmd,
+            stt_selection.model.as_deref(),
+            stt_selection.language.as_deref(),
+        );
     }
     let suggested_action = if cfg!(windows) {
         "perception/transcription needs the Python sidecar. Run the ShellX Cut \
@@ -1025,6 +1060,7 @@ mod tests {
 
     #[test]
     fn configured_sidecar_python_never_returns_bare_python_fallback() {
+        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
         let old_py = std::env::var_os(ENV_PYTHON);
         let tmp = tempfile::tempdir().unwrap();
         std::env::remove_var(ENV_PYTHON);
@@ -1057,7 +1093,7 @@ mod tests {
 
         let explicit = tmp.path().join("custom-python");
         std::env::set_var(ENV_PYTHON, &explicit);
-        assert_eq!(configured_sidecar_python(), Some(explicit));
+        assert_eq!(configured_sidecar_python().unwrap(), Some(explicit));
 
         match old_py {
             Some(v) => std::env::set_var(ENV_PYTHON, v),
@@ -1235,6 +1271,7 @@ mod tests {
             subject_track: None,
             speaker_turns: vec![],
             diarization: None,
+            runtime_context: None,
         }
     }
 
@@ -1268,7 +1305,10 @@ mod tests {
     /// coverage is returned WITHOUT spawning python (proved by pointing at a
     /// media path that does not exist — a real run would have to fail).
     #[test]
-    fn cache_hit_skips_python() {
+    fn legacy_cache_hit_skips_python() {
+        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+        std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
         let dir = tempfile::tempdir().unwrap();
         let r = report(&["words", "silence", "scenes", "beats", "loudness"]);
         std::fs::write(
@@ -1286,6 +1326,42 @@ mod tests {
         )
         .expect("cache hit must not need the media file");
         assert_eq!(got.asset_hash, "sha256:cafe");
+        assert!(got.runtime_context.is_none());
+        match prior {
+            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
+            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
+        }
+    }
+
+    #[test]
+    fn invalid_prepared_context_rejects_matching_legacy_cache() {
+        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+        let dir = tempfile::tempdir().unwrap();
+        let r = report(&["words", "silence", "scenes", "beats", "loudness"]);
+        std::fs::write(
+            dir.path().join("a1.perception.json"),
+            serde_json::to_string(&r).unwrap(),
+        )
+        .unwrap();
+        let invalid = dir.path().join("invalid-context.json");
+        std::fs::write(&invalid, b"not json").unwrap();
+        std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, invalid);
+
+        let error = run_instruments(
+            Path::new("/definitely/missing.mp4"),
+            dir.path(),
+            "a1",
+            "sha256:cafe",
+            InstrumentSet::Full,
+            None,
+        )
+        .expect_err("a supplied invalid context must reject before cache reuse");
+        assert!(error.message.contains("prepared native runtime rejected"));
+        match prior {
+            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
+            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
+        }
     }
 
     /// A WordsOnly cached report must NOT satisfy a Full request: the

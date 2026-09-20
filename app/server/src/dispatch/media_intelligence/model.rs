@@ -125,6 +125,19 @@ pub(super) fn current_bindings(
     snapshot: &ProjectSnapshot,
     selected: Option<&[String]>,
 ) -> Result<Vec<SourceBinding>, CutError> {
+    // In prepared mode, the visual cache is only authority when the exact
+    // current runtime accepts its model and provenance. This is also the
+    // status/rebuild boundary, so a malformed supplied context fails before
+    // reporting a stale cache as ready.
+    let visual_runtime = crate::vissearch::visual_cache_runtime()?;
+    current_bindings_for_visual_runtime(snapshot, selected, &visual_runtime)
+}
+
+pub(super) fn current_bindings_for_visual_runtime(
+    snapshot: &ProjectSnapshot,
+    selected: Option<&[String]>,
+    visual_runtime: &crate::vissearch::VisualCacheRuntime,
+) -> Result<Vec<SourceBinding>, CutError> {
     let selected = selected.map(|ids| ids.iter().collect::<std::collections::BTreeSet<_>>());
     if let Some(ids) = &selected {
         for id in ids {
@@ -157,7 +170,6 @@ pub(super) fn current_bindings(
                 .and_then(|value| value.get("has_audio"))
                 .and_then(Value::as_bool)
                 .unwrap_or(video);
-        let visual_path = crate::vissearch::index_path(&snapshot.dir, id);
         bindings.push(SourceBinding {
             asset_id: id.clone(),
             asset_hash: asset.hash.clone(),
@@ -166,12 +178,29 @@ pub(super) fn current_bindings(
             audio,
             transcript_sha256: relative_receipt_hash(&snapshot.dir, asset.transcript.as_deref()),
             perception_sha256: relative_receipt_hash(&snapshot.dir, asset.perception.as_deref()),
-            visual_sha256: std::fs::read(visual_path)
-                .ok()
-                .map(|bytes| digest_bytes(&bytes)),
+            visual_sha256: visual_index_sha256(&snapshot.dir, id, visual_runtime),
         });
     }
     Ok(bindings)
+}
+
+fn visual_index_sha256(
+    project_dir: &Path,
+    asset_id: &str,
+    visual_runtime: &crate::vissearch::VisualCacheRuntime,
+) -> Option<String> {
+    match visual_runtime {
+        crate::vissearch::VisualCacheRuntime::Legacy => {
+            crate::vissearch::load_index_for_runtime(project_dir, asset_id, None)
+        }
+        crate::vissearch::VisualCacheRuntime::Prepared(runtime) => {
+            crate::vissearch::load_index_for_runtime(project_dir, asset_id, Some(runtime))
+        }
+        crate::vissearch::VisualCacheRuntime::Unavailable => None,
+    }?;
+    std::fs::read(crate::vissearch::index_path(project_dir, asset_id))
+        .ok()
+        .map(|bytes| digest_bytes(&bytes))
 }
 
 pub(super) fn binding_map(bindings: &[SourceBinding]) -> BTreeMap<&str, &SourceBinding> {

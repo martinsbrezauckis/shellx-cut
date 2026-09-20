@@ -22,10 +22,10 @@ Model choice (server/translate.rs documents the tradeoff):
   this runner adds automatically when the model id contains "madlad".
 - NLLB-200 is intentionally NOT supported (CC-BY-NC, non-commercial).
 
-The model DOWNLOAD is gated behind FIRST USE: transformers fetches + caches the
-model on the first run; an offline run with no cached model FAILS HONESTLY
-(non-zero exit + a clear stderr message) — nothing fake is emitted, and no
-multi-GB model is bundled with the app.
+An ordinary installation downloads and caches a model on first use. A supplied
+Runner context instead accepts only a verified prepared directory and loads it
+with Transformers' local-files-only policy: no cache discovery, download, or
+second candidate is available in that mode.
 
 Contract (matches server/translate.rs):
   python translate_runner.py --src <code> --tgt <code> [--model <hf_id>]
@@ -44,6 +44,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+
+from native_runtime_models import NativeRuntimeModelError
+from translation_models import PreparedTranslationModel, prepared_translation_model
 
 try:
     sys.stdin.reconfigure(encoding="utf-8")
@@ -65,7 +68,7 @@ def _fail(msg: str, code: int = 1):
     sys.exit(code)
 
 
-def _load(model_id: str):
+def _load(model_source: str, *, local_files_only: bool):
     """Load tokenizer + seq2seq model, returning (tok, model). Honest, specific
     errors for the two common failures (missing deps / model fetch)."""
     try:
@@ -76,8 +79,8 @@ def _load(model_id: str):
             f"(pip install transformers sentencepiece torch): {e}"
         )
     try:
-        tok = AutoTokenizer.from_pretrained(model_id)
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+        tok = AutoTokenizer.from_pretrained(model_source, local_files_only=local_files_only)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_source, local_files_only=local_files_only)
     except Exception as e:  # noqa: BLE001
         # Distinguish "no such pair / offline" from other errors as best we can.
         raise RuntimeError(str(e)) from e
@@ -95,6 +98,18 @@ def _resolve_models(src: str, tgt: str, explicit: str | None) -> list[tuple[str,
         (f"Helsinki-NLP/opus-mt-{src}-{tgt}", "opus-mt"),
         (f"Helsinki-NLP/opus-mt-tc-big-{src}-{tgt}", "opus-mt"),
     ]
+
+
+def _load_prepared_model(selected: PreparedTranslationModel):
+    """Load the one context-admitted model without any fallback candidate."""
+    try:
+        return _load(str(selected.directory), local_files_only=True)
+    except RuntimeError as error:
+        _fail(
+            f"could not load prepared local translation model {selected.model_id}: {error}. "
+            "The native runtime does not download models or use a host cache."
+        )
+        raise AssertionError("_fail exits")  # placate type checkers if it is patched in a test
 
 
 def main() -> None:
@@ -115,31 +130,40 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001
         _fail(f"could not parse STDIN JSON ({e}); expected {{\"segments\":[...]}}")
         return
+    try:
+        prepared = prepared_translation_model(src, tgt, args.model)
+    except NativeRuntimeModelError as error:
+        _fail(f"prepared local translation rejected: {error}")
+        return
     if not segments:
         # Nothing to translate is not an error — emit an empty result.
         print(json.dumps({"translations": [], "model": args.model or "", "backend": "opus-mt"}))
         return
 
-    candidates = _resolve_models(src, tgt, args.model)
-    last_err = None
-    tok = model = None
-    chosen_id = chosen_tag = None
-    for model_id, tag in candidates:
-        try:
-            tok, model = _load(model_id)
-            chosen_id, chosen_tag = model_id, tag
-            break
-        except RuntimeError as e:
-            last_err = e
-            continue
-    if model is None:
-        _fail(
-            f"could not load a translation model for {src}->{tgt} "
-            f"(tried: {[c[0] for c in candidates]}). "
-            "On first use the model is downloaded; this fails offline or for an "
-            f"unsupported pair. Last error: {last_err}"
-        )
-        return
+    if prepared is not None:
+        tok, model = _load_prepared_model(prepared)
+        chosen_id, chosen_tag = prepared.model_id, prepared.backend
+    else:
+        candidates = _resolve_models(src, tgt, args.model)
+        last_err = None
+        tok = model = None
+        chosen_id = chosen_tag = None
+        for model_id, tag in candidates:
+            try:
+                tok, model = _load(model_id, local_files_only=False)
+                chosen_id, chosen_tag = model_id, tag
+                break
+            except RuntimeError as error:
+                last_err = error
+                continue
+        if model is None:
+            _fail(
+                f"could not load a translation model for {src}->{tgt} "
+                f"(tried: {[c[0] for c in candidates]}). "
+                "On first use the model is downloaded; this fails offline or for an "
+                f"unsupported pair. Last error: {last_err}"
+            )
+            return
 
     is_madlad = chosen_tag == "madlad"
     outputs: list[str] = []

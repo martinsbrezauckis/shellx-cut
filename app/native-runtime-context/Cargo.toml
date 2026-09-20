@@ -1,0 +1,17 @@
+[package]
+name = "cut-native-runtime-context"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Typed Release Runner native Python runtime context for ShellX Cut"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

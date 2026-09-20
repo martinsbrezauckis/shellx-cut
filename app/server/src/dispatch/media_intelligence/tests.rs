@@ -1,6 +1,12 @@
 use super::*;
 use crate::dispatch::media_intelligence::model::{
-    finalize_index, generator_identity, load_index, opaque_id, EvidenceEntry, MediaEvidenceIndex,
+    current_bindings_for_visual_runtime, finalize_index, generator_identity, load_index, opaque_id,
+    EvidenceEntry, MediaEvidenceIndex,
+};
+use crate::dispatch::media_intelligence::status::status_value_for_visual_runtime;
+use crate::dispatch::media_intelligence::visual::visual_candidates;
+use crate::vissearch::{
+    EmbeddingIndex, FrameEmbedding, NativeRuntimeProvenance, Runtime, VisualCacheRuntime,
 };
 use cut_core::{Asset, Clip, Marker, Project, ProjectSettings};
 
@@ -72,6 +78,30 @@ fn kinds(values: &[&str]) -> BTreeSet<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
 
+fn prepared_visual_runtime() -> VisualCacheRuntime {
+    VisualCacheRuntime::Prepared(Runtime::prepared_for_test(NativeRuntimeProvenance {
+        contract: "release-runner.native-runtime-context/v1".into(),
+        manifest_sha256: "a".repeat(64),
+        receipt_sha256: "b".repeat(64),
+        model_group: "cut.siglip.google.siglip2-base-patch16-224".into(),
+        model_id: "google/siglip2-base-patch16-224".into(),
+    }))
+}
+
+fn legacy_visual_index() -> EmbeddingIndex {
+    EmbeddingIndex {
+        schema: "shellx-cut/vissearch/1".into(),
+        model: "google/siglip2-base-patch16-224".into(),
+        dim: 2,
+        asset: "a1".into(),
+        frames: vec![FrameEmbedding {
+            ms: 0,
+            v: vec![1.0, 0.0],
+        }],
+        native_runtime: None,
+    }
+}
+
 fn build_fixture_index(snapshot: &ProjectSnapshot) -> MediaEvidenceIndex {
     let bindings = current_bindings(snapshot, None).unwrap();
     build_index(
@@ -81,6 +111,79 @@ fn build_fixture_index(snapshot: &ProjectSnapshot) -> MediaEvidenceIndex {
         crate::jobs::JobCancellation::test_active(),
     )
     .unwrap()
+}
+
+#[test]
+fn prepared_visual_status_and_query_reject_a_legacy_embedding_index() {
+    let (_directory, snapshot) = fixture();
+    crate::vissearch::save_index(&snapshot.dir, &legacy_visual_index()).unwrap();
+
+    let legacy_bindings =
+        current_bindings_for_visual_runtime(&snapshot, None, &VisualCacheRuntime::Legacy).unwrap();
+    let evidence_index = build_index(
+        &snapshot,
+        legacy_bindings,
+        kinds(&["visual"]),
+        crate::jobs::JobCancellation::test_active(),
+    )
+    .unwrap();
+    publish_index(&snapshot, &evidence_index).unwrap();
+    assert_eq!(
+        status_value(&snapshot, None).unwrap()["coverage"]["visual"]["ready"],
+        1
+    );
+
+    let runtime = prepared_visual_runtime();
+    let prepared_bindings = current_bindings_for_visual_runtime(&snapshot, None, &runtime).unwrap();
+    assert!(prepared_bindings[0].visual_sha256.is_none());
+    let prepared_status = status_value_for_visual_runtime(&snapshot, None, &runtime).unwrap();
+    assert_eq!(prepared_status["coverage"]["visual"]["ready"], 0);
+    assert_eq!(prepared_status["coverage"]["visual"]["missing"], 1);
+
+    let candidates = visual_candidates(
+        &snapshot,
+        &evidence_index,
+        &prepared_bindings,
+        None,
+        "chart",
+        10,
+    )
+    .unwrap();
+    assert!(
+        candidates.is_empty(),
+        "a rejected index must not reach the visual query child"
+    );
+}
+
+#[test]
+fn unavailable_prepared_siglip_keeps_nonvisual_intelligence_ready() {
+    let (directory, mut snapshot) = fixture();
+    std::fs::write(
+        directory.path().join("receipts/a1.perception.json"),
+        br#"{"asset":"a1","scenes":[]}"#,
+    )
+    .unwrap();
+    snapshot.project.assets.get_mut("a1").unwrap().perception =
+        Some("receipts/a1.perception.json".into());
+    crate::vissearch::save_index(&snapshot.dir, &legacy_visual_index()).unwrap();
+    let bindings =
+        current_bindings_for_visual_runtime(&snapshot, None, &VisualCacheRuntime::Unavailable)
+            .unwrap();
+    let evidence_index = build_index(
+        &snapshot,
+        bindings,
+        kinds(&["transcript", "scene", "visual"]),
+        crate::jobs::JobCancellation::test_active(),
+    )
+    .unwrap();
+    publish_index(&snapshot, &evidence_index).unwrap();
+
+    let status =
+        status_value_for_visual_runtime(&snapshot, None, &VisualCacheRuntime::Unavailable).unwrap();
+    assert_eq!(status["coverage"]["transcript"]["ready"], 1);
+    assert_eq!(status["coverage"]["scene"]["ready"], 1);
+    assert_eq!(status["coverage"]["visual"]["ready"], 0);
+    assert_eq!(status["coverage"]["visual"]["missing"], 1);
 }
 
 #[test]

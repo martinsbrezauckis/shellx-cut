@@ -8,7 +8,12 @@ use std::io::Write;
 use std::path::PathBuf;
 
 fn test_python() -> Option<PathBuf> {
-    let python = crate::dispatch::configured_adapter_python()?;
+    let python = crate::dispatch::adapter_python::resolve_adapter_runtime(
+        "judge/adapters/ladder_judge.py",
+        || None,
+    )
+    .ok()?
+    .python?;
     (Command::new(&python)
         .arg("--version")
         .status()
@@ -90,6 +95,37 @@ fn write_fake_adapter(path: &Path, marker: &Path) {
     .unwrap();
 }
 
+fn write_native_policy_fake_adapter(path: &Path) {
+    fs::write(
+        path,
+        [
+            "import json, sys\n",
+            "assert sys.flags.ignore_environment == 1\n",
+            "assert sys.flags.no_user_site == 1\n",
+            "assert sys.dont_write_bytecode\n",
+            "assert sys.argv[1:] == ['detect']\n",
+            "print(json.dumps({'rungs': [{'provider': 'claude', 'found': True, 'judge_ready': True}]}))\n",
+        ]
+        .concat(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn prepared_probe_applies_the_shared_python_policy() {
+    let Some(python) = test_python() else {
+        return;
+    };
+    let root = tempfile::tempdir().unwrap();
+    let adapter = root.path().join("native-policy-adapter.py");
+    write_native_policy_fake_adapter(&adapter);
+
+    assert!(matches!(
+        probe(&adapter, &python, None, true),
+        JudgeAdmissions::Verified(_)
+    ));
+}
+
 #[test]
 fn selected_context_probe_passes_exact_handoff_without_path_augmentation() {
     let Some(python) = test_python() else {
@@ -107,7 +143,7 @@ fn selected_context_probe_passes_exact_handoff_without_path_augmentation() {
     write_fake_adapter(&adapter, &marker);
     let injected_path = root.path().join("must-not-be-supplied-path");
 
-    let admissions = probe(&adapter, &python, Some(injected_path.as_os_str()));
+    let admissions = probe(&adapter, &python, Some(injected_path.as_os_str()), false);
 
     assert!(matches!(admissions, JudgeAdmissions::Verified(_)));
     let observed: Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
@@ -146,7 +182,7 @@ fn malformed_context_refuses_before_the_doctor_probe_spawns() {
     write_fake_adapter(&adapter, &marker);
 
     assert!(matches!(
-        probe(&adapter, &python, None),
+        probe(&adapter, &python, None, false),
         JudgeAdmissions::Unverified
     ));
     assert!(!marker.exists());

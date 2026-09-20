@@ -1294,7 +1294,7 @@ pub(in crate::dispatch) async fn edit_redact(
         // Track each face by default (privacy: a moving face MUST stay covered);
         // `track_faces:false` opts into the faster static-detect pass.
         let want_track = fa.track_faces.unwrap_or(true);
-        let rt = crate::faces::runtime().ok_or_else(|| {
+        let rt = crate::faces::runtime()?.ok_or_else(|| {
             CutError::new(
                 error_codes::NOT_FOUND,
                 "faces needs the perception sidecar (opencv), which is not installed",
@@ -1413,7 +1413,7 @@ pub(in crate::dispatch) async fn edit_redact(
     let src_at = c.src_in_ms + (at_ms as f64 * speed).round() as u64;
     let (src_path, _hash) = asset_info(state, &c.asset.clone()).await?;
 
-    let rt = crate::ocr::runtime().ok_or_else(|| {
+    let rt = crate::ocr::runtime()?.ok_or_else(|| {
         CutError::new(
             error_codes::NOT_FOUND,
             "ocr_auto needs the perception sidecar + rapidocr-onnxruntime, which is not installed",

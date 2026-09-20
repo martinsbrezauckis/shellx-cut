@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 cut-core = { path = "../core" }
 cut-media = { path = "../media" }
+cut-native-runtime-context = { path = "../native-runtime-context" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
