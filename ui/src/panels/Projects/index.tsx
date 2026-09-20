@@ -256,6 +256,7 @@ export default function ProjectsPanel({ onReopen, currentName, active, b5Receipt
 	                <button
 	                  type="button"
 	                  className="pj-open"
+	                  data-cut-action="project-open"
 	                  data-cut-project-open={p.id}
 	                  disabled={p.missing || busy}
 	                  title={p.missing ? `${p.name} is missing. Remove it from this list or locate the project file.` : `Reopen ${p.name}`}
@@ -275,6 +276,7 @@ export default function ProjectsPanel({ onReopen, currentName, active, b5Receipt
 	                <button
 	                  type="button"
 	                  className="pj-forget"
+	                  data-cut-action="project-forget"
 	                  data-cut-project-forget={p.id}
                   title="Remove from this list; files stay on disk"
                   onClick={(e) => void forget(p, e)}
@@ -284,6 +286,7 @@ export default function ProjectsPanel({ onReopen, currentName, active, b5Receipt
                 <button
                   type="button"
                   className="pj-delete"
+                  data-cut-action="project-delete"
                   data-cut-project-delete={p.id}
                   title="Delete project from this machine; original media files are not deleted"
                   onClick={(e) => void del(p, e)}
