@@ -4748,7 +4748,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "side_effects": {
       "filesystem": true,
       "process": true,
-      "network": false,
+      "network": true,
       "ui": false
     },
     "dispatch": "system_setup_perception",

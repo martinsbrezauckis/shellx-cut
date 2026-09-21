@@ -12,6 +12,64 @@ use tauri::Manager;
 use crate::platform::alert_state::{AlertStateManager, AlertType};
 use crate::server::response::WebDriverErrorResponse;
 
+const OPTION_SNAPSHOT_SCRIPT: &str = r#"// Read-only DOM inspection. Retained references are adapter bookkeeping only.
+(function (reference, phase) {
+    const key = reference + '_optionSnapshot';
+    const container = reference + '_select';
+    if (phase === 'clear') {
+        delete window[key];
+        delete window[container];
+        return null;
+    }
+    const target = window[reference];
+    if (!target || !target.isConnected) return {error: 'stale element reference'};
+    if (!(target instanceof HTMLOptionElement)) {
+        return phase === 'prepare' ? null : {error: 'stale element reference'};
+    }
+    const direct = target.parentElement;
+    const select = direct instanceof HTMLOptGroupElement ? direct.parentElement : direct;
+    if (!(select instanceof HTMLSelectElement) || !select.isConnected) return {error: 'stale element reference'};
+    if (select.matches(':disabled')) return {error: 'element not interactable'};
+    const hidden = e => {
+        const style = getComputedStyle(e);
+        return e.hidden || style.display === 'none' || style.visibility !== 'visible';
+    };
+    const options = Array.from(select.options);
+    const index = options.indexOf(target);
+    const validChildren = Array.from(select.children).every(e =>
+        e instanceof HTMLOptionElement || (e instanceof HTMLOptGroupElement &&
+            Array.from(e.children).every(o => o instanceof HTMLOptionElement)));
+    if (select.multiple || select.size > 1 || options.length < 1 || options.length > 128 || index < 0 ||
+        !validChildren || hidden(select) || options.some(o => o.disabled || hidden(o) ||
+            (o.parentElement instanceof HTMLOptGroupElement && (o.parentElement.disabled || hidden(o.parentElement))))) {
+        return {error: 'unsupported operation'};
+    }
+    if (phase === 'prepare') {
+        window[key] = {target, select, direct, options, index, value: target.value,
+            values: options.map(o => o.value), labels: options.map(o => o.label),
+            parents: options.map(o => o.parentElement), selected: select.selectedIndex};
+        window[container] = select;
+    }
+    const saved = window[key];
+    if (!saved || saved.target !== target || saved.select !== select || saved.direct !== direct ||
+        saved.index !== index || saved.options.length !== options.length || saved.value !== target.value ||
+        options.some((o, i) => o !== saved.options[i] || o.parentElement !== saved.parents[i] ||
+            o.value !== saved.values[i] || o.label !== saved.labels[i])) return {error: 'stale element reference'};
+    if (phase === 'complete' || phase === 'settle') {
+        if (!target.selected || select.selectedIndex !== index || select.value !== saved.value) {
+            return {error: 'unknown error', pending: phase === 'settle', message: 'native option selection did not reach the exact retained target; observation=' + JSON.stringify({
+                phase, retainedIndex: saved.index, initialSelectedIndex: saved.selected,
+                selectedIndex: select.selectedIndex, targetSelected: target.selected,
+                selectedFlags: options.map(o => o.selected), valueMatchesRetained: select.value === saved.value
+            })};
+        }
+    } else if (select.selectedIndex !== saved.selected) {
+        return {error: 'stale element reference', message: 'option selection changed before native commit'};
+    }
+    return {index, selected: target.selected};
+})
+"#;
+
 // Native input is process-global. Refuse overlapping input requests instead of
 // introducing another queue or interleaving two balanced button sequences.
 static NATIVE_INPUT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -509,6 +567,59 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
         Ok((center.x, center.y))
     }
 
+    fn option_defer_primary_release(&self) -> bool { false }
+
+    /// Additional native readiness at the original gesture point; no input replay.
+    async fn option_completion_readiness(&self) -> Result<Option<WebDriverErrorResponse>,WebDriverErrorResponse> { Ok(None) }
+    fn clear_option_completion(&self) {}
+
+    /// Read-only owner identity for completion; never activates or changes focus.
+    async fn option_completion_owner(&self) -> Result<String, WebDriverErrorResponse> {
+        Ok(self.window().label().to_owned())
+    }
+
+    /// None means exact completion; Some retains the latest intact mismatch.
+    async fn inspect_option_completion(&self, js_var: &str) -> Result<Option<WebDriverErrorResponse>, WebDriverErrorResponse> {
+        let script=format!("({})({}, \"settle\")",OPTION_SNAPSHOT_SCRIPT,serde_json::to_string(js_var).unwrap());
+        let result=self.evaluate_js(&script).await?;
+        let value=result.get("value").ok_or_else(||WebDriverErrorResponse::unknown_error("option inspection returned no value"))?;
+        if let Some(error)=value.get("error").and_then(Value::as_str) {
+            let response=WebDriverErrorResponse::new(axum::http::StatusCode::BAD_REQUEST,error,value.get("message").and_then(Value::as_str).unwrap_or(error),None);
+            if error=="unknown error" && value.get("pending")==Some(&Value::Bool(true)) {return Ok(Some(response));}
+            return Err(response);
+        }
+        if value.get("index").and_then(Value::as_u64).is_some_and(|i|i<128) && value.get("selected")==Some(&Value::Bool(true)) {return Ok(None);}
+        Err(WebDriverErrorResponse::unknown_error("invalid option completion result"))
+    }
+
+    /// Snapshot/verify an OPTION without changing DOM selection or emitting events.
+    async fn inspect_option(&self, js_var: &str, phase: &str) -> Result<Option<(usize, bool)>, WebDriverErrorResponse> {
+        let script = format!("({})({}, {})", OPTION_SNAPSHOT_SCRIPT,
+            serde_json::to_string(js_var).unwrap(), serde_json::to_string(phase).unwrap());
+        let result = self.evaluate_js(&script).await?;
+        let value = result.get("value").ok_or_else(|| WebDriverErrorResponse::unknown_error("option inspection returned no value"))?;
+        if value.is_null() { return Ok(None); }
+        if let Some(error) = value.get("error").and_then(Value::as_str) {
+            return Err(WebDriverErrorResponse::new(axum::http::StatusCode::BAD_REQUEST, error,
+                value.get("message").and_then(Value::as_str).unwrap_or(error), None));
+        }
+        let index = value.get("index").and_then(Value::as_u64).filter(|v| *v < 128)
+            .ok_or_else(|| WebDriverErrorResponse::unknown_error("invalid option index"))?;
+        let selected = value.get("selected").and_then(Value::as_bool)
+            .ok_or_else(|| WebDriverErrorResponse::unknown_error("invalid option selectedness"))?;
+        Ok(Some((index as usize, selected)))
+    }
+
+    /// Native popup first-item key. Backends must opt in explicitly.
+    /// Internal OPTION keyboard scope; ordinary Actions retain their normal route.
+    async fn dispatch_option_key_event(&self, key: &str, is_down: bool, modifiers: &ModifierState) -> Result<(), WebDriverErrorResponse> {
+        self.dispatch_key_event(key, is_down, modifiers).await
+    }
+
+    fn option_popup_first_key(&self) -> Result<&'static str, WebDriverErrorResponse> {
+        Err(WebDriverErrorResponse::unsupported_operation("native option popup navigation is unavailable on this platform"))
+    }
+
     /// Check if element is displayed
     async fn is_element_displayed(&self, js_var: &str) -> Result<bool, WebDriverErrorResponse> {
         let script = format!(
@@ -546,7 +657,7 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
             r"(function() {{
                 var el = window.{js_var};
                 if (!el || !el.isConnected) {{
-                    throw new Error('stale element reference');
+                    return {{ error: 'stale element reference' }};
                 }}
                 if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {{
                     return el.checked;
@@ -558,7 +669,7 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
             }})()"
         );
         let result = self.evaluate_js(&script).await?;
-        extract_bool_value(&result)
+        extract_selected_value(&result)
     }
 
     /// Click on element
@@ -1033,6 +1144,14 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
         ))
     }
 
+    /// Internal OPTION popup scope; ordinary pointer dispatch is unchanged.
+    async fn dispatch_option_pointer_event(
+        &self, event_type: PointerEventType, x: i32, y: i32, button: u32,
+        buttons: u32, modifiers: &ModifierState,
+    ) -> Result<(), WebDriverErrorResponse> {
+        self.dispatch_pointer_event(event_type, x, y, button, buttons, modifiers).await
+    }
+
     async fn dispatch_pointer_event(
         &self,
         _event_type: PointerEventType,
@@ -1408,6 +1527,18 @@ fn extract_bool_value(result: &Value) -> Result<bool, WebDriverErrorResponse> {
     Ok(false)
 }
 
+/// Selectedness has an explicit stale result: WebView2 may serialize an
+/// uncaught JavaScript exception as null, which must never become false.
+fn extract_selected_value(result: &Value) -> Result<bool, WebDriverErrorResponse> {
+    let value = extract_value(result)?;
+    if value.get("error").and_then(Value::as_str) == Some("stale element reference") {
+        return Err(WebDriverErrorResponse::stale_element_reference());
+    }
+    value.as_bool().ok_or_else(|| {
+        WebDriverErrorResponse::unknown_error("selectedness script returned no boolean value")
+    })
+}
+
 /// Extract usize value from JavaScript result
 fn extract_usize_value(result: &Value) -> Result<usize, WebDriverErrorResponse> {
     if let Some(success) = result.get("success").and_then(Value::as_bool) {
@@ -1593,6 +1724,21 @@ fn webdriver_cookie_to_tauri(cookie: &Cookie) -> TauriCookie<'static> {
 
 #[cfg(test)]
 mod native_input_tests {
+    #[test]
+    fn selectedness_preserves_booleans_and_refuses_stale_or_missing_values() {
+        use serde_json::json;
+        for selected in [false, true] {
+            assert_eq!(super::extract_selected_value(&json!({"success":true,"value":selected})).unwrap(), selected);
+        }
+        let stale = super::extract_selected_value(&json!({"success":true,"value":{"error":"stale element reference"}})).unwrap_err();
+        assert_eq!(stale.error, "stale element reference");
+        assert_eq!(stale.status, axum::http::StatusCode::NOT_FOUND);
+        for result in [json!({"success":true,"value":null}), json!({"success":true}), json!({}), json!({"success":true,"value":"false"})] {
+            assert_eq!(super::extract_selected_value(&result).unwrap_err().error, "unknown error");
+        }
+        assert_eq!(super::extract_selected_value(&json!({"success":false,"error":"evaluation failed"})).unwrap_err().error, "javascript error");
+    }
+
     #[test]
     fn overlapping_input_is_refused_and_guard_release_restores_admission() {
         let guard = super::native_input_guard().unwrap();

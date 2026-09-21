@@ -16474,7 +16474,7 @@
     {
       "name": "system.setup_perception",
       "domain": "system",
-      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + pinned requirements.txt); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (https-pinned astral-sh/uv release, per-asset sha256 verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ready. rationale is recorded on the job.",
+      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (https-pinned astral-sh/uv release, per-asset sha256 verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ready. rationale is recorded on the job.",
       "args": {
         "type": "object",
         "required": [],
@@ -16482,20 +16482,20 @@
         "properties": {
           "warm_model": {
             "type": "boolean",
-            "description": "Pre-download the default Parakeet ONNX model during setup so the FIRST transcription is instant (default true). Set false to skip — selected models then lazy-download on first transcribe."
+            "description": "Download and load the selected ONNX speech model after final dependency checks (default true; Parakeet v3 if no model is selected). Persisted model selection takes precedence over inherited environment. An explicit Whisper choice skips ONNX preparation and uses its own runtime on first transcription. model_warmed reports a successful load; model_warm_error preserves preparation failure separately from package installation. Set false to skip model preparation."
           },
           "rationale": {
             "type": "string"
           }
         }
       },
-      "result": "{job_id} — watch job_progress (downloading uv → installing Python → creating venv → installing dependencies → downloading model) or poll jobs.status; the job result is {venv_python, managed_python, python_version, uv_version, package_versions, onnx_asr_ready, model_warmed, full_perception_ready, extras_note, perception_ok_after}; doctor_updated fires on completion",
+      "result": "{job_id} — watch job_progress (downloading uv → installing Python → creating venv → installing dependencies → downloading model) or poll jobs.status; the job result is {venv_python, managed_python, python_version, uv_version, package_versions, onnx_asr_ready, model_warmed, model_warm_error, full_perception_ready, extras_note, perception_ok_after}; failed model preparation completes with warnings while preserving installed dependencies; doctor_updated fires on completion",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
           "filesystem": true,
           "process": true,
-          "network": false,
+          "network": true,
           "ui": false
         },
         "dispatch": "system_setup_perception",

@@ -47,6 +47,7 @@
       "../../perception/py/requirements-full.txt": "perception/requirements-full.txt",
       "../../perception/py/safe_numbers.py": "perception/safe_numbers.py",
       "../../perception/py/native_runtime_models.py": "perception/native_runtime_models.py",
+      "../../perception/py/ordinary_speech_models.py": "perception/ordinary_speech_models.py",
       "../../perception/py/translation_models.py": "perception/translation_models.py",
       "../../perception/py/blaze_face_short_range.tflite": "perception/blaze_face_short_range.tflite",
       "../../perception/py/matte_runner.py": "perception/matte_runner.py",

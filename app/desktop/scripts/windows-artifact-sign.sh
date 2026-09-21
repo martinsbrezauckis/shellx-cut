@@ -13,6 +13,12 @@ if [ -z "$artifact" ]; then
   exit 2
 fi
 
+callback_mode="${2:-}"
+case "$callback_mode" in
+  ""|--verify-only) ;;
+  *) echo "windows-artifact-sign: unsupported callback mode: $callback_mode" >&2; exit 2 ;;
+esac
+
 case "$artifact" in
   *"/nsis/"*"Plugins/"*|*'\nsis\'*'\Plugins\'*)
     exit 0
@@ -52,6 +58,10 @@ if [ "${SHELLX_WINDOWS_SIGNING_REQUIRED:-0}" = "1" ]; then
     echo "windows-artifact-sign: refusing a recursive signing helper" >&2
     exit 1
   fi
+  if [ "$callback_mode" = "--verify-only" ]; then
+    "$helper" "$artifact" --verify-only
+    exit 0
+  fi
   "$helper" "$artifact"
   record_signed_artifact
   exit 0
@@ -59,6 +69,11 @@ fi
 
 if [ ! -e "$artifact" ]; then
   echo "windows-artifact-sign: artifact not found: $artifact" >&2
+  exit 1
+fi
+
+if [ "$callback_mode" = "--verify-only" ]; then
+  echo "windows-artifact-sign: verification-only callback requires official signing" >&2
   exit 1
 fi
 

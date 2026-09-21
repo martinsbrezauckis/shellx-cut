@@ -7,6 +7,14 @@
 ; before NSIS can offer an unsafe skip-write path and record a mixed version.
 
 !macro NSIS_HOOK_PREINSTALL
+  ; Tauri's generated default finalizer signs the temporary uninstaller. Add a
+  ; later, verification-only finalizer with an enforced zero exit so a failed
+  ; signature verification aborts NSIS without a copied template or a second
+  ; provider signing request. The generated template defines this command
+  ; before it expands this macro; unsigned builds keep it empty.
+  !if "${UNINSTALLERSIGNCOMMAND}" != ""
+    !uninstfinalize '${UNINSTALLERSIGNCOMMAND} --verify-only' = 0
+  !endif
   nsExec::ExecToStack 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& { $$target = [IO.Path]::GetFullPath($\'$INSTDIR\cutd.exe$\'); $$owned = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $$_.Name -and $$_.Name.Equals($\'cutd.exe$\', [StringComparison]::OrdinalIgnoreCase) -and $$_.ExecutablePath -and [IO.Path]::GetFullPath($$_.ExecutablePath).Equals($$target, [StringComparison]::OrdinalIgnoreCase) }); foreach ($$process in $$owned) { Stop-Process -Id $$process.ProcessId -Force -ErrorAction Stop }; if ($$owned.Count -gt 0) { Start-Sleep -Milliseconds 500 }; $$remaining = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $$_.Name -and $$_.Name.Equals($\'cutd.exe$\', [StringComparison]::OrdinalIgnoreCase) -and $$_.ExecutablePath -and [IO.Path]::GetFullPath($$_.ExecutablePath).Equals($$target, [StringComparison]::OrdinalIgnoreCase) }); if ($$remaining.Count -ne 0) { exit 42 } }"'
   Pop $0
   Pop $1

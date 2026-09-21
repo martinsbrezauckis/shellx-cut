@@ -1,30 +1,21 @@
-# ShellX Cut perception sidecar — BASE transcription deps (perception contract).
-# Permissive licenses only. Provisioned by perception_setup.rs with
-#   uv pip install --only-binary :all: --strict -r requirements.txt
-# into a standalone CPython 3.12 venv (system python on real desktops is too old —
-# macOS ships 3.9 < onnx-asr's 3.10 floor; uv installs a managed 3.12).
+# ShellX Cut perception sidecar - BASE transcription dependencies.
+# Permissive licenses only. Provisioned by perception_setup.rs with uv pip
+# install --only-binary :all: --strict -r requirements.txt into a standalone
+# CPython 3.12 venv; system Python on real desktops can be too old.
 #
-# ── WHY THIS FILE IS JUST onnx-asr fresh-Windows install fix) ──────
-# The BASE install MUST succeed on a fresh user machine with ZERO developer tools
-# (no MSVC C++ compiler, no LLVM). onnx-asr is onnxruntime-based and ships prebuilt
-# wheels for win/mac/linux on cp312, so `--only-binary :all:` installs it with NO
-# source build → working transcription immediately. The heavier, torch-based
-# perception extras (whisperX fallback, auto-reframe detector, face framing, beat
-# grid, OCR) moved to requirements-full.txt and are installed BEST-EFFORT afterward;
-# if they ever fail, transcription still works (instruments.py imports each extra
-# lazily inside try/except and degrades gracefully).
-#
-# Root cause of the old failure: the previous single file installed the whole stack
-# at once WITHOUT --only-binary. An unpinned numpy floated to 2.5.0, which exceeds
-# the newest numba's `numpy<2.5` ceiling, so pip's resolver backtracked to an ancient
-# sdist-only numba/llvmlite and tried to COMPILE llvmlite from source → "Build
-# failures usually indicate a problem with the build environment" on a box with no
-# compiler. Splitting the install + --only-binary makes that impossible.
+# BASE policy: this install stays wheel-only so fresh user machines need no
+# compiler. It installs the CPU ONNX engine and Hub client; model files are
+# prepared later into the app-owned perception directory and are reported
+# separately from package import readiness. Torch-based extras remain in
+# requirements-full.txt and are best-effort.
 #
 # PRIMARY transcription engine
-# NVIDIA Parakeet-TDT-0.6B via ONNX Runtime — native, accurate word timestamps,
-# punctuation + caps, and NO torch. [cpu] = onnxruntime CPU build; [hub] = HF model
-# download. macOS forces the CPU EP at runtime (CoreML fails on the model's
-# external-data init). The minimum marks the verified API/wheel compatibility
-# line; uv resolves a current compatible release at consent time.
-onnx-asr[cpu,hub]>=0.11.0  # MIT — Parakeet-TDT ONNX STT (PRIMARY words engine)
+# NVIDIA Parakeet-TDT-0.6B via ONNX Runtime - native, accurate word timestamps,
+# punctuation and caps, with no torch. cpu selects the ONNX Runtime CPU build;
+# hub supplies the canonical local-directory model preparation. macOS forces
+# the CPU EP at runtime because CoreML fails on the model external-data init.
+# onnx-asr resolves its canonical Hub model mapping and local-dir resume flow.
+# uv resolves a current compatible release at consent time; the model still
+# has to load successfully before transcription is ready.
+onnx-asr[cpu,hub]>=0.11.0  # MIT - Parakeet-TDT ONNX STT (primary words engine)
+filelock>=3.10.0  # Unlicense - serialize ordinary model staging and publish

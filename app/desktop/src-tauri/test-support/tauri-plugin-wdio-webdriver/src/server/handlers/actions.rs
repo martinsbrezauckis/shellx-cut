@@ -6,7 +6,7 @@ use axum::Json;
 use serde::Deserialize;
 use tauri::Runtime;
 
-use crate::platform::PointerEventType;
+use crate::platform::{PointerEventType,PlatformExecutor};
 use crate::server::response::{WebDriverErrorResponse, WebDriverResponse, WebDriverResult};
 use crate::server::AppState;
 
@@ -305,6 +305,14 @@ pub(crate) async fn perform_inner<R: Runtime + 'static>(
     session_id: &str,
     request: ActionsRequest,
 ) -> WebDriverResult {
+    perform_scoped(state, session_id, request, false).await
+}
+
+pub(crate) async fn perform_option_inner<R: Runtime + 'static>(state: &Arc<AppState<R>>, session_id: &str, request: ActionsRequest) -> WebDriverResult {
+    perform_scoped(state, session_id, request, true).await
+}
+
+async fn perform_scoped<R: Runtime + 'static>(state: &Arc<AppState<R>>, session_id: &str, request: ActionsRequest, option: bool) -> WebDriverResult {
     validate(&request)?;
     if state
         .sessions
@@ -318,7 +326,7 @@ pub(crate) async fn perform_inner<R: Runtime + 'static>(
             "release prior failed native input before continuing",
         ));
     }
-    let result = perform_sequence(state, session_id, request).await;
+    let result = perform_sequence(state, session_id, request, option).await;
     if result.is_err() {
         state
             .sessions
@@ -335,6 +343,7 @@ async fn perform_sequence<R: Runtime + 'static>(
     state: &Arc<AppState<R>>,
     session_id: &str,
     request: ActionsRequest,
+    option: bool,
 ) -> WebDriverResult {
     validate(&request)?;
     let (window, timeouts, frames, mut input) = {
@@ -426,18 +435,16 @@ async fn perform_sequence<R: Runtime + 'static>(
                         input.keyboard_source = Some(id.clone());
                         input.retain_key(value);
                         save_input(state, session_id, &input).await?;
-                        executor
-                            .dispatch_key_event(value, true, &input.modifiers())
-                            .await?;
+                        if option { executor.dispatch_option_key_event(value, true, &input.modifiers()).await?; }
+                        else { executor.dispatch_key_event(value, true, &input.modifiers()).await?; }
                     }
                     Some(KeyAction::KeyUp { value }) if input.pressed_keys.contains(value) => {
                         let mut next = input.clone();
                         next.released(&crate::webdriver::session::NativeRelease::Key(
                             value.clone(),
                         ));
-                        executor
-                            .dispatch_key_event(value, false, &next.modifiers())
-                            .await?;
+                        if option { executor.dispatch_option_key_event(value, false, &next.modifiers()).await?; }
+                        else { executor.dispatch_key_event(value, false, &next.modifiers()).await?; }
                         input = next;
                         save_input(state, session_id, &input).await?;
                     }
@@ -616,6 +623,23 @@ pub(crate) async fn release_inner<R: Runtime + 'static>(
     state: &Arc<AppState<R>>,
     id: &str,
 ) -> WebDriverResult {
+    release_scoped(state, id, None, false).await
+}
+
+pub(crate) async fn release_option_inner<R: Runtime + 'static>(state: &Arc<AppState<R>>, id: &str, executor: &dyn PlatformExecutor<R>) -> WebDriverResult {
+    release_scoped(state, id, Some(executor), false).await
+}
+
+pub(crate) async fn release_option_keys_inner<R: Runtime + 'static>(state:&Arc<AppState<R>>,id:&str,executor:&dyn PlatformExecutor<R>)->WebDriverResult {
+    release_scoped(state,id,Some(executor),true).await
+}
+
+fn release_plan(input:&crate::webdriver::session::ActionState,keys_only:bool)->Vec<crate::webdriver::session::NativeRelease> {
+    input.release_order.iter().rev().filter(|item|!keys_only || matches!(item,crate::webdriver::session::NativeRelease::Key(_))).cloned().collect()
+}
+
+async fn release_scoped<R: Runtime + 'static>(state: &Arc<AppState<R>>, id: &str, option_executor: Option<&dyn PlatformExecutor<R>>, keys_only:bool) -> WebDriverResult {
+    let option=option_executor.is_some();
     let (mut input, timeouts) = {
         let sessions = state.sessions.read().await;
         let s = sessions.get(&id)?;
@@ -626,17 +650,20 @@ pub(crate) async fn release_inner<R: Runtime + 'static>(
         save_input(&state, &id, &input).await?;
         return Ok(WebDriverResponse::null());
     };
-    let executor = state.get_executor_for_window(&owner.window, timeouts, owner.frames)?;
-    for item in input.release_order.clone().into_iter().rev() {
+    let original_executor = state.get_executor_for_window(&owner.window, timeouts, owner.frames)?;
+    let executor=option_executor.unwrap_or(&*original_executor);
+    for item in release_plan(&input,keys_only) {
         let mut next = input.clone();
         next.released(&item);
         match &item {
             crate::webdriver::session::NativeRelease::Key(key) => {
-                executor
-                    .dispatch_key_event(key, false, &next.modifiers())
-                    .await?
+                if option { executor.dispatch_option_key_event(key, false, &next.modifiers()).await?; }
+                else { executor.dispatch_key_event(key, false, &next.modifiers()).await?; }
             }
             crate::webdriver::session::NativeRelease::Button(_, button) => {
+                if option && *button==0 {
+                    executor.dispatch_option_pointer_event(PointerEventType::Up,owner.position.0,owner.position.1,*button,next.buttons(),&next.modifiers()).await?;
+                } else {
                 executor
                     .dispatch_pointer_event(
                         PointerEventType::Up,
@@ -647,6 +674,7 @@ pub(crate) async fn release_inner<R: Runtime + 'static>(
                         &next.modifiers(),
                     )
                     .await?
+                }
             }
         }
         input = next;
@@ -660,6 +688,22 @@ pub(crate) async fn release_inner<R: Runtime + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deferred_popup_cleanup_keeps_original_primary_after_keys_only() {
+        use crate::webdriver::session::{ActionState,NativeRelease};
+        let mut input=ActionState::default();
+        input.retain_primary_down("element-click","original",&[],(10,20));
+        input.retain_key("Home");input.retain_key("Escape");
+        assert_eq!(release_plan(&input,false),vec![NativeRelease::Key("Escape".into()),NativeRelease::Key("Home".into()),NativeRelease::Button("element-click".into(),0)]);
+        for item in release_plan(&input,true) {input.released(&item);}
+        assert!(input.pressed_keys.is_empty());assert_eq!(input.buttons(),1);
+        let owner=input.release_owner().unwrap().unwrap();assert_eq!(owner.window,"original");assert_eq!(owner.position,(10,20));
+        let final_release=release_plan(&input,false);assert_eq!(final_release,vec![NativeRelease::Button("element-click".into(),0)]);
+        // Simulated unknown delivery does not apply released() or erase authority.
+        assert_eq!(input.buttons(),1);assert!(input.release_owner().unwrap().is_some());
+        input.released(&final_release[0]);assert!(!input.has_held_input());assert!(input.release_owner().unwrap().is_none());
+    }
+
     fn admitted(v: serde_json::Value) -> bool {
         validate(&serde_json::from_value(v).unwrap()).is_ok()
     }

@@ -64,16 +64,19 @@ pub struct SetupOutcome {
     pub python_version: String,
     /// uv version used.
     pub uv_version: Option<String>,
-    /// True when the Parakeet model was pre-fetched (first transcribe is instant).
+    /// True when the model loaded successfully during setup.
     pub model_warmed: bool,
-    /// Whether onnx-asr imports in the new venv (the STT engine is ready). This is
-    /// the CRITICAL outcome: when true, transcription works on the user's box.
+    /// Optional model preparation failure, preserved separately from successful
+    /// package installation. None when warming was skipped or succeeded.
+    pub model_warm_error: Option<CutError>,
+    /// Whether onnx-asr imports in the new venv. This does not prove model loading
+    /// or transcription; those can still fail independently.
     pub onnx_asr_ready: bool,
     /// Whether the FULL perception extras (whisperX fallback, auto-reframe detector,
     /// face framing, beat grid, OCR) passed dependency checking and their required
     /// module-import probe. This is package/runtime admission only; native product
     /// actions still require their own host qualification. BEST-EFFORT: false here
-    /// does NOT mean setup failed — transcription still works on the onnx-asr base.
+    /// does NOT mean the base dependency installation failed.
     pub full_perception_ready: bool,
     /// Human note about the extras outcome (e.g. why they were skipped) — surfaced
     /// for the audit trail; empty when everything installed.
@@ -85,8 +88,8 @@ pub struct SetupOutcome {
 }
 
 /// Provision the perception venv. BLOCKING — call from a spawn_blocking task.
-/// `warm_model` pre-downloads the Parakeet ONNX model so the first transcription
-/// is instant (otherwise it lazy-downloads on first use). Every error is
+/// `warm_model` attempts to download and load the ONNX speech model.
+/// Model preparation failures are retained separately from dependency setup. Every error is
 /// actionable; nothing is left half-installed that the resolver would trust
 /// (uv writes the venv atomically enough that a failed pip leaves an obviously
 /// incomplete venv the doctor still reports as "deps missing").
@@ -176,36 +179,7 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     )?;
     verify_perception_dependencies(&uv, vpy, "base transcription engine", progress, 0.60, 0.605)?;
 
-    // ---- 5. verify onnx-asr imports (the STT engine is actually usable) ------
-    progress(0.61, "verifying STT engine");
-    let initial_onnx_asr_ready = onnx_asr_import_ready(&venv_python);
-
-    // ---- 6. (optional) pre-fetch the Parakeet model --------------------------
-    // Done BEFORE the heavy extras so the critical "engine + model" pair lands
-    // first; the user can transcribe even if the extras phase is slow or skipped.
-    let mut model_warmed = false;
-    if warm_model && initial_onnx_asr_ready {
-        progress(0.62, "downloading Parakeet model (first run only)");
-        // Loading the model with the hub downloader caches its ONNX files so the
-        // first real transcription is instant. CPU provider everywhere (matches
-        // instruments.py; correctness over the CoreML accel path).
-        let warm = run_streaming(
-            &venv_python,
-            &[
-                "-c",
-                "import os,onnx_asr; \
-                 onnx_asr.load_model(os.environ.get('SHELLX_CUT_STT_MODEL','nemo-parakeet-tdt-0.6b-v3'), \
-                 providers=['CPUExecutionProvider']); print('warmed')",
-            ],
-            "model download",
-            progress,
-            0.62,
-            0.76,
-        );
-        model_warmed = warm.is_ok();
-    }
-
-    // ---- 7. install the perception extras (BEST-EFFORT, current wheels) -------
+    // ---- 5. install the perception extras (BEST-EFFORT, current wheels) -------
     //
     // This intentionally resolves the bundled policy at consent time rather than
     // shipping a platform-specific generated lock. Wheel-only installation and
@@ -214,7 +188,7 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     // final shared-venv dependency and STT checks still pass.
     let full_install = requirements_full.as_ref().map(|requirements_full| {
         progress(
-            0.78,
+            0.62,
             "installing perception tools (captions, scenes, silence, auto-reframe, OCR)",
         );
         full_perception_install_args(vpy, requirements_full).and_then(|args| {
@@ -223,8 +197,8 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
                 &args,
                 "uv pip install perception tools",
                 progress,
-                0.78,
-                0.96,
+                0.62,
+                0.86,
             )
         })
     });
@@ -232,16 +206,16 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     // The extras share this venv. Even an optional-install failure can have
     // changed its resolved graph, so every successful outcome needs a final
     // dependency check and STT import before the actual final package receipt.
-    progress(0.965, "checking final perception dependencies");
+    progress(0.865, "checking final perception dependencies");
     verify_perception_dependencies(
         &uv,
         vpy,
         "final perception environment",
         progress,
-        0.965,
-        0.97,
+        0.865,
+        0.88,
     )?;
-    progress(0.975, "verifying final transcription engine");
+    progress(0.885, "verifying final transcription engine");
     verify_final_onnx_asr_import(&venv_python)?;
     let onnx_asr_ready = true;
 
@@ -251,20 +225,20 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
             Err(e) => {
                 let note = format!(
                     "the current compatible perception tools installed but did not pass their module-import check ({}); \
-                     transcription still works on the built-in engine",
+                     the base transcription dependencies are installed",
                     e.message
                 );
-                progress(0.98, &note);
+                progress(0.90, &note);
                 (false, Some(note))
             }
         },
         Some(Err(e)) => {
             let note = format!(
                 "the current compatible perception tools could not be installed ({}); \
-                 transcription still works on the built-in engine",
+                 the base transcription dependencies are installed",
                 e.message
             );
-            progress(0.98, &note);
+            progress(0.90, &note);
             (false, Some(note))
         }
         None => (
@@ -278,18 +252,84 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     };
     let package_versions = installed_package_versions(&uv, vpy)?;
 
-    progress(1.0, "perception ready");
+    // ---- 6. optional model load against the final installed environment -----
+    let mut model_warmed = false;
+    let mut model_warm_error = None;
+    let selection = cut_perception::effective_stt_selection();
+    if let Some(model_id) = onnx_warm_model_id(selection.model.as_deref()).filter(|_| warm_model) {
+        progress(0.91, "preparing speech model");
+        // Setup and real transcription share the same ordinary local model
+        // layout; Runner's admitted immutable models remain a separate route.
+        let model_script = script.with_file_name("ordinary_speech_models.py");
+        let model_root = sidecar_dir.join("models");
+        let warm = run_streaming(
+            &venv_python,
+            &[
+                model_script.to_str().unwrap_or_default(),
+                "--prepare",
+                "--model",
+                model_id,
+                "--root",
+                model_root.to_str().unwrap_or_default(),
+            ],
+            "model download",
+            progress,
+            0.91,
+            0.99,
+        );
+        match warm {
+            Ok(()) => model_warmed = true,
+            Err(error) => model_warm_error = Some(error),
+        }
+    }
+
+    progress(
+        1.0,
+        if model_warm_error.is_some() {
+            "caption tools installed; speech model preparation failed"
+        } else {
+            "caption tools installed"
+        },
+    );
     Ok(SetupOutcome {
         venv_python: venv_python.display().to_string(),
         managed_python: managed_python.path.display().to_string(),
         python_version,
         uv_version,
         model_warmed,
+        model_warm_error,
         onnx_asr_ready,
         full_perception_ready,
         extras_note,
         package_versions,
     })
+}
+
+// Match the ordinary transcription selector's explicit model families. Whisper
+// uses its own runtime and prepares on first transcription, not through ONNX.
+fn onnx_warm_model_id(selected: Option<&str>) -> Option<&str> {
+    let selected = selected.map(str::trim).filter(|value| !value.is_empty());
+    let model = selected.unwrap_or("nemo-parakeet-tdt-0.6b-v3");
+    let lowered = model.to_ascii_lowercase();
+    if lowered.starts_with("whisper-") || lowered.starts_with("whisperx-") {
+        None
+    } else if lowered == "canary"
+        || lowered.starts_with("canary-")
+        || lowered.starts_with("nemo-canary")
+        || lowered.starts_with("canary@")
+    {
+        let canary = model.split('@').next().unwrap_or(model).trim();
+        if matches!(
+            canary.to_ascii_lowercase().as_str(),
+            "canary" | "canary-1b-v2"
+        ) {
+            Some("nemo-canary-1b-v2")
+        } else {
+            Some(canary)
+        }
+    } else {
+        Some(model)
+    }
 }
 
 // ===========================================================================
@@ -1127,6 +1167,25 @@ fn io_err(op: &'static str) -> impl Fn(std::io::Error) -> CutError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_warm_selection_preserves_ordinary_runtime_choice() {
+        use super::onnx_warm_model_id;
+        assert_eq!(onnx_warm_model_id(None), Some("nemo-parakeet-tdt-0.6b-v3"));
+        for model in [
+            "nemo-parakeet-tdt-0.6b-v2",
+            "nemo-canary-1b-v2",
+            "owner/custom-onnx",
+        ] {
+            assert_eq!(onnx_warm_model_id(Some(model)), Some(model));
+        }
+        for alias in ["canary", "Canary-1b-v2", "canary@cpu"] {
+            assert_eq!(onnx_warm_model_id(Some(alias)), Some("nemo-canary-1b-v2"));
+        }
+        for whisper in ["whisperx-large-v3", "Whisper-large-v3@cpu"] {
+            assert_eq!(onnx_warm_model_id(Some(whisper)), None);
+        }
+    }
+
     use super::*;
 
     /// The dev-jargon line the fresh-Windows user actually saw must NEVER reach the

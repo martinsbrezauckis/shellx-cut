@@ -100,7 +100,12 @@ export function useEnvironmentSetupJob(onChanged: () => void) {
       if (record.state === 'done') {
         activeJobRef.current = null
         if (!mountedRef.current) return
-        setJob({ busy: false, pct: 100, msg: 'done', err: null })
+        const warning = record.completion === 'done_with_warnings'
+          ? record.kind === 'setup_perception'
+            ? 'Caption tools installed, but the speech model could not be prepared.'
+            : 'Setup completed with warnings.'
+          : null
+        setJob({ busy: false, pct: 100, msg: 'done', err: warning })
         onChanged()
         return
       }

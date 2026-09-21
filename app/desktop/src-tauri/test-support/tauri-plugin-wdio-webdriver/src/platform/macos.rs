@@ -9,12 +9,13 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSBitmapImageFileType, NSBitmapImageRep,
-    NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSRunningApplication,
+    NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSEventTrackingRunLoopMode, NSImage, NSRunningApplication,
     NSScreen, NSView, NSWindow, NSWorkspace,
 };
+use objc2_core_foundation::{CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, CFString, kCFRunLoopCommonModes};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
-    CGEventType, CGMouseButton, CGPreflightPostEventAccess, CGScrollEventUnit,
+    CGEventType, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGMouseButton, CGPreflightPostEventAccess, CGPreflightListenEventAccess, CGScrollEventUnit,
 };
 use objc2_foundation::{
     NSData, NSDictionary, NSError, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint,
@@ -45,6 +46,8 @@ pub struct MacOSExecutor<R: Runtime> {
     window: WebviewWindow<R>,
     timeouts: Timeouts,
     frame_context: Vec<FrameId>,
+    option_pointer: Arc<std::sync::Mutex<Option<OptionPointerPin>>>,
+    option_completion_point: Arc<std::sync::Mutex<Option<OptionCompletionPoint>>>,
 }
 
 impl<R: Runtime> MacOSExecutor<R> {
@@ -53,6 +56,8 @@ impl<R: Runtime> MacOSExecutor<R> {
             window,
             timeouts,
             frame_context,
+            option_pointer: Arc::new(std::sync::Mutex::new(None)),
+            option_completion_point: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -75,6 +80,35 @@ enum NativeInput {
         dx: i32,
         dy: i32,
     },
+}
+
+// Only this executor's internal OPTION Down can create the release proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OptionPointerPin { marker: i64, window: isize, view: usize }
+// Readiness metadata for this gesture, never held-button/release authority.
+#[derive(Clone, Copy)]
+struct OptionCompletionPoint {window:isize,view:usize,viewport:(i32,i32,f64,f64),screen:NSPoint}
+
+fn option_point_readiness(pin:OptionCompletionPoint,window:isize,view:usize,screen:NSPoint,observed:isize)->Result<Option<String>,String> {
+    if view!=pin.view || window!=pin.window {return Err("option original point owner changed".into());}
+    if screen!=pin.screen {return Err("option original point geometry changed".into());}
+    Ok((observed!=pin.window).then(||format!("option original point remains covered; expectedWindow={} observedWindow={observed}",pin.window)))
+}
+
+unsafe fn native_screen_point(wk:&WKWebView,window:&NSWindow,viewport:(i32,i32,f64,f64))->Result<NSPoint,String> {
+    let (x,y,width,height)=viewport;
+    let b=wk.bounds();let i=wk.safeAreaInsets();
+    let full=(b.size.width-width).abs()<=1.0 && (b.size.height-height).abs()<=1.0;
+    let inset=[i.left,i.right,i.top,i.bottom].iter().all(|n|n.is_finite() && *n>=0.0)
+        && (b.size.width-i.left-i.right-width).abs()<=1.0 && (b.size.height-i.top-i.bottom-height).abs()<=1.0;
+    if wk.pageZoom()!=1.0 || (!full && !inset) {return Err(format!("native/DOM viewport mismatch bounds={b:?} dom={width}x{height} insets={i:?}"));}
+    let left=if full{0.0}else{i.left};let top=if full{0.0}else{i.top};
+    let p=NSPoint::new(b.origin.x+left+f64::from(x),b.origin.y+if wk.isFlipped(){top+f64::from(y)}else{b.size.height-top-f64::from(y)});
+    Ok(window.convertPointToScreen(wk.convertPoint_toView(p,None)))
+}
+
+fn option_release_admitted(pin: Option<OptionPointerPin>, window: isize, view: usize, held: bool) -> bool {
+    pin.is_some_and(|p| p.marker > 0 && p.window == window && p.view == view) && held
 }
 
 fn native_buttons_held() -> bool {
@@ -206,6 +240,15 @@ fn native_key(
 }
 
 impl<R: Runtime + 'static> MacOSExecutor<R> {
+    async fn remove_popup_observer(&self, marker:i64) -> Result<(),WebDriverErrorResponse> {
+        let (tx,rx)=oneshot::channel();
+        self.window.run_on_main_thread(move || { remove_popup_tap(marker);let _=tx.send(()); })
+            .map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
+        tokio::time::timeout(std::time::Duration::from_millis(2000),rx).await
+            .map_err(|_|WebDriverErrorResponse::unknown_error("popup observer cleanup timed out"))?
+            .map_err(|_|WebDriverErrorResponse::unknown_error("popup observer cleanup channel closed"))
+    }
+
     async fn complete_key_release(
         &self,
         owner: (isize, String),
@@ -295,6 +338,7 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
         input: NativeInput,
         coords: Option<(i32, i32)>,
         modifiers: ModifierState,
+        option_scope: bool,
     ) -> Result<(), WebDriverErrorResponse> {
         if !self.frame_context.is_empty() {
             return Err(WebDriverErrorResponse::unsupported_operation(
@@ -306,7 +350,11 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 "native input posting unavailable: CGPreflightPostEventAccess=false pid={} executable={}",
                 std::process::id(), std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default())));
         }
-        self.ensure_owned_foreground().await?;
+        // Popup Up/keys must not reactivate a lost owner. The original Down
+        // retains its established foreground setup and post-AppKit barrier.
+        if !option_scope || matches!(&input, NativeInput::Pointer { event_type: PointerEventType::Down, .. }) {
+            self.ensure_owned_foreground().await?;
+        }
         // An Up may release the original owned press after the view shrank.
         // Common state supplies the last successfully admitted point, never a failed move.
         let releasing = matches!(
@@ -337,6 +385,8 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
             None
         };
         let (tx, rx) = oneshot::channel();
+        let option_state = self.option_pointer.clone();
+        let completion_point = self.option_completion_point.clone();
         // macOS consumes Command key equivalents at application/system level;
         // their keyUp need not reach an NSEvent local monitor. Acknowledge that
         // particular release using native session key state, never a DOM claim.
@@ -351,6 +401,8 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
         let posted_completion = completion.clone();
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let pending = cancelled.clone();
+        let popup_observer = option_scope && matches!(&input,NativeInput::Key{..});
+        let _observer_cleanup=popup_observer.then(||PopupObserverCleanup{window:self.window.clone(),marker,cancelled:cancelled.clone()});
         self.window.with_webview(move |webview| unsafe {
             let response = (|| -> Result<(),String> {
                 let mtm=MainThreadMarker::new().ok_or("native input requires main thread")?;
@@ -360,17 +412,14 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 if !app.isActive() || !window.isKeyWindow() || !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {
                     return Err("owned view/window must be visible and not minimized".into());
                 }
+                let option_down = option_scope && matches!(&input, NativeInput::Pointer { event_type: PointerEventType::Down, .. });
                 let location = if let Some((x,y,width,height))=viewport {
-                    let b=wk.bounds();let i=wk.safeAreaInsets();
-                    let full=(b.size.width-width).abs()<=1.0 && (b.size.height-height).abs()<=1.0;
-                    let inset=[i.left,i.right,i.top,i.bottom].iter().all(|n|n.is_finite() && *n>=0.0)
-                        && (b.size.width-i.left-i.right-width).abs()<=1.0 && (b.size.height-i.top-i.bottom-height).abs()<=1.0;
-                    if wk.pageZoom()!=1.0 || (!full && !inset) { return Err(format!("native/DOM viewport mismatch bounds={b:?} dom={width}x{height} insets={i:?}")); }
-                    let left=if full{0.0}else{i.left};let top=if full{0.0}else{i.top};
-                    let p=NSPoint::new(b.origin.x+left+f64::from(x),b.origin.y+if wk.isFlipped(){top+f64::from(y)}else{b.size.height-top-f64::from(y)});
-                    let screen=window.convertPointToScreen(wk.convertPoint_toView(p,None));
+                    let screen=native_screen_point(wk,&window,(x,y,width,height))?;
                     if !releasing && NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen,0,mtm)!=window.windowNumber() {
                         return Err("owned window is not frontmost at native input point".into());
+                    }
+                    if option_down {
+                        *completion_point.lock().unwrap()=Some(OptionCompletionPoint {window:window.windowNumber(),view:wk as *const WKWebView as usize,viewport:(x,y,width,height),screen});
                     }
                     let screens=NSScreen::screens(mtm);let primary=screens.firstObject().ok_or("primary screen unavailable")?;
                     let frame=primary.frame();
@@ -412,8 +461,11 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                         KEY_REPRESENTATIONS.with(|keys|keys.borrow_mut().insert(owner,KeyRepresentation::Hardware{code:*code,held:false}));
                     }
                 }
+                let option_up = option_scope && matches!(&input, NativeInput::Pointer { event_type: PointerEventType::Up, .. });
+                let expected_view = wk as *const WKWebView as usize;
                 let keyboard=matches!(&input,NativeInput::Key{..});
                 let keyboard_transition=match &input { NativeInput::Key{key,code,down,..}=>Some((key.clone(),*code,*down)), _=>None };
+                let no_button_move=matches!(&input,NativeInput::Pointer{event_type:PointerEventType::Move,buttons:0,..});
                 let event=match input {
                     NativeInput::Pointer{event_type,button,buttons} => {
                         let active=if matches!(event_type,PointerEventType::Move) {
@@ -437,7 +489,7 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                         eprintln!("ST14A_NATIVE_RESPONDER ownedDescendant={already_owned} class={:?}",responder.as_ref().map(|r|r.class().name()));
                         // Reassigning the WK wrapper while its content/editor
                         // view already owns focus can disturb a live selection.
-                        if !already_owned && !window.makeFirstResponder(Some(wk)) { return Err("owned webview refuses first responder".into()); }
+                        if !popup_observer && !already_owned && !window.makeFirstResponder(Some(wk)) { return Err("owned webview refuses first responder".into()); }
                         let e=CGEvent::new_keyboard_event(None,code,down).ok_or("native keyboard event unavailable")?;
                         if let Some(text)=text { let units:Vec<u16>=text.encode_utf16().collect();CGEvent::keyboard_set_unicode_string(Some(&e),units.len() as _,units.as_ptr()); }
                         e
@@ -453,6 +505,53 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 eprintln!("ST14A_NATIVE_POST route=hid pid={} type={:?} point={:?} window={} active=true key=true postAccess=true",
                     std::process::id(),CGEvent::r#type(Some(&event)),location,window.windowNumber());
                 CGEvent::set_integer_value_field(Some(&event),CGEventField::EventSourceUserData,marker);
+                if popup_observer {
+                    let expected_window=window.windowNumber();
+                    let retained_view=Retained::retain(wk as *const WKWebView as *mut WKWebView).ok_or("owned view retention failed")?;
+                    let expected_kind=CGEvent::r#type(Some(&event));
+                    let field=if keyboard{CGEventField::KeyboardEventKeycode}else{CGEventField::MouseEventButtonNumber};
+                    let detail=CGEvent::integer_value_field(Some(&event),field);
+                    let flags=native_flags(modifiers);
+                    let delivered=posted_completion.clone();let native_release=completed_release.clone();
+                    install_popup_tap(marker,expected_kind,Box::new(move |kind,incoming| {
+                        let result=(||->Result<(),String>{
+                            if kind==CGEventType::TapDisabledByTimeout || kind==CGEventType::TapDisabledByUserInput {
+                                return Err("popup process event tap disabled; delivery unknown".into());
+                            }
+                            let mtm=MainThreadMarker::new().ok_or("popup callback not on main thread")?;
+                            let owner=retained_view.window().ok_or("popup owner window missing")?;
+                            let app=NSApplication::sharedApplication(mtm);
+                            let owner_valid=owner.windowNumber()==expected_window && app.isActive() && owner.isKeyWindow()
+                                && owner.isVisible() && !owner.isMiniaturized() && !retained_view.isHiddenOrHasHiddenAncestor();
+                            if !popup_event_matches(kind,expected_kind,
+                                CGEvent::integer_value_field(Some(incoming),field),detail,
+                                CGEvent::flags(Some(incoming)),flags,
+                                CGEvent::integer_value_field(Some(incoming),CGEventField::EventTargetUnixProcessID),std::process::id(),owner_valid) {
+                                return Err("marked popup event identity or owner changed".into());
+                            }
+                            if let Some((key,code,down))=&keyboard_transition {
+                                // Diagnostic only: the enclosing tap already matched this exact
+                                // marked control key and owned window. Conversion is optional and
+                                // does not establish AppKit/menu consumption or change admission.
+                                let representation=NSEvent::eventWithCGEvent(incoming).map(|event| {
+                                    let units=|text:Option<Retained<NSString>>|text.map(|s|s.to_string().encode_utf16().take(8).collect::<Vec<_>>());
+                                    (event.keyCode(),event.modifierFlags().bits(),units(event.characters()),units(event.charactersIgnoringModifiers()))
+                                });
+                                eprintln!("ST43_OPTION_KEY_REPRESENTATION marker={marker} expectedCode={code} observedCode={} cgFlags={} nsEvent={representation:?} afterAppKitClaimed=false",
+                                    CGEvent::integer_value_field(Some(incoming),CGEventField::KeyboardEventKeycode),CGEvent::flags(Some(incoming)).bits());
+                                let held=CGEventSource::key_state(CGEventSourceStateID::CombinedSessionState,*code);
+                                if held!=*down{return Err("popup key state differs from observed transition".into());}
+                                if *down {KEY_REPRESENTATIONS.with(|keys|keys.borrow_mut().insert((expected_window,key.clone()),KeyRepresentation::Hardware{code:*code,held}));}
+                                else {*native_release.lock().unwrap()=Some((expected_window,key.clone()));}
+                            }
+                            eprintln!("ST43_OPTION_DELIVERY basis=own-process-cgevent-tap marker={marker} eventType={kind:?} ownerPid={} ownerWindow={expected_window} afterAppKitClaimed=false",std::process::id());
+                            Ok(())
+                        })();
+                        if let Some(tx)=delivered.lock().unwrap().take(){let _=tx.send(result);}
+                    }))?;
+                    CGEvent::post(CGEventTapLocation::HIDEventTap,Some(&event));
+                    return Ok(());
+                }
                 if let Some((key,code,false))=keyboard_transition.as_ref().filter(|_|modifiers.meta) {
                     let code=*code;
                     let held_pin=KEY_REPRESENTATIONS.with(|keys|matches!(keys.borrow().get(&(window.windowNumber(),key.clone())),Some(KeyRepresentation::Hardware{held:true,..})));
@@ -470,12 +569,26 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 let delivered=posted_completion.clone();
                 let native_release=completed_release.clone();
                 let seen=Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let release_pin=option_state.clone();
+                let diagnostic_owner=window.clone();
+                let delivery_view=Retained::retain(wk as *const WKWebView as *mut WKWebView).ok_or("owned delivery view retention failed")?;
                 let handler=RcBlock::new(move |pointer: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
                     let incoming=pointer.as_ref();
                     let marked=incoming.CGEvent().is_some_and(|cg|
                         CGEvent::integer_value_field(Some(&cg),CGEventField::EventSourceUserData)==marker);
                     let actual_window=incoming.windowNumber();
                     if marked { eprintln!("ST14A_NATIVE_DELIVERY marker={marker} eventType={:?} window={actual_window} expectedWindow={expected_window}",incoming.r#type()); }
+                    if marked && !keyboard && actual_window!=expected_window {
+                        // Diagnose only this exact owned marked input. The narrow
+                        // missing-object mouse-move binding below is separately checked.
+                        let event_window=MainThreadMarker::new().and_then(|mtm|incoming.window(mtm)).map(|w|
+                            (format!("{:p}",&*w),w.class().name().to_string_lossy().chars().take(128).collect::<String>(),w.windowNumber(),w.level(),w.isVisible(),std::ptr::eq(&*w,&*diagnostic_owner)));
+                        let fields=incoming.CGEvent().map(|cg|(
+                            CGEvent::integer_value_field(Some(&cg),CGEventField::MouseEventWindowUnderMousePointer),
+                            CGEvent::integer_value_field(Some(&cg),CGEventField::MouseEventWindowUnderMousePointerThatCanHandleThisEvent)));
+                        let mode=CFRunLoop::current().and_then(|r|r.current_mode()).map(|m|m.to_string().chars().take(128).collect::<String>());
+                        eprintln!("ST43_MARKED_WINDOW_MISMATCH marker={marker} eventWindowNumber={actual_window} eventWindow={event_window:?} retainedOwner={:p} retainedOwnerNumber={expected_window} cgWindows={fields:?} runLoopMode={mode:?}",&*diagnostic_owner);
+                    }
                     // Key equivalents are application events and may have no
                     // event window. Bind those to the still-active original key
                     // window; mouse events must identify that window directly.
@@ -483,17 +596,44 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                         let app=NSApplication::sharedApplication(mtm);
                         app.isActive() && app.keyWindow().is_some_and(|w|w.windowNumber()==expected_window)
                     });
-                    let matched=marked && (actual_window==expected_window || (keyboard && actual_window==0 && owner_key));
+                    let cg_bound=if marked && no_button_move && actual_window!=expected_window {
+                        MainThreadMarker::new().is_some_and(|mtm| {
+                            let app=NSApplication::sharedApplication(mtm);
+                            let owner_valid=app.isActive() && diagnostic_owner.windowNumber()==expected_window && diagnostic_owner.isKeyWindow() && diagnostic_owner.isVisible()
+                                && !diagnostic_owner.isMiniaturized() && !delivery_view.isHiddenOrHasHiddenAncestor()
+                                && delivery_view.window().is_some_and(|w|std::ptr::eq(&*w,&*diagnostic_owner))
+                                && app.keyWindow().is_some_and(|w|std::ptr::eq(&*w,&*diagnostic_owner));
+                            incoming.CGEvent().is_some_and(|cg|cg_mouse_move_binding(
+                                marked,no_button_move,incoming.r#type(),CGEvent::r#type(Some(&cg)),
+                                CGEvent::location(Some(&cg)),location,incoming.window(mtm).is_some(),
+                                (CGEvent::integer_value_field(Some(&cg),CGEventField::MouseEventWindowUnderMousePointer),
+                                 CGEvent::integer_value_field(Some(&cg),CGEventField::MouseEventWindowUnderMousePointerThatCanHandleThisEvent)),
+                                expected_window,owner_valid,native_buttons_held()))
+                        })
+                    } else {false};
+                    if cg_bound {eprintln!("ST43_NATIVE_DELIVERY_BINDING marker={marker} basis=own-cg-window-ids ownerWindow={expected_window} legacyEventWindow={actual_window} eventWindowObject=none");}
+                    let matched=marked && (actual_window==expected_window || (keyboard && actual_window==0 && owner_key) || cg_bound);
                     if matched && !seen.swap(true,std::sync::atomic::Ordering::SeqCst) {
                         let delivered=delivered.clone();
                         let keyboard_transition=keyboard_transition.clone();
                         let native_release=native_release.clone();
+                        let option_state=option_state.clone();
                         let after_dispatch=RcBlock::new(move || {
                             remove_delivery_monitor(marker);
                             let result=if let Some((key,code,down))=&keyboard_transition {
                                 let held=CGEventSource::key_state(CGEventSourceStateID::CombinedSessionState,*code);
                                 if *down && !held { Err("acknowledged key Down lacks native session held state".into()) }
                                 else { KEY_REPRESENTATIONS.with(|keys| { if *down { keys.borrow_mut().insert((expected_window,key.clone()),KeyRepresentation::Hardware{code:*code,held}); } else { *native_release.lock().unwrap()=Some((expected_window,key.clone())); } }); Ok(()) }
+                            } else if option_down {
+                                if !CGEventSource::button_state(CGEventSourceStateID::CombinedSessionState, CGMouseButton::Left) {
+                                    Err("acknowledged OPTION Down lacks native held button state".into())
+                                } else {
+                                    *option_state.lock().unwrap() = Some(OptionPointerPin { marker, window: expected_window, view: expected_view });
+                                    Ok(())
+                                }
+                            } else if option_up {
+                                if CGEventSource::button_state(CGEventSourceStateID::CombinedSessionState,CGMouseButton::Left) {Err("acknowledged OPTION Up still has held primary button".into())}
+                                else {*option_state.lock().unwrap()=None;Ok(())}
                             } else { Ok(()) };
                             if let Some(tx)=delivered.lock().unwrap().take() { let _=tx.send(result); }
                         });
@@ -504,6 +644,16 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 let monitor=NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::Any,&handler)
                     .ok_or("owned event delivery monitor unavailable")?;
                 DELIVERY_MONITORS.with(|items|items.borrow_mut().insert(marker,monitor));
+                if option_up {
+                    let mut pin=release_pin.lock().unwrap();
+                    if !option_release_admitted(*pin,window.windowNumber(),expected_view,
+                        CGEventSource::button_state(CGEventSourceStateID::CombinedSessionState,CGMouseButton::Left)) {
+                        return Err("OPTION Up requires exact acknowledged Down and held primary button; no Up posted".into());
+                    }
+                    // Consume one release attempt before posting. Unknown delivery
+                    // retains common held intent but cannot post this Up again.
+                    pin.as_mut().unwrap().marker=0;
+                }
                 CGEvent::post(CGEventTapLocation::HIDEventTap,Some(&event));
                 Ok(())
             })();
@@ -512,12 +662,10 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 if let Some(tx)=posted_completion.lock().unwrap().take() { let _=tx.send(Err(error)); }
             }
         }).map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(self.timeouts.script_ms.min(2000)),
-            rx,
-        )
-        .await
-        {
+        let outcome=tokio::time::timeout(
+            std::time::Duration::from_millis(self.timeouts.script_ms.min(2000)),rx).await;
+        if popup_observer { cancelled.store(true,std::sync::atomic::Ordering::SeqCst);self.remove_popup_observer(marker).await?; }
+        match outcome {
             Ok(Ok(Ok(()))) => {
                 let release_record = command_release.lock().unwrap().clone();
                 if let Some((owner_window, key, code)) = release_record {
@@ -566,6 +714,71 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
             }
         }
     }
+}
+
+// A no-button move may carry no AppKit window object after native menu use.
+// Normalize only that observed representation; never apply to captured drags,
+// buttons, wheel or keyboard, and keep the same local after-dispatch barrier.
+fn cg_mouse_move_binding(marked:bool,no_button_move:bool,ns_type:NSEventType,cg_type:CGEventType,
+    point:NSPoint,expected_point:NSPoint,has_window_object:bool,windows:(i64,i64),owner:isize,owner_valid:bool,buttons_held:bool)->bool {
+    marked && no_button_move && ns_type==NSEventType::MouseMoved && cg_type==CGEventType::MouseMoved
+        && point==expected_point && !has_window_object && owner>0 && windows==(owner as i64,owner as i64)
+        && owner_valid && !buttons_held
+}
+
+// This observer is scoped to one marked event addressed to this process. It
+// does not claim AppKit consumption; the original OPTION Down keeps its local
+// monitor ordering barrier and the oracle still verifies actual trusted effects.
+fn popup_event_matches(kind:CGEventType,expected:CGEventType,detail:i64,expected_detail:i64,flags:CGEventFlags,expected_flags:CGEventFlags,target:i64,pid:u32,owner:bool)->bool {
+    let relevant=CGEventFlags::MaskShift|CGEventFlags::MaskControl|CGEventFlags::MaskAlternate|CGEventFlags::MaskCommand;
+    kind==expected && detail==expected_detail && flags&relevant==expected_flags&relevant
+        // A zero metadata field has no contrary PID claim; the tap itself is
+        // created for the exact own PID. Any nonzero contradiction refuses.
+        && (target==0 || target==i64::from(pid)) && owner
+}
+fn popup_first_receipt(expected:i64,marker:Option<i64>,seen:&std::cell::Cell<bool>)->bool {
+    // None is used only for a native tap-disabled notification, never an input.
+    (marker.is_none() || marker==Some(expected)) && !seen.replace(true)
+}
+struct PopupTapContext {marker:i64,seen:std::cell::Cell<bool>,callback:Box<dyn Fn(CGEventType,&CGEvent)>}
+struct PopupTap {port:CFRetained<CFMachPort>,source:CFRetained<CFRunLoopSource>,run_loop:CFRetained<CFRunLoop>,tracking:CFRetained<CFString>,_context:Box<PopupTapContext>}
+impl Drop for PopupTap {
+    fn drop(&mut self) {unsafe {
+        CGEvent::tap_enable(&self.port,false);self.port.invalidate();
+        self.run_loop.remove_source(Some(&self.source),kCFRunLoopCommonModes);
+        self.run_loop.remove_source(Some(&self.source),Some(&self.tracking));
+    }}
+}
+thread_local! {static POPUP_TAPS:std::cell::RefCell<std::collections::HashMap<i64,PopupTap>>=Default::default();}
+unsafe extern "C-unwind" fn popup_tap_callback(_proxy:CGEventTapProxy,kind:CGEventType,event:std::ptr::NonNull<CGEvent>,data:*mut std::ffi::c_void)->*mut CGEvent {
+    let context=&*(data as *const PopupTapContext);
+    let disabled=kind==CGEventType::TapDisabledByTimeout || kind==CGEventType::TapDisabledByUserInput;
+    // Read no key data and retain nothing for unrelated events.
+    let marker=if disabled{None}else{Some(CGEvent::integer_value_field(Some(event.as_ref()),CGEventField::EventSourceUserData))};
+    if popup_first_receipt(context.marker,marker,&context.seen) {
+        (context.callback)(kind,event.as_ref());
+    }
+    event.as_ptr()
+}
+fn install_popup_tap(marker:i64,kind:CGEventType,callback:Box<dyn Fn(CGEventType,&CGEvent)>)->Result<(),String> {unsafe {
+    if POPUP_TAPS.with(|items|!items.borrow().is_empty()){return Err("popup observer already active".into());}
+    let mut context=Box::new(PopupTapContext{marker,seen:std::cell::Cell::new(false),callback});
+    let port=CGEvent::tap_create_for_pid(std::process::id() as i32,CGEventTapPlacement::TailAppendEventTap,CGEventTapOptions::ListenOnly,1u64<<kind.0,Some(popup_tap_callback),(&mut *context as *mut PopupTapContext).cast())
+        .ok_or_else(||format!("own-process popup event tap unavailable; listenPreflight={}",CGPreflightListenEventAccess()))?;
+    let source=CFMachPort::new_run_loop_source(None,Some(&port),0).ok_or("popup run-loop source unavailable")?;
+    let run_loop=CFRunLoop::main().ok_or("main run loop unavailable")?;
+    let tracking=CFString::from_str(&NSEventTrackingRunLoopMode.to_string());
+    let holder=PopupTap{port,source,run_loop,tracking,_context:context};
+    holder.run_loop.add_source(Some(&holder.source),kCFRunLoopCommonModes);
+    holder.run_loop.add_source(Some(&holder.source),Some(&holder.tracking));
+    CGEvent::tap_enable(&holder.port,true);
+    if !holder.port.is_valid() || !CGEvent::tap_is_enabled(&holder.port){return Err("popup event tap not enabled".into());}
+    POPUP_TAPS.with(|items|items.borrow_mut().insert(marker,holder));Ok(())
+}}
+fn remove_popup_tap(marker:i64) {POPUP_TAPS.with(|items|{items.borrow_mut().remove(&marker);});}
+struct PopupObserverCleanup<R:Runtime> {window:WebviewWindow<R>,marker:i64,cancelled:Arc<std::sync::atomic::AtomicBool>}
+impl<R:Runtime> Drop for PopupObserverCleanup<R> {
+    fn drop(&mut self) {self.cancelled.store(true,std::sync::atomic::Ordering::SeqCst);let marker=self.marker;let _=self.window.run_on_main_thread(move ||remove_popup_tap(marker));}
 }
 
 // A monitor is only an acknowledgement of our marked event entering AppKit.
@@ -636,6 +849,76 @@ pub fn register_webview_handlers<R: Runtime>(webview: &tauri::Webview<R>) {
 
 #[async_trait]
 impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
+    fn option_defer_primary_release(&self) -> bool { true }
+
+    fn clear_option_completion(&self) { *self.option_completion_point.lock().unwrap()=None; }
+
+    async fn option_completion_readiness(&self) -> Result<Option<WebDriverErrorResponse>,WebDriverErrorResponse> {
+        let pin=(*self.option_completion_point.lock().unwrap()).ok_or_else(||WebDriverErrorResponse::unknown_error("option original point missing"))?;
+        let value=self.evaluate_js("({width:innerWidth,height:innerHeight,scale:visualViewport?visualViewport.scale:1,x:visualViewport?visualViewport.offsetLeft:0,y:visualViewport?visualViewport.offsetTop:0})").await?;
+        let v=&value["value"];
+        if v["width"].as_f64()!=Some(pin.viewport.2) || v["height"].as_f64()!=Some(pin.viewport.3) || v["scale"].as_f64()!=Some(1.0) || v["x"].as_f64()!=Some(0.0) || v["y"].as_f64()!=Some(0.0) {
+            return Err(WebDriverErrorResponse::unknown_error("option viewport changed during completion"));
+        }
+        let (tx,rx)=oneshot::channel();
+        self.window.with_webview(move |view| unsafe {
+            let result=(||->Result<Option<String>,String>{
+                let mtm=MainThreadMarker::new().ok_or("option readiness not on main thread")?;
+                let wk:&WKWebView=&*view.inner().cast();
+                let window=wk.window().ok_or("option readiness window missing")?;
+                if wk as *const WKWebView as usize!=pin.view || window.windowNumber()!=pin.window {return Err("option original point owner changed".into());}
+                let screen=native_screen_point(wk,&window,pin.viewport)?;
+                let observed=NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen,0,mtm);
+                option_point_readiness(pin,window.windowNumber(),wk as *const WKWebView as usize,screen,observed)
+            })();
+            let _=tx.send(result);
+        }).map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
+        rx.await.map_err(|_|WebDriverErrorResponse::unknown_error("option readiness channel closed"))?
+            .map(|pending|pending.map(|m|WebDriverErrorResponse::unknown_error(&m)))
+            .map_err(|e|WebDriverErrorResponse::unknown_error(&e))
+    }
+
+    async fn option_completion_owner(&self) -> Result<String,WebDriverErrorResponse> {
+        let (tx,rx)=oneshot::channel();
+        self.window.with_webview(move |view| unsafe {
+            let result=(||->Result<String,String>{
+                let mtm=MainThreadMarker::new().ok_or("option owner check not on main thread")?;
+                let wk:&WKWebView=&*view.inner().cast();
+                let window=wk.window().ok_or("option owner window missing")?;
+                if !NSApplication::sharedApplication(mtm).isActive() || !window.isKeyWindow() || !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {
+                    return Err("option completion owner is no longer active and visible".into());
+                }
+                Ok(format!("{}:{:p}",window.windowNumber(),wk))
+            })();
+            let _=tx.send(result);
+        }).map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
+        rx.await.map_err(|_|WebDriverErrorResponse::unknown_error("option owner observation channel closed"))?
+            .map_err(|e|WebDriverErrorResponse::unknown_error(&e))
+    }
+
+    async fn dispatch_option_pointer_event(
+        &self, event_type: PointerEventType, x: i32, y: i32, button: u32,
+        buttons: u32, modifiers: &ModifierState,
+    ) -> Result<(), WebDriverErrorResponse> {
+        if button != 0 || !matches!((event_type, buttons), (PointerEventType::Down, 1) | (PointerEventType::Up, 0)) {
+            return Err(WebDriverErrorResponse::unsupported_operation("OPTION scope requires balanced primary pointer input"));
+        }
+        self.post_native(NativeInput::Pointer { event_type, button, buttons }, Some((x,y)), *modifiers, true).await
+    }
+
+    async fn dispatch_option_key_event(&self,key:&str,is_down:bool,modifiers:&ModifierState)->Result<(),WebDriverErrorResponse> {
+        if !matches!(key,"\u{E011}"|"\u{E015}"|"\u{E007}"|"\u{E00C}") || (modifiers.ctrl || modifiers.shift || modifiers.alt || modifiers.meta) {
+            return Err(WebDriverErrorResponse::unsupported_operation("OPTION scope requires unmodified bounded popup keys"));
+        }
+        let (code,text)=native_key(key,modifiers)?;
+        self.post_native(NativeInput::Key{key:key.to_owned(),code,text,down:is_down},None,*modifiers,true).await
+    }
+
+    fn option_popup_first_key(&self) -> Result<&'static str, WebDriverErrorResponse> {
+        // Existing native Home mapping; popup delivery is separately qualified.
+        Ok("\u{E011}")
+    }
+
     // =========================================================================
     // Window Access
     // =========================================================================
@@ -670,6 +953,7 @@ impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
             },
             Some((x, y)),
             *modifiers,
+            false,
         )
         .await
     }
@@ -692,6 +976,7 @@ impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
             },
             None,
             *modifiers,
+            false,
         )
         .await
     }
@@ -727,9 +1012,10 @@ impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
             },
             Some((x, y)),
             *modifiers,
+            false,
         )
         .await?;
-        self.post_native(NativeInput::Wheel { dx, dy }, Some((x, y)), *modifiers)
+        self.post_native(NativeInput::Wheel { dx, dy }, Some((x, y)), *modifiers, false)
             .await
     }
 
@@ -1330,6 +1616,69 @@ impl WebDriverUIDelegate {
 
 #[cfg(test)]
 mod native_input_mapping_tests {
+    #[test]
+    fn popup_receipt_ignores_unrelated_markers_and_completes_once() {
+        let seen=std::cell::Cell::new(false);
+        assert!(!super::popup_first_receipt(12,Some(13),&seen));assert!(!seen.get());
+        assert!(super::popup_first_receipt(12,Some(12),&seen));
+        assert!(!super::popup_first_receipt(12,Some(12),&seen));
+        let disabled=std::cell::Cell::new(false);assert!(super::popup_first_receipt(12,None,&disabled));
+        assert!(!super::popup_first_receipt(12,Some(12),&disabled));
+    }
+
+    #[test]
+    fn popup_receipt_requires_exact_transition_and_retained_owner() {
+        let kind=CGEventType::KeyDown;let flags=CGEventFlags::empty();
+        assert!(super::popup_event_matches(kind,kind,115,115,flags,flags,42,42,true));
+        assert!(super::popup_event_matches(kind,kind,115,115,flags,flags,0,42,true));
+        assert!(!super::popup_event_matches(CGEventType::KeyUp,kind,115,115,flags,flags,42,42,true));
+        assert!(!super::popup_event_matches(kind,kind,116,115,flags,flags,42,42,true));
+        assert!(!super::popup_event_matches(kind,kind,115,115,CGEventFlags::MaskShift,flags,42,42,true));
+        assert!(!super::popup_event_matches(kind,kind,115,115,flags,flags,43,42,true));
+        assert!(!super::popup_event_matches(kind,kind,115,115,flags,flags,42,42,false));
+        assert!(!super::popup_event_matches(CGEventType::TapDisabledByTimeout,kind,115,115,flags,flags,42,42,true));
+    }
+
+    #[test]
+    fn cg_move_binding_requires_exact_missing_object_representation() {
+        let point=NSPoint::new(10.0,20.0);
+        let valid=|marked,no_buttons,ns,cg,p,object,ids,owner,live,held|super::cg_mouse_move_binding(marked,no_buttons,ns,cg,p,point,object,ids,owner,live,held);
+        assert!(valid(true,true,NSEventType::MouseMoved,CGEventType::MouseMoved,point,false,(12,12),12,true,false));
+        for (marked,no_buttons,object,ids,owner,live,held) in [
+            (false,true,false,(12,12),12,true,false),(true,false,false,(12,12),12,true,false),
+            (true,true,true,(12,12),12,true,false),(true,true,false,(0,12),12,true,false),
+            (true,true,false,(12,13),12,true,false),(true,true,false,(13,12),12,true,false),
+            (true,true,false,(0,0),0,true,false),(true,true,false,(12,12),13,true,false),
+            (true,true,false,(12,12),12,false,false),(true,true,false,(12,12),12,true,true)] {
+            assert!(!valid(marked,no_buttons,NSEventType::MouseMoved,CGEventType::MouseMoved,point,object,ids,owner,live,held));
+        }
+        assert!(!valid(true,true,NSEventType::LeftMouseDragged,CGEventType::MouseMoved,point,false,(12,12),12,true,false));
+        assert!(!valid(true,true,NSEventType::MouseMoved,CGEventType::LeftMouseDown,point,false,(12,12),12,true,false));
+        assert!(!valid(true,true,NSEventType::MouseMoved,CGEventType::MouseMoved,NSPoint::new(11.0,20.0),false,(12,12),12,true,false));
+    }
+
+    #[test]
+    fn original_option_point_readiness_only_waits_for_numeric_coverage() {
+        let point=NSPoint::new(10.0,20.0);
+        let pin=super::OptionCompletionPoint {window:12,view:34,viewport:(1,2,100.0,200.0),screen:point};
+        assert_eq!(super::option_point_readiness(pin,12,34,point,12).unwrap(),None);
+        let mismatch=super::option_point_readiness(pin,12,34,point,99).unwrap().unwrap();
+        assert!(mismatch.contains("expectedWindow=12 observedWindow=99"));
+        assert!(super::option_point_readiness(pin,12,35,point,12).is_err());
+        assert!(super::option_point_readiness(pin,13,34,point,12).is_err());
+        assert!(super::option_point_readiness(pin,12,34,NSPoint::new(11.0,20.0),12).is_err());
+    }
+
+    #[test]
+    fn option_release_requires_acknowledged_exact_owner_and_held_button() {
+        let pin = super::OptionPointerPin { marker: 7, window: 12, view: 34 };
+        assert!(super::option_release_admitted(Some(pin), 12, 34, true));
+        assert!(!super::option_release_admitted(None, 12, 34, true));
+        assert!(!super::option_release_admitted(Some(pin), 13, 34, true));
+        assert!(!super::option_release_admitted(Some(pin), 12, 35, true));
+        assert!(!super::option_release_admitted(Some(pin), 12, 34, false));
+        assert!(!super::option_release_admitted(Some(super::OptionPointerPin { marker: 0, ..pin }), 12, 34, true));
+    }
     use super::*;
 
     #[test]

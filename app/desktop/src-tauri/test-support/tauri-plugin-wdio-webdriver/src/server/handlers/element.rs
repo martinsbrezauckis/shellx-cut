@@ -169,7 +169,19 @@ async fn click_sequence<R: Runtime + 'static>(
     let executor =
         state.get_executor_for_window(&current_window, timeouts, frame_context.clone())?;
     use crate::platform::PointerEventType;
-    let (x, y) = executor.get_element_center(&js_var).await?;
+    let option = executor.inspect_option(&js_var, "prepare").await?;
+    let center_ref = if option.is_some() { format!("{js_var}_select") } else { js_var.clone() };
+    let mut popup_started = false;
+    let defer_release=option.is_some() && executor.option_defer_primary_release();
+    let mut release_attempted=false;
+    let mut operation = async {
+    let first_key = if option.is_some() { Some(executor.option_popup_first_key()?) } else { None };
+    let (x, y) = executor.get_element_center(&center_ref).await?;
+    if let Some((_, selected)) = option {
+        executor.inspect_option(&js_var, "verify").await?;
+        option_context(state, session_id, &current_window).await?;
+        if selected { return Ok(WebDriverResponse::null()); }
+    }
     executor
         .dispatch_pointer_event(
             PointerEventType::Move,
@@ -180,6 +192,13 @@ async fn click_sequence<R: Runtime + 'static>(
             &crate::platform::ModifierState::default(),
         )
         .await?;
+    if option.is_some() {
+        option_context(state, session_id, &current_window).await?;
+        executor.inspect_option(&js_var, "verify").await?;
+        if executor.get_element_center(&center_ref).await? != (x, y) {
+            return Err(WebDriverErrorResponse::element_not_interactable("select container moved before native click"));
+        }
+    }
     {
         let mut sessions = state.sessions.write().await;
         let state = &mut sessions.get_mut(session_id)?.action_state;
@@ -187,26 +206,18 @@ async fn click_sequence<R: Runtime + 'static>(
         // Retain intent even if native down delivery returns uncertain.
         state.retain_primary_down("element-click", &current_window, &frame_context, (x, y));
     }
-    executor
-        .dispatch_pointer_event(
-            PointerEventType::Down,
-            x,
-            y,
-            0,
-            1,
-            &crate::platform::ModifierState::default(),
-        )
-        .await?;
-    executor
-        .dispatch_pointer_event(
-            PointerEventType::Up,
-            x,
-            y,
-            0,
-            0,
-            &crate::platform::ModifierState::default(),
-        )
-        .await?;
+    popup_started = option.is_some();
+    for (event_type, buttons) in [(PointerEventType::Down, 1), (PointerEventType::Up, 0)] {
+        if defer_release && matches!(event_type,PointerEventType::Up) {continue;}
+        if option.is_some() {
+            executor.dispatch_option_pointer_event(event_type, x, y, 0, buttons,
+                &crate::platform::ModifierState::default()).await?;
+        } else {
+            executor.dispatch_pointer_event(event_type, x, y, 0, buttons,
+                &crate::platform::ModifierState::default()).await?;
+        }
+    }
+    if !defer_release {
     state
         .sessions
         .write()
@@ -214,8 +225,144 @@ async fn click_sequence<R: Runtime + 'static>(
         .get_mut(session_id)?
         .action_state
         .primary_released("element-click");
+    }
 
+    if let Some((index, _)) = option {
+        executor.inspect_option(&js_var, "verify").await?;
+        for key in option_navigation(first_key.unwrap(), index)? {
+            option_context(state, session_id, &current_window).await?;
+            executor.inspect_option(&js_var, "verify").await?;
+            super::actions::perform_option_inner(state, session_id, option_key_pair(key)?).await?;
+        }
+        option_context(state, session_id, &current_window).await?;
+        executor.inspect_option(&js_var, "verify").await?;
+        let owner=tokio::time::timeout(std::time::Duration::from_millis(executor.script_timeout_ms().min(2000)),executor.option_completion_owner()).await
+            .map_err(|_|WebDriverErrorResponse::unknown_error("option owner observation timed out"))??;
+        super::actions::perform_option_inner(state, session_id, option_key_pair("\u{E007}")?).await?;
+        // One Enter only. Observe the exact retained target until WebKit commits;
+        // every asynchronous read shares this single bounded deadline.
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(executor.script_timeout_ms().min(2000));
+        let mut last_mismatch=None;
+        loop {
+            if tokio::time::Instant::now()>=deadline {
+                return Err(last_mismatch.unwrap_or_else(||WebDriverErrorResponse::unknown_error("option completion deadline expired before observation")));
+            }
+            let observation=async {
+                option_context(state,session_id,&current_window).await?;
+                if executor.option_completion_owner().await?!=owner {return Err(WebDriverErrorResponse::unknown_error("option completion owner changed"));}
+                let mut result=executor.inspect_option_completion(&js_var).await?;
+                if result.is_none() {
+                    result=executor.option_completion_readiness().await?;
+                    // Native readiness must not hide a concurrent DOM replacement.
+                    if let Some(mismatch)=executor.inspect_option_completion(&js_var).await? {result=Some(mismatch);}
+                }
+                option_context(state,session_id,&current_window).await?;
+                if executor.option_completion_owner().await?!=owner {return Err(WebDriverErrorResponse::unknown_error("option completion owner changed"));}
+                Ok::<_,WebDriverErrorResponse>(result)
+            };
+            match tokio::time::timeout_at(deadline,observation).await {
+                Ok(Ok(None))=>break,
+                Ok(Ok(Some(mismatch)))=>last_mismatch=Some(mismatch),
+                Ok(Err(error))=>return Err(error),
+                Err(_)=>return Err(WebDriverErrorResponse::unknown_error(&format!("option completion observation timed out; latest intact mismatch: {}",last_mismatch.as_ref().map(|e|e.message.as_str()).unwrap_or("none")))),
+            }
+            tokio::task::yield_now().await;
+        }
+        if defer_release {
+            release_attempted=true;
+            super::actions::release_option_inner(state,session_id,&*executor).await?;
+        }
+    }
     Ok(WebDriverResponse::null())
+    }.await;
+    if option.is_some() {
+        if operation.is_err() && popup_started {
+            // Never repeat a release whose posting/acknowledgement is uncertain.
+            let cleanup = async {
+                if defer_release {
+                    if release_attempted {return Ok(WebDriverResponse::null());}
+                    super::actions::release_option_keys_inner(state,session_id,&*executor).await?;
+                    option_context(state,session_id,&current_window).await?;
+                    super::actions::perform_option_inner(state,session_id,option_key_pair("\u{E00C}")?).await?;
+                    wait_option_release_ready(state,session_id,&current_window,&*executor).await?;
+                    release_attempted=true;
+                    super::actions::release_option_inner(state,session_id,&*executor).await
+                } else {
+                    super::actions::release_option_inner(state, session_id, &*executor).await?;
+                    option_context(state, session_id, &current_window).await?;
+                    super::actions::perform_option_inner(state, session_id, option_key_pair("\u{E00C}")?).await
+                }
+            }.await;
+            state.sessions.write().await.get_mut(session_id)?.action_state.input_failed = true;
+            if let Err(error) = cleanup { operation = Err(error); }
+        }
+        // Always release adapter references, even when native cleanup fails.
+        // Preserve the operation/cleanup error and its retained held-input state.
+        executor.clear_option_completion();
+        let cleared = executor.inspect_option(&js_var, "clear").await;
+        if operation.is_ok() { cleared?; }
+    }
+    operation
+}
+
+
+fn option_navigation(first: &'static str, index: usize) -> Result<Vec<&'static str>, WebDriverErrorResponse> {
+    if index >= 128 { return Err(WebDriverErrorResponse::unsupported_operation("option count exceeds native navigation bound")); }
+    let mut keys = vec![first];
+    keys.extend(std::iter::repeat("\u{E015}").take(index));
+    Ok(keys)
+}
+
+fn option_key_pair(key: &str) -> Result<super::actions::ActionsRequest, WebDriverErrorResponse> {
+    serde_json::from_value(json!({"actions":[{"type":"key","id":"element-option","actions":[
+        {"type":"keyDown","value":key},{"type":"keyUp","value":key}]}]}))
+        .map_err(|_| WebDriverErrorResponse::invalid_argument("invalid native option key pair"))
+}
+
+// Cancelled/stale DOM does not erase the original native release obligation.
+async fn wait_option_release_ready<R:Runtime+'static>(state:&Arc<AppState<R>>,id:&str,window:&str,executor:&dyn crate::platform::PlatformExecutor<R>)->Result<(),WebDriverErrorResponse> {
+    let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(executor.script_timeout_ms().min(2000));
+    let mut last=None;
+    loop {
+        if tokio::time::Instant::now()>=deadline {return Err(last.unwrap_or_else(||WebDriverErrorResponse::unknown_error("option release readiness deadline expired")));}
+        let observation=async {
+            option_context(state,id,window).await?;
+            let owner=executor.option_completion_owner().await?;
+            let result=executor.option_completion_readiness().await?;
+            if executor.option_completion_owner().await?!=owner {return Err(WebDriverErrorResponse::unknown_error("option release owner changed"));}
+            option_context(state,id,window).await?;
+            Ok::<_,WebDriverErrorResponse>(result)
+        };
+        match tokio::time::timeout_at(deadline,observation).await {
+            Ok(Ok(None))=>return Ok(()),Ok(Ok(Some(error)))=>last=Some(error),Ok(Err(error))=>return Err(error),
+            Err(_)=>return Err(WebDriverErrorResponse::unknown_error("option release readiness observation timed out")),
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+async fn option_context<R: Runtime + 'static>(state: &Arc<AppState<R>>, session_id: &str, window: &str) -> Result<(), WebDriverErrorResponse> {
+    let sessions = state.sessions.read().await;
+    let session = sessions.get(session_id)?;
+    if session.current_window != window || !session.frame_context.is_empty() {
+        return Err(WebDriverErrorResponse::unsupported_operation("option click context changed before native delivery"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+    #[test]
+    fn popup_navigation_is_bounded_and_commit_is_separate() {
+        assert_eq!(option_navigation("\u{E011}", 0).unwrap(), vec!["\u{E011}"]);
+        assert_eq!(option_navigation("\u{E011}", 2).unwrap(), vec!["\u{E011}", "\u{E015}", "\u{E015}"]);
+        assert_eq!(option_navigation("\u{E011}", 127).unwrap().len(), 128);
+        assert!(option_navigation("\u{E011}", 128).is_err());
+        for key in ["\u{E011}", "\u{E015}", "\u{E007}", "\u{E00C}"] {
+            super::super::actions::validate(&option_key_pair(key).unwrap()).unwrap();
+        }
+    }
 }
 
 /// POST `/session/{session_id}/element/{element_id}/clear` - Clear element

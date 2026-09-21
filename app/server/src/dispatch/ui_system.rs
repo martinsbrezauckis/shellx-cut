@@ -477,23 +477,27 @@ pub(super) async fn system_setup_perception(
                     .find(|c| c.id == "perception")
                     .map(|c| matches!(c.status, crate::doctor::CardStatus::Ok))
                     .unwrap_or(false);
-                st.jobs.finish(
-                    &jid,
-                    json!({
-                        "venv_python": o.venv_python,
-                        "managed_python": o.managed_python,
-                        "python_version": o.python_version,
-                        "uv_version": o.uv_version,
-                        "package_versions": o.package_versions,
-                        "onnx_asr_ready": o.onnx_asr_ready,
-                        "model_warmed": o.model_warmed,
-                        // BEST-EFFORT extras: false here does NOT mean failure —
-                        // transcription works on the onnx-asr base regardless.
-                        "full_perception_ready": o.full_perception_ready,
-                        "extras_note": o.extras_note,
-                        "perception_ok_after": sidecar_ok,
-                    }),
-                );
+                let model_preparation_failed = o.model_warm_error.is_some();
+                let result = json!({
+                    "venv_python": o.venv_python,
+                    "managed_python": o.managed_python,
+                    "python_version": o.python_version,
+                    "uv_version": o.uv_version,
+                    "package_versions": o.package_versions,
+                    "onnx_asr_ready": o.onnx_asr_ready,
+                    "model_warmed": o.model_warmed,
+                    "model_warm_error": o.model_warm_error,
+                    // Extras and model readiness are distinct from successful
+                    // base dependency installation.
+                    "full_perception_ready": o.full_perception_ready,
+                    "extras_note": o.extras_note,
+                    "perception_ok_after": sidecar_ok,
+                });
+                if model_preparation_failed {
+                    st.jobs.finish_with_warnings(&jid, result);
+                } else {
+                    st.jobs.finish(&jid, result);
+                }
             }
             Err(e) => st.jobs.fail(&jid, e),
         }

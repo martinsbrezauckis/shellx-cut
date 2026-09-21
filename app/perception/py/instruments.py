@@ -73,6 +73,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from native_runtime_models import NativeRuntimeModelError, context_requested, parakeet_directory
+from ordinary_speech_models import load_ordinary_model
 
 # on a cold install ffmpeg/ffprobe are NOT on
 # PATH — they live in the app's bundled/app-data tools dir. The Rust sidecar
@@ -551,7 +552,6 @@ def _words_via_canary(media_path: str, asset_id: str) -> dict:
     timestamp arrays are empty. This route refuses to return text unless forced
     alignment produced real word spans, so transcript edits never see an empty
     or untimed transcript masquerading as success."""
-    import onnx_asr
     import soundfile as sf
 
     selected = os.environ.get("SHELLX_CUT_STT_MODEL") or ""
@@ -562,7 +562,7 @@ def _words_via_canary(media_path: str, asset_id: str) -> dict:
         load_kwargs["providers"] = ["CPUExecutionProvider"]
     _emit_progress(0.05, "transcribe:loading-canary")
     log(f"words: canary onnx-asr model={model_id} + MMS_FA aligner lang={lang_hint or 'auto'}")
-    model = onnx_asr.load_model(model_id, **load_kwargs)
+    model = load_ordinary_model(model_id, providers=load_kwargs.get("providers"))
 
     with tempfile.TemporaryDirectory(prefix="cut-stt-canary-") as td:
         wav = extract_wav16k(media_path, td)
@@ -607,7 +607,6 @@ def _words_via_parakeet(media_path: str, asset_id: str, model_override: str | No
     failure so instrument_words can fall back to whisperX. Chunks audio > 5 min
     for sub-progress + bounded memory. macOS forces the CPU EP (CoreML fails on
     this model's external-data initialization)."""
-    import onnx_asr  # raises ImportError on an older venv → caller falls back
     import soundfile as sf
 
     model_id = model_override or os.environ.get("SHELLX_CUT_STT_MODEL") or STT_MODEL_DEFAULT
@@ -622,9 +621,11 @@ def _words_via_parakeet(media_path: str, asset_id: str, model_override: str | No
         # A generic type has no remote repository fallback in onnx-asr 0.11.0.
         # The existing directory selects its offline local resolver. Runtime
         # preparation binds every file, including the ONNX external data.
+        import onnx_asr
+
         model = onnx_asr.load_model("nemo-conformer-tdt", path=local_model, **load_kwargs).with_timestamps()
     else:
-        model = onnx_asr.load_model(model_id, **load_kwargs).with_timestamps()
+        model = load_ordinary_model(model_id, providers=load_kwargs.get("providers")).with_timestamps()
 
     # Decode to the same mono 16 kHz the rest of the sidecar uses, then read it
     # as a float32 array so chunking is in-memory (one ffmpeg call, not N).
