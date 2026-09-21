@@ -4,7 +4,8 @@
 # CPython 3.12 venv; system Python on real desktops can be too old.
 #
 # BASE policy: this install stays wheel-only so fresh user machines need no
-# compiler. It installs the CPU ONNX engine and Hub client; model files are
+# compiler. It installs the CPU ONNX engine, Hub client, and the direct audio
+# and numerical modules used by the base word/beat routes; model files are
 # prepared later into the app-owned perception directory and are reported
 # separately from package import readiness. Torch-based extras remain in
 # requirements-full.txt and are best-effort.
@@ -19,3 +20,5 @@
 # has to load successfully before transcription is ready.
 onnx-asr[cpu,hub]>=0.11.0  # MIT - Parakeet-TDT ONNX STT (primary words engine)
 filelock>=3.10.0  # Unlicense - serialize ordinary model staging and publish
+numpy  # BSD-3 - direct numerical runtime for base beat analysis
+soundfile  # BSD-3 - direct WAV reader for Parakeet and Canary transcription

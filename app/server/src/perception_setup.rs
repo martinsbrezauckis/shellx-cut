@@ -47,6 +47,8 @@ const PYTHON_REQUEST: &str = "3.12";
 /// graph. It intentionally exercises torch/audio/vision together because those
 /// packages can resolve to individually valid but incompatible wheel releases.
 const ONNX_ASR_IMPORT_SENTINEL: &str = "shellx-cut-onnx-asr-import-ok";
+const BASE_STT_IMPORT_PROBE: &str =
+    "import onnx_asr, onnxruntime, numpy, soundfile; print('shellx-cut-onnx-asr-import-ok')";
 const FULL_PERCEPTION_IMPORT_SENTINEL: &str = "shellx-cut-full-perception-import-ok";
 const FULL_PERCEPTION_IMPORT_PROBE: &str = "import onnx_asr, onnxruntime; import torch, torchaudio, torchvision; import whisperx, soundfile, silero_vad, transformers, sentencepiece, supervision, mediapipe, cv2; from scenedetect import open_video, SceneManager; from scenedetect.detectors import ContentDetector; from rapidocr_onnxruntime import RapidOCR; print('shellx-cut-full-perception-import-ok')";
 
@@ -69,8 +71,8 @@ pub struct SetupOutcome {
     /// Optional model preparation failure, preserved separately from successful
     /// package installation. None when warming was skipped or succeeded.
     pub model_warm_error: Option<CutError>,
-    /// Whether onnx-asr imports in the new venv. This does not prove model loading
-    /// or transcription; those can still fail independently.
+    /// Whether the direct base STT modules import in the new venv. This does not
+    /// prove model loading or transcription; those can still fail independently.
     pub onnx_asr_ready: bool,
     /// Whether the FULL perception extras (whisperX fallback, auto-reframe detector,
     /// face framing, beat grid, OCR) passed dependency checking and their required
@@ -178,6 +180,8 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
         0.60,
     )?;
     verify_perception_dependencies(&uv, vpy, "base transcription engine", progress, 0.60, 0.605)?;
+    progress(0.61, "verifying base transcription engine");
+    verify_base_onnx_asr_import(&venv_python)?;
 
     // ---- 5. install the perception extras (BEST-EFFORT, current wheels) -------
     //
@@ -927,15 +931,9 @@ fn verify_perception_dependencies(
 }
 
 fn onnx_asr_import_ready(python: &Path) -> bool {
-    run_capture(
-        python,
-        &[
-            "-c",
-            "import onnx_asr, onnxruntime; print('shellx-cut-onnx-asr-import-ok')",
-        ],
-    )
-    .map(|output| has_final_stdout_sentinel(&output, ONNX_ASR_IMPORT_SENTINEL))
-    .unwrap_or(false)
+    run_capture(python, &["-c", BASE_STT_IMPORT_PROBE])
+        .map(|output| has_final_stdout_sentinel(&output, ONNX_ASR_IMPORT_SENTINEL))
+        .unwrap_or(false)
 }
 
 fn has_final_stdout_sentinel(output: &str, sentinel: &str) -> bool {
@@ -947,20 +945,34 @@ fn has_final_stdout_sentinel(output: &str, sentinel: &str) -> bool {
         == Some(sentinel)
 }
 
+/// The required base import follows the base dependency check, before optional
+/// tools can change the shared venv graph.
+fn verify_base_onnx_asr_import(python: &Path) -> Result<(), CutError> {
+    verify_onnx_asr_import(python, "base", "the base transcription environment")
+}
+
 /// The required base import is repeated after the best-effort full install because
 /// both policies share a venv. A changed graph must never produce a success result
 /// that relies on a stale pre-extras probe.
 fn verify_final_onnx_asr_import(python: &Path) -> Result<(), CutError> {
+    verify_onnx_asr_import(python, "final", "the perception environment")
+}
+
+fn verify_onnx_asr_import(python: &Path, stage: &str, repair_target: &str) -> Result<(), CutError> {
     if onnx_asr_import_ready(python) {
         return Ok(());
     }
-    Err(CutError::new(
+    Err(transcription_import_failure(python, stage, repair_target))
+}
+
+fn transcription_import_failure(python: &Path, stage: &str, repair_target: &str) -> CutError {
+    CutError::new(
         error_codes::SIDECAR,
-        "the final perception environment can no longer import the transcription engine",
+        format!("the {stage} perception environment cannot import the transcription engine"),
         python.display().to_string(),
     )
-    .with_suggested_action(
-        "Choose Install captions again; the optional tools were not marked ready",
+    .with_suggested_action(format!(
+        "Choose Install captions again to rebuild {repair_target}"
     ))
 }
 
@@ -1284,6 +1296,39 @@ mod tests {
             "shellx-cut-full-perception-import-ok\nmore output\n",
             FULL_PERCEPTION_IMPORT_SENTINEL,
         ));
+    }
+
+    #[test]
+    fn base_transcription_probe_covers_direct_runtime_modules() {
+        assert!(BASE_STT_IMPORT_PROBE.contains("import onnx_asr, onnxruntime, numpy, soundfile"));
+        assert!(BASE_STT_IMPORT_PROBE.contains(ONNX_ASR_IMPORT_SENTINEL));
+    }
+
+    #[test]
+    fn transcription_import_failure_identifies_the_install_phase() {
+        let base = transcription_import_failure(
+            Path::new("/venv/python"),
+            "base",
+            "the base transcription environment",
+        );
+        assert_eq!(
+            base.message,
+            "the base perception environment cannot import the transcription engine"
+        );
+        assert_eq!(
+            base.suggested_action.as_deref(),
+            Some("Choose Install captions again to rebuild the base transcription environment")
+        );
+
+        let final_environment = transcription_import_failure(
+            Path::new("/venv/python"),
+            "final",
+            "the perception environment",
+        );
+        assert_eq!(
+            final_environment.message,
+            "the final perception environment cannot import the transcription engine"
+        );
     }
 
     #[test]

@@ -788,16 +788,21 @@ fn perception_card() -> Card {
             stt_language,
         );
     }
-    // Python runs — probe the STT engine. The PRIMARY words engine is onnx-asr
-    // Parakeet-TDT is primary; whisperX is only the compatibility fallback.
-    // (requirements.txt §PRIMARY/§FALLBACK). Transcription works if EITHER imports,
-    // so readiness must key off onnx-asr FIRST — probing whisperX alone reported a
-    // correctly set-up machine (onnx-asr present, no whisperX) as "degraded" and
-    // wrongly nagged the user to re-install. Short import-only checks; never loads a
-    // model, never runs inference.
-    let onnx_ok = import_check(&python, "onnx_asr", Duration::from_secs(15));
-    // Only fall back to the whisperX probe when onnx-asr is absent (saves a slow
-    // import on the common, healthy path).
+    // Python runs — probe the direct base STT closure. Parakeet-TDT is primary;
+    // whisperX is only the compatibility fallback. `instruments.py` imports
+    // soundfile before it can decode either Parakeet or Canary audio, and imports
+    // numpy for its base routes, so checking onnx-asr alone would falsely report
+    // a broken base venv as ready. Short import-only checks never load a model or
+    // run inference.
+    let onnx_ok = imports_check(
+        &python,
+        &["onnx_asr", "onnxruntime", "numpy", "soundfile"],
+        Duration::from_secs(15),
+    );
+    // Only probe the compatibility fallback when the base route is unavailable.
+    // `instrument_words` enters whisperX through `whisperx.load_audio` and does
+    // not directly import soundfile on that branch, so preserve its independent
+    // readiness rather than applying the primary route's decoder requirement.
     let whisper_ok = if onnx_ok || native_context.is_some() {
         false
     } else {
@@ -923,12 +928,18 @@ fn prepared_stt_details(
     }
 }
 
-/// Cheap import check: `python -c "import <module>"` with a bounded timeout.
-/// Returns true iff the import succeeds (exit 0). Never imports anything heavy
-/// beyond what the module's top level does — we accept that cost as the price
-/// of an honest tier read; it is bounded and only runs on `refresh`/startup.
+/// Cheap single-module import check. Kept for independent optional capability
+/// probes; the primary STT closure uses `imports_check` below.
 fn import_check(python: &Path, module: &str, timeout: Duration) -> bool {
-    let snippet = match python_import_snippet(module) {
+    imports_check(python, &[module], timeout)
+}
+
+/// Bounded, identifier-validated multi-module import check. One Python process
+/// tests the complete primary closure, so Doctor cannot spend one timeout per
+/// module on a broken venv. The existing isolated/no-bytecode command policy is
+/// applied exactly as it is for every other Python import probe.
+fn imports_check(python: &Path, modules: &[&str], timeout: Duration) -> bool {
+    let snippet = match python_imports_snippet(modules) {
         Some(snippet) => snippet,
         None => return false,
     };
@@ -943,13 +954,19 @@ fn import_check(python: &Path, module: &str, timeout: Duration) -> bool {
         .unwrap_or(false)
 }
 
-fn python_import_snippet(module: &str) -> Option<String> {
-    if !module.split('.').all(is_python_identifier) {
+fn python_imports_snippet(modules: &[&str]) -> Option<String> {
+    if modules.is_empty()
+        || !modules
+            .iter()
+            .all(|module| module.split('.').all(is_python_identifier))
+    {
         return None;
     }
-    Some(format!(
-        "import importlib; importlib.import_module({module:?})"
-    ))
+    let mut snippet = String::from("import importlib");
+    for module in modules {
+        snippet.push_str(&format!("; importlib.import_module({module:?})"));
+    }
+    Some(snippet)
 }
 
 fn is_python_identifier(part: &str) -> bool {
@@ -2163,6 +2180,17 @@ mod tests {
     }
 
     #[test]
+    fn failed_primary_import_closure_needs_a_working_fallback_to_be_ready() {
+        let missing_decoder = perception_stt_readiness(None, false, false);
+        assert!(!missing_decoder.ready);
+        assert_eq!(missing_decoder.status, CardStatus::Degraded);
+
+        let fallback = perception_stt_readiness(None, false, true);
+        assert!(fallback.ready);
+        assert_eq!(fallback.engine, "whisperX (fallback)");
+    }
+
+    #[test]
     fn prepared_stt_details_do_not_claim_model_load_or_inference() {
         let admitted = Ok(cut_perception::PreparedSttModel {
             model: DEFAULT_STT_MODEL.into(),
@@ -2492,11 +2520,19 @@ mod tests {
 
     #[test]
     fn python_import_snippet_quotes_module_name() {
-        let snippet = python_import_snippet("PIL.Image").expect("valid module");
+        let snippet = python_imports_snippet(&["PIL.Image"]).expect("valid module");
         assert!(snippet.contains("importlib.import_module"));
         assert!(snippet.contains("\"PIL.Image\""));
-        assert!(python_import_snippet("os; import subprocess").is_none());
-        assert!(python_import_snippet("../bad").is_none());
+        let closure = python_imports_snippet(&["onnx_asr", "onnxruntime", "numpy", "soundfile"])
+            .expect("valid base STT closure");
+        assert_eq!(closure.matches("importlib.import_module").count(), 4);
+        for module in ["onnx_asr", "onnxruntime", "numpy", "soundfile"] {
+            assert!(closure.contains(&format!("\"{module}\"")));
+        }
+        assert!(python_imports_snippet(&[]).is_none());
+        assert!(python_imports_snippet(&["soundfile", "os; import subprocess"]).is_none());
+        assert!(python_imports_snippet(&["os; import subprocess"]).is_none());
+        assert!(python_imports_snippet(&["../bad"]).is_none());
     }
 
     /// The new `Unknown` ("unverified") status is the honest middle state a
