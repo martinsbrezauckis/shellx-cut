@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { callVerb, type Project } from '../../lib/client'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
+import { matteSubjectSeed, matteResultFromReceipt, type MatteResult } from './contract'
 import '../drawer.css'
 
 export interface MatteDrawerProps {
@@ -32,14 +33,6 @@ export interface MatteDrawerProps {
   /** Current playhead (ms) — the default frame for the premium subject seed. */
   playheadMs: number
   onClose: () => void
-}
-
-/** edit.matte result (subset we surface). */
-interface MatteResult {
-  clip: string
-  enabled?: boolean
-  model?: string
-  mode?: string
 }
 
 /** One doctor card (subset). */
@@ -200,18 +193,18 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
         args.mode = mode
         if (mode === 'replace') args.bg = { type: 'color', color: bgColor }
         if (model === 'matanyone' && usePick) {
-          args.seed = { at_ms: playheadMs, point: [Math.round(pickX * 1000) / 1000, Math.round(pickY * 1000) / 1000] }
+          args.seed = matteSubjectSeed(project, clipId, playheadMs, pickX, pickY)
         }
       }
       const r = await callVerb('edit.matte', args as never)
       if (r.ok) {
-        setResult(r.result as MatteResult)
+        setResult(matteResultFromReceipt(r.result, clipId, enabled))
         document.dispatchEvent(new CustomEvent('cut:show-composed'))
       } else {
         setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'edit.matte failed'}`)
       }
-    } catch {
-      setErr('server unreachable')
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : 'Background removal could not be applied.')
     } finally {
       setBusy(false)
     }

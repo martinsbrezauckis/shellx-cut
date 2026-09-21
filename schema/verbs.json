@@ -5204,7 +5204,7 @@
           }
         }
       },
-      "result": "{op} — committed-op ride-along; the before/after grade is in op.effects[].detail (no bespoke top-level result fields)",
+      "result": "{op} — committed-op ride-along; the before/after grade is in op.effects[] (no bespoke top-level result fields)",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -5287,7 +5287,7 @@
           }
         }
       },
-      "result": "{op} — committed-op ride-along; old/new grade stack is in op.effects[].detail",
+      "result": "{op} — committed-op ride-along; old/new grade stack is in op.effects[]",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -5398,7 +5398,7 @@
           }
         }
       },
-      "result": "{clip, new_grade_windows, old_grade_windows} — committed-op ride-along; the window list before/after is in op.effects[].detail",
+      "result": "{op} — committed-op ride-along; clip, new_grade_windows and old_grade_windows are flat fields in op.effects[]",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -5487,7 +5487,7 @@
           }
         }
       },
-      "result": "{op} — the lowered edit.grade op (replay-safe concrete params); before/after grade in op.effects[].detail",
+      "result": "{op} — the lowered edit.grade op (replay-safe concrete params); before/after grade in op.effects[]",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -5572,7 +5572,7 @@
           }
         }
       },
-      "result": "{op} — committed-op ride-along; the before/after input space is in op.effects[].detail",
+      "result": "{op} — committed-op ride-along; the before/after input space is in op.effects[]",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -5807,7 +5807,7 @@
           }
         }
       },
-      "result": "{op} — committed-op ride-along; the matte intent (old/new) is in op.effects[].detail. The alpha bake + the flicker/coverage receipt ride along with the render bake step.",
+      "result": "{op, matte?} — committed-op ride-along; old_matte/new_matte are flat fields in op.effects[]. Applying bakes the alpha before committing and returns its quality receipt in matte; clearing returns the committed op without a matte receipt.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -5918,7 +5918,7 @@
           }
         }
       },
-      "result": "{op} — committed-op ride-along; the before/after effects list is in op.effects[].detail (old_effects, effects)",
+      "result": "{op} — committed-op ride-along; the before/after effects list is in op.effects[] (old_effects, effects)",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -7346,7 +7346,7 @@
           }
         }
       },
-      "result": "{op} — committed-op ride-along; the layer (adjustment_id, range_ms, grade, effects) is in op.effects[].detail",
+      "result": "{op} — committed-op ride-along; the layer (adjustment_id, range_ms, grade, effects) is in op.effects[]",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {

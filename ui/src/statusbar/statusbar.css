@@ -78,7 +78,8 @@
 }
 .sb-receipt--pass { color: var(--receipt-pass); background: var(--receipt-pass-bg); }
 .sb-receipt--fail { color: var(--receipt-fail); background: var(--receipt-fail-bg); }
-.sb-receipt--unmeasured { color: var(--receipt-pending); background: var(--receipt-pending-bg); }
+.sb-receipt--unmeasured,
+.sb-receipt--waived { color: var(--receipt-pending); background: var(--receipt-pending-bg); }
 .sb-receipt--none { color: var(--ink-4); cursor: default; font-weight: 400; }
 .sb-receipt:hover { border-color: var(--hairline-2); }
 

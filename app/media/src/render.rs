@@ -18,7 +18,6 @@ use crate::paths::PathFence;
 use cut_core::{error_codes, CutError, Edl, EdlSegment, Project, TrackKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -27,11 +26,18 @@ use std::path::{Path, PathBuf};
 /// Boxed dyn so the server can forward into its WS event bus.
 pub type ProgressFn = Box<dyn Fn(f32) + Send + Sync>;
 
+mod graph_inputs;
 mod input_paths;
+mod matte;
 mod options;
 mod ramp_timing;
 mod stabilization;
-use input_paths::strip_verbatim_prefix;
+#[cfg(test)]
+use graph_inputs::bake_mask_png_atomic;
+use graph_inputs::{
+    collect_graph_inputs, mask_alpha_path, mask_input_key, matte_alpha_path, matte_input_key,
+    preview_geometry, segment_video_track_visible, window_alpha_path, window_input_key, GraphInput,
+};
 pub use options::{
     apply_bitrate, format_codec_args, parse_bitrate_kbps, platform_spec, set_audio_bitrate, Fit,
     PlatformSpec, RenderOptions, RenderPreset, Resolution, FORMAT_NAMES, PLATFORM_NAMES,
@@ -70,22 +76,6 @@ pub struct RenderOutput {
     /// NOT apply to it (GPU output varies by driver/hardware).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<String>,
-}
-
-/// One `-i` input of the graph. Stills (kind=image probes) are fed with
-/// `-loop 1` so the single frame becomes an infinite stream the segment
-/// chain can trim to the clip duration (the renderer "loops the still").
-struct GraphInput {
-    path: PathBuf,
-    /// True when the asset probed as a still image (probe.kind == "image").
-    image: bool,
-    /// GPU fast-track: NVDEC-decode THIS input to CUDA frames (graph_args emits
-    /// `-hwaccel cuda` for it). Per-INPUT (not whole-graph) because the GPU path
-    /// keeps the expensive BASE track on the GPU (NVDEC→scale_cuda→nvenc) while
-    /// OVERLAY inputs decode on the CPU — the small overlay needs CPU-only filters
-    /// (pad/colorchannelmixer/transparent-filler) before a single hwupload into
-    /// `overlay_cuda` (2b-ii). Software graph: always false (system-memory frames).
-    gpu_decode: bool,
 }
 
 /// A built filter_complex program: the `-i` inputs plus the graph text and
@@ -421,6 +411,37 @@ fn base_region_transform_block(
     format!("[{in_label}]null{vtransform}{vopacity}[{out_label}];")
 }
 
+/// Place a prepared overlay stream on the full-frame transparent canvas when
+/// `edit.keyframe pos_x/pos_y` needs a time expression. `input_chain` ends at a
+/// yuva frame and deliberately has no output label: ordinary media and a fully
+/// composed matte replacement both take this same placement path. Opacity and
+/// fade therefore apply to the completed overlay exactly once.
+#[allow(clippy::too_many_arguments)]
+fn animated_overlay_canvas_block(
+    input_chain: &str,
+    small: &str,
+    canvas: &str,
+    output: &str,
+    w: u32,
+    h: u32,
+    fps: &str,
+    dur_ms: u64,
+    vopacity: &str,
+    ow: u32,
+    oh: u32,
+    static_opacity: &str,
+    xexpr: &str,
+    yexpr: &str,
+    vfade: &str,
+) -> String {
+    format!(
+        "{input_chain}{vopacity},scale={ow}:{oh},setsar=1{static_opacity}[{small}];\n\
+         color=c=black@0.0:s={w}x{h}:r={fps}:d={},format=yuva420p[{canvas}];\n\
+         [{canvas}][{small}]overlay=x='{xexpr}':y='{yexpr}':eof_action=pass{vfade}[{output}];",
+        secs(dur_ms),
+    )
+}
+
 /// ffmpeg filter snippet (comma-PREFIXED, appended to a clip's chain) for a
 /// clip's visual EFFECTS (edit.effect), in order. `overlay` = is this an overlay
 /// clip — chroma key is emitted ONLY there (it makes pixels TRANSPARENT to reveal
@@ -612,7 +633,7 @@ fn mask_block(
 /// static mask, even multi-region, takes the baked-PNG union path instead.) The
 /// store-layer validation guarantees every region is rect/ellipse when any is tracked
 /// (the geq can't paint a polygon), so we don't re-check shapes here.
-fn mask_uses_geq(m: &cut_core::ClipMask) -> bool {
+pub(super) fn mask_uses_geq(m: &cut_core::ClipMask) -> bool {
     m.track.is_some() || m.regions.iter().any(|r| r.track.is_some())
 }
 
@@ -1628,335 +1649,6 @@ fn duck_volume_expr(windows: &[cut_core::GainWindow]) -> String {
     parts.join("*")
 }
 
-/// Build the composition graph from the EDL (media-engine contract: trim/atrim + concat
-/// per track, gain via volume, caption burn-in via ass filter).
-/// `project_dir` resolves project-relative asset paths. `with_captions=false`
-/// skips burn-in (seam for caption-less previews); `with_audio=false` skips
-/// audio chains entirely — every emitted label must be mapped or consumed,
-/// ffmpeg hard-errors on unconnected outputs (frame extraction is video-only).
-/// Composition model (multi-track compositing regression): the FIRST video track with
-/// clips is the base canvas; every later video track is composited above it
-/// in track order via full-length transparent-backed overlay streams
-/// (per-clip ClipTransform = PiP geometry; gaps stay transparent). Multicam
-/// angle-switching remains out of scope. Audio tracks all mix (amix).
-/// Resolve the distinct media inputs for a graph: one entry per asset referenced
-/// by any media segment, in first-use order, plus the asset→`-i` index map the
-/// filter chains reference. Shared by the software [`build_graph`] and the GPU
-/// [`build_graph_gpu`] so both number their inputs identically. Stills are flagged
-/// (looped at the input). Errors if an asset id or its file is missing.
-/// Absolute path to a clip's baked matte alpha under the project cache. The
-/// renderer (reader) and the server bake step (writer) both route through
-/// `ClipMatte::cache_filename` so they always agree.
-fn matte_alpha_path(project_dir: &Path, asset_hash: &str, m: &cut_core::ClipMatte) -> PathBuf {
-    project_dir
-        .join("cache")
-        .join("matte")
-        .join(m.cache_filename(asset_hash))
-}
-
-/// Graph-input map key for a matte alpha file (distinct from asset-id keys so a
-/// matte and a same-named asset never collide).
-fn matte_input_key(alpha_path: &Path) -> String {
-    format!("matte::{}", alpha_path.display())
-}
-
-/// Absolute path to a clip's baked mask alpha PNG under the project cache. Content-
-/// addressed by the mask geometry + frame size (`ClipMask::cache_tag`), so identical
-/// masks share one baked file and a render reuses it.
-fn mask_alpha_path(project_dir: &Path, mask: &cut_core::ClipMask, w: u32, h: u32) -> PathBuf {
-    project_dir
-        .join("cache")
-        .join("mask")
-        .join(format!("{}.png", mask.cache_tag(w, h)))
-}
-
-/// Graph-input map key for a mask alpha file (distinct from asset/matte keys).
-fn mask_input_key(alpha_path: &Path) -> String {
-    format!("mask::{}", alpha_path.display())
-}
-
-/// Absolute path to a power-window's baked shape-alpha PNG (edit.grade_window). The
-/// window's geometry is lowered to an ephemeral [`cut_core::ClipMask`]
-/// (`WindowShape::to_mask`), so the alpha bake + content-address reuse the proven mask
-/// path verbatim — identical window shapes (across windows or clips) share one baked file.
-/// Stored under a distinct `gwindow/` cache dir so a window alpha and a same-shaped mask
-/// alpha never collide.
-fn window_alpha_path(project_dir: &Path, win: &cut_core::WindowShape, w: u32, h: u32) -> PathBuf {
-    project_dir
-        .join("cache")
-        .join("gwindow")
-        .join(format!("{}.png", win.to_mask().cache_tag(w, h)))
-}
-
-/// Graph-input map key for a power-window alpha file (distinct from asset/matte/mask keys).
-fn window_input_key(alpha_path: &Path) -> String {
-    format!("gwindow::{}", alpha_path.display())
-}
-
-fn segment_video_track_visible(project: &Project, seg: &EdlSegment) -> bool {
-    if seg.track_kind != TrackKind::Video {
-        return true;
-    }
-    match project.track(&seg.track) {
-        Some(track) => track.visible,
-        // EDL segments normally reference live project tracks. If an imported or
-        // legacy EDL lacks that track, preserve the historical render behavior.
-        None => true,
-    }
-}
-
-static ALPHA_BAKE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn bake_mask_png_atomic(
-    mask: &cut_core::ClipMask,
-    w: u32,
-    h: u32,
-    alpha_path: &Path,
-) -> Result<(), CutError> {
-    if alpha_path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = alpha_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let seq = ALPHA_BAKE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let file_name = alpha_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("alpha.png");
-    let tmp = alpha_path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), seq));
-    crate::mask::bake_mask_png(mask, w, h, &tmp)?;
-    match std::fs::rename(&tmp, alpha_path) {
-        Ok(()) => Ok(()),
-        Err(e) if alpha_path.exists() => {
-            let _ = std::fs::remove_file(&tmp);
-            drop(e);
-            Ok(())
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(CutError::new(
-                error_codes::FFMPEG,
-                "mask PNG publish failed",
-                e.to_string(),
-            ))
-        }
-    }
-}
-
-/// Preview output geometry: scale `(w,h)` to height `ph`, preserving aspect and
-/// even yuv420 dimensions. No-op when `ph >= h`; previews never upscale.
-fn preview_geometry(w: u32, h: u32, ph: u32) -> (u32, u32) {
-    if h == 0 || ph == 0 || ph >= h {
-        return (w & !1, h & !1);
-    }
-    let pw = ((w as u64 * ph as u64 + (h as u64) / 2) / h as u64) as u32;
-    ((pw.max(2)) & !1, (ph.max(2)) & !1)
-}
-
-/// Whether an asset's proxy can safely replace its raw source in a preview.
-/// Requires an existing clean downscale with matching aspect and no source-pixel
-/// geometry such as crop or stabilization. Coordinate-free effects remain valid
-/// at proxy resolution; ineligible assets fall back to the raw source.
-fn asset_proxy_ok(project: &Project, edl: &Edl, asset_id: &str, asset: &cut_core::Asset) -> bool {
-    let _ = project;
-    if asset.proxy.is_none() {
-        return false;
-    }
-    let Some((sw, sh)) = source_dims(asset) else {
-        return false;
-    };
-    let src_ar = sw as f64 / sh as f64;
-    let proxy_ar = crate::proxy::PROXY_WIDTH as f64 / crate::proxy::PROXY_HEIGHT as f64;
-    if (src_ar - proxy_ar).abs() > 0.01 {
-        return false; // letterboxed proxy — bars would composite as content
-    }
-    !edl.segments.iter().any(|s| {
-        s.asset.as_deref() == Some(asset_id) && (s.crop.is_some() || s.stabilize.is_some())
-    })
-}
-
-fn collect_graph_inputs(
-    project: &Project,
-    edl: &Edl,
-    project_dir: &Path,
-    use_proxy: bool,
-    with_video: bool,
-    output_w: u32,
-    output_h: u32,
-) -> Result<(Vec<GraphInput>, BTreeMap<String, usize>), CutError> {
-    let mut input_idx: BTreeMap<String, usize> = BTreeMap::new();
-    let mut inputs: Vec<GraphInput> = Vec::new();
-    for seg in edl.segments.iter().filter(|s| s.asset.is_some()) {
-        if !segment_video_track_visible(project, seg) {
-            continue;
-        }
-        let asset_id = seg.asset.as_deref().unwrap();
-        if input_idx.contains_key(asset_id) {
-            continue;
-        }
-        let asset = project.assets.get(asset_id).ok_or_else(|| {
-            CutError::new(
-                error_codes::NOT_FOUND,
-                format!("asset {asset_id} referenced by the timeline does not exist"),
-                "EDL references an asset id missing from project.assets",
-            )
-            .with_clip(seg.clip_id.clone().unwrap_or_default())
-        })?;
-        // Decode the proxy when it is coordinate-safe. `export.frame` passes
-        // `use_proxy=false` for full-resolution source; a missing proxy falls back.
-        let proxy_rel = if use_proxy && asset_proxy_ok(project, edl, asset_id, asset) {
-            asset.proxy.clone()
-        } else {
-            None
-        };
-        let mut path = PathBuf::from(proxy_rel.as_deref().unwrap_or(asset.path.as_str()));
-        if path.is_relative() {
-            path = project_dir.join(path); // Asset (and proxy) paths may be project-relative.
-        }
-        if proxy_rel.is_some() && !path.exists() {
-            // Proxy vanished — fall back to the raw source so the preview still renders.
-            path = PathBuf::from(&asset.path);
-            if path.is_relative() {
-                path = project_dir.join(path);
-            }
-        }
-        // Rust canonicalization stamps Windows paths with `\\?\`, but the
-        // shipped FFmpeg build cannot open that extended form. Keep canonical
-        // paths for ownership checks and persistence, then hand external media
-        // tools the equivalent plain drive/UNC path.
-        path = strip_verbatim_prefix(&path);
-        if !path.exists() {
-            return Err(CutError::new(
-                error_codes::NOT_FOUND,
-                format!(
-                    "media file for asset {asset_id} not found: {}",
-                    path.display()
-                ),
-                "source file moved or deleted since import",
-            )
-            .with_suggested_action(
-                "repoint the asset at the file's new location via media.relink {asset, path} \
-                 (media.check lists offline assets), or restore the file",
-            ));
-        }
-        // Stills are looped at the input (-loop 1) so the trim chain can cut
-        // the clip's duration out of an infinite single-frame stream.
-        let image = asset
-            .probe
-            .as_ref()
-            .and_then(|p| p.get("kind"))
-            .and_then(|k| k.as_str())
-            == Some("image");
-        input_idx.insert(asset_id.to_string(), inputs.len());
-        // gpu_decode defaults false (CPU decode); build_graph_gpu flips it on for
-        // BASE-track inputs only (NVDEC). The software path leaves it false.
-        inputs.push(GraphInput {
-            path,
-            image,
-            gpu_decode: false,
-        });
-    }
-    // Matte alpha mattes (edit.matte): each matted segment needs its baked alpha
-    // as a PARALLEL input so the overlay chain can alphamerge it onto the clip.
-    // Keyed by the cache path so clips sharing one baked matte share one `-i`.
-    // The alpha is baked by edit.matte (content-addressed); a missing file is a
-    // clear error, never a silent un-matted render.
-    if with_video {
-        for seg in edl.segments.iter().filter(|s| {
-            s.matte.is_some() && s.asset.is_some() && segment_video_track_visible(project, s)
-        }) {
-            let m = seg.matte.as_ref().unwrap();
-            let asset_id = seg.asset.as_deref().unwrap();
-            let asset = project.assets.get(asset_id).ok_or_else(|| {
-                CutError::new(
-                    error_codes::NOT_FOUND,
-                    format!("asset {asset_id} referenced by a matte segment does not exist"),
-                    "EDL references an asset id missing from project.assets",
-                )
-            })?;
-            let alpha_path = matte_alpha_path(project_dir, &asset.hash, m);
-            let key = matte_input_key(&alpha_path);
-            if input_idx.contains_key(&key) {
-                continue;
-            }
-            if !alpha_path.exists() {
-                return Err(CutError::new(
-                    error_codes::NOT_FOUND,
-                    format!(
-                        "baked matte alpha missing for clip {}: {}",
-                        seg.clip_id.as_deref().unwrap_or(asset_id),
-                        alpha_path.display()
-                    ),
-                    "the matte alpha is baked by edit.matte (content-addressed); it is absent",
-                )
-                .with_suggested_action(
-                    "re-apply edit.matte on the clip to bake its alpha (the matting sidecar must be reachable), then render",
-                ));
-            }
-            input_idx.insert(key, inputs.len());
-            inputs.push(GraphInput {
-                path: alpha_path,
-                image: false,
-                gpu_decode: false,
-            });
-        }
-        // Vector/freeform masks (edit.add_mask): each masked segment needs its baked
-        // GRAY alpha PNG as a PARALLEL input so the chain can maskedmerge the region
-        // effect. Unlike mattes (baked by a slow sidecar), a mask is rasterized HERE
-        // (resvg, ~ms) and cached content-addressed — so it bakes on first render and
-        // reuses thereafter. Keyed by the cache path → clips sharing one mask share `-i`.
-        let (mw, mh) = (output_w, output_h);
-        for seg in edl.segments.iter().filter(|s| {
-            // A TRACKED rect/ellipse mask paints its alpha procedurally (geq) — no PNG
-            // to bake. Only STATIC (or polygon) masks need a baked shape input here.
-            s.mask.as_ref().is_some_and(|m| !mask_uses_geq(m))
-                && s.asset.is_some()
-                && segment_video_track_visible(project, s)
-        }) {
-            let m = seg.mask.as_ref().unwrap();
-            let alpha_path = mask_alpha_path(project_dir, m, mw, mh);
-            let key = mask_input_key(&alpha_path);
-            if input_idx.contains_key(&key) {
-                continue;
-            }
-            bake_mask_png_atomic(m, mw, mh, &alpha_path)?;
-            input_idx.insert(key, inputs.len());
-            inputs.push(GraphInput {
-                path: alpha_path,
-                image: true, // a single still PNG (looped at the input like other stills)
-                gpu_decode: false,
-            });
-        }
-        // Power windows (edit.grade_window): each window needs its baked shape-alpha PNG as a
-        // PARALLEL input so the chain can alphamerge the GRADED copy into the region. The
-        // alpha is rasterized exactly like a mask (resvg, ~ms) and cached content-addressed by
-        // the window geometry — identical window shapes (within a clip, across clips) share one
-        // `-i`. Windows are STATIC (no geq path), so every window bakes a PNG here.
-        for seg in edl.segments.iter().filter(|s| {
-            !s.grade_windows.is_empty()
-                && s.asset.is_some()
-                && segment_video_track_visible(project, s)
-        }) {
-            for gw in &seg.grade_windows {
-                let alpha_path = window_alpha_path(project_dir, &gw.window, mw, mh);
-                let key = window_input_key(&alpha_path);
-                if input_idx.contains_key(&key) {
-                    continue;
-                }
-                bake_mask_png_atomic(&gw.window.to_mask(), mw, mh, &alpha_path)?;
-                input_idx.insert(key, inputs.len());
-                inputs.push(GraphInput {
-                    path: alpha_path,
-                    image: true, // a single still PNG (looped at the input like other stills)
-                    gpu_decode: false,
-                });
-            }
-        }
-    }
-    Ok((inputs, input_idx))
-}
-
 #[derive(Debug, Clone, Copy)]
 struct VideoTrackPlan<'a> {
     id: &'a str,
@@ -1990,6 +1682,22 @@ fn planned_video_tracks(project: &Project) -> Vec<VideoTrackPlan<'_>> {
     out
 }
 
+/// Build the composition graph from the EDL (media-engine contract: trim/atrim + concat
+/// per track, gain via volume, caption burn-in via ass filter).
+/// `project_dir` resolves project-relative asset paths. `with_captions=false`
+/// skips burn-in (seam for caption-less previews); `with_audio=false` skips
+/// audio chains entirely — every emitted label must be mapped or consumed,
+/// ffmpeg hard-errors on unconnected outputs (frame extraction is video-only).
+/// Composition model (multi-track compositing regression): the FIRST video track with
+/// clips is the base canvas; every later video track is composited above it
+/// in track order via full-length transparent-backed overlay streams
+/// (per-clip ClipTransform = PiP geometry; gaps stay transparent). Multicam
+/// angle-switching remains out of scope. Audio tracks all mix (amix).
+/// Resolve the distinct media inputs for a graph: one entry per asset referenced
+/// by any media segment, in first-use order, plus the asset→`-i` index map the
+/// filter chains reference. Shared by the software [`build_graph`] and the GPU
+/// [`build_graph_gpu`] so both number their inputs identically. Stills are flagged
+/// (looped at the input). Errors if an asset id or its file is missing.
 fn build_graph(
     project: &Project,
     edl: &Edl,
@@ -2157,6 +1865,60 @@ fn build_graph(
                             src_out,
                             project_dir,
                         )?;
+                        // `replace` is a self-contained composite, including on
+                        // the base track. Its foreground first follows the ordinary
+                        // per-clip path; the cached alpha then joins it over the
+                        // declared colour/asset background. `remove` remains the
+                        // existing overlay-only operation (core refuses it here).
+                        let matte_replace = matte::replacement_background(seg.matte.as_ref())?;
+                        let matte_alpha_idx = if matte_replace.is_some() {
+                            let matte = seg.matte.as_ref().expect("replace has a matte");
+                            let hash = project
+                                .assets
+                                .get(asset.as_str())
+                                .map(|a| a.hash.as_str())
+                                .unwrap_or("");
+                            Some(
+                                input_idx
+                                    .get(&matte_input_key(&matte_alpha_path(
+                                        project_dir,
+                                        hash,
+                                        matte,
+                                    )))
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        CutError::new(
+                                            error_codes::NOT_FOUND,
+                                            "baked matte alpha is unavailable to render",
+                                            "re-apply edit.matte so the cached alpha is present",
+                                        )
+                                    })?,
+                            )
+                        } else {
+                            None
+                        };
+                        let matte_foreground = if matte_replace.is_some() {
+                            format!("{label}fg")
+                        } else {
+                            label.clone()
+                        };
+                        // A base fade/opacity applies to the completed replacement,
+                        // not only the foreground. Preserve all no-matte strings.
+                        let foreground_opacity = if matte_replace.is_some() {
+                            ""
+                        } else {
+                            vopacity.as_str()
+                        };
+                        let foreground_fade = if matte_replace.is_some() {
+                            ""
+                        } else {
+                            vfade.as_str()
+                        };
+                        let foreground_lock = if matte_replace.is_some() {
+                            ""
+                        } else {
+                            vlock.as_str()
+                        };
                         // edit.add_mask: a region effect (blur/pixelate/black) scoped via
                         // a baked shape alpha. When present, the conformed clip is split,
                         // the effect runs on one copy, and it's alphamerge+overlay'd back
@@ -2185,7 +1947,7 @@ fn build_graph(
                             // a power window or mask with a transform never drops either edit.
                             let pre = format!("{label}pre");
                             let post_region = if vtransform.is_empty() && vopacity.is_empty() {
-                                label.clone()
+                                matte_foreground.clone()
                             } else {
                                 format!("{label}region")
                             };
@@ -2208,7 +1970,7 @@ fn build_graph(
                                 } else {
                                     format!("{label}gw{wi}")
                                 };
-                                let this_vfade = if is_final { vfade.as_str() } else { "" };
+                                let this_vfade = if is_final { foreground_fade } else { "" };
                                 let uniq = format!("{label}w{wi}");
                                 let wp = window_alpha_path(project_dir, &gw.window, w, h);
                                 let widx = input_idx[&window_input_key(&wp)];
@@ -2227,7 +1989,7 @@ fn build_graph(
                                         &post_region,
                                         w,
                                         h,
-                                        &vfade,
+                                        foreground_fade,
                                     ));
                                 } else {
                                     f.push_str(&mask_block(
@@ -2238,20 +2000,20 @@ fn build_graph(
                                         &post_region,
                                         w,
                                         h,
-                                        &vfade,
+                                        foreground_fade,
                                     ));
                                 }
                                 f.push('\n');
                             }
-                            if post_region != label {
+                            if post_region != matte_foreground {
                                 writeln!(
                                     f,
                                     "{}",
                                     base_region_transform_block(
                                         &post_region,
-                                        &label,
+                                        &matte_foreground,
                                         &vtransform,
-                                        &vopacity,
+                                        foreground_opacity,
                                     )
                                 )
                                 .unwrap();
@@ -2260,10 +2022,36 @@ fn build_graph(
                             writeln!(
                             f,
                             "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                             {conform}{vanim}{vgrade}{veffects}{vtransform}{vopacity}{vcolor},{vfps},format=yuv420p{vfade}{vlock}[{label}];",
+                             {conform}{vanim}{vgrade}{veffects}{vtransform}{foreground_opacity}{vcolor},{vfps},format=yuv420p{foreground_fade}{foreground_lock}[{matte_foreground}];",
                             idx = input_idx[asset],
                         )
                         .unwrap();
+                        }
+                        if let (Some(background), Some(am)) = (matte_replace, matte_alpha_idx) {
+                            let alpha = format!("v{n}ma");
+                            let subject = format!("v{n}subject");
+                            let bg = format!("v{n}bg");
+                            writeln!(
+                                f,
+                                "[{am}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
+                                 {conform}{vanim}{vtransform},{vfps},format=gray[{alpha}];"
+                            )
+                            .unwrap();
+                            let bg_filter = matte::background_filter(
+                                project, &input_idx, background, w, h, &fps, opts.fit, seg_dur,
+                            )?;
+                            let output_suffix = format!("{vopacity}{vfade}{vlock}");
+                            f.push_str(&matte::replace_block(
+                                &matte_foreground,
+                                &alpha,
+                                &subject,
+                                &bg_filter,
+                                &bg,
+                                &label,
+                                "yuv420p",
+                                &output_suffix,
+                            ));
+                            f.push('\n');
                         }
                         vsegs.push(SegStream {
                             label,
@@ -2507,14 +2295,12 @@ fn build_graph(
             let posx = kf_points(&seg.keyframes, cut_core::KfParam::PosX);
             let posy = kf_points(&seg.keyframes, cut_core::KfParam::PosY);
             // edit.matte: SET the overlay's alpha plane from the baked straight-alpha
-            // (RVM) instead of the clip's own opaque alpha — the background is removed
-            // (this overlay reveals the track below) / replaced. The matte is a
-            // PARALLEL gray input trimmed/conformed IDENTICALLY to the clip (so it
-            // stays frame-aligned), alphamerged onto the yuva clip; the usual
-            // opacity/PiP/fade suffixes then apply unchanged. Software path only (the
-            // GPU gate excludes matte). v1 composites with the STATIC `place` form
-            // (full-frame or static PiP); the alpha skips the colour stages
-            // (grade/effects don't change a matte) but keeps every GEOMETRY stage.
+            // (RVM) instead of the clip's own opaque alpha. `remove` preserves the
+            // established lower-track reveal. `replace` composites that subject over
+            // a declared color/asset plate before it becomes this overlay stream.
+            // The matte is a PARALLEL gray input trimmed/conformed IDENTICALLY to
+            // the clip (so it stays frame-aligned); the alpha skips color stages but
+            // keeps every GEOMETRY stage. Software path only (GPU excludes matte).
             let matte_alpha_idx = seg.matte.as_ref().and_then(|m| {
                 let hash = project
                     .assets
@@ -2525,9 +2311,81 @@ fn build_graph(
                     .get(&matte_input_key(&matte_alpha_path(project_dir, hash, m)))
                     .copied()
             });
-            if let Some(am) = matte_alpha_idx {
+            let matte_replace = matte::replacement_background(seg.matte.as_ref())?;
+            if let (Some(am), Some(background)) = (matte_alpha_idx, matte_replace) {
                 let fgpre = format!("ofp{ti}_{}", olabels.len());
                 let amatte = format!("oam{ti}_{}", olabels.len());
+                let subject = format!("osub{ti}_{}", olabels.len());
+                let bg = format!("obg{ti}_{}", olabels.len());
+                let replacement = format!("orepl{ti}_{}", olabels.len());
+                writeln!(
+                    f,
+                    "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
+                     {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p[{fgpre}];\n\
+                     [{am}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
+                     {conform}{vanim},{vfps},format=gray[{amatte}];",
+                    idx = input_idx[asset.as_str()],
+                )
+                .unwrap();
+                let bg_filter = matte::background_filter(
+                    project, &input_idx, background, w, h, &fps, opts.fit, seg_dur_ms,
+                )?;
+                f.push_str(&matte::replace_block(
+                    &fgpre,
+                    &amatte,
+                    &subject,
+                    &bg_filter,
+                    &bg,
+                    &replacement,
+                    "yuva420p",
+                    "",
+                ));
+                f.push('\n');
+                if posx.is_some() || posy.is_some() {
+                    // The replacement is one opaque stream before the regular
+                    // animated canvas applies its transform, alpha and fade.
+                    let xexpr = match posx {
+                        Some((pts, interp)) => format!("{w}*({})", kf_expr(&pts, "t", interp)),
+                        None => ox.to_string(),
+                    };
+                    let yexpr = match posy {
+                        Some((pts, interp)) => format!("{h}*({})", kf_expr(&pts, "t", interp)),
+                        None => oy.to_string(),
+                    };
+                    let opac = if t.opacity < 1.0 && vopac.is_empty() {
+                        let o = (t.opacity.clamp(0.0, 1.0) * 1000.0).round() / 1000.0;
+                        format!(",colorchannelmixer=aa={o}")
+                    } else {
+                        String::new()
+                    };
+                    let small = format!("o{ti}_sm{}", olabels.len());
+                    let canvas = format!("o{ti}_cv{}", olabels.len());
+                    f.push_str(&animated_overlay_canvas_block(
+                        &format!("[{replacement}]null"),
+                        &small,
+                        &canvas,
+                        &label,
+                        w,
+                        h,
+                        &fps,
+                        seg_dur_ms,
+                        &vopac,
+                        ow,
+                        oh,
+                        &opac,
+                        &xexpr,
+                        &yexpr,
+                        &vfade,
+                    ));
+                    f.push('\n');
+                } else {
+                    writeln!(f, "[{replacement}]null{vopac}{place}{vfade}[{label}];").unwrap();
+                }
+            } else if let Some(am) = matte_alpha_idx {
+                let fgpre = format!("ofp{ti}_{}", olabels.len());
+                let amatte = format!("oam{ti}_{}", olabels.len());
+                // Keep the existing remove graph byte-for-byte: it is the lower-track
+                // reveal contract and remains independent from replacement handling.
                 writeln!(
                     f,
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
@@ -2561,17 +2419,29 @@ fn build_graph(
                 };
                 let small = format!("o{ti}_sm{}", olabels.len());
                 let canvas = format!("o{ti}_cv{}", olabels.len());
-                writeln!(
-                    f,
+                let input_chain = format!(
                     "[{idx}:v]trim=start={trim_in}:end={trim_out},{vsetpts}{vstab}{vreverse}{vfreeze}{vcrop},\
-                     {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p{vopac},\
-                     scale={ow}:{oh},setsar=1{opac}[{small}];\n\
-                     color=c=black@0.0:s={w}x{h}:r={fps}:d={d},format=yuva420p[{canvas}];\n\
-                     [{canvas}][{small}]overlay=x='{xexpr}':y='{yexpr}':eof_action=pass{vfade}[{label}];",
+                     {conform}{vanim}{vgrade}{veffects}{vcolor},{vfps},format=yuva420p",
                     idx = input_idx[asset.as_str()],
-                    d = secs(seg.timeline_out_ms - seg.timeline_in_ms),
-                )
-                .unwrap();
+                );
+                f.push_str(&animated_overlay_canvas_block(
+                    &input_chain,
+                    &small,
+                    &canvas,
+                    &label,
+                    w,
+                    h,
+                    &fps,
+                    seg_dur_ms,
+                    &vopac,
+                    ow,
+                    oh,
+                    &opac,
+                    &xexpr,
+                    &yexpr,
+                    &vfade,
+                ));
+                f.push('\n');
             } else {
                 writeln!(
                     f,
@@ -4599,7 +4469,7 @@ pub fn plan_scrub_frame(
 /// present. Returns None when the asset was imported without a video probe — the
 /// scrub-crop mapping then can't be computed, and `plan_scrub_frame` keeps the
 /// composed fallback.
-fn source_dims(asset: &cut_core::Asset) -> Option<(u32, u32)> {
+pub(super) fn source_dims(asset: &cut_core::Asset) -> Option<(u32, u32)> {
     let p = asset.probe.as_ref()?;
     let w = p.get("width").and_then(|v| v.as_u64())? as u32;
     let h = p.get("height").and_then(|v| v.as_u64())? as u32;

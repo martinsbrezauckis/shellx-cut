@@ -345,7 +345,7 @@
 .assets__health-dimensions {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(6, minmax(64px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   gap: 4px;
   overflow-x: auto;
 }

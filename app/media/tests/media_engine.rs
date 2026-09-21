@@ -1073,6 +1073,142 @@ fn px(rgb: &[u8], w: u32, x: u32, y: u32) -> (u8, u8, u8) {
     (rgb[i], rgb[i + 1], rgb[i + 2])
 }
 
+/// A one-second flat-color source keeps Matte replacement pixel expectations
+/// unambiguous: the opaque alpha half must retain the subject, while the other
+/// half must be the declared plate.
+fn matte_color_video(dir: &Path, name: &str, color: &str) -> PathBuf {
+    let out = dir.join(name);
+    let args: Vec<String> = [
+        "-f",
+        "lavfi",
+        "-i",
+        &format!("color=c={color}:s=320x240:r=30:d=1"),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain([out.display().to_string()])
+    .collect();
+    cut_media::ffmpeg::run_ffmpeg(&args).expect("matte color source");
+    out
+}
+
+/// The cached sidecar output used by the real renderer tests: left opaque,
+/// right transparent, encoded in the same FFV1 gray form as a baked matte.
+fn matte_half_alpha(dir: &Path, matte: &cut_core::ClipMatte, asset_hash: &str) {
+    let alpha_dir = dir.join("cache").join("matte");
+    create_private_test_dir(&alpha_dir);
+    let alpha_path = alpha_dir.join(matte.cache_filename(asset_hash));
+    let args: Vec<String> = [
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=white:s=160x240:r=30:d=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=160x240:r=30:d=1",
+        "-filter_complex",
+        "[0:v][1:v]hstack=inputs=2,format=gray[a]",
+        "-map",
+        "[a]",
+        "-c:v",
+        "ffv1",
+        "-pix_fmt",
+        "gray",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain([alpha_path.display().to_string()])
+    .collect();
+    cut_media::ffmpeg::run_ffmpeg(&args).expect("matte alpha source");
+}
+
+fn matte_test_project(id: &str) -> Project {
+    Project::new(
+        id,
+        ProjectSettings {
+            width: 320,
+            height: 240,
+            fps: 30.0,
+            audio_rate: 48_000,
+            color: cut_core::ColorConfig::default(),
+        },
+    )
+}
+
+fn add_matte_video_asset(project: &mut Project, id: &str, path: &Path) {
+    project.assets.insert(
+        id.into(),
+        cut_core::Asset {
+            path: path.display().to_string(),
+            hash: format!("sha256:{id}"),
+            probe: Some(serde_json::json!({"kind": "video", "width": 320, "height": 240})),
+            transcript: None,
+            perception: None,
+            proxy: None,
+            filmstrip: None,
+        },
+    );
+}
+
+fn matte_media_clip(id: &str, asset: &str, matte: Option<cut_core::ClipMatte>) -> MediaClip {
+    MediaClip {
+        id: id.into(),
+        asset: asset.into(),
+        src_in_ms: 0,
+        src_out_ms: 1000,
+        effects: vec![],
+        gain_db: 0.0,
+        transform: None,
+        crop: None,
+        fade: None,
+        xfade_in_ms: 0,
+        xfade_kind: None,
+        speed: 1.0,
+        grade: None,
+        matte,
+        mask: None,
+        reverse: false,
+        freeze: None,
+        animation: None,
+        keyframes: vec![],
+        eq: None,
+        mute_ranges: vec![],
+        stabilize: None,
+        speed_ramp: None,
+        input_color_space: None,
+        nest: None,
+        grade_stack: vec![],
+        grade_windows: vec![],
+    }
+}
+
+fn render_matte_output(project: &Project, dir: &Path, name: &str) -> PathBuf {
+    let fence = PathFence::new(dir).unwrap();
+    let out = render_final(
+        project,
+        &edl_from_project(project),
+        &fence,
+        Path::new(name),
+        &RenderPreset::default(),
+        RenderOptions::default(),
+        None,
+    )
+    .expect("matte fixture render");
+    out.path
+}
+
+fn render_matte_fixture(project: &Project, dir: &Path, name: &str) -> Vec<u8> {
+    let output = render_matte_output(project, dir, name);
+    frame_rgb(&output, 0.5, 320, 240)
+}
+
 /// (masks): an `edit.add_mask` rect with `effect:black` over the LEFT
 /// half of the frame blacks out ONLY that region (the right half keeps the testsrc2
 /// picture). This exercises the WHOLE mask path through the real render: resvg bakes
@@ -4705,32 +4841,8 @@ fn render_blend_mode_multiplies_only_in_overlay_region() {
 #[test]
 fn render_matte_remove_reveals_base_through_alpha() {
     let dir = tempfile::tempdir().unwrap();
-    let gen = |name: &str, color: &str| -> std::path::PathBuf {
-        let out = dir.path().join(name);
-        let args: Vec<String> = [
-            "-f",
-            "lavfi",
-            "-i",
-            &format!("color=c={color}:s=320x240:r=30:d=1"),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-pix_fmt",
-            "yuv420p",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .chain([out.display().to_string()])
-        .collect();
-        cut_media::ffmpeg::run_ffmpeg(&args).expect("color source");
-        out
-    };
-    let magenta = gen("bg.mp4", "magenta"); // base
-    let green = gen("subject.mp4", "green"); // overlay subject
-
-    // The baked alpha: LEFT half white (opaque → overlay shows), RIGHT half black
-    // (transparent → base reveals). FFV1 gray, exactly like the sidecar returns.
+    let magenta = matte_color_video(dir.path(), "bg.mp4", "magenta");
+    let green = matte_color_video(dir.path(), "subject.mp4", "green");
     let matte = cut_core::ClipMatte {
         mode: cut_core::MatteMode::Remove,
         model: cut_core::MatteModel::Rvm,
@@ -4738,92 +4850,21 @@ fn render_matte_remove_reveals_base_through_alpha() {
         quality: cut_core::MatteQuality::Good,
         seed: None,
     };
-    let alpha_dir = dir.path().join("cache").join("matte");
-    create_private_test_dir(&alpha_dir);
-    let alpha_path = alpha_dir.join(matte.cache_filename("sha256:a2"));
-    let alpha_args: Vec<String> = [
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=white:s=160x240:r=30:d=1",
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=black:s=160x240:r=30:d=1",
-        "-filter_complex",
-        "[0:v][1:v]hstack=inputs=2,format=gray[a]",
-        "-map",
-        "[a]",
-        "-c:v",
-        "ffv1",
-        "-pix_fmt",
-        "gray",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .chain([alpha_path.display().to_string()])
-    .collect();
-    cut_media::ffmpeg::run_ffmpeg(&alpha_args).expect("alpha source");
+    matte_half_alpha(dir.path(), &matte, "sha256:subject");
 
-    let mut p = Project::new(
-        "t",
-        ProjectSettings {
-            width: 320,
-            height: 240,
-            fps: 30.0,
-            audio_rate: 48_000,
-            color: cut_core::ColorConfig::default(),
-        },
-    );
-    for (id, path) in [("a1", &magenta), ("a2", &green)] {
-        p.assets.insert(
-            id.into(),
-            cut_core::Asset {
-                path: path.display().to_string(),
-                hash: format!("sha256:{id}"),
-                probe: Some(serde_json::json!({"kind": "video", "width": 320, "height": 240})),
-                transcript: None,
-                perception: None,
-                proxy: None,
-                filmstrip: None,
-            },
-        );
-    }
-    let mk = |id: &str, asset: &str, matte: Option<cut_core::ClipMatte>| MediaClip {
-        id: id.into(),
-        asset: asset.into(),
-        src_in_ms: 0,
-        src_out_ms: 1000,
-        effects: vec![],
-        gain_db: 0.0,
-        transform: None,
-        crop: None,
-        fade: None,
-        xfade_in_ms: 0,
-        xfade_kind: None,
-        speed: 1.0,
-        grade: None,
-        matte,
-        mask: None,
-        reverse: false,
-        freeze: None,
-        animation: None,
-        keyframes: vec![],
-        eq: None,
-        mute_ranges: vec![],
-        stabilize: None,
-        speed_ramp: None,
-        input_color_space: None,
-        nest: None,
-        grade_stack: vec![],
-        grade_windows: vec![],
-    };
-    // base = magenta on v1; overlay = green (full-frame) on v2 with matte REMOVE.
-    p.track_mut("v1").unwrap().clips = vec![Clip::Media(mk("c1", "a1", None))];
-    p.tracks.push(Track {
+    let mut project = matte_test_project("matte-remove");
+    add_matte_video_asset(&mut project, "base", &magenta);
+    add_matte_video_asset(&mut project, "subject", &green);
+    project.track_mut("v1").unwrap().clips =
+        vec![Clip::Media(matte_media_clip("base-clip", "base", None))];
+    project.tracks.push(Track {
         id: "v2".into(),
         kind: TrackKind::Video,
-        clips: vec![Clip::Media(mk("c2", "a2", Some(matte)))],
+        clips: vec![Clip::Media(matte_media_clip(
+            "subject-clip",
+            "subject",
+            Some(matte),
+        ))],
         gain_db: 0.0,
         gain_windows: vec![],
         blend_mode: None,
@@ -4835,21 +4876,20 @@ fn render_matte_remove_reveals_base_through_alpha() {
     });
 
     let fence = PathFence::new(dir.path()).unwrap();
-    let edl = edl_from_project(&p);
     let out = render_final(
-        &p,
-        &edl,
+        &project,
+        &edl_from_project(&project),
         &fence,
-        Path::new("matte.mp4"),
+        Path::new("matte-remove.mp4"),
         &RenderPreset::default(),
         RenderOptions::default(),
         None,
     )
-    .expect("matte render");
+    .expect("matte remove render");
 
     let frame = frame_rgb(&out.path, 0.5, 320, 240);
-    let (lr, lg, lb) = px(&frame, 320, 80, 120); // LEFT half: alpha white → green overlay
-    let (rr, rg, rb) = px(&frame, 320, 240, 120); // RIGHT half: alpha black → magenta base
+    let (lr, lg, lb) = px(&frame, 320, 80, 120); // opaque alpha → subject
+    let (rr, rg, rb) = px(&frame, 320, 240, 120); // transparent alpha → lower track
     assert!(
         lg > 120 && lr < 100 && lb < 100,
         "left = green overlay (alpha opaque) ({lr},{lg},{lb})"
@@ -4857,6 +4897,282 @@ fn render_matte_remove_reveals_base_through_alpha() {
     assert!(
         rr > 120 && rb > 120 && rg < 100,
         "right = magenta base revealed (alpha transparent) ({rr},{rg},{rb})"
+    );
+}
+
+/// Real FFmpeg pixels prove `replace` fills the transparent side of a base or
+/// overlay subject with its own color plate. The cached alpha is a fixture, not
+/// a claim about the native AI inference path.
+#[test]
+fn render_matte_replace_color_fills_base_and_overlay() {
+    let dir = tempfile::tempdir().unwrap();
+    let subject = matte_color_video(dir.path(), "subject.mp4", "green");
+    let lower = matte_color_video(dir.path(), "lower.mp4", "magenta");
+    let replace = cut_core::ClipMatte {
+        mode: cut_core::MatteMode::Replace,
+        model: cut_core::MatteModel::Rvm,
+        bg: Some(cut_core::MatteBg::Color {
+            color: "#0000FF".into(),
+        }),
+        quality: cut_core::MatteQuality::Good,
+        seed: None,
+    };
+    matte_half_alpha(dir.path(), &replace, "sha256:subject");
+
+    let mut base = matte_test_project("matte-replace-base");
+    add_matte_video_asset(&mut base, "subject", &subject);
+    base.track_mut("v1").unwrap().clips = vec![Clip::Media(matte_media_clip(
+        "base-subject",
+        "subject",
+        Some(replace.clone()),
+    ))];
+    let frame = render_matte_fixture(&base, dir.path(), "replace-base.mp4");
+    let (lr, lg, lb) = px(&frame, 320, 80, 120);
+    let (rr, rg, rb) = px(&frame, 320, 240, 120);
+    assert!(
+        lg > 120 && lr < 100 && lb < 100,
+        "base subject ({lr},{lg},{lb})"
+    );
+    assert!(
+        rb > 120 && rr < 100 && rg < 100,
+        "base blue plate ({rr},{rg},{rb})"
+    );
+
+    let mut overlay = matte_test_project("matte-replace-overlay");
+    add_matte_video_asset(&mut overlay, "lower", &lower);
+    add_matte_video_asset(&mut overlay, "subject", &subject);
+    overlay.track_mut("v1").unwrap().clips =
+        vec![Clip::Media(matte_media_clip("lower-clip", "lower", None))];
+    overlay.tracks.push(Track {
+        id: "v2".into(),
+        kind: TrackKind::Video,
+        clips: vec![Clip::Media(matte_media_clip(
+            "overlay-subject",
+            "subject",
+            Some(replace),
+        ))],
+        gain_db: 0.0,
+        gain_windows: vec![],
+        blend_mode: None,
+        visible: true,
+        locked: false,
+        muted: false,
+        solo: false,
+        pan: 0.0,
+    });
+    let frame = render_matte_fixture(&overlay, dir.path(), "replace-overlay.mp4");
+    let (lr, lg, lb) = px(&frame, 320, 80, 120);
+    let (rr, rg, rb) = px(&frame, 320, 240, 120);
+    assert!(
+        lg > 120 && lr < 100 && lb < 100,
+        "overlay subject ({lr},{lg},{lb})"
+    );
+    assert!(
+        rb > 120 && rr < 100 && rg < 100,
+        "overlay blue plate, not lower magenta ({rr},{rg},{rb})"
+    );
+}
+
+/// A replacement overlay is first made opaque (subject plus its own plate), then
+/// its transform opacity and fade apply once to that completed image. If each
+/// plane receives alpha before composition, the subject half becomes more opaque
+/// than its plate; black replacement content over one magenta lower track makes
+/// that measurable without relying on the native matte-inference route.
+#[test]
+fn render_matte_replace_applies_overlay_opacity_and_fade_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let lower = matte_color_video(dir.path(), "lower.mp4", "magenta");
+    let subject = matte_color_video(dir.path(), "subject.mp4", "black");
+    let replace = cut_core::ClipMatte {
+        mode: cut_core::MatteMode::Replace,
+        model: cut_core::MatteModel::Rvm,
+        bg: Some(cut_core::MatteBg::Color {
+            color: "black".into(),
+        }),
+        quality: cut_core::MatteQuality::Good,
+        seed: None,
+    };
+    matte_half_alpha(dir.path(), &replace, "sha256:subject");
+
+    let mut project = matte_test_project("matte-replace-overlay-opacity-fade");
+    add_matte_video_asset(&mut project, "lower", &lower);
+    add_matte_video_asset(&mut project, "subject", &subject);
+    project.track_mut("v1").unwrap().clips =
+        vec![Clip::Media(matte_media_clip("lower-clip", "lower", None))];
+    let mut clip = matte_media_clip("overlay-subject", "subject", Some(replace));
+    clip.transform = Some(cut_core::ClipTransform {
+        x: 0.0,
+        y: 0.0,
+        scale: 1.0,
+        opacity: 0.5,
+    });
+    clip.fade = Some(cut_core::ClipFade {
+        in_ms: 1000,
+        out_ms: 0,
+        kind: cut_core::FadeKind::Video,
+    });
+    project.tracks.push(Track {
+        id: "v2".into(),
+        kind: TrackKind::Video,
+        clips: vec![Clip::Media(clip)],
+        gain_db: 0.0,
+        gain_windows: vec![],
+        blend_mode: None,
+        visible: true,
+        locked: false,
+        muted: false,
+        solo: false,
+        pan: 0.0,
+    });
+
+    let output = render_matte_output(&project, dir.path(), "replace-opacity-fade.mp4");
+    let frame = frame_rgb(&output, 0.5, 320, 240);
+    let left = px(&frame, 320, 80, 120);
+    let right = px(&frame, 320, 240, 120);
+    // At 500 ms, the 50% clip opacity and 50% fade give a 25% black overlay:
+    // both halves should retain roughly 75% of the magenta lower track. A
+    // per-plane alpha bug makes the opaque-subject half materially darker.
+    for (name, (r, g, b)) in [("subject", left), ("plate", right)] {
+        assert!(
+            r > 165 && b > 165 && g < 45,
+            "{name} retains the expected lower-track contribution ({r},{g},{b})"
+        );
+    }
+    assert!(
+        (i16::from(left.0) - i16::from(right.0)).abs() < 16
+            && (i16::from(left.2) - i16::from(right.2)).abs() < 16,
+        "subject and plate receive one shared alpha: left={left:?}, right={right:?}"
+    );
+}
+
+/// A matted replacement overlay still follows the ordinary animated position
+/// route. Its opaque subject half and transparent-alpha replacement half must
+/// move together across the lower track at two distinct timeline times.
+#[test]
+fn render_matte_replace_keeps_animated_overlay_position() {
+    use cut_core::{Keyframe, KfInterp, KfParam, KfPoint};
+
+    let dir = tempfile::tempdir().unwrap();
+    let lower = matte_color_video(dir.path(), "lower.mp4", "magenta");
+    let subject = matte_color_video(dir.path(), "subject.mp4", "green");
+    let replace = cut_core::ClipMatte {
+        mode: cut_core::MatteMode::Replace,
+        model: cut_core::MatteModel::Rvm,
+        bg: Some(cut_core::MatteBg::Color {
+            color: "#0000FF".into(),
+        }),
+        quality: cut_core::MatteQuality::Good,
+        seed: None,
+    };
+    matte_half_alpha(dir.path(), &replace, "sha256:subject");
+
+    let mut project = matte_test_project("matte-replace-animated-position");
+    add_matte_video_asset(&mut project, "lower", &lower);
+    add_matte_video_asset(&mut project, "subject", &subject);
+    project.track_mut("v1").unwrap().clips =
+        vec![Clip::Media(matte_media_clip("lower-clip", "lower", None))];
+    let mut clip = matte_media_clip("overlay-subject", "subject", Some(replace));
+    clip.transform = Some(cut_core::ClipTransform {
+        x: 0.0,
+        y: 0.0,
+        scale: 0.25,
+        opacity: 1.0,
+    });
+    clip.keyframes = vec![Keyframe {
+        param: KfParam::PosX,
+        points: vec![
+            KfPoint {
+                t_ms: 0,
+                value: 0.0,
+            },
+            KfPoint {
+                t_ms: 1000,
+                value: 0.6,
+            },
+        ],
+        interp: KfInterp::Linear,
+    }];
+    project.tracks.push(Track {
+        id: "v2".into(),
+        kind: TrackKind::Video,
+        clips: vec![Clip::Media(clip)],
+        gain_db: 0.0,
+        gain_windows: vec![],
+        blend_mode: None,
+        visible: true,
+        locked: false,
+        muted: false,
+        solo: false,
+        pan: 0.0,
+    });
+
+    let output = render_matte_output(&project, dir.path(), "replace-animated-position.mp4");
+    let leftmost = |at: f64, kind: &str| -> u32 {
+        let frame = frame_rgb(&output, at, 320, 240);
+        (0u32..320)
+            .find(|&x| {
+                let (r, g, b) = px(&frame, 320, x, 30);
+                match kind {
+                    "subject" => g > 100 && r < 100 && b < 100,
+                    "plate" => b > 120 && r < 100 && g < 100,
+                    _ => unreachable!("fixed color kind"),
+                }
+            })
+            .unwrap_or_else(|| panic!("{kind} replacement half visible at {at}s"))
+    };
+    let early_subject = leftmost(0.1, "subject");
+    let late_subject = leftmost(0.8, "subject");
+    let early_plate = leftmost(0.1, "plate");
+    let late_plate = leftmost(0.8, "plate");
+    let subject_delta = late_subject - early_subject;
+    let plate_delta = late_plate - early_plate;
+    assert!(
+        subject_delta > 100 && plate_delta > 100,
+        "both replacement halves move right: subject {early_subject}→{late_subject}, plate {early_plate}→{late_plate}"
+    );
+    assert!(
+        (i32::try_from(subject_delta).unwrap() - i32::try_from(plate_delta).unwrap()).abs() < 12,
+        "subject and plate share one animated placement: subject Δ{subject_delta}, plate Δ{plate_delta}"
+    );
+}
+
+/// `MatteBg::Asset` is a shipped schema promise. This verifies an imported plate
+/// with no ordinary timeline clip is admitted as a real graph input and fills the
+/// base clip's transparent matte half.
+#[test]
+fn render_matte_replace_uses_imported_asset_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let subject = matte_color_video(dir.path(), "subject.mp4", "green");
+    let plate = matte_color_video(dir.path(), "plate.mp4", "cyan");
+    let replace = cut_core::ClipMatte {
+        mode: cut_core::MatteMode::Replace,
+        model: cut_core::MatteModel::Rvm,
+        bg: Some(cut_core::MatteBg::Asset {
+            asset: "plate".into(),
+        }),
+        quality: cut_core::MatteQuality::Good,
+        seed: None,
+    };
+    matte_half_alpha(dir.path(), &replace, "sha256:subject");
+    let mut project = matte_test_project("matte-replace-asset");
+    add_matte_video_asset(&mut project, "subject", &subject);
+    add_matte_video_asset(&mut project, "plate", &plate);
+    project.track_mut("v1").unwrap().clips = vec![Clip::Media(matte_media_clip(
+        "base-subject",
+        "subject",
+        Some(replace),
+    ))];
+
+    let frame = render_matte_fixture(&project, dir.path(), "replace-asset.mp4");
+    let (lr, lg, lb) = px(&frame, 320, 80, 120);
+    let (rr, rg, rb) = px(&frame, 320, 240, 120);
+    assert!(
+        lg > 120 && lr < 100 && lb < 100,
+        "asset subject ({lr},{lg},{lb})"
+    );
+    assert!(
+        rg > 120 && rb > 120 && rr < 100,
+        "imported cyan plate ({rr},{rg},{rb})"
     );
 }
 

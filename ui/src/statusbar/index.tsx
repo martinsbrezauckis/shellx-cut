@@ -17,6 +17,7 @@ import { activeJobLabel, activeJobProgress } from '../lib/jobPresentation'
 import { useTimeDisplay } from '../lib/timedisplay'
 import { formatClock } from '../panels/Timeline/layout'
 import { useTopbarJobs } from '../topbar/useTopbarJobs'
+import { receiptSummary } from './receiptSummary'
 import '../panels/Environment/environment.css'
 import './statusbar.css'
 
@@ -211,48 +212,23 @@ export default function StatusBar({ project, receipts, playheadMs, selectedClipI
         //: a human verdict + output length, NOT an ocean of checks.
         // The detail (every check + evidence) lives in the Inspect rail, one
         // click away — this chip is the summary + the door to it.
-        const dur = (lastReceipt.duration_ms / 1000).toFixed(1)
-        // Recognised auto-/manual fixes from the fix_actions contract (falls
-        // back to the failing-check count for legacy receipts without it).
-        const receiptChecks = lastReceipt.checks.filter((c) => c.name !== 'footage_profile')
-        const isUnmeasured = (c: (typeof receiptChecks)[number]) => {
-          const d = c.details
-          return d !== null && typeof d === 'object'
-            && (Reflect.get(d, 'status') === 'unmeasured' || Reflect.get(d, 'measured') === false)
-        }
-        const unmeasured = receiptChecks.filter(isUnmeasured).length
-        const failing = receiptChecks.filter(
-          (c) => !c.pass && !isUnmeasured(c),
-        ).length
-        const fixActions = lastReceipt.fix_actions
-        const toFix = failing > 0 && Array.isArray(fixActions) && fixActions.length > 0
-          ? fixActions.length
-          : failing
-        const failSummary = failing > 0 && Array.isArray(fixActions) && fixActions.length > 0
-          ? `${fixActions.length} to fix`
-          : failing > 0
-            ? `${failing} failed${unmeasured > 0 ? ` · ${unmeasured} unmeasured` : ''}`
-            : unmeasured > 0
-              ? `${unmeasured} unmeasured`
-            : 'needs review'
-        const summary = lastReceipt.pass
-          ? `${dur}s · all checks pass`
-          : `${dur}s · ${failSummary}`
+        const summary = receiptSummary(lastReceipt)
         return (
           <button
-            className={`sb-receipt ${lastReceipt.pass ? 'sb-receipt--pass' : failing === 0 && unmeasured > 0 ? 'sb-receipt--unmeasured' : 'sb-receipt--fail'}`}
+            className={`sb-receipt sb-receipt--${summary.tone}`}
             data-cut-last-receipt={lastReceipt.render_id}
             data-cut-receipt-pass={lastReceipt.pass}
-            data-cut-receipt-tofix={toFix}
+            data-cut-receipt-tofix={summary.toFix}
+            {...(summary.waived > 0 ? { 'data-cut-receipt-waived': summary.waived } : {})}
             title={`render ${lastReceipt.render_id} — open Inspect for the full receipt`}
             // The RECEIPTS tab lives in the review (Inspect) rail; it listens
             // for this DOM event to expand + switch tabs (loose-coupled join).
             onClick={() => document.dispatchEvent(new CustomEvent('cut:open-receipts'))}
           >
-            {lastReceipt.pass
+            {summary.tone === 'pass'
               ? <Icon name="success" size={14} tone="success" />
               : <Icon name="warning" size={14} tone="warn" />}
-            {' '}{summary}
+            {' '}{summary.text}
           </button>
         )
       })() : (

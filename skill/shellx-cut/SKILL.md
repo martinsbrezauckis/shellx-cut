@@ -420,6 +420,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 > - **AI matte (no green screen)** — `edit.matte` (+ `system.setup_matte`):
 >   background removal/replace, RVM auto default or premium target-assigned
 >   MatAnyone2 (SAM2 click-to-pick subject).
+>   Subject seeds use integer source pixels and source time in milliseconds.
+>   Read applied/cleared intent from the committed `op.effects[]` fields;
+>   applying also returns the immediate alpha-bake quality receipt as `matte`.
 > - **Advanced color** — the `grade` gallery (`grade.save`/`apply`/`list`),
 >   `edit.grade_stack` (layered grades), `edit.grade_window` (power window),
 >   `project.color` / `edit.color_space` (Rec.709, Rec.2020, sRGB, or

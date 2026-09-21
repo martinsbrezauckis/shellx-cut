@@ -691,6 +691,7 @@ pub(in crate::dispatch) async fn edit_matte(
     }
     let a: Args = parse_args(args.clone())?; // arg-shape + enum validation up front
     let enabling = a.enabled != Some(false);
+    let mode = a.mode.unwrap_or_default();
 
     // Snapshot the bake inputs (source path + content hash + project dir) WITHOUT
     // holding the write lock across the slow, network bake.
@@ -719,12 +720,53 @@ pub(in crate::dispatch) async fn edit_matte(
                 "the clip's source asset is not in the project",
             )
         })?;
+        // A replacement background is a render input, so validate its declared
+        // kind before the subject's expensive alpha bake. `remove` deliberately
+        // keeps its lower-track behavior and ignores `bg`; disabling clears the
+        // matte without reading any background.
+        if mode == cut_core::MatteMode::Replace {
+            match a.bg.as_ref() {
+                None => {
+                    return Err(CutError::new(
+                        error_codes::INVALID_ARGS,
+                        "matte replace needs a background",
+                        "pass bg:{type:'color', color:'…'} or bg:{type:'asset', asset:'…'} when mode is replace",
+                    ));
+                }
+                Some(cut_core::MatteBg::Asset {
+                    asset: background_id,
+                }) => {
+                    let background = store.project.assets.get(background_id).ok_or_else(|| {
+                        CutError::new(
+                            error_codes::NOT_FOUND,
+                            format!("matte background asset {background_id} not found"),
+                            "import an image or video to use it behind the matted subject",
+                        )
+                    })?;
+                    let kind = background
+                        .probe
+                        .as_ref()
+                        .and_then(|probe| probe.get("kind"))
+                        .and_then(serde_json::Value::as_str);
+                    if !matches!(kind, Some("image" | "video")) {
+                        return Err(CutError::new(
+                            error_codes::INVALID_ARGS,
+                            format!(
+                                "matte background asset {background_id} is not an image or video"
+                            ),
+                            "choose an imported image or video for a replacement background",
+                        ));
+                    }
+                }
+                Some(cut_core::MatteBg::Color { .. }) => {}
+            }
+        }
         let mut path = PathBuf::from(&asset.path);
         if path.is_relative() {
             path = store.dir.join(path);
         }
         let m = cut_core::ClipMatte {
-            mode: a.mode.unwrap_or_default(),
+            mode,
             model: a.model.unwrap_or_default(),
             bg: a.bg.clone(),
             quality: a.quality.unwrap_or_default(),

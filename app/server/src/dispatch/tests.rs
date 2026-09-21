@@ -5022,6 +5022,114 @@ async fn edit_matte_accepts_rationale_arg_shape() {
     assert_eq!(e.code, error_codes::NO_PROJECT);
 }
 
+/// Replacement backgrounds are renderer video inputs, so reject an absent,
+/// missing, or audio-only declaration before the subject matte sidecar can run.
+#[tokio::test]
+async fn edit_matte_replace_validates_background_before_bake() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"matte-background","dir":dir.path().join("matte-background.cutproj")}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "project.create: {:?}", created.error);
+
+    let make_asset = |path: &str, hash: &str, kind: &str| cut_core::Asset {
+        path: path.into(),
+        hash: hash.into(),
+        probe: Some(json!({"kind":kind})),
+        transcript: None,
+        perception: None,
+        proxy: None,
+        filmstrip: None,
+    };
+    {
+        let mut guard = state.project.write().await;
+        let store = guard.as_mut().expect("created project");
+        store
+            .record_import(
+                Some("subject".into()),
+                make_asset("subject.mp4", "sha256:subject", "video"),
+                test_actor(),
+                None,
+            )
+            .unwrap();
+        store
+            .record_import(
+                Some("audio-background".into()),
+                make_asset("background.mp3", "sha256:audio-background", "audio"),
+                test_actor(),
+                None,
+            )
+            .unwrap();
+    }
+    let inserted = dispatch(
+        &state,
+        "edit.insert",
+        json!({"asset":"subject","track":"v1","at_ms":0,"src_range_ms":[0,1000]}),
+        test_actor(),
+    )
+    .await;
+    assert!(inserted.ok, "edit.insert: {:?}", inserted.error);
+    let clip = inserted.result.unwrap()["clip_id"]
+        .as_str()
+        .expect("subject clip id")
+        .to_owned();
+
+    let missing = dispatch(
+        &state,
+        "edit.matte",
+        json!({"clip":clip,"mode":"replace"}),
+        test_actor(),
+    )
+    .await;
+    let error = missing
+        .error
+        .expect("missing replacement background must reject before bake");
+    assert_eq!(error.code, error_codes::INVALID_ARGS, "{error:?}");
+    assert!(error.message.contains("needs a background"), "{error:?}");
+
+    for (bg, code, message) in [
+        (
+            json!({"type":"asset","asset":"missing-background"}),
+            error_codes::NOT_FOUND,
+            "not found",
+        ),
+        (
+            json!({"type":"asset","asset":"audio-background"}),
+            error_codes::INVALID_ARGS,
+            "not an image or video",
+        ),
+    ] {
+        let result = dispatch(
+            &state,
+            "edit.matte",
+            json!({"clip":clip,"mode":"replace","bg":bg}),
+            test_actor(),
+        )
+        .await;
+        let error = result
+            .error
+            .expect("invalid replacement must reject before bake");
+        assert_eq!(error.code, code, "{error:?}");
+        assert!(error.message.contains(message), "{error:?}");
+    }
+
+    let ops = dispatch(&state, "project.ops", json!({}), test_actor()).await;
+    assert!(ops.ok, "project.ops: {:?}", ops.error);
+    assert!(
+        !ops.result.unwrap()["ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op["verb"] == "edit.matte"),
+        "a rejected replacement must not record a matte operation"
+    );
+}
+
 /// captions.import owns the subtitle `cap1` track. A project may already
 /// have `txt1` from timed text cards; imported subtitles must not reuse that
 /// title-card track, because captions.translate intentionally ignores txt1.
