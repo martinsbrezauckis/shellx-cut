@@ -88,11 +88,35 @@ def ffprobe(path: str) -> tuple[float, int, int]:
 
 
 def load_model(ckpt: str, device: torch.device):
-    """Load MatAnyone2 + an InferenceCore. Imports are local so an import error is
-    a clean non-zero exit with a useful message (not a top-level crash)."""
+    """Load MatAnyone2 + an InferenceCore from the supplied local checkpoint.
+
+    The pinned MatAnyone2 checkpoint contains the ResNet encoder weights. Its
+    upstream convenience helper defaults to downloading an additional pretrained
+    ResNet before applying that checkpoint, which breaks a prepared runtime's
+    closed, offline model contract. Compose the reviewed config directly and use
+    its supported ``pretrained_resnet`` option instead. This changes neither the
+    upstream package nor the selected checkpoint and preserves the caller's
+    device choice.
+    """
+    from hydra import compose, initialize_config_dir
     from matanyone2.inference.inference_core import InferenceCore
-    from matanyone2.utils.get_default_model import get_matanyone2_model
-    model = get_matanyone2_model(ckpt, device)
+    from matanyone2 import __file__ as matanyone2_init
+    from matanyone2.model.matanyone2 import MatAnyone2
+    from omegaconf import open_dict
+
+    config_dir = Path(matanyone2_init).resolve().parent / "config"
+    initialize_config_dir(
+        version_base="1.3.2",
+        config_dir=str(config_dir),
+        job_name="shellx_cut_matanyone",
+    )
+    cfg = compose(config_name="eval_matanyone_config")
+    with open_dict(cfg):
+        cfg.weights = ckpt
+        cfg.model.pretrained_resnet = False
+
+    model = MatAnyone2(cfg, single_object=True).to(device).eval()
+    model.load_weights(torch.load(cfg.weights, map_location=device))
     processor = InferenceCore(model, cfg=model.cfg)
     return processor
 
