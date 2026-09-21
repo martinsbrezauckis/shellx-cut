@@ -4,11 +4,10 @@
 //! chart") by matching a query embedding against per-FRAME image embeddings and
 //! merging the best adjacent frames into time RANGES. The engine is MODEL-
 //! AGNOSTIC: the app stays decoupled from the encoder so it
-//! can swap models. SigLIP2 fixed-res ONNX is the default, but any same-dim
-//! image-text embedder works): it operates on stored vectors, so the ranking is
-//! fully testable without the model. The SigLIP2 INDEXER (py/siglip_index.py)
-//! produces the vectors; it needs the perception venv + the model + a GPU/CPU,
-//! fetched on consent like the matte runtime.
+//! can swap models. The default SigLIP2 indexer uses the local perception
+//! runtime and model, but any same-dim image-text embedder works: it operates on
+//! stored vectors, so the ranking is fully testable without the model. The
+//! SigLIP2 INDEXER (py/siglip_index.py) produces the vectors.
 //!
 //! Storage: one content-addressed index per asset under the project
 //! (`<proj>/embeddings/<asset>.json`): {schema, model, dim, frames:[{ms, v[]}]}.
@@ -208,9 +207,42 @@ pub fn index_path(proj_dir: &Path, asset_id: &str) -> PathBuf {
 
 /// Load an asset's embedding index, or None if not indexed / unreadable.
 pub fn load_index(proj_dir: &Path, asset_id: &str) -> Option<EmbeddingIndex> {
+    load_index_checked(proj_dir, asset_id).ok()
+}
+
+/// Load and validate a just-produced index, retaining a bounded reason suitable
+/// for a `media.index` setup error. Cache consumers deliberately keep the
+/// Option-returning wrapper above: a stale or unreadable cache is a cache miss.
+pub fn load_index_checked(proj_dir: &Path, asset_id: &str) -> Result<EmbeddingIndex, String> {
     let p = index_path(proj_dir, asset_id);
-    let txt = std::fs::read_to_string(p).ok()?;
-    serde_json::from_str(&txt).ok()
+    let txt =
+        std::fs::read_to_string(&p).map_err(|error| format!("could not read index: {error}"))?;
+    let index: EmbeddingIndex = serde_json::from_str(&txt)
+        .map_err(|error| format!("index JSON does not match the embedding contract: {error}"))?;
+    if index.asset != asset_id {
+        return Err("index asset does not match the requested asset".into());
+    }
+    if index.dim == 0 {
+        return Err("index dimension is zero".into());
+    }
+    if index.frames.is_empty() {
+        return Err("index has no frame embeddings".into());
+    }
+    for (position, frame) in index.frames.iter().enumerate() {
+        if frame.v.len() != index.dim {
+            return Err(format!(
+                "frame {position} dimension {} does not match index dimension {}",
+                frame.v.len(),
+                index.dim
+            ));
+        }
+        if frame.v.iter().any(|value| !value.is_finite()) {
+            return Err(format!(
+                "frame {position} contains a non-finite embedding value"
+            ));
+        }
+    }
+    Ok(index)
 }
 
 /// Load a cache only when the prepared runtime that produced it remains exact.
@@ -389,6 +421,22 @@ mod tests {
         assert_eq!(back.frames.len(), 2);
         assert_eq!(back.frames[1].ms, 1000);
         assert!(load_index(&dir, "missing").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checked_index_reports_a_nested_vector_contract_error() {
+        let dir = std::env::temp_dir().join(format!("cut-vissearch-nested-{}", std::process::id()));
+        let embeddings = dir.join("embeddings");
+        std::fs::create_dir_all(&embeddings).unwrap();
+        std::fs::write(
+            embeddings.join("a1.json"),
+            r#"{"schema":"shellx-cut/vissearch/1","model":"siglip","dim":1,"asset":"a1","frames":[{"ms":0,"v":[[0.1,0.2]]}]}"#,
+        )
+        .unwrap();
+        let error = load_index_checked(&dir, "a1").unwrap_err();
+        assert!(error.contains("does not match the embedding contract"));
+        assert!(load_index(&dir, "a1").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

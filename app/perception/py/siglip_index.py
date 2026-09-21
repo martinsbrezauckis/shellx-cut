@@ -11,14 +11,10 @@
 # on-device use. The engine is model-
 # AGNOSTIC — any same-dim image-text encoder works, so the model is swappable.
 #
-# ── SCAFFOLD STATUS ──────────────────────────────────────────────────────────
-# This optional indexer needs the perception environment, a SigLIP2 model, and
-# a GPU or CPU. It follows the existing
-# perception-sidecar patterns (ffmpeg frame pipe like matanyone_runner; one-shot
-# CLI like matte_runner). The Rust search engine + media.search are proven
-# independently with synthetic embeddings. Provision the runtime through
-# system.setup_perception and the model-fetch flow before indexing.
-# ─────────────────────────────────────────────────────────────────────────────
+# This optional indexer needs the local perception runtime, a SigLIP2 model, and
+# a GPU or CPU. In a prepared native context it receives one sealed local model.
+# Ordinary mode passes its explicit ``--model`` source to Transformers, which
+# resolves that source through its normal local-cache/download API.
 import argparse
 import json
 import os
@@ -48,6 +44,33 @@ FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
 
 def log(msg: str) -> None:
     print(f"[siglip_index] {msg}", file=sys.stderr, flush=True)
+
+
+def pooled_embedding(torch, output, tower: str) -> list[float]:
+    """Return one finite pooled SigLIP embedding from a Transformers output.
+
+    ``BaseModelOutputWithPooling`` is tuple-like, but item zero is its token
+    ``last_hidden_state``. The image and text towers must instead use the
+    documented ``pooler_output``: one vector for the one-item batch. Writing
+    token states makes a nested JSON array that the Rust ``Vec<f32>`` contract
+    correctly rejects.
+    """
+    # Transformers 4.57 returns the pooled Tensor directly; 5.16 returns its
+    # BaseModelOutputWithPooling. Accept only those two explicit contracts, never
+    # tuple-like output where item zero is a hidden/token state.
+    pooled = output if torch.is_tensor(output) else getattr(output, "pooler_output", None)
+    if pooled is None:
+        raise RuntimeError(f"SigLIP {tower} tower returned no pooled embedding")
+    if pooled.ndim != 2 or pooled.shape[0] != 1:
+        raise RuntimeError(
+            f"SigLIP {tower} pooled embedding must have shape [1, dim], got {tuple(pooled.shape)}"
+        )
+    vector = torch.nn.functional.normalize(pooled, dim=-1)[0]
+    if vector.ndim != 1 or vector.numel() == 0:
+        raise RuntimeError(f"SigLIP {tower} pooled embedding must be one non-empty vector")
+    if not torch.isfinite(vector).all():
+        raise RuntimeError(f"SigLIP {tower} pooled embedding contains non-finite values")
+    return vector.float().cpu().tolist()
 
 
 def resolve_model_source(requested: str, model_id: str) -> tuple[str, dict, str]:
@@ -145,10 +168,10 @@ def main() -> int:
         with torch.inference_mode():
             inp = processor(text=[args.embed_text], return_tensors="pt",
                             padding="max_length").to(device)
-            feat = model.get_text_features(**inp)[0]
-            feat = torch.nn.functional.normalize(feat, dim=-1)
+            output = model.get_text_features(**inp, return_dict=True)
+            vec = pooled_embedding(torch, output, "text")
         # The ONLY stdout line is the JSON document (wire discipline).
-        print(json.dumps({"v": feat.float().cpu().tolist()}))
+        print(json.dumps({"v": vec}))
         return 0
 
     frames = []
@@ -156,9 +179,12 @@ def main() -> int:
     with torch.inference_mode():
         for ms, img in iter_frames(args.inp, args.fps, args.size):
             inputs = processor(images=img, return_tensors="pt").to(device)
-            feat = model.get_image_features(**inputs)[0]
-            feat = torch.nn.functional.normalize(feat, dim=-1)  # L2 for cosine
-            vec = feat.float().cpu().tolist()
+            output = model.get_image_features(**inputs, return_dict=True)
+            vec = pooled_embedding(torch, output, "image")
+            if dim and len(vec) != dim:
+                raise RuntimeError(
+                    f"SigLIP image pooled embedding dimension changed from {dim} to {len(vec)}"
+                )
             dim = len(vec)
             frames.append({"ms": ms, "v": vec})
 

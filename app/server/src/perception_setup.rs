@@ -421,23 +421,24 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
 
     let vpy = venv_python.to_str().unwrap_or_default();
 
-    // ---- 4. cu128 torch (the big one, ~3 GB) ---------------------------------
+    // ---- 4. platform-selected torch (the big one, ~3 GB on CUDA) ------------
+    // macOS must use its platform build from uv's default index. The cu128
+    // index is NVIDIA-only, so keeping it for macOS makes the ordinary installer
+    // select an inapplicable package source. Windows and Linux retain the pinned
+    // CUDA route; this is source selection, not a compatibility claim.
+    let macos = cfg!(target_os = "macos");
     progress(
         0.22,
-        "installing PyTorch (CUDA, ~3 GB — this can take a few minutes)",
+        if macos {
+            "installing PyTorch for macOS — this can take a few minutes"
+        } else {
+            "installing PyTorch (CUDA, ~3 GB — this can take a few minutes)"
+        },
     );
+    let torch_args = premium_torch_install_args(vpy, macos);
     run_streaming(
         &uv,
-        &[
-            "pip",
-            "install",
-            "--python",
-            vpy,
-            "torch==2.8.0",
-            "torchvision==0.23.0",
-            "--index-url",
-            TORCH_CU128_INDEX,
-        ],
+        &torch_args,
         "uv pip install torch",
         progress,
         0.22,
@@ -530,19 +531,56 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
             "-c",
             "import matanyone2, sam2, torch; print('ok', torch.cuda.is_available())",
         ],
-    )
-    .unwrap_or_default();
-    let matanyone_ready = probe.contains("ok");
-    let cuda_available = probe.contains("True");
+    )?;
+    let cuda_available = parse_matanyone_probe(&probe)?;
 
     progress(1.0, "premium background removal ready");
     Ok(MatanyoneSetupOutcome {
         venv_python: venv_python.display().to_string(),
         checkpoint: checkpoint.display().to_string(),
         uv_version,
-        matanyone_ready,
+        // An unsuccessful or malformed import probe now returns Err above, so a
+        // successful setup result is an actual import-ready result.
+        matanyone_ready: true,
         cuda_available,
     })
+}
+
+/// Select the reviewed PyTorch source by product target. The platform boolean
+/// is injected so the policy stays unit-testable on every development host.
+fn premium_torch_install_args<'a>(venv_python: &'a str, macos: bool) -> Vec<&'a str> {
+    let mut args = vec![
+        "pip",
+        "install",
+        "--python",
+        venv_python,
+        "torch==2.8.0",
+        "torchvision==0.23.0",
+    ];
+    if !macos {
+        args.extend(["--index-url", TORCH_CU128_INDEX]);
+    }
+    args
+}
+
+/// Interpret the exact stdout emitted by the final premium-runtime probe.
+/// A setup job must not be marked successful when its required imports fail or
+/// when the probe does not identify its device state.
+fn parse_matanyone_probe(probe: &str) -> Result<bool, CutError> {
+    match probe.split_whitespace().collect::<Vec<_>>().as_slice() {
+        ["ok", "True"] => Ok(true),
+        ["ok", "False"] => Ok(false),
+        _ => Err(
+            CutError::new(
+                error_codes::SIDECAR,
+                "premium background-removal runtime failed verification",
+                format!("expected `ok True` or `ok False` from the runtime probe; got {probe:?}"),
+            )
+            .with_suggested_action(
+                "retry the premium installation; if it persists, use the standard Background Removal tool",
+            ),
+        ),
+    }
 }
 
 /// Platform venv python path (POSIX `.venv/bin/python`, Windows
@@ -954,6 +992,36 @@ mod tests {
             Some(PathBuf::from("C:\\uv\\cpython-3.12.13\\python.exe"))
         );
         assert_eq!(managed_python_path(" \r\n\t"), None);
+    }
+
+    #[test]
+    fn premium_torch_source_is_platform_specific() {
+        let macos = premium_torch_install_args("/venv/bin/python", true);
+        assert!(
+            !macos.contains(&TORCH_CU128_INDEX),
+            "macOS must not select NVIDIA's cu128 wheel index"
+        );
+
+        for target in ["windows", "linux"] {
+            let args = premium_torch_install_args("C:/venv/python", false);
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--index-url", TORCH_CU128_INDEX]),
+                "{target} must retain the reviewed CUDA wheel source"
+            );
+        }
+    }
+
+    #[test]
+    fn premium_probe_requires_import_ready_output() {
+        assert_eq!(parse_matanyone_probe("ok True\n").unwrap(), true);
+        assert_eq!(parse_matanyone_probe("ok False\n").unwrap(), false);
+        for invalid in ["", "ok", "not ok", "ok maybe"] {
+            assert!(
+                parse_matanyone_probe(invalid).is_err(),
+                "malformed or failed probe must fail setup: {invalid:?}"
+            );
+        }
     }
 
     /// Network drops are the most common real cause of a half-finished download.

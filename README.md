@@ -212,6 +212,16 @@ conversion path, not camera Log interpretation or HDR mastering/delivery.
 | **plugins** | list · enable · call | agent-only scoped-dispatch fence over the same registry; `plugins.list`, `plugins.enable`, and `plugins.call` expose built-in Openverse-assets and matte-runtime capabilities without creating a parallel API |
 | **system** | **system.mcp_test · system.doctor · system.motion_status · system.fetch_tool · system.setup_perception · system.setup_matte · system.set_ffmpeg · system.set_stt_model** | Agent control plus environment/setup cards: Settings > Agent control discovers the exact installed executable, copies a ready MCP client config, and runs a read-only initialize/ping/tools/list/same-engine proxy check; capability cards cover ffmpeg, perception/STT, matte, dubbing, diarization, judge CLIs, and disk health. `system.motion_status` is a separate fixed read-only runtime/catalog/descriptor check: a discovered checkout, PATH binary, or npm package remains unmanaged and connector execution-unqualified. Install, Repair, Update, and Remove remain unavailable until `MOTION-DIST-01` supplies a verified immutable platform manifest and matching artifact; setup remains consented and local-first |
 
+### Advanced visual-index API
+
+`media.index` is an explicit advanced API operation that creates legacy visual
+embeddings. It needs the local perception runtime and SigLIP2 model; ordinary
+installed mode uses optional `torch` and `transformers` extras with
+`AutoModel`/`AutoProcessor` resolution for default
+`google/siglip2-base-patch16-224`. Cut has no separate SigLIP fetch/install
+card. Find Moment's **Prepare search** consumes existing visual embeddings and
+never silently starts visual indexing.
+
 WS events: `op_applied · job_progress · render_done · receipt_ready · project_changed · ui_state · doctor_updated`
 — `receipt_ready` always follows `render_done`; agents key on `receipt_ready`.
 `project_changed` keeps visible clients synchronized when REST, CLI, or MCP

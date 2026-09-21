@@ -3192,7 +3192,7 @@
     {
       "name": "media.index",
       "domain": "media",
-      "description": "Build the VISUAL-SEARCH index for an asset : sample its frames at `fps` and embed each with the SigLIP2 image encoder → embeddings/<asset>.json, so media.search can then find MOMENTS by content ('the slide with the chart'). OPTIONAL + fetch-on-consent (the matte pattern): the indexer needs the perception venv (onnxruntime) + a SigLIP2 ONNX model. When that runtime is ABSENT the verb returns an actionable SETUP error (core editing + search of an already-built index work without re-indexing). Requires an open project.",
+      "description": "Build the VISUAL-SEARCH index for an asset: sample its frames at `fps` and embed each with the SigLIP2 image encoder → embeddings/<asset>.json, so media.search can then find MOMENTS by content ('the slide with the chart'). This is an advanced explicit API operation; Find moment's Prepare search and media.intelligence_rebuild use only existing visual embeddings. The indexer needs the local perception runtime and SigLIP2 model. In ordinary installed mode, its optional torch + transformers extras invoke AutoModel/AutoProcessor for default `google/siglip2-base-patch16-224` through their normal cache/download resolution on first use. Cut has no separate SigLIP fetch/install action. When that runtime is absent the verb returns an actionable SETUP error (core editing + search of an already-built index work without re-indexing). Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -3220,8 +3220,8 @@
         "mutation_class": "external_side_effect",
         "side_effects": {
           "filesystem": true,
-          "process": false,
-          "network": false,
+          "process": true,
+          "network": true,
           "ui": false
         },
         "dispatch": "media_index",
@@ -3238,7 +3238,7 @@
     {
       "name": "media.search",
       "domain": "media",
-      "description": "ON-DEVICE VISUAL SEARCH: find the MOMENTS in indexed clips that match a query, by matching a query embedding against the per-frame SigLIP2 image embeddings (media.index) and merging the best adjacent frames into time RANGES. Pass `query` text (embedded live by the SigLIP2 TEXT encoder through the perception runtime — errors with a setup pointer only when that runtime is absent) OR `query_vector` (an already-embedded query — the advanced/agent path, usable without the runtime). `asset` narrows to one clip; omitted searches every indexed asset. Returns ranked {asset, start_ms, end_ms, peak_ms, score}. Requires an open project; errors if nothing is indexed yet (run media.index first). Integration coverage verifies that a text query resolves the matching frame range through real SigLIP2 image and text embeddings.",
+      "description": "ON-DEVICE VISUAL SEARCH: find the MOMENTS in indexed clips that match a query, by matching a query embedding against the per-frame SigLIP2 image embeddings (media.index) and merging the best adjacent frames into time RANGES. Pass `query` text (embedded live by the same local perception runtime and SigLIP2 model; ordinary Torch/Transformers model resolution may use the cache/download path) OR `query_vector` (an already-embedded query — the advanced/agent path, usable without the runtime or network). `asset` narrows to one clip; omitted searches every indexed asset. Returns ranked {asset, start_ms, end_ms, peak_ms, score}. Requires an open project; errors if nothing is indexed yet (run media.index first). Integration coverage verifies that a text query resolves the matching frame range through real SigLIP2 image and text embeddings.",
       "args": {
         "type": "object",
         "additionalProperties": false,
@@ -3280,7 +3280,7 @@
         "side_effects": {
           "filesystem": true,
           "process": true,
-          "network": false,
+          "network": true,
           "ui": false
         },
         "dispatch": "media_search",
@@ -16540,7 +16540,7 @@
           }
         }
       },
-      "result": "rvm: NO path -> {job_id} (downloads the 14 MB RVM model); WITH path -> {model, source:'browse', doctor}. matanyone (needs accept_noncommercial:true): NO path -> {job_id} (builds an isolated torch venv + downloads the 135 MB checkpoint; finish result {model, checkpoint, cuda_available, matte_premium_ready}); WITH path -> browse a matanyone2.pth. Flips the matte / matte_premium doctor card.",
+      "result": "rvm: NO path -> {job_id} (downloads the 14 MB RVM model); WITH path -> {model, source:'browse', doctor}. matanyone (needs accept_noncommercial:true): NO path -> {job_id} (builds an isolated torch venv + downloads the 135 MB checkpoint; a failed MatAnyone2/SAM2 import probe fails the job; finish result {model, venv_python, uv_version, checkpoint, matanyone_ready:true, cuda_available, matte_premium_ready}); WITH path -> browse a matanyone2.pth. Flips the matte / matte_premium doctor card.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

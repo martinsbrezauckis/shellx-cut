@@ -647,7 +647,10 @@ pub(super) async fn system_setup_matte(
                             &jid,
                             json!({
                                 "model": "matanyone",
+                                "venv_python": o.venv_python,
+                                "uv_version": o.uv_version,
                                 "checkpoint": o.checkpoint,
+                                "matanyone_ready": o.matanyone_ready,
                                 "cuda_available": o.cuda_available,
                                 "matte_premium_ready": ready,
                             }),

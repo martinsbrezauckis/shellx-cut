@@ -887,6 +887,12 @@ transcription, perception, or visual indexing. Then call
 `media.intelligence_search` with an evidence-kind and sequence scope. Treat each
 `EvidenceHit@1` as source-relative cited evidence: keep its source range,
 provenance, and live timeline occurrences distinct; stale evidence is excluded.
+Creating visual embeddings is separate: `media.index` is an advanced explicit
+API operation, not a Find moment control and not an Agent Chat route. It needs
+the local perception runtime and SigLIP2 model; ordinary installed mode uses
+the optional `torch` and `transformers` extras with `AutoModel`/`AutoProcessor`
+resolution for the default model. Cut has no separate SigLIP fetch/install
+flow. Do not represent **Prepare search** as triggering that work.
 In Find → Moment, **Preview** opens the registered source at its anchor and
 **Timeline** jumps only to the nearest real occurrence in the active sequence.
 An offline or unused source remains an honest citation without a fabricated

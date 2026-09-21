@@ -1229,8 +1229,8 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "mutation_class": "external_side_effect",
     "side_effects": {
       "filesystem": true,
-      "process": false,
-      "network": false,
+      "process": true,
+      "network": true,
       "ui": false
     },
     "dispatch": "media_index",
@@ -1248,7 +1248,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "side_effects": {
       "filesystem": true,
       "process": true,
-      "network": false,
+      "network": true,
       "ui": false
     },
     "dispatch": "media_search",

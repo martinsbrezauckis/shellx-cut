@@ -296,11 +296,10 @@ pub(in crate::dispatch) async fn media_index_status(
 
 /// media.index — build the visual-search index for an asset: sample its
 /// frames + embed each with the SigLIP2 image encoder → `embeddings/<asset>.json`
-/// (then media.search can find moments by content). The indexer is OPTIONAL +
-/// fetch-on-consent (the matte pattern): it needs the perception venv +
-/// onnxruntime + a SigLIP2 ONNX model. Absent → an actionable setup error (core
-/// editing + search of an existing index work without it). Requires an open
-/// project.
+/// (then media.search can find moments by content). The indexer is optional: it
+/// needs the local perception runtime and a SigLIP2 model. Absent → an actionable
+/// setup error (core editing + search of an existing index work without it).
+/// Requires an open project.
 pub(in crate::dispatch) async fn media_index(
     state: &AppState,
     args: Value,
@@ -332,7 +331,7 @@ pub(in crate::dispatch) async fn media_index(
         CutError::new(
             error_codes::SIDECAR,
             "the visual-search indexer is not installed",
-            "media.index needs the local captions/search runtime (onnxruntime) + a SigLIP2 ONNX model. Choose Install captions and fetch the SigLIP2 model, then re-run. Core editing and search of an already-built index work without it.",
+            "media.index needs the local perception runtime and a SigLIP2 model. Set up perception and the model, then re-run. Core editing and search of an already-built index work without it.",
         )
     })?;
     let out = crate::vissearch::index_path(&proj_dir, &a.asset);
@@ -366,19 +365,27 @@ pub(in crate::dispatch) async fn media_index(
         )
     })?;
     if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        let detail = stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.chars().take(400).collect::<String>())
+            .unwrap_or_else(|| format!("siglip_index.py exited with {}", status.status));
         return Err(CutError::new(
             error_codes::SIDECAR,
             "the visual-search indexer failed",
-            format!("siglip_index.py exited with {}", status.status),
+            detail,
         ));
     }
-    let mut index = crate::vissearch::load_index(&proj_dir, &a.asset).ok_or_else(|| {
-        CutError::new(
-            error_codes::SIDECAR,
-            "the indexer did not write a valid index",
-            "check the perception venv has onnxruntime + the SigLIP2 model",
-        )
-    })?;
+    let mut index =
+        crate::vissearch::load_index_checked(&proj_dir, &a.asset).map_err(|detail| {
+            CutError::new(
+                error_codes::SIDECAR,
+                "the indexer output is invalid",
+                detail,
+            )
+        })?;
     if rt.is_native_context() {
         rt.stamp_index(&mut index).map_err(|error| {
             CutError::new(
