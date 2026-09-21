@@ -1482,7 +1482,7 @@ def _load_yunet_face_detector():
     MediaPipe's native Tasks graph aborts the Python process on affected macOS
     runtimes, so catching its Python exception cannot make the Director path safe.
     YuNet is already bundled for face redaction and uses the same OpenCV dependency
-    from the locked perception environment. Return None only with an explicit
+    from the provisioned perception environment. Return None only with an explicit
     body/saliency fallback, never an optimistic face-aware claim.
     """
     model = _yunet_model_path()

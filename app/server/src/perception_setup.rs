@@ -10,10 +10,11 @@
 //!   The hard part this solves: system Python on real desktops is too old
 //!   (macOS ships 3.9; onnx-asr — the Parakeet STT engine — needs >=3.10) and
 //!   unpinned. So we DON'T assume a system python. We fetch `uv` (Astral's single
-//!   static binary, sha256-verified via the fetch.rs allow-list), have it install
-//!   a standalone CPython 3.12, create the venv with it, and `uv pip install -r`
-//!   the bundled, pinned requirements. The sidecar resolver then finds this venv
-//!   at the app-data perception dir (cut_perception::appdata_sidecar_dir).
+//!   static binary, sha256-verified via the fetch.rs allow-list), have it select
+//!   a standalone compatible CPython 3.12 patch, resolve its concrete executable,
+//!   create the venv with that executable, and `uv pip install -r` the bundled
+//!   perception requirement policy. The sidecar resolver then finds this venv at
+//!   the app-data perception dir (cut_perception::appdata_sidecar_dir).
 //!
 //! SECURITY
 //!   - uv is downloaded ONLY through fetch::install_tool — the same pinned-host,
@@ -32,24 +33,22 @@ use cut_core::{error_codes, CutError};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-mod optional_lock;
-
 /// Env override: use an EXISTING uv binary instead of downloading one. Test/dev
 /// seam (the build box already has uv) — never a verb arg.
 pub const ENV_UV: &str = "SHELLX_CUT_UV";
 
-/// Exact Python version the sidecar venv is built on. CPython 3.12 has wheels
+/// Python compatibility request for the sidecar venv. CPython 3.12 has wheels
 /// for every dep (onnx-asr/onnxruntime, torch, mediapipe) on win/linux/mac and
-/// satisfies the onnx-asr >=3.10 floor.
-///
-/// Keep all three components pinned. On Windows, `uv venv --python 3.12`
-/// records uv's floating `cpython-3.12-windows-x86_64-none` junction in
-/// `pyvenv.cfg`. Windows restricted tokens and agent processes reject that
-/// junction as an untrusted
-/// mount point after setup. An exact patch version binds the venv directly to
-/// the versioned managed interpreter directory and remains usable in every
-/// supported control path.
-const PYTHON_VERSION: &str = "3.12.13";
+/// satisfies the onnx-asr >=3.10 floor. `uv` selects the latest available 3.12
+/// patch when it has to provision a new managed interpreter.
+const PYTHON_REQUEST: &str = "3.12";
+
+/// Full-policy readiness requires real imports, not merely a solved dependency
+/// graph. It intentionally exercises torch/audio/vision together because those
+/// packages can resolve to individually valid but incompatible wheel releases.
+const ONNX_ASR_IMPORT_SENTINEL: &str = "shellx-cut-onnx-asr-import-ok";
+const FULL_PERCEPTION_IMPORT_SENTINEL: &str = "shellx-cut-full-perception-import-ok";
+const FULL_PERCEPTION_IMPORT_PROBE: &str = "import onnx_asr, onnxruntime; import torch, torchaudio, torchvision; import whisperx, soundfile, silero_vad, transformers, sentencepiece, supervision, mediapipe, cv2; from scenedetect import open_video, SceneManager; from scenedetect.detectors import ContentDetector; from rapidocr_onnxruntime import RapidOCR; print('shellx-cut-full-perception-import-ok')";
 
 /// Result of a successful provisioning — becomes the job result + drives the
 /// doctor re-scan (the sidecar card flips missing → ready).
@@ -57,6 +56,12 @@ const PYTHON_VERSION: &str = "3.12.13";
 pub struct SetupOutcome {
     /// Absolute path to the venv python that now runs the sidecar.
     pub venv_python: String,
+    /// Concrete uv-managed CPython executable used to create the venv. This is
+    /// resolved after selection so Windows never stores uv's floating minor
+    /// junction in `pyvenv.cfg`.
+    pub managed_python: String,
+    /// Actual `MAJOR.MINOR.PATCH` reported by the freshly-created venv Python.
+    pub python_version: String,
     /// uv version used.
     pub uv_version: Option<String>,
     /// True when the Parakeet model was pre-fetched (first transcribe is instant).
@@ -65,13 +70,18 @@ pub struct SetupOutcome {
     /// the CRITICAL outcome: when true, transcription works on the user's box.
     pub onnx_asr_ready: bool,
     /// Whether the FULL perception extras (whisperX fallback, auto-reframe detector,
-    /// face framing, beat grid, OCR) installed. BEST-EFFORT: false here does NOT mean
-    /// setup failed — transcription still works on the onnx-asr base; the richer
-    /// instruments simply fall back to their ffmpeg/saliency paths.
+    /// face framing, beat grid, OCR) passed dependency checking and their required
+    /// module-import probe. This is package/runtime admission only; native product
+    /// actions still require their own host qualification. BEST-EFFORT: false here
+    /// does NOT mean setup failed — transcription still works on the onnx-asr base.
     pub full_perception_ready: bool,
     /// Human note about the extras outcome (e.g. why they were skipped) — surfaced
     /// for the audit trail; empty when everything installed.
     pub extras_note: Option<String>,
+    /// Package-manager readback from the completed environment in `name==version`
+    /// form. This records the actually resolved versions without treating a
+    /// generated lock as a product contract.
+    pub package_versions: Vec<String>,
 }
 
 /// Provision the perception venv. BLOCKING — call from a spawn_blocking task.
@@ -95,15 +105,13 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
             )
             .with_suggested_action("reinstall the app — the perception payload is missing")
         })?;
-    // The FULL perception extras (whisperX fallback, auto-reframe detector, face
-    // framing, beat grid, OCR) are installed only from the matching fully-pinned
-    // platform lock. An older bundle without the optional source input remains
-    // base-only; a current bundle with a missing/invalid lock records an honest
-    // extras note without discarding a working transcription install.
-    let optional_lock = script.parent().and_then(|dir| {
-        dir.join("requirements-full.txt")
-            .is_file()
-            .then(|| optional_lock::resolve(dir, PYTHON_VERSION))
+    // The FULL perception policy (whisperX fallback, auto-reframe detector, face
+    // framing, beat grid, OCR) is bundled beside the base policy. It is resolved
+    // at consent time by uv against ready-to-install wheels; an older bundle
+    // without this source input remains a valid base-only installation.
+    let requirements_full = script.parent().and_then(|dir| {
+        let path = dir.join("requirements-full.txt");
+        path.is_file().then_some(path)
     });
     let sidecar_dir = cut_perception::appdata_sidecar_dir().ok_or_else(|| {
         CutError::new(
@@ -125,7 +133,7 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
 
     // ---- 2. standalone CPython (uv-managed; no system python dependency) -----
     progress(0.22, "installing Python runtime");
-    install_managed_python_if_missing(&uv, progress, 0.22, 0.40)?;
+    let managed_python = select_managed_python(&uv, progress, 0.22, 0.40)?;
 
     // ---- 3. create the venv on that interpreter ------------------------------
     progress(0.42, "creating venv");
@@ -137,13 +145,15 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
             "venv",
             venv_dir.to_str().unwrap_or_default(),
             "--python",
-            PYTHON_VERSION,
+            managed_python_arg(&managed_python)?,
         ],
         "uv venv",
         progress,
         0.42,
         0.48,
     )?;
+
+    let python_version = confirmed_python_version(&venv_python)?;
 
     // ---- 4. install the BASE STT engine INTO that venv (MUST succeed) --------
     //
@@ -155,38 +165,26 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
     // transcription "just work" on a clean machine.
     let vpy = venv_python.to_str().unwrap_or_default();
     progress(0.50, "installing the transcription engine");
+    let base_args = base_perception_install_args(vpy, &requirements)?;
     run_streaming(
         &uv,
-        &[
-            "pip",
-            "install",
-            "--python",
-            vpy,
-            "--only-binary",
-            ":all:",
-            "-r",
-            requirements.to_str().unwrap_or_default(),
-        ],
-        "uv pip install",
+        &base_args,
+        "uv pip install transcription engine",
         progress,
         0.50,
         0.60,
     )?;
+    verify_perception_dependencies(&uv, vpy, "base transcription engine", progress, 0.60, 0.605)?;
 
     // ---- 5. verify onnx-asr imports (the STT engine is actually usable) ------
     progress(0.61, "verifying STT engine");
-    let onnx_asr_ready = run_capture(
-        &venv_python,
-        &["-c", "import onnx_asr, onnxruntime; print('ok')"],
-    )
-    .map(|o| o.contains("ok"))
-    .unwrap_or(false);
+    let initial_onnx_asr_ready = onnx_asr_import_ready(&venv_python);
 
     // ---- 6. (optional) pre-fetch the Parakeet model --------------------------
     // Done BEFORE the heavy extras so the critical "engine + model" pair lands
     // first; the user can transcribe even if the extras phase is slow or skipped.
     let mut model_warmed = false;
-    if warm_model && onnx_asr_ready {
+    if warm_model && initial_onnx_asr_ready {
         progress(0.62, "downloading Parakeet model (first run only)");
         // Loading the model with the hub downloader caches its ONNX files so the
         // first real transcription is instant. CPU provider everywhere (matches
@@ -207,73 +205,90 @@ pub fn setup_perception(warm_model: bool, progress: &ProgressFn) -> Result<Setup
         model_warmed = warm.is_ok();
     }
 
-    // ---- 7. install the perception extras (BEST-EFFORT, platform locked) -----
+    // ---- 7. install the perception extras (BEST-EFFORT, current wheels) -------
     //
-    // The lock is resolved for the exact packaged target and contains every
-    // transitive version. Wheel-only CPU torch remains mandatory. A FAILURE is
-    // NON-FATAL: the base STT engine + model already work, so we record a note
-    // rather than throwing away a working install.
-    let (full_perception_ready, extras_note) = if let Some(lock) = optional_lock {
-        match lock {
-            Ok(lock) => {
-                progress(
-                    0.78,
-                    "installing perception tools (captions, scenes, silence, auto-reframe, OCR)",
-                );
-                let args = optional_lock::install_args(vpy, &lock);
-                let full_res = run_streaming(
-                    &uv,
-                    &args,
-                    "uv pip install locked perception extras",
-                    progress,
-                    0.78,
-                    0.97,
-                );
-                match full_res {
-                    Ok(()) => (true, None),
-                    Err(e) => {
-                        // Keep the working base; surface WHY the extras were skipped.
-                        let note = format!(
-                            "the locked perception tools could not be installed ({}); \
-                     transcription still works on the built-in engine. Lock: {}",
-                            e.message,
-                            lock.display()
-                        );
-                        progress(0.97, &note);
-                        (false, Some(note))
-                    }
-                }
-            }
+    // This intentionally resolves the bundled policy at consent time rather than
+    // shipping a platform-specific generated lock. Wheel-only installation and
+    // uv's explicit CPU torch backend keep a fresh machine off source builds and
+    // CUDA/NVIDIA payloads. An installer failure remains best-effort only when the
+    // final shared-venv dependency and STT checks still pass.
+    let full_install = requirements_full.as_ref().map(|requirements_full| {
+        progress(
+            0.78,
+            "installing perception tools (captions, scenes, silence, auto-reframe, OCR)",
+        );
+        full_perception_install_args(vpy, requirements_full).and_then(|args| {
+            run_streaming(
+                &uv,
+                &args,
+                "uv pip install perception tools",
+                progress,
+                0.78,
+                0.96,
+            )
+        })
+    });
+
+    // The extras share this venv. Even an optional-install failure can have
+    // changed its resolved graph, so every successful outcome needs a final
+    // dependency check and STT import before the actual final package receipt.
+    progress(0.965, "checking final perception dependencies");
+    verify_perception_dependencies(
+        &uv,
+        vpy,
+        "final perception environment",
+        progress,
+        0.965,
+        0.97,
+    )?;
+    progress(0.975, "verifying final transcription engine");
+    verify_final_onnx_asr_import(&venv_python)?;
+    let onnx_asr_ready = true;
+
+    let (full_perception_ready, extras_note) = match full_install {
+        Some(Ok(())) => match verify_full_perception_imports(&venv_python) {
+            Ok(()) => (true, None),
             Err(e) => {
                 let note = format!(
-                    "the packaged optional-perception lock is unavailable or invalid ({}); \
+                    "the current compatible perception tools installed but did not pass their module-import check ({}); \
                      transcription still works on the built-in engine",
                     e.message
                 );
-                progress(0.97, &note);
+                progress(0.98, &note);
                 (false, Some(note))
             }
+        },
+        Some(Err(e)) => {
+            let note = format!(
+                "the current compatible perception tools could not be installed ({}); \
+                 transcription still works on the built-in engine",
+                e.message
+            );
+            progress(0.98, &note);
+            (false, Some(note))
         }
-    } else {
-        // Older bundle without the extras file — base-only is a valid, working state.
-        (
+        None => (
             false,
             Some(
                 "perception extras file not shipped in this build; \
-                      transcription engine installed"
+                 transcription engine installed"
                     .to_string(),
             ),
-        )
+        ),
     };
+    let package_versions = installed_package_versions(&uv, vpy)?;
 
     progress(1.0, "perception ready");
     Ok(SetupOutcome {
         venv_python: venv_python.display().to_string(),
+        managed_python: managed_python.path.display().to_string(),
+        python_version,
         uv_version,
         model_warmed,
         onnx_asr_ready,
         full_perception_ready,
         extras_note,
+        package_versions,
     })
 }
 
@@ -400,7 +415,7 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
 
     // ---- 2. standalone CPython 3.12 (MatAnyone2 runtime) ---------------------
     progress(0.10, "installing Python runtime");
-    install_managed_python_if_missing(&uv, progress, 0.10, 0.16)?;
+    let managed_python = select_managed_python(&uv, progress, 0.10, 0.16)?;
 
     // ---- 3. the isolated venv (clean rebuild) --------------------------------
     progress(0.17, "creating premium venv");
@@ -411,7 +426,7 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
             "venv",
             venv_dir.to_str().unwrap_or_default(),
             "--python",
-            PYTHON_VERSION,
+            managed_python_arg(&managed_python)?,
         ],
         "uv venv",
         progress,
@@ -548,7 +563,7 @@ pub fn setup_matanyone(progress: &ProgressFn) -> Result<MatanyoneSetupOutcome, C
 
 /// Select the reviewed PyTorch source by product target. The platform boolean
 /// is injected so the policy stays unit-testable on every development host.
-fn premium_torch_install_args<'a>(venv_python: &'a str, macos: bool) -> Vec<&'a str> {
+fn premium_torch_install_args(venv_python: &str, macos: bool) -> Vec<&str> {
     let mut args = vec![
         "pip",
         "install",
@@ -630,21 +645,59 @@ fn uv_exe() -> &'static str {
     }
 }
 
-/// Reuse an exact uv-managed interpreter when it is already installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedPython {
+    path: PathBuf,
+    version: String,
+}
+
+/// Select a concrete uv-managed CPython 3.12 executable, installing the latest
+/// compatible patch only when no usable managed interpreter exists.
 ///
-/// This is more than an optimization on Windows. Older uv releases could leave
-/// the floating `cpython-3.12-windows-*` alias as a plain directory when the
-/// account could not create a junction. A later `uv python install 3.12.13`
-/// then tries to replace that alias and fails with `ERROR_NOT_A_REPARSE_POINT`,
-/// even though the exact patch interpreter is complete and usable. The bounded
-/// lookup disables downloads and accepts only uv-managed Python; fresh machines
-/// still take the normal sha-pinned install path.
-fn install_managed_python_if_missing(
+/// The pre-install lookup retains the Windows recovery path from older uv
+/// releases: a floating `cpython-3.12-windows-*` alias could be a plain
+/// directory when the account could not create a junction. If its versioned
+/// interpreter is already usable, we resolve it and never ask uv to replace the
+/// broken alias. `--resolve-links` is mandatory: the subsequent venv receives
+/// the real executable, never the floating alias.
+fn select_managed_python(
     uv: &Path,
     progress: &ProgressFn,
     band_lo: f32,
     band_hi: f32,
-) -> Result<(), CutError> {
+) -> Result<ManagedPython, CutError> {
+    if let Some(installed) = find_managed_python(uv)? {
+        progress(
+            band_hi,
+            &format!("Python {} runtime already installed", installed.version),
+        );
+        return Ok(installed);
+    }
+
+    run_streaming(
+        uv,
+        &["python", "install", PYTHON_REQUEST],
+        "uv python install",
+        progress,
+        band_lo,
+        band_hi,
+    )?;
+    find_managed_python(uv)?.ok_or_else(|| {
+        CutError::new(
+            error_codes::SIDECAR,
+            "uv installed Python but did not expose a usable CPython 3.12 executable",
+            "the post-install managed Python lookup returned no resolved executable",
+        )
+        .with_suggested_action(
+            "Choose Install captions again; if it persists, reinstall the captions runtime",
+        )
+    })
+}
+
+/// Return a concrete managed CPython selected by uv, or None when uv has no
+/// installed compatible runtime. A malformed successful lookup is an error: it
+/// must never fall through to venv creation with an alias or an arbitrary path.
+fn find_managed_python(uv: &Path) -> Result<Option<ManagedPython>, CutError> {
     let mut probe = Command::new(uv);
     probe.args([
         "python",
@@ -652,31 +705,260 @@ fn install_managed_python_if_missing(
         "--managed-python",
         "--no-python-downloads",
         "--no-project",
-        PYTHON_VERSION,
+        "--resolve-links",
+        PYTHON_REQUEST,
     ]);
-    let installed =
+    let output =
         crate::dispatch::run_bounded_foreground_command(&mut probe, "managed Python lookup")
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| managed_python_path(&String::from_utf8_lossy(&output.stdout)))
-            .filter(|path| path.is_file());
-    if installed.is_some() {
-        progress(band_hi, "Python runtime already installed");
-        return Ok(());
+            .map_err(|e| {
+                CutError::new(
+                    error_codes::JOB_FAILED,
+                    "could not locate the managed Python runtime",
+                    format!("{}: {e}", uv.display()),
+                )
+                .with_suggested_action(
+                    "Choose Install captions again; if it persists, reinstall the captions runtime",
+                )
+            })?;
+    if !output.status.success() {
+        return Ok(None);
     }
+    let path = managed_python_path(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| {
+        CutError::new(
+            error_codes::SIDECAR,
+            "managed Python lookup returned no executable path",
+            "uv reported success without a concrete Python executable",
+        )
+        .with_suggested_action(
+            "Choose Install captions again; if it persists, reinstall the captions runtime",
+        )
+    })?;
+    if !path.is_file() {
+        return Err(CutError::new(
+            error_codes::SIDECAR,
+            "managed Python lookup returned an unusable executable",
+            format!("{} is not a file", path.display()),
+        )
+        .with_suggested_action(
+            "Choose Install captions again; if it persists, reinstall the captions runtime",
+        ));
+    }
+    let output = run_capture(&path, &["--version"])?;
+    managed_python_identity(path, &output)
+        .map(Some)
+        .map_err(|cause| {
+            CutError::new(
+                error_codes::SIDECAR,
+                "managed Python is not a compatible CPython 3.12 runtime",
+                cause,
+            )
+            .with_suggested_action(
+                "Choose Install captions again; if it persists, reinstall the captions runtime",
+            )
+        })
+}
+
+fn managed_python_path(stdout: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(stdout.trim());
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+fn managed_python_identity(path: PathBuf, version_output: &str) -> Result<ManagedPython, String> {
+    if !path.is_absolute() {
+        return Err(format!(
+            "resolved managed Python path is not absolute: {}",
+            path.display()
+        ));
+    }
+    let version = parse_compatible_python_version(version_output)
+        .ok_or_else(|| format!("expected CPython {PYTHON_REQUEST}.*; got {version_output:?}"))?;
+    Ok(ManagedPython { path, version })
+}
+
+fn managed_python_arg(managed: &ManagedPython) -> Result<&str, CutError> {
+    managed.path.to_str().ok_or_else(|| {
+        CutError::new(
+            error_codes::IO,
+            "managed Python path is not valid text",
+            managed.path.display().to_string(),
+        )
+        .with_suggested_action(
+            "Choose Install captions again; if it persists, reinstall the captions runtime",
+        )
+    })
+}
+
+fn confirmed_python_version(python: &Path) -> Result<String, CutError> {
+    let output = run_capture(python, &["--version"])?;
+    parse_compatible_python_version(&output).ok_or_else(|| {
+        CutError::new(
+            error_codes::SIDECAR,
+            "the new perception environment did not use CPython 3.12",
+            format!("{} reported {output:?}", python.display()),
+        )
+        .with_suggested_action(
+            "Choose Install captions again; if it persists, reinstall the captions runtime",
+        )
+    })
+}
+
+fn parse_compatible_python_version(output: &str) -> Option<String> {
+    let reported = output.trim().strip_prefix("Python ")?;
+    let version = reported.split_whitespace().next()?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse::<u16>().ok()?;
+    let minor = parts.next()?.parse::<u16>().ok()?;
+    let patch = parts.next()?.parse::<u16>().ok()?;
+    if parts.next().is_some() || (major, minor) != (3, 12) {
+        return None;
+    }
+    Some(format!("{major}.{minor}.{patch}"))
+}
+
+/// Arguments shared by the required base setup. Wheel-only is a product policy:
+/// the installer never compiles an arbitrary source package on a user device.
+fn base_perception_install_args<'a>(
+    venv_python: &'a str,
+    requirements: &'a Path,
+) -> Result<Vec<&'a str>, CutError> {
+    Ok(vec![
+        "pip",
+        "install",
+        "--python",
+        venv_python,
+        "--only-binary",
+        ":all:",
+        "--strict",
+        "-r",
+        requirements_arg(requirements)?,
+    ])
+}
+
+/// Arguments for the optional tools. `--torch-backend cpu` is uv's explicit
+/// PyTorch-family source selection: it leaves ordinary dependencies on the
+/// normal index while choosing CPU wheels for torch/vision/audio.
+fn full_perception_install_args<'a>(
+    venv_python: &'a str,
+    requirements: &'a Path,
+) -> Result<Vec<&'a str>, CutError> {
+    Ok(vec![
+        "pip",
+        "install",
+        "--python",
+        venv_python,
+        "--only-binary",
+        ":all:",
+        "--torch-backend",
+        "cpu",
+        "--strict",
+        "-r",
+        requirements_arg(requirements)?,
+    ])
+}
+
+fn requirements_arg(requirements: &Path) -> Result<&str, CutError> {
+    requirements.to_str().ok_or_else(|| {
+        CutError::new(
+            error_codes::IO,
+            "perception requirements path is not valid text",
+            requirements.display().to_string(),
+        )
+    })
+}
+
+/// Dependency checks are explicit evidence. Base failures stop setup; optional
+/// failures produce a best-effort note and never become a false readiness claim.
+fn verify_perception_dependencies(
+    uv: &Path,
+    venv_python: &str,
+    label: &str,
+    progress: &ProgressFn,
+    band_lo: f32,
+    band_hi: f32,
+) -> Result<(), CutError> {
     run_streaming(
         uv,
-        &["python", "install", PYTHON_VERSION],
-        "uv python install",
+        &["pip", "check", "--python", venv_python],
+        &format!("uv pip check {label}"),
         progress,
         band_lo,
         band_hi,
     )
 }
 
-fn managed_python_path(stdout: &str) -> Option<PathBuf> {
-    let path = PathBuf::from(stdout.trim());
-    (!path.as_os_str().is_empty()).then_some(path)
+fn onnx_asr_import_ready(python: &Path) -> bool {
+    run_capture(
+        python,
+        &[
+            "-c",
+            "import onnx_asr, onnxruntime; print('shellx-cut-onnx-asr-import-ok')",
+        ],
+    )
+    .map(|output| has_final_stdout_sentinel(&output, ONNX_ASR_IMPORT_SENTINEL))
+    .unwrap_or(false)
+}
+
+fn has_final_stdout_sentinel(output: &str, sentinel: &str) -> bool {
+    output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        == Some(sentinel)
+}
+
+/// The required base import is repeated after the best-effort full install because
+/// both policies share a venv. A changed graph must never produce a success result
+/// that relies on a stale pre-extras probe.
+fn verify_final_onnx_asr_import(python: &Path) -> Result<(), CutError> {
+    if onnx_asr_import_ready(python) {
+        return Ok(());
+    }
+    Err(CutError::new(
+        error_codes::SIDECAR,
+        "the final perception environment can no longer import the transcription engine",
+        python.display().to_string(),
+    )
+    .with_suggested_action(
+        "Choose Install captions again; the optional tools were not marked ready",
+    ))
+}
+
+/// Full extras are admitted only when their actual modules load together. This
+/// deliberately precedes native product qualification; a successful import does
+/// not claim that a model, media fixture, or native UI flow has run on this host.
+fn verify_full_perception_imports(python: &Path) -> Result<(), CutError> {
+    let output = run_capture(python, &["-c", FULL_PERCEPTION_IMPORT_PROBE])?;
+    if has_final_stdout_sentinel(&output, FULL_PERCEPTION_IMPORT_SENTINEL) {
+        return Ok(());
+    }
+    Err(CutError::new(
+        error_codes::SIDECAR,
+        "the installed perception tools did not pass their module-import check",
+        format!("{} returned {output:?}", python.display()),
+    )
+    .with_suggested_action(
+        "Transcription remains available. Choose Install captions again to retry the optional tools",
+    ))
+}
+
+/// Return the package manager's actual resolved versions after dependency
+/// validation. This is receipt data, not a generated lock or future install input.
+fn installed_package_versions(uv: &Path, venv_python: &str) -> Result<Vec<String>, CutError> {
+    let output = run_capture(uv, &["pip", "freeze", "--python", venv_python, "--strict"])?;
+    Ok(parse_package_versions(&output))
+}
+
+fn parse_package_versions(freeze: &str) -> Vec<String> {
+    freeze
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.split_once("==")
+                .is_some_and(|(name, version)| !name.is_empty() && !version.is_empty())
+        })
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 /// Run a command, streaming its stderr lines to `progress` (frac pinned at
@@ -810,14 +1092,13 @@ fn classify_install_failure(tail: &str, exit_code: Option<i32>) -> (String, &'st
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "unknown".into())
         ),
-        "Nothing half-installed is kept. Choose \"Install captions\" again; if it keeps \
-         failing, check your internet connection and that you have a few gigabytes of \
-         free disk space.",
+        "Setup did not complete. Choose \"Install captions\" again; if it keeps failing, \
+         check your internet connection and that you have a few gigabytes of free disk space.",
     )
 }
 
-/// Run a command and return trimmed stdout (best-effort; used for version + the
-/// onnx-asr import probe).
+/// Run a command and return stdout only when the probe command succeeded. Import
+/// readiness and package receipts must never accept output from a nonzero process.
 fn run_capture(prog: &Path, args: &[&str]) -> Result<String, CutError> {
     let mut command = Command::new(prog);
     command.args(args);
@@ -830,6 +1111,13 @@ fn run_capture(prog: &Path, args: &[&str]) -> Result<String, CutError> {
                     e.to_string(),
                 )
             })?;
+    if !out.status.success() {
+        return Err(CutError::new(
+            error_codes::JOB_FAILED,
+            "perception setup probe failed",
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ));
+    }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -839,10 +1127,6 @@ fn io_err(op: &'static str) -> impl Fn(std::io::Error) -> CutError {
 
 #[cfg(test)]
 mod tests {
-    use super::optional_lock::{
-        perception_lock_spec, validate_contents, PerceptionLockSpec, PERCEPTION_LOCKS,
-        PERCEPTION_LOCK_SCHEMA, REQUIRED_OPTIONAL_PERCEPTION_PACKAGES,
-    };
     use super::*;
 
     /// The dev-jargon line the fresh-Windows user actually saw must NEVER reach the
@@ -894,103 +1178,94 @@ mod tests {
         }
     }
 
-    /// RUNTIME-PERCEPTION-LOCK-01: every currently packaged engine target has
-    /// a local, exact-version lock. This reads source files only; it must never
-    /// ask a package index to re-resolve the graph during a test run.
     #[test]
-    fn supported_platform_locks_are_present_and_valid_without_network() {
-        let lock_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../perception/py");
+    fn perception_install_policy_uses_ready_wheels_and_cpu_torch() {
+        let base = base_perception_install_args("/venv/python", Path::new("requirements.txt"))
+            .expect("base args");
         assert_eq!(
-            PERCEPTION_LOCKS,
-            [
-                PerceptionLockSpec {
-                    platform: "linux-x86_64",
-                    os: "linux",
-                    arch: "x86_64",
-                    file: "requirements-full.linux-x86_64.lock",
-                },
-                PerceptionLockSpec {
-                    platform: "windows-x86_64",
-                    os: "windows",
-                    arch: "x86_64",
-                    file: "requirements-full.windows-x86_64.lock",
-                },
-                PerceptionLockSpec {
-                    platform: "macos-aarch64",
-                    os: "macos",
-                    arch: "aarch64",
-                    file: "requirements-full.macos-aarch64.lock",
-                },
+            base,
+            vec![
+                "pip",
+                "install",
+                "--python",
+                "/venv/python",
+                "--only-binary",
+                ":all:",
+                "--strict",
+                "-r",
+                "requirements.txt",
             ]
         );
-        for spec in PERCEPTION_LOCKS {
-            assert_eq!(perception_lock_spec(spec.os, spec.arch), Some(*spec));
-            let contents = std::fs::read_to_string(lock_dir.join(spec.file)).unwrap();
-            validate_contents(&contents, *spec, PYTHON_VERSION)
-                .unwrap_or_else(|error| panic!("{}: {error}", spec.file));
-        }
-        assert!(perception_lock_spec("windows", "aarch64").is_none());
-        assert!(perception_lock_spec("macos", "x86_64").is_none());
-        assert!(perception_lock_spec("linux", "aarch64").is_none());
+        let full = full_perception_install_args("/venv/python", Path::new("requirements-full.txt"))
+            .expect("full args");
+        assert!(full
+            .windows(2)
+            .any(|pair| pair == ["--only-binary", ":all:"]));
+        assert!(full
+            .windows(2)
+            .any(|pair| pair == ["--torch-backend", "cpu"]));
+        assert!(full.contains(&"--strict"));
+        assert!(!full.contains(&"--index-strategy"));
     }
 
     #[test]
-    fn lock_manifest_rejects_unpinned_or_mismatched_inputs() {
-        let spec = PERCEPTION_LOCKS[0];
-        let mut valid = format!(
-            "# {PERCEPTION_LOCK_SCHEMA}\n# python={PYTHON_VERSION}\n# platform={}\n",
-            spec.platform
-        );
-        for package in REQUIRED_OPTIONAL_PERCEPTION_PACKAGES {
-            valid.push_str(&format!(
-                "{package}==1.0 \\\n    --hash=sha256:{}\n",
-                "a".repeat(64)
-            ));
-        }
-        assert!(validate_contents(&valid, spec, PYTHON_VERSION).is_ok());
-        let windows_checkout = valid.replace('\n', "\r\n");
-        assert!(validate_contents(&windows_checkout, spec, PYTHON_VERSION).is_ok());
-
-        let unpinned = valid.replacen("numpy==1.0", "numpy>=1.0", 1);
-        assert!(
-            validate_contents(&unpinned, spec, PYTHON_VERSION)
-                .unwrap_err()
-                .contains("exact-version"),
-            "a range must never be installed as a reviewed lock"
-        );
-
-        let wrong_platform = valid.replace("platform=linux-x86_64", "platform=windows-x86_64");
-        assert!(validate_contents(&wrong_platform, spec, PYTHON_VERSION)
-            .unwrap_err()
-            .contains("manifest header"));
-
-        let missing_hash =
-            valid.replacen(&format!("    --hash=sha256:{}\n", "a".repeat(64)), "", 1);
-        assert!(validate_contents(&missing_hash, spec, PYTHON_VERSION)
-            .unwrap_err()
-            .contains("no artifact hash"));
+    fn full_perception_readiness_requires_real_cross_package_imports() {
+        assert!(FULL_PERCEPTION_IMPORT_PROBE.contains("import torch, torchaudio, torchvision"));
+        assert!(FULL_PERCEPTION_IMPORT_PROBE.contains("import whisperx"));
+        assert!(FULL_PERCEPTION_IMPORT_PROBE.contains("from rapidocr_onnxruntime import RapidOCR"));
+        assert!(FULL_PERCEPTION_IMPORT_PROBE.contains("cv2"));
+        assert!(FULL_PERCEPTION_IMPORT_PROBE
+            .contains("from scenedetect.detectors import ContentDetector"));
+        assert!(FULL_PERCEPTION_IMPORT_PROBE.contains(FULL_PERCEPTION_IMPORT_SENTINEL));
+        assert!(has_final_stdout_sentinel(
+            "normal import output\nshellx-cut-full-perception-import-ok\n",
+            FULL_PERCEPTION_IMPORT_SENTINEL,
+        ));
+        assert!(!has_final_stdout_sentinel(
+            "shellx-cut-full-perception-import-ok\nmore output\n",
+            FULL_PERCEPTION_IMPORT_SENTINEL,
+        ));
     }
 
     #[test]
-    fn managed_python_is_patch_pinned_for_windows_venv_durability() {
-        let parts = PYTHON_VERSION.split('.').collect::<Vec<_>>();
+    fn resolved_package_receipt_keeps_only_name_version_rows() {
         assert_eq!(
-            parts.len(),
-            3,
-            "uv must receive an exact patch version, not a floating Windows junction"
-        );
-        assert!(
-            parts.iter().all(|part| part.parse::<u16>().is_ok()),
-            "managed Python pin must contain only numeric version components"
+            parse_package_versions(
+                "# comment\nonnx-asr==0.11.0\ntorch @ https://example.invalid/wheel\nnumpy==2.4.6\n",
+            ),
+            vec!["onnx-asr==0.11.0", "numpy==2.4.6"]
         );
     }
 
     #[test]
-    fn managed_python_lookup_requires_one_nonempty_path() {
+    fn managed_python_request_keeps_the_reviewed_cp312_compatibility_line() {
+        assert_eq!(PYTHON_REQUEST, "3.12");
+    }
+
+    #[test]
+    fn managed_python_identity_requires_a_concrete_cp312_executable() {
         assert_eq!(
-            managed_python_path("  C:\\uv\\cpython-3.12.13\\python.exe\r\n"),
-            Some(PathBuf::from("C:\\uv\\cpython-3.12.13\\python.exe"))
+            managed_python_identity(
+                PathBuf::from("/managed/cpython-3.12.14/bin/python"),
+                "Python 3.12.14\n",
+            ),
+            Ok(ManagedPython {
+                path: PathBuf::from("/managed/cpython-3.12.14/bin/python"),
+                version: "3.12.14".to_string(),
+            })
         );
+        for invalid in [
+            "Python 3.13.0\n",
+            "Python 3.11.9\n",
+            "Python 3.12\n",
+            "not Python\n",
+        ] {
+            assert!(
+                managed_python_identity(PathBuf::from("/managed/python"), invalid).is_err(),
+                "wrong or absent Python patch must be rejected: {invalid:?}"
+            );
+        }
+        assert!(managed_python_identity(PathBuf::from("python"), "Python 3.12.14\n").is_err());
         assert_eq!(managed_python_path(" \r\n\t"), None);
     }
 

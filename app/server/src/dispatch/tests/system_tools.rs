@@ -69,7 +69,8 @@ async fn system_fetch_tool_rejects_unknown_tool() {
 /// FULL fetch path against a LOCAL fixture HTTP server (honest no-network
 /// proof of: pinned-URL download -> sha256 verify vs checksums.sha256 ->
 /// extract -> atomic install into the toolpath rung-3 dir -> doctor flips
-/// the ffmpeg card ok + doctor_updated fires). Uses the
+/// the ffmpeg card ok + doctor_updated fires). It then proves a latest-alias
+/// rollover mismatch preserves those installed binaries. Uses the
 /// SHELLX_CUT_FETCH_BASE_URL operator/test seam (loopback http) - the
 /// "no caller URL" security property is untouched.
 ///
@@ -133,8 +134,8 @@ esac
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
     }
-    // 2. tar.xz it (asset name MUST match the immutable registry asset).
-    let asset = "ffmpeg-N-126229-gf101fce22d-linux64-gpl.tar.xz";
+    // 2. tar.xz it (asset name MUST match the maintained latest registry).
+    let asset = "ffmpeg-master-latest-linux64-gpl.tar.xz";
     let archive = tmp.path().join(asset);
     let status = std::process::Command::new("tar")
         .arg("-cJf")
@@ -241,6 +242,66 @@ esac
     assert!(
         saw_doctor_event,
         "expected a doctor_updated event after install"
+    );
+
+    // A latest alias may roll between a publisher checksum request and archive
+    // download. Keep the already verified binaries and change only the served
+    // checksum to prove that the second fetch fails before replacement.
+    let installed_bin = cut_media::toolpath::appdata_tools_dir()
+        .unwrap()
+        .join("ffmpeg")
+        .join("bin");
+    let old_ffmpeg = std::fs::read(installed_bin.join("ffmpeg")).unwrap();
+    let old_ffprobe = std::fs::read(installed_bin.join("ffprobe")).unwrap();
+    std::fs::write(
+        tmp.path().join("checksums.sha256"),
+        format!("{}  {asset}\n", "f".repeat(64)),
+    )
+    .unwrap();
+
+    let mismatch = dispatch(
+        &state,
+        "system.fetch_tool",
+        json!({"tool": "ffmpeg", "rationale": "latest alias rollover fixture"}),
+        test_actor(),
+    )
+    .await;
+    assert!(mismatch.ok, "{:?}", mismatch.error);
+    let mismatch_job_id = mismatch.result.unwrap()["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mismatch_deadline = tokio::time::Instant::now() + FETCH_FIXTURE_FULL_SUITE_TIMEOUT;
+    loop {
+        let job = state.jobs.get(&mismatch_job_id).unwrap();
+        match job.state {
+            crate::jobs::JobState::Failed => {
+                assert!(
+                    format!("{:?}", job.error).contains("publisher checksum"),
+                    "mismatch must retain the verified-download failure: {:?}",
+                    job.error
+                );
+                break;
+            }
+            crate::jobs::JobState::Done => panic!("checksum-mismatched archive was installed"),
+            _ if tokio::time::Instant::now() >= mismatch_deadline => {
+                panic!(
+                    "checksum-mismatch fetch job did not settle: {:?}",
+                    job.state
+                )
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+        }
+    }
+    assert_eq!(
+        std::fs::read(installed_bin.join("ffmpeg")).unwrap(),
+        old_ffmpeg,
+        "checksum mismatch must preserve the existing ffmpeg binary"
+    );
+    assert_eq!(
+        std::fs::read(installed_bin.join("ffprobe")).unwrap(),
+        old_ffprobe,
+        "checksum mismatch must preserve the existing ffprobe binary"
     );
 
     // Cleanup env so other tests are unaffected.

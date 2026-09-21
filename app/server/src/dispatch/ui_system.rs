@@ -416,11 +416,12 @@ fn default_true() -> bool {
 
 /// `system.setup_perception {warm_model?, rationale?}` — consented provisioning of
 /// the Python perception venv as a job (the background-job contract: returns {job_id}). Downloads uv
-/// (sha256-verified via the fetch registry), installs a standalone CPython 3.12,
-/// builds the app-data sidecar venv, and `uv pip install`s the bundled pinned
-/// requirements (onnx-asr Parakeet/Canary STT + the perception stack). This closes the
-/// cold-install gap — the bundle ships only instruments.py + requirements.txt, and
-/// system python is too old on real desktops (macOS 3.9 < onnx-asr's 3.10 floor).
+/// (sha256-verified via the fetch registry), selects a compatible CPython 3.12 patch,
+/// resolves its concrete executable, builds the app-data sidecar venv from that path,
+/// and `uv pip install`s the bundled perception requirements (onnx-asr Parakeet/Canary
+/// STT + the perception stack). This closes the cold-install gap — the bundle ships
+/// only instruments.py + requirements.txt, and system python is too old on real
+/// desktops (macOS 3.9 < onnx-asr's 3.10 floor).
 /// On success the doctor `perception` card flips missing→ready. SECURITY: see
 /// perception_setup.rs (uv via the fetch allow-list; bundled requirements only).
 pub(super) async fn system_setup_perception(
@@ -480,7 +481,10 @@ pub(super) async fn system_setup_perception(
                     &jid,
                     json!({
                         "venv_python": o.venv_python,
+                        "managed_python": o.managed_python,
+                        "python_version": o.python_version,
                         "uv_version": o.uv_version,
+                        "package_versions": o.package_versions,
                         "onnx_asr_ready": o.onnx_asr_ready,
                         "model_warmed": o.model_warmed,
                         // BEST-EFFORT extras: false here does NOT mean failure —

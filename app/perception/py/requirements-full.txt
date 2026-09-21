@@ -1,36 +1,29 @@
-# ShellX Cut perception sidecar — FULL perception extras source inputs.
+# ShellX Cut perception sidecar — FULL perception extras policy.
 #
-# This file is deliberately NOT installed directly. `uv pip compile` resolves
-# it into one reviewed, exact-version lock for each packaged Python/platform
-# target, and perception_setup.rs installs only that matching lock. Regenerate
-# all three locks together when changing these inputs:
-#   uv pip compile requirements-full.txt --python-version 3.12.13 \
-#     --python-platform <linux-x86_64|windows-x86_64|macos-aarch64 target> \
-#     --only-binary :all: --extra-index-url https://download.pytorch.org/whl/cpu \
-#     --index-strategy unsafe-best-match --generate-hashes \
-#     --output-file requirements-full.<target>.lock
+# `perception_setup.rs` installs this bundled policy directly after the required
+# onnx-asr base with:
+#   uv pip install --only-binary :all: --torch-backend cpu --strict \
+#     -r requirements-full.txt
 #
-# The locks are installed BEST-EFFORT by perception_setup.rs AFTER the BASE
-# (onnx-asr) install, with their recorded CPU-wheel index policy and required
-# artifact hashes.
+# uv resolves current compatible wheels when the user consents to setup. We do
+# not ship a generated platform lock because that turns ordinary dependency
+# updates into Cut releases. The setup receipt records the actual resolved
+# package versions, and `uv pip check` must pass before extras are ready.
 #
-# WHY THESE FLAGS fresh-Windows install fix):
+# WHY THESE FLAGS:
 #   --only-binary :all:  → NEVER compile from source on a user box (no MSVC/LLVM).
-#                          If a wheel is genuinely missing for the platform, uv fails
-#                          FAST with "no usable wheels" instead of a doomed build,
-#                          and the BASE transcription already works regardless.
-#   CPU torch index      → torch/torchvision/torchaudio land as the small +cpu wheels
-#                          on every OS (avoids the ~2 GB CUDA build + nvidia-* deps a
-#                          fresh CPU user box neither has nor needs).
+#                          If a wheel is genuinely missing, the full tools remain
+#                          unavailable and the base transcription engine still works.
+#   --torch-backend cpu  → uv selects official CPU torch-family wheels while normal
+#                          dependencies keep their regular index policy. This avoids
+#                          CUDA/NVIDIA payloads without unsafe multi-index matching.
 #   numpy<2.5 (below)    → KEEPS numba on its newest prebuilt WHEEL (numba 0.65.x
-#                          requires numpy<2.5). WITHOUT this pin the resolver lets
-#                          numpy float to 2.5.0, can't use the numba wheel, backtracks
-#                          to ancient sdist-only numba/llvmlite, and tries to COMPILE
-#                          llvmlite — the original fresh-machine build failure.
+#                          requires numpy<2.5). Without this proven bound, the
+#                          resolver can select an sdist-only numba/llvmlite route.
 #
-# If the matching lock fails to install, transcription STILL works (onnx-asr
-# from the base). instruments.py imports each dep lazily inside try/except and
-# degrades to the ffmpeg-based instruments when an extra is absent.
+# If these extras fail to resolve or pass dependency checking, transcription STILL
+# works from the base. instruments.py imports extras lazily and falls back to the
+# ffmpeg-based instruments when an extra is absent.
 #
 numpy<2.5             # BSD-3 — PIN: hold numba/llvmlite on their prebuilt wheels (see header)
 #

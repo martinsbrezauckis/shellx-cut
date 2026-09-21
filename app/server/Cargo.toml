@@ -55,13 +55,13 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 # Binary verb payloads: render.frame/ui.screenshot inline base64 (the binary-output contract).
 base64 = "0.22"
-# system.fetch_tool: blocking HTTPS download of a registry-pinned BtbN
+# system.fetch_tool: blocking HTTPS download from an allowlisted BtbN
 # ffmpeg build. ureq = tiny, blocking, rustls+webpki-roots by default (no
 # OpenSSL, no async) — ideal for a one-shot download inside a job task. We
 # stream bytes to disk while hashing (sha256 via sha2), verify against the
 # release checksums file, then shell out to the platform archive tool to
 # extract. No zip/xz crate needed: extraction is of ALREADY-VERIFIED bytes (the
-# security boundary — pinned URL + checksum — stays native in Rust).
+# security boundary — publisher URL + checksum — stays native in Rust).
 ureq = "3"
 sha2 = { workspace = true }
 hound = "3"

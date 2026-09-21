@@ -1,6 +1,6 @@
 # ShellX Cut perception sidecar — BASE transcription deps (perception contract).
 # Permissive licenses only. Provisioned by perception_setup.rs with
-#   uv pip install --only-binary :all: -r requirements.txt
+#   uv pip install --only-binary :all: --strict -r requirements.txt
 # into a standalone CPython 3.12 venv (system python on real desktops is too old —
 # macOS ships 3.9 < onnx-asr's 3.10 floor; uv installs a managed 3.12).
 #
@@ -25,5 +25,6 @@
 # NVIDIA Parakeet-TDT-0.6B via ONNX Runtime — native, accurate word timestamps,
 # punctuation + caps, and NO torch. [cpu] = onnxruntime CPU build; [hub] = HF model
 # download. macOS forces the CPU EP at runtime (CoreML fails on the model's
-# external-data init). Pinned for reproducibility.
-onnx-asr[cpu,hub]==0.11.0  # MIT — Parakeet-TDT ONNX STT (PRIMARY words engine)
+# external-data init). The minimum marks the verified API/wheel compatibility
+# line; uv resolves a current compatible release at consent time.
+onnx-asr[cpu,hub]>=0.11.0  # MIT — Parakeet-TDT ONNX STT (PRIMARY words engine)

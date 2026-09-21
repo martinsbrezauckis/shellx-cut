@@ -15,12 +15,11 @@
 //!      REGISTRY of https-pinned URLs. A caller can pick WHICH known tool, never
 //!      WHERE from. This is the difference between a feature and an arbitrary-
 //!      download RCE.
-//!   2. https only, host-pinned to github.com/BtbN releases.
-//!   3. Production FFmpeg archives are verified against a SHA-256 digest
-//!      committed beside their immutable BtbN release asset. A test/operator
-//!      base override can use its local manifest, but can never change the
-//!      production identity. A mismatch aborts — nothing touches the install
-//!      dir.
+//!   2. https only, with fixed BtbN and astral-sh publisher release bases.
+//!   3. Each install reads the selected publisher's current checksum metadata,
+//!      then verifies the downloaded archive before anything touches the
+//!      install dir. A mismatch aborts safely; this also handles an upstream
+//!      latest-alias rollover between the checksum and archive requests.
 //!   4. Staged-then-atomic: download + verify + extract happen in a temp dir;
 //!      the verified payload is moved into place by a single rename (atomic on
 //!      the same volume; a copy+swap fallback otherwise). A failure mid-way
@@ -31,10 +30,9 @@
 //!      temp dir.
 //!
 //! OS-AWARENESS
-//!   The registry selects the asset by `std::env::consts::OS`/`ARCH`: Linux ⇒
-//!   one immutable `autobuild-2026-08-31-13-27` asset on Linux/Windows. The
-//!   target-specific file names and SHA-256 digests below are release identity,
-//!   not a mutable "latest" alias.
+//!   The registry selects the asset by `std::env::consts::OS`/`ARCH`: Linux and
+//!   Windows fetch BtbN's maintained `latest` FFmpeg asset names and verify
+//!   them against that release's published `checksums.sha256` at install time.
 //!
 //! TESTABILITY
 //!   `SHELLX_CUT_FETCH_BASE_URL` overrides the registry BASE (the github.com
@@ -58,22 +56,13 @@ use std::path::{Path, PathBuf};
 /// TESTABILITY). Never a verb arg.
 pub const ENV_FETCH_BASE_URL: &str = "SHELLX_CUT_FETCH_BASE_URL";
 
-/// The immutable BtbN release selected for the consented FFmpeg bootstrap.
-///
-/// This is BtbN's final August 2026 autobuild. BtbN documents that the final
-/// build of each month is retained for two years; its two archive digests were
-/// verified from the release manifest and downloaded bytes on 2026-09-21. Do
-/// not replace this with BtbN's mutable `latest` alias: it makes an accepted
-/// archive identity change without a source review.
-const BTBN_FFMPEG_BASE: &str =
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27";
-const BTBN_FFMPEG_LINUX64_GPL_SHA256: &str =
-    "d1cf19f669510448f18a4cffcdbd8fa9592ee7c15c92feb5b96ad7e9ccc30114";
-const BTBN_FFMPEG_WIN64_GPL_SHA256: &str =
-    "b4da332540eaebc6939181b59e267f163dd57407ef6596f7f3452845921d1d91";
+/// BtbN's maintained latest-release alias for the consented FFmpeg bootstrap.
+/// The selected archive is verified against the matching publisher manifest at
+/// installation time, so a successful install always has a fresh SHA-256.
+const BTBN_FFMPEG_BASE: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest";
 
-/// Pinned uv release base (keep the version in sync with UV_VERSION below).
-const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/download/0.11.21";
+/// astral-sh's maintained latest-release alias for the uv provisioner.
+const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/latest/download";
 
 /// How a tool's checksum is published — the two release conventions we support.
 #[derive(Clone, Copy)]
@@ -91,19 +80,13 @@ enum ChecksumSource {
 struct ToolSpec {
     /// Registry id (the verb's `tool` arg must equal this).
     id: &'static str,
-    /// Pinned release base URL; every asset is `<base>/<asset>`. Overridable
-    /// ONLY by the test/operator env seam (base_url), never a verb arg.
+    /// Built-in publisher release base URL; every asset is `<base>/<asset>`.
+    /// Overridable ONLY by the test/operator env seam, never a verb argument.
     base: &'static str,
     /// Archive file name for THIS os/arch under the base URL.
     asset: &'static str,
-    /// Where this tool's sha256 lives (manifest vs per-asset sibling).
-    /// Used only by test/operator base overrides and registries that do not
-    /// have a committed immutable digest.
+    /// Where this tool's current publisher SHA-256 is published.
     checksum: ChecksumSource,
-    /// SHA-256 accepted for the production asset. `Some` means the normal
-    /// production base performs no checksum-manifest network request: the
-    /// digest is source-reviewed together with the release asset identity.
-    production_sha256: Option<&'static str>,
     /// Archive kind, picks the extractor: "tar.xz" | "tar.gz" (unix) | "zip".
     kind: &'static str,
     /// The executables this archive provides (so we can locate them after
@@ -114,30 +97,28 @@ struct ToolSpec {
 // uv (astral-sh/uv) is the standalone Python provisioner used by
 // `system.setup_perception` to build the sidecar venv on a modern CPython
 // (system python is too old on real desktops: macOS ships 3.9, onnx-asr needs
-// ≥3.10). The version is pinned in UV_BASE; bump deliberately — the per-asset
-// `.sha256` is verified before use.
+// ≥3.10). The maintained latest-release alias keeps this provisioner current;
+// its publisher-provided per-asset `.sha256` is verified before use.
 
 /// Resolve the built-in spec for `(tool, os, arch)`. Returns None for an unknown
 /// tool id OR an unsupported platform (the verb turns that into an honest
 /// error). This is the ENTIRE allow-list — there is no other way to reach a URL.
 fn tool_spec(tool: &str, os: &str, arch: &str) -> Option<ToolSpec> {
     match (tool, os, arch) {
-        // ── ffmpeg (BtbN immutable GPL static release; linux64 + win64) ─────
+        // ── ffmpeg (BtbN current GPL static release; linux64 + win64) ───────
         ("ffmpeg", "linux", "x86_64") => Some(ToolSpec {
             id: "ffmpeg",
             base: BTBN_FFMPEG_BASE,
-            asset: "ffmpeg-N-126342-gf88b741dbf-linux64-gpl.tar.xz",
+            asset: "ffmpeg-master-latest-linux64-gpl.tar.xz",
             checksum: ChecksumSource::Manifest("checksums.sha256"),
-            production_sha256: Some(BTBN_FFMPEG_LINUX64_GPL_SHA256),
             kind: "tar.xz",
             binaries: &["ffmpeg", "ffprobe"],
         }),
         ("ffmpeg", "windows", "x86_64") => Some(ToolSpec {
             id: "ffmpeg",
             base: BTBN_FFMPEG_BASE,
-            asset: "ffmpeg-N-126342-gf88b741dbf-win64-gpl.zip",
+            asset: "ffmpeg-master-latest-win64-gpl.zip",
             checksum: ChecksumSource::Manifest("checksums.sha256"),
-            production_sha256: Some(BTBN_FFMPEG_WIN64_GPL_SHA256),
             kind: "zip",
             binaries: &["ffmpeg", "ffprobe"],
         }),
@@ -161,7 +142,6 @@ fn tool_spec(tool: &str, os: &str, arch: &str) -> Option<ToolSpec> {
                 base: UV_BASE,
                 asset,
                 checksum: ChecksumSource::PerAsset,
-                production_sha256: None,
                 kind,
                 binaries: &["uv"],
             })
@@ -238,9 +218,8 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     let _guard = StagingGuard(staging.clone());
 
     // ---- 1. load the expected sha256 -----------------------------------------
-    // Normal FFmpeg production downloads use the immutable source-reviewed
-    // digest. The explicit base override remains a local-fixture/operator seam,
-    // so it intentionally verifies against the fixture registry instead.
+    // Every production and explicit fixture request reads its publisher's
+    // matching checksum metadata before archive bytes are accepted.
     progress(0.02, "loading checksum");
     let expected = expected_sha256(&spec, &base, &asset_url)?;
 
@@ -257,11 +236,11 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     if !got.eq_ignore_ascii_case(&expected) {
         return Err(CutError::new(
             error_codes::JOB_FAILED,
-            "sha256 mismatch — the download is NOT the pinned artifact",
+            "sha256 mismatch — download differs from the publisher checksum",
             format!("expected {expected}, got {got}"),
         )
         .with_suggested_action(
-            "nothing was installed; the file was discarded. Re-run; if it persists the release or the network is compromised — do not install",
+            "nothing was installed; the file was discarded. The publisher's latest release may have changed during download, so retry to load a matching published checksum. If it persists, do not install and report it",
         ));
     }
 
@@ -311,18 +290,9 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
 
 /// Resolve the checksum accepted for this download.
 ///
-/// A source-pinned production digest is authoritative when the effective base
-/// is the registry's production base. A deliberate base override is only for a
-/// local fixture or an operator-controlled alternate registry, so its manifest
-/// remains the authority for that explicit non-production invocation.
+/// The trusted publisher's current release metadata is authoritative for every
+/// request, including the local-fixture/operator override seam.
 fn expected_sha256(spec: &ToolSpec, base: &str, asset_url: &str) -> Result<String, CutError> {
-    if base == spec.base {
-        if let Some(digest) = spec.production_sha256 {
-            debug_assert!(is_hex_sha256(digest));
-            return Ok(digest.to_string());
-        }
-    }
-
     let expected = match spec.checksum {
         ChecksumSource::Manifest(name) => {
             let manifest = http_get_string(&format!("{base}/{name}"))?;
@@ -748,54 +718,24 @@ mod tests {
         assert!(tool_spec("uv", "freebsd", "x86_64").is_none());
     }
 
-    /// RUNTIME-FFMPEG-PIN-01: this is intentionally a no-network identity
-    /// test. Both production payloads must name a fixed release asset and use
-    /// the exact source-reviewed digest; the mutable BtbN `latest` alias is
-    /// never accepted content.
+    /// The source fixes only trusted publisher routes and current asset names.
+    /// The actual digest is deliberately resolved from BtbN's release manifest
+    /// at installation time, not compiled into a Cut update.
     #[test]
-    fn ffmpeg_production_assets_have_immutable_release_digests() {
-        for (os, arch, asset, digest) in [
-            (
-                "linux",
-                "x86_64",
-                "ffmpeg-N-126342-gf88b741dbf-linux64-gpl.tar.xz",
-                BTBN_FFMPEG_LINUX64_GPL_SHA256,
-            ),
-            (
-                "windows",
-                "x86_64",
-                "ffmpeg-N-126342-gf88b741dbf-win64-gpl.zip",
-                BTBN_FFMPEG_WIN64_GPL_SHA256,
-            ),
+    fn ffmpeg_production_assets_use_latest_release_manifest() {
+        for (os, arch, asset) in [
+            ("linux", "x86_64", "ffmpeg-master-latest-linux64-gpl.tar.xz"),
+            ("windows", "x86_64", "ffmpeg-master-latest-win64-gpl.zip"),
         ] {
             let spec = tool_spec("ffmpeg", os, arch).expect("supported FFmpeg platform");
             assert_eq!(spec.base, BTBN_FFMPEG_BASE);
-            assert!(!spec.base.ends_with("/latest"));
+            assert!(spec.base.ends_with("/releases/download/latest"));
             assert_eq!(spec.asset, asset);
-            assert_eq!(spec.production_sha256, Some(digest));
-            assert!(is_hex_sha256(digest));
-
-            // The normal production path resolves from source only; no local
-            // fixture or HTTP request is involved in this assertion.
-            let asset_url = format!("{}/{}", spec.base, spec.asset);
-            assert_eq!(
-                expected_sha256(&spec, spec.base, &asset_url).unwrap(),
-                digest,
-                "{os}/{arch} must retain its committed release digest"
-            );
+            assert!(matches!(
+                spec.checksum,
+                ChecksumSource::Manifest("checksums.sha256")
+            ));
         }
-    }
-
-    #[test]
-    fn explicit_fixture_base_uses_its_own_manifest_not_the_production_digest() {
-        let spec = tool_spec("ffmpeg", "linux", "x86_64").unwrap();
-        // The parser is the test/operator seam. The full fixture exercises its
-        // loopback HTTP path; this unit test remains pure and proves a fixture
-        // digest cannot be mistaken for the production digest.
-        let fixture_digest = "f".repeat(64);
-        let manifest = format!("{fixture_digest}  {}\n", spec.asset);
-        assert_eq!(checksum_for(&manifest, spec.asset), Some(fixture_digest));
-        assert_ne!(spec.production_sha256.unwrap(), "f".repeat(64));
     }
 
     #[test]

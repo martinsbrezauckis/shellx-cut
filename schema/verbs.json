@@ -16489,7 +16489,7 @@
           }
         }
       },
-      "result": "{job_id} — watch job_progress (downloading uv → installing Python → creating venv → installing dependencies → downloading model) or poll jobs.status; the job result is {venv_python, uv_version, onnx_asr_ready, model_warmed, perception_ok_after}; doctor_updated fires on completion",
+      "result": "{job_id} — watch job_progress (downloading uv → installing Python → creating venv → installing dependencies → downloading model) or poll jobs.status; the job result is {venv_python, managed_python, python_version, uv_version, package_versions, onnx_asr_ready, model_warmed, full_perception_ready, extras_note, perception_ok_after}; doctor_updated fires on completion",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
