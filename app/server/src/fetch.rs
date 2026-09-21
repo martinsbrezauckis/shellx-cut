@@ -32,7 +32,7 @@
 //!
 //! OS-AWARENESS
 //!   The registry selects the asset by `std::env::consts::OS`/`ARCH`: Linux ⇒
-//!   one immutable `autobuild-2026-08-20-13-45` asset on Linux/Windows. The
+//!   one immutable `autobuild-2026-08-31-13-27` asset on Linux/Windows. The
 //!   target-specific file names and SHA-256 digests below are release identity,
 //!   not a mutable "latest" alias.
 //!
@@ -60,16 +60,17 @@ pub const ENV_FETCH_BASE_URL: &str = "SHELLX_CUT_FETCH_BASE_URL";
 
 /// The immutable BtbN release selected for the consented FFmpeg bootstrap.
 ///
-/// The tag and both asset digests were verified from the BtbN GitHub release
-/// `autobuild-2026-08-20-13-45` (release commit `48576f1`) on 2026-08-28. Do
+/// This is BtbN's final August 2026 autobuild. BtbN documents that the final
+/// build of each month is retained for two years; its two archive digests were
+/// verified from the release manifest and downloaded bytes on 2026-09-21. Do
 /// not replace this with BtbN's mutable `latest` alias: it makes an accepted
 /// archive identity change without a source review.
 const BTBN_FFMPEG_BASE: &str =
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-20-13-45";
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27";
 const BTBN_FFMPEG_LINUX64_GPL_SHA256: &str =
-    "cfce4cb7658648b9abe1161e06f783062cf3af8cf04a8aac6fb82cc376e1f921";
+    "d1cf19f669510448f18a4cffcdbd8fa9592ee7c15c92feb5b96ad7e9ccc30114";
 const BTBN_FFMPEG_WIN64_GPL_SHA256: &str =
-    "c4e072ab7d22f9bfddfedc0acd3c0613120475345b51a6a245d42faa05a7349b";
+    "b4da332540eaebc6939181b59e267f163dd57407ef6596f7f3452845921d1d91";
 
 /// Pinned uv release base (keep the version in sync with UV_VERSION below).
 const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/download/0.11.21";
@@ -125,7 +126,7 @@ fn tool_spec(tool: &str, os: &str, arch: &str) -> Option<ToolSpec> {
         ("ffmpeg", "linux", "x86_64") => Some(ToolSpec {
             id: "ffmpeg",
             base: BTBN_FFMPEG_BASE,
-            asset: "ffmpeg-N-126229-gf101fce22d-linux64-gpl.tar.xz",
+            asset: "ffmpeg-N-126342-gf88b741dbf-linux64-gpl.tar.xz",
             checksum: ChecksumSource::Manifest("checksums.sha256"),
             production_sha256: Some(BTBN_FFMPEG_LINUX64_GPL_SHA256),
             kind: "tar.xz",
@@ -134,7 +135,7 @@ fn tool_spec(tool: &str, os: &str, arch: &str) -> Option<ToolSpec> {
         ("ffmpeg", "windows", "x86_64") => Some(ToolSpec {
             id: "ffmpeg",
             base: BTBN_FFMPEG_BASE,
-            asset: "ffmpeg-N-126229-gf101fce22d-win64-gpl.zip",
+            asset: "ffmpeg-N-126342-gf88b741dbf-win64-gpl.zip",
             checksum: ChecksumSource::Manifest("checksums.sha256"),
             production_sha256: Some(BTBN_FFMPEG_WIN64_GPL_SHA256),
             kind: "zip",
@@ -757,13 +758,13 @@ mod tests {
             (
                 "linux",
                 "x86_64",
-                "ffmpeg-N-126229-gf101fce22d-linux64-gpl.tar.xz",
+                "ffmpeg-N-126342-gf88b741dbf-linux64-gpl.tar.xz",
                 BTBN_FFMPEG_LINUX64_GPL_SHA256,
             ),
             (
                 "windows",
                 "x86_64",
-                "ffmpeg-N-126229-gf101fce22d-win64-gpl.zip",
+                "ffmpeg-N-126342-gf88b741dbf-win64-gpl.zip",
                 BTBN_FFMPEG_WIN64_GPL_SHA256,
             ),
         ] {
