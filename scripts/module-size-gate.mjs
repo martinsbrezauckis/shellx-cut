@@ -14,6 +14,9 @@ const lineCount = (relative) => {
 // more room must be decomposed by responsibility, not added as an exception.
 const boundedSources = [
   "app/native-runtime-context/src/lib.rs",
+  "app/native-runtime-context/src/context_io.rs",
+  "app/native-runtime-context/src/context_set.rs",
+  "app/native-runtime-context/src/pinned_executable_bundle.rs",
   "app/perception/src/sidecar/native_runtime.rs",
   "app/perception/src/sidecar/runtime_cache.rs",
   "app/perception/src/prepared_stt.rs",
@@ -76,6 +79,7 @@ const boundedSources = [
   "app/media/src/hwencode_args.rs",
   "app/media/src/render/ramp_timing.rs",
   "app/desktop/src-tauri/examples/verify-updater-signature.rs",
+  "app/desktop/src-tauri/src/tools/pinned_executable_bundle.rs",
   "app/desktop/src-tauri/src/update_handoff.rs",
   "app/desktop/src-tauri/src/update_identity.rs",
   "app/desktop/src-tauri/src/macos_region_bridge.rs",

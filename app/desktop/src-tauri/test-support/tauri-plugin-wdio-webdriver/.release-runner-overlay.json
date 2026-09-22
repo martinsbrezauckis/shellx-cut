@@ -187,10 +187,10 @@
       "sha256": "69a2ea8862964c915e44ef1a0fcc8c5a393f2889b124e4956f02657df88dfcf5"
     },
     {
-      "bytes": 36476,
+      "bytes": 36542,
       "mode": 420,
       "path": "src/server/handlers/element.rs",
-      "sha256": "98354302b877dd67615d0ad52cc768c4716ef7c3ed5d018cdfd31cc44b9a14f9"
+      "sha256": "f25e5d6ef8fd889cd8abe3a99e40ec4ad982bc827e7a714678d8906681f5ea67"
     },
     {
       "bytes": 4630,
@@ -259,10 +259,10 @@
       "sha256": "fb43364ecc78c1660b7c835582bbdee1a50f8d7afbed145aadc01d3ef4e27377"
     },
     {
-      "bytes": 6285,
+      "bytes": 7173,
       "mode": 420,
       "path": "src/server/response.rs",
-      "sha256": "d5aec0a934cc82ce0127372abbac90b245d62c68f9c9f65c6279bc284c963d55"
+      "sha256": "f2173e14c03cb4d041c8c5dc21a03b629e243db785052df479d3dbfa8551dbea"
     },
     {
       "bytes": 8339,
@@ -289,10 +289,10 @@
       "sha256": "d24764c949ed124475886586a6373d80b31956222b9810fd7913dbf8a27748d9"
     },
     {
-      "bytes": 12640,
+      "bytes": 16784,
       "mode": 420,
       "path": "src/webdriver/session.rs",
-      "sha256": "7cd233d5de9a76de6fa5045a12e03c2e757108d1c8d9207e7995ff0b3d638969"
+      "sha256": "085dea298c618d89784364fdf8d8e0af166e0dc4869dce529e968c3243d535ea"
     }
   ],
   "overlay": [
@@ -326,15 +326,19 @@
     },
     {
       "path": "src/server/handlers/element.rs",
-      "sha256": "98354302b877dd67615d0ad52cc768c4716ef7c3ed5d018cdfd31cc44b9a14f9"
+      "sha256": "f25e5d6ef8fd889cd8abe3a99e40ec4ad982bc827e7a714678d8906681f5ea67"
     },
     {
       "path": "src/server/handlers/session.rs",
       "sha256": "2e3b4ebde447aaa9a6bf4b94d2c4857bd7642a620b872ef66be4a2ac15b5c121"
     },
     {
+      "path": "src/server/response.rs",
+      "sha256": "f2173e14c03cb4d041c8c5dc21a03b629e243db785052df479d3dbfa8551dbea"
+    },
+    {
       "path": "src/webdriver/session.rs",
-      "sha256": "7cd233d5de9a76de6fa5045a12e03c2e757108d1c8d9207e7995ff0b3d638969"
+      "sha256": "085dea298c618d89784364fdf8d8e0af166e0dc4869dce529e968c3243d535ea"
     }
   ],
   "schema": "release-runner.embedded-webdriver-overlay/v1",

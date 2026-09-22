@@ -1393,8 +1393,8 @@ mod tests {
 
     #[test]
     fn premium_probe_requires_import_ready_output() {
-        assert_eq!(parse_matanyone_probe("ok True\n").unwrap(), true);
-        assert_eq!(parse_matanyone_probe("ok False\n").unwrap(), false);
+        assert!(parse_matanyone_probe("ok True\n").unwrap());
+        assert!(!parse_matanyone_probe("ok False\n").unwrap());
         for invalid in ["", "ok", "not ok", "ok maybe"] {
             assert!(
                 parse_matanyone_probe(invalid).is_err(),

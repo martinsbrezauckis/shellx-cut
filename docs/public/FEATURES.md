@@ -485,6 +485,9 @@ route to the same surface registry.
   `not_run` (never a fabricated plan); cutd validates every returned plan or
   storyboard against the local catalog before anything can be previewed or
   inserted.
+- The existing Motion bridge described below remains unqualified and outside
+  v0.6.114 connection testing. This release qualifies read-only Motion
+  discovery; connection qualification and managed integration remain deferred.
 - Motion-backed Generate templates lower through `motion.template_to_cut` for
   package templates and `motion.script_to_cut` for scripted-video JSON, calling
   the local ShellX Motion CLI, returning preview receipt/artifact evidence, and

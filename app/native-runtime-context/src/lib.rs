@@ -12,11 +12,23 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+mod context_io;
+mod context_set;
+mod pinned_executable_bundle;
+
+pub use context_io::context_schema_from_env;
+use context_io::read_context;
+pub use context_set::RuntimeContextSet;
+pub use pinned_executable_bundle::{PinnedExecutable, PinnedExecutableBundleContext};
+
 pub const CONTEXT_ENV: &str = "RELEASE_RUNNER_NATIVE_RUNTIME_CONTEXT";
 pub const CONTEXT_CONTRACT: &str = "release-runner.native-runtime-context/v1";
+pub const PINNED_EXECUTABLE_BUNDLE_CONTEXT_CONTRACT: &str =
+    "release-runner.pinned-executable-bundle-context/v1";
+pub const SET_CONTEXT_CONTRACT: &str = "release-runner.native-runtime-context-set/v1";
 pub const CONTEXT_MAX_BYTES: u64 = 1024 * 1024;
-const MAX_FILES: usize = 131_072;
-const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub(crate) const MAX_FILES: usize = 131_072;
+pub(crate) const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_IMPORTS: usize = 256;
 const MAX_MODELS: usize = 4096;
 
@@ -72,20 +84,15 @@ impl RuntimeContext {
     }
 
     pub fn from_path(path: &Path) -> Result<Self, String> {
-        if !path.is_absolute() {
-            return Err("native runtime context locator must be absolute".into());
-        }
-        regular_no_link(path, "native runtime context")?;
-        let mut bytes = Vec::new();
-        File::open(path)
-            .map_err(|e| format!("open native runtime context: {e}"))?
-            .take(CONTEXT_MAX_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("read native runtime context: {e}"))?;
-        if bytes.len() as u64 > CONTEXT_MAX_BYTES {
-            return Err("native runtime context exceeds 1 MiB".into());
-        }
+        let bytes = read_context(path)?;
         let context: Self = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parse native runtime context: {e}"))?;
+        context.validate()?;
+        Ok(context)
+    }
+
+    pub(crate) fn from_value(value: serde_json::Value) -> Result<Self, String> {
+        let context: Self = serde_json::from_value(value)
             .map_err(|e| format!("parse native runtime context: {e}"))?;
         context.validate()?;
         Ok(context)
@@ -233,7 +240,7 @@ impl RuntimeContext {
     }
 }
 
-fn regular_no_link(path: &Path, label: &str) -> Result<(), String> {
+pub(crate) fn regular_no_link(path: &Path, label: &str) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|e| format!("inspect {label}: {e}"))?;
     if metadata.file_type().is_symlink() || reparse_point(&metadata) || !metadata.is_file() {
         return Err(format!("{label} must be a regular non-link file"));
@@ -241,7 +248,7 @@ fn regular_no_link(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn directory_no_link(path: &Path, label: &str) -> Result<(), String> {
+pub(crate) fn directory_no_link(path: &Path, label: &str) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|e| format!("inspect {label}: {e}"))?;
     if metadata.file_type().is_symlink() || reparse_point(&metadata) || !metadata.is_dir() {
         return Err(format!("{label} must be a non-link directory"));
@@ -249,18 +256,22 @@ fn directory_no_link(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn canonical_root(root: &Path) -> Result<PathBuf, String> {
+pub(crate) fn canonical_root(root: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(root).map_err(|e| format!("canonicalize native runtime root: {e}"))
 }
 
-fn clean_absolute(path: &Path) -> bool {
+pub(crate) fn clean_absolute(path: &Path) -> bool {
     path.is_absolute()
         && !path
             .components()
             .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
 }
 
-fn no_reparse_ancestors(root: &Path, relative: &Path, label: &str) -> Result<(), String> {
+pub(crate) fn no_reparse_ancestors(
+    root: &Path,
+    relative: &Path,
+    label: &str,
+) -> Result<(), String> {
     let mut current = root.to_path_buf();
     for part in relative.components() {
         let Component::Normal(name) = part else {
@@ -295,7 +306,7 @@ fn reparse_point(_: &fs::Metadata) -> bool {
     false
 }
 
-fn sha(value: &str) -> bool {
+pub(crate) fn sha(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()

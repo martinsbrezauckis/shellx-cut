@@ -164,18 +164,28 @@ fn prepared_premium_runtime_requires_the_complete_model_and_script_group() {
         instruments.parent().unwrap().join("sam2_runner.py")
     );
 
-    let (_temp, mut context, python, instruments, hashes) = premium_fixture();
-    context.models.retain(|model| model.id != SAM2_MODEL_ID);
-    let error = prepared_matanyone_from_context_with_hashes(
-        &context,
-        &python,
-        &instruments,
-        &hashes.0,
-        &hashes.1,
-        &hashes.2,
-    )
-    .unwrap_err();
-    assert!(error.message.contains("SAM2 asset"));
+    for (missing_id, label) in [
+        (RVM_MODEL_ID, "RVM"),
+        (MATANYONE_MODEL_ID, "MatAnyone2"),
+        (SAM2_MODEL_ID, "SAM2"),
+    ] {
+        let (_temp, mut context, python, instruments, hashes) = premium_fixture();
+        context.models.retain(|model| model.id != missing_id);
+        let error = prepared_matanyone_from_context_with_hashes(
+            &context,
+            &python,
+            &instruments,
+            &hashes.0,
+            &hashes.1,
+            &hashes.2,
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains(&format!("{label} asset")),
+            "{missing_id}: {}",
+            error.message
+        );
+    }
 }
 
 #[test]

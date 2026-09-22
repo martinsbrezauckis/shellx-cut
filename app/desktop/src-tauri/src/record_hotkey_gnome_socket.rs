@@ -426,6 +426,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         let mut stream = UnixStream::connect(&path).unwrap();
         stream.write_all(&[FORWARDER_BYTE]).unwrap();
+        drop(stream);
         for _ in 0..20 {
             if calls.load(Ordering::SeqCst) == 1 {
                 break;

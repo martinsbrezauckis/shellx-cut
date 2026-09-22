@@ -43,6 +43,8 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 mod judge_admission;
+mod premium_matte;
+use premium_matte::matte_premium_card;
 mod service_cards;
 
 /// Card schema version (bumped only on a breaking shape change).
@@ -199,7 +201,13 @@ fn probe_exec(prog: &std::ffi::OsStr, args: &[&str], timeout: Duration) -> Probe
         Ok(command) => command,
         Err(_) => return ProbeOutcome::NotFound,
     };
-    let out = match run_doctor_command(&mut command, timeout, "doctor version probe") {
+    probe_command(&mut command, timeout, "doctor version probe")
+}
+
+/// Classify an already-configured Doctor command. Python callers must apply the
+/// shared native-runtime policy before calling this helper.
+fn probe_command(command: &mut Command, timeout: Duration, context: &str) -> ProbeOutcome {
+    let out = match run_doctor_command(command, timeout, context) {
         Ok(output) => output,
         Err(error) if looks_like_missing_program(&error) => return ProbeOutcome::NotFound,
         // A timeout or a post-spawn ownership failure is not a confirmed absence.
@@ -222,8 +230,9 @@ fn probe_exec(prog: &std::ffi::OsStr, args: &[&str], timeout: Duration) -> Probe
 /// Run `<prog> <args...>`, returning the FIRST non-empty banner line — the common
 /// "is it runnable + what version" probe. A thin `Option` view over `probe_exec`:
 /// any non-`Ran`(non-empty) outcome is `None`. Callers that must tell a TIMEOUT
-/// from a real absence (the essential-tool + matte-CUDA paths) read `probe_exec`
-/// directly. Bounded; never hangs. `prog` may be a full path or a bare name.
+/// from a real absence read `probe_exec` (or `probe_command` after configuring
+/// a native Python command) directly. Bounded; never hangs. `prog` may be a full
+/// path or a bare name.
 fn version_line(prog: &std::ffi::OsStr, args: &[&str], timeout: Duration) -> Option<String> {
     match probe_exec(prog, args, timeout) {
         ProbeOutcome::Ran(line) if !line.is_empty() => Some(line),
@@ -1918,105 +1927,6 @@ fn prepared_matte_card_failure(reason: &str) -> Card {
     }
 }
 
-/// PREMIUM background-removal capability: MatAnyone2 (`edit.matte{model:"matanyone"}`)
-/// — target-assigned matting (pick WHICH subject) with cleaner edges + temporal
-/// stability than RVM. Opt-in, NVIDIA-realistic, NON-COMMERCIAL (NTU S-Lab License
-/// 1.0). Its OWN isolated torch venv + a 135 MB checkpoint, installed by
-/// `system.setup_matte{model:"matanyone", accept_noncommercial:true}`. OPTIONAL —
-/// the default RVM tier + core editing work without it.
-fn matte_premium_card() -> Card {
-    let rt = crate::matte::runtime_matanyone();
-    let installed = rt.is_some();
-    // Report the RESOLVED checkpoint when the runtime is present (honours the env
-    // override + the browse setting), else the default fetch target.
-    let model = rt
-        .as_ref()
-        .map(|r| r.model.clone())
-        .or_else(crate::matte::read_matanyone_model_setting)
-        .or_else(crate::matte::matanyone_default_model);
-    let model_present = model.as_ref().map(|p| p.exists()).unwrap_or(false);
-    // CUDA probe only when installed (a bounded torch import — premium users only,
-    // so the cost is never paid on a default install). We read the FULL probe
-    // outcome (not version_line's Option) so a TIMED-OUT probe is distinguishable
-    // from a confirmed CPU-only box: `Ran` ⇒ Some(has-cuda), but a `Timeout`/
-    // `NotFound` ⇒ None (unverified). A timed-out CUDA probe must not read as
-    // Ok — a CPU-only box would then advertise premium matte as ready and run
-    // unusably slow.
-    let cuda_avail: Option<bool> = rt
-        .as_ref()
-        .map(|r| {
-            probe_exec(
-                r.python.as_os_str(),
-                &[
-                    "-c",
-                    "import torch; print('cuda', torch.cuda.is_available())",
-                ],
-                Duration::from_secs(25),
-            )
-        })
-        .and_then(|o| match o {
-            ProbeOutcome::Ran(s) => Some(s.contains("True")),
-            ProbeOutcome::Timeout | ProbeOutcome::NotFound => None,
-        });
-    let (status, hint) = if !installed {
-        (
-            CardStatus::Missing,
-            Some(
-                "Premium background removal (MatAnyone2 — cleaner edges, pick which subject) is not \
-                 installed. Run system.setup_matte{model:\"matanyone\", accept_noncommercial:true} — it's \
-                 NVIDIA-realistic and NON-COMMERCIAL (NTU S-Lab License 1.0). Optional: the default RVM \
-                 tier works without it."
-                    .to_string(),
-            ),
-        )
-    } else if cuda_avail == Some(false) {
-        (
-            CardStatus::Degraded,
-            Some(
-                "MatAnyone2 is installed but torch reports no CUDA device — it would run on CPU, which is \
-                 unusably slow for video. Use an NVIDIA GPU, or stick with the default RVM tier."
-                    .to_string(),
-            ),
-        )
-    } else if cuda_avail.is_none() {
-        // The torch CUDA probe TIMED OUT (or its interpreter wouldn't run) — we
-        // cannot confirm a usable GPU. Do not read that as Ok: a CPU-only box
-        // would then show premium as ready and run unusably slow. Honest middle
-        // state — couldn't verify; a re-scan re-probes.
-        (
-            CardStatus::Unknown,
-            Some(
-                "MatAnyone2 is installed, but the GPU check timed out, so its CUDA device couldn't be \
-                 confirmed this scan. It needs an NVIDIA GPU to run usably (CPU is far too slow for video). \
-                 Re-scan to verify; if the check keeps timing out, the torch import may be wedged."
-                    .to_string(),
-            ),
-        )
-    } else {
-        // cuda_avail == Some(true): a confirmed CUDA device.
-        (CardStatus::Ok, None)
-    };
-    Card {
-        id: "matte_premium".into(),
-        kind: "matte".into(),
-        status,
-        source: None,
-        version: None,
-        hint,
-        details: json!({
-            "model": "matanyone2",
-            "installed": installed,
-            "checkpoint_present": model_present,
-            "checkpoint_path": model.map(|p| p.display().to_string()),
-            // null when UNVERIFIED (the GPU probe timed out) — never a confident
-            // false that would read as "definitely CPU-only".
-            "cuda_available": cuda_avail,
-            "license": "NTU S-Lab License 1.0 (non-commercial)",
-            "unlocks": "premium target-assigned matte (edit.matte{model:matanyone}) — cleaner edges, pick the subject",
-        }),
-    }
-}
-
 pub fn scan(addr: Option<String>) -> DoctorReport {
     // Every group is observational and independent. Run them together so one
     // slow optional CLI/model never turns the total Doctor scan into the sum of
@@ -2110,7 +2020,6 @@ pub fn scan_minimal() -> DoctorReport {
 mod tests {
     use super::service_cards::service_card;
     use super::*;
-
     #[test]
     fn stt_preference_keeps_default_and_explicit_language() {
         let (model, is_default, language) = stt_preference(None, None);

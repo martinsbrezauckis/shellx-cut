@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+
 import { Icon } from '../../icons'
 import type {
   ApplyState,
@@ -7,6 +9,125 @@ import type {
   ShortsMaterialization,
   ShortsRequest,
 } from './assemblePlanModel'
+
+type AssembleNumberField = 'count' | 'target' | 'minscore'
+
+const assembleNumberFieldAttributes: Record<AssembleNumberField, Record<string, string>> = {
+  count: { 'data-cut-assemble-count': '' },
+  target: { 'data-cut-assemble-target': '' },
+  minscore: { 'data-cut-assemble-minscore': '' },
+}
+
+function clampAssembleNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+/**
+ * Accept browser-style decimal text without `type=number` sanitizing an edit
+ * such as `0.` before the next trusted key arrives.
+ */
+export function assembleNumericDraft(text: string, min: number, max: number, integer = false): number | null {
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)) return null
+  const value = Number(text)
+  return Number.isFinite(value) && (!integer || Number.isInteger(value)) ? clampAssembleNumber(value, min, max) : null
+}
+
+function AssembleNumberInput({
+  field,
+  value,
+  min,
+  max,
+  step = 1,
+  integer = false,
+  disabled,
+  onValueChange,
+}: {
+  field: AssembleNumberField
+  value: number
+  min: number
+  max: number
+  step?: number
+  integer?: boolean
+  disabled: boolean
+  onValueChange: (value: number) => void
+}) {
+  const [draft, setDraft] = useState(() => String(value))
+  const editing = useRef(false)
+  const previewValue = useRef<number | null>(null)
+  const hasValueEffect = useRef(false)
+
+  useEffect(() => {
+    const firstValueEffect = !hasValueEffect.current
+    hasValueEffect.current = true
+    // A valid keystroke can immediately update the controlled parent value.
+    // Keep its exact text while editing so the next trusted key replaces the
+    // selection instead of appending to a clamped value. The initial effect
+    // can follow browser focus, so it must not overwrite a just-started edit.
+    if (!firstValueEffect && (!editing.current || previewValue.current !== value)) setDraft(String(value))
+  }, [value])
+
+  const preview = (text: string) => {
+    setDraft(text)
+    const next = assembleNumericDraft(text, min, max, integer)
+    if (next === null) return
+    previewValue.current = next
+    onValueChange(next)
+  }
+
+  const commit = (text: string) => {
+    const next = assembleNumericDraft(text, min, max, integer)
+    previewValue.current = null
+    if (next === null) {
+      setDraft(String(value))
+      return
+    }
+    setDraft(String(next))
+    onValueChange(next)
+  }
+
+  const stepValue = (direction: 1 | -1) => {
+    const current = assembleNumericDraft(draft, min, max, integer) ?? value
+    const decimals = step < 1 ? Math.max(0, -Math.floor(Math.log10(step))) : 0
+    const next = clampAssembleNumber(Number((current + direction * step).toFixed(decimals)), min, max)
+    previewValue.current = next
+    setDraft(String(next))
+    onValueChange(next)
+  }
+
+  return <input
+    className="cd-input cd-input--num"
+    type="text"
+    inputMode={step < 1 ? 'decimal' : 'numeric'}
+    role="spinbutton"
+    min={min}
+    max={max}
+    step={step}
+    {...assembleNumberFieldAttributes[field]}
+    value={draft}
+    disabled={disabled}
+    aria-valuemin={min}
+    aria-valuemax={max}
+    aria-valuenow={value}
+    aria-valuetext={draft}
+    onFocus={() => {
+      editing.current = true
+      previewValue.current = null
+    }}
+    onChange={(event) => preview(event.target.value)}
+    onBlur={(event) => {
+      editing.current = false
+      commit(event.target.value)
+    }}
+    onKeyDown={(event) => {
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        event.preventDefault()
+        stepValue(event.key === 'ArrowUp' ? 1 : -1)
+        return
+      }
+      if (event.key === 'Enter') event.currentTarget.blur()
+    }}
+  />
+}
 
 function ApplyPlanControl({
   mode,
@@ -72,23 +193,19 @@ export interface AssemblePlanControlsProps {
 
 /** Planner inputs and explicit Apply controls stay outside the drawer shell. */
 export function AssemblePlanControls(props: AssemblePlanControlsProps) {
-  const resetCount = (value: number) => props.onCount(Math.max(1, Math.min(50, value || 5)))
-  const resetTarget = (value: number) => props.onTargetS(Math.max(3, Math.min(600, value || 30)))
   if (props.mode === 'shorts') {
     const plan = props.shortsPlan
     return <>
       <div className="cd-row">
         <label className="cd-field cd-field--inline">
           <span className="cd-field-label">How many</span>
-          <input className="cd-input cd-input--num" type="number" min={1} max={50}
-            data-cut-assemble-count value={props.count} disabled={props.busy}
-            onChange={(e) => resetCount(Number(e.target.value))} />
+          <AssembleNumberInput field="count" value={props.count} min={1} max={50} integer
+            disabled={props.busy} onValueChange={props.onCount} />
         </label>
         <label className="cd-field cd-field--inline">
           <span className="cd-field-label">Length (s)</span>
-          <input className="cd-input cd-input--num" type="number" min={3} max={600}
-            data-cut-assemble-target value={props.targetS} disabled={props.busy}
-            onChange={(e) => resetTarget(Number(e.target.value))} />
+          <AssembleNumberInput field="target" value={props.targetS} min={3} max={600}
+            disabled={props.busy} onValueChange={props.onTargetS} />
         </label>
         <label className="cd-field cd-field--inline">
           <span className="cd-field-label">Aspect</span>
@@ -116,11 +233,11 @@ export function AssemblePlanControls(props: AssemblePlanControlsProps) {
     return <>
       <div className="cd-row">
         <label className="cd-field cd-field--inline"><span className="cd-field-label">How many</span>
-          <input className="cd-input cd-input--num" type="number" min={1} max={50} data-cut-assemble-count value={props.count} disabled={props.busy}
-            onChange={(e) => resetCount(Number(e.target.value))} /></label>
+          <AssembleNumberInput field="count" value={props.count} min={1} max={50} integer
+            disabled={props.busy} onValueChange={props.onCount} /></label>
         <label className="cd-field cd-field--inline"><span className="cd-field-label">Target length (s)</span>
-          <input className="cd-input cd-input--num" type="number" min={3} max={600} data-cut-assemble-target value={props.targetS} disabled={props.busy}
-            onChange={(e) => resetTarget(Number(e.target.value))} /></label>
+          <AssembleNumberInput field="target" value={props.targetS} min={3} max={600}
+            disabled={props.busy} onValueChange={props.onTargetS} /></label>
       </div>
       <label className="cd-field"><span className="cd-field-label">Theme / keywords (optional)</span>
         <input className="cd-input" data-cut-assemble-prompt placeholder="e.g. product demo highlights" value={props.prompt} disabled={props.busy}
@@ -140,8 +257,8 @@ export function AssemblePlanControls(props: AssemblePlanControlsProps) {
         placeholder={'Welcome to the demo\nHere is the main feature\nAnd how to get started'} value={props.script}
         onChange={(e) => props.onScript(e.target.value)} /></label>
     <label className="cd-field cd-field--inline"><span className="cd-field-label">Min match (0–1)</span>
-      <input className="cd-input cd-input--num" type="number" min={0} max={1} step={0.05} data-cut-assemble-minscore value={props.minScore} disabled={props.busy}
-        onChange={(e) => props.onMinScore(Math.max(0, Math.min(1, Number(e.target.value) || 0.35)))} /></label>
+      <AssembleNumberInput field="minscore" value={props.minScore} min={0} max={1} step={0.05}
+        disabled={props.busy} onValueChange={props.onMinScore} /></label>
     <button className="cd-btn cd-btn--primary" data-cut-assemble-run disabled={props.busy || !props.effectiveAsset} onClick={props.onRunFromScript}>
       {props.busy ? 'Matching…' : <><Icon name="text" size={14} tone="brand" /> Match script to footage</>}
     </button>

@@ -331,6 +331,7 @@ fn tools_doctor(state: tauri::State<'_, ToolResolutionState>) -> serde_json::Val
             "source": if r.sidecar_ok { "bundled-or-appdata" } else { "missing" },
         },
         "nativeRuntime": r.native_runtime.to_json(),
+        "pinnedExecutableBundle": r.pinned_executable_bundle.to_json(),
         "hint": r.bootstrap_hint(),
     })
 }
@@ -504,6 +505,11 @@ fn spawn_engine(
             "engine unavailable: prepared native runtime rejected: {reason}"
         ));
     }
+    if let Some(reason) = tools.pinned_executable_bundle.error() {
+        return Err(format!(
+            "engine unavailable: pinned executable bundle rejected: {reason}"
+        ));
+    }
     let (addr, reuse) = pick_engine_addr()?;
     let url = format!("http://{addr}/");
     if reuse {
@@ -547,16 +553,10 @@ fn spawn_engine(
         bridge.apply_to_child(&mut cmd);
     }
 
-    // hand the engine the resolved tool locations. The engine's toolpath
-    // resolver reads these env vars at the top of its resolution order, so a
-    // bundled / app-data ffmpeg or sidecar wins over PATH. When tools were not
-    // found we set NOTHING — the engine then falls through to its own beside-
-    // exe / app-data / PATH rungs (identical logic), so behaviour is correct
-    // either way; setting them here is just the shell sharing what it already
-    // computed for the bootstrap state.
-    if let Some(ff) = &tools.ffmpeg_dir {
-        cmd.env(tools::ENV_FFMPEG_DIR, ff);
-    }
+    // Hand the engine the resolved tool locations. A Runner-pinned pair uses
+    // exact per-executable overrides; otherwise this retains the ordinary
+    // bundled/app-data directory hand-off and its established fallback ladder.
+    tools.apply_engine_tool_overrides(&mut cmd);
     if let Some(sc) = &tools.sidecar_dir {
         cmd.env(tools::ENV_SIDECAR_DIR, sc);
     }

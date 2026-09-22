@@ -379,6 +379,10 @@ carries the per-track detail) and `op_ids` in the envelope.
 
 ## generate (native editable templates, prompt plans, and storyboards)
 
+For v0.6.114, Motion connection routes remain unqualified and outside release
+testing; only read-only Motion discovery is included. The existing bridge verbs
+below describe source behavior, not a completed or release-qualified connection.
+
 | Verb | Args | Returns | Ops |
 |---|---|---|---|
 | `generate.list` | `{kind?: all\|title\|caption\|shape\|motion\|social\|batch, source?: all\|builtin\|project\|user, query?}` | `{templates:[{id,title,kind,source,summary,params,capabilities,available}]}` — list the built-in native Generate catalog. Pure read, no project needed. `available:false` marks motion-kind templates on a machine WITHOUT the separate ShellX Motion CLI (probed per call) — the prompt/storyboard planner never picks those; choosing one manually still fails honestly at preview/insert. Promoted rich Motion ids include `builtin.motion.cinematic-fog-title`, `.editorial-liquid-surface`, `.keyed-subject-promo`, and `.tracked-callout-overlay`; their bounded decimal controls carry `minimum`/`maximum`/`step`. This is not `assets.generate`; it returns editable/rendered timeline template definitions. | no |

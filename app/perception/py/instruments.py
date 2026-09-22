@@ -293,6 +293,62 @@ STT_TAIL_CAP_MS = 400
 STT_GAP_SPLIT_MS = 600
 _MMS_FA_CACHE = None
 
+# Only punctuation that expresses sentence structure or quotation is treated as
+# non-spoken when it arrives as its OWN BPE token. This deliberately is not a
+# Unicode-category test: `%`, `+`, `-`, currency marks, mathematical operators,
+# brackets, and mixed text such as `3.14` can carry spoken meaning or hide an
+# inseparable lexical fragment, so they continue to anchor a word span.
+_NON_SPOKEN_SENTENCE_OR_QUOTE_CHARS = frozenset(
+    ".,!?:;…。，、！？：；\"'“”‘’«»‹›「」『』《》"
+)
+_DIRECTIONAL_OPENING_QUOTES = frozenset("“‘«‹「『《")
+_AMBIGUOUS_QUOTES = frozenset("\"'")
+
+
+def _is_digit_token(token: str, *, leading: bool = False) -> bool:
+    """Whether a BPE token begins or ends with a Unicode decimal digit."""
+    text = (token or "").strip()
+    if not text:
+        return False
+    return text[0 if leading else -1].isdecimal()
+
+
+def _is_nonspoken_sentence_or_quote_token(
+    token: str,
+    previous_token: str | None = None,
+    next_token: str | None = None,
+) -> bool:
+    """Return true only for standalone sentence/quote punctuation.
+
+    A decimal separator between adjacent digit tokens is retained as an acoustic
+    token. Mixed BPE pieces (for example ``"friend."``) also stay acoustic: we
+    cannot recover an independent lexical timestamp from one emitted token, so
+    retaining its timestamp is the conservative choice.
+    """
+    text = (token or "").strip()
+    if not text or any(ch not in _NON_SPOKEN_SENTENCE_OR_QUOTE_CHARS for ch in text):
+        return False
+    if text in {".", ","} and _is_digit_token(previous_token or "") and _is_digit_token(
+        next_token or "", leading=True
+    ):
+        return False
+    return True
+
+
+def _is_leading_quote_token(text: str, token: str, big_gap: bool, has_words: bool) -> bool:
+    """Choose quote attachment without discarding either quote direction.
+
+    Directional opening quotes always prefix the next lexical token at a word
+    boundary. Straight quotes and apostrophes are ambiguous: they prefix only
+    when they begin a new word; otherwise they remain attached to the current
+    lexical word (which handles contractions and trailing quotes).
+    """
+    stripped = (text or "").strip()
+    starts_word = not has_words or (token or "").startswith(" ") or big_gap
+    if stripped and all(ch in _DIRECTIONAL_OPENING_QUOTES for ch in stripped):
+        return starts_word
+    return bool(stripped) and all(ch in _AMBIGUOUS_QUOTES for ch in stripped) and starts_word
+
 
 def _emit_progress(frac: float, label: str) -> None:
     """Machine-parseable progress line for the Rust sidecar streamer.
@@ -324,25 +380,82 @@ def _aggregate_parakeet_words(tokens: list, timestamps: list,
             f"STT model returned {len(tokens)} text tokens but NO timestamps — "
             "needs a timestamped model (Parakeet/whisperX) or forced alignment; "
             "refusing to emit an empty transcript")
-    # Pass 1 — group tokens into words, tracking each word's first + last token
-    # start (absolute ms).
-    groups = []  # {"text": str, "start_ms": int, "last_start_ms": int}
+    # Pass 1 — group tokens into display words. `last_acoustic_start_ms` tracks
+    # the final lexical (or inseparable mixed) token only; standalone sentence
+    # punctuation and quotes preserve text but must not stretch a spoken word.
+    # A punctuation-only orphan remains a positive span so transcript text is
+    # never silently dropped, but it never extends a neighboring lexical word.
+    groups = []  # {"text": str, "start_ms": int, "last_acoustic_start_ms": int}
+    pending_prefix = []  # [(raw_text, start_ms)] for leading quotes/punctuation
     prev_ts = None
-    for tok, ts in zip(tokens, timestamps):
+    force_next_word = False
+    paired = list(zip(tokens, timestamps))
+    for token_index, (tok, ts) in enumerate(paired):
+        previous_token = paired[token_index - 1][0] if token_index else None
+        next_token = paired[token_index + 1][0] if token_index + 1 < len(paired) else None
+        tok = str(tok)
         start_ms = int(ts * 1000) + offset_ms
         big_gap = prev_ts is not None and (ts - prev_ts) * 1000 > STT_GAP_SPLIT_MS
-        if tok.startswith(" ") or big_gap or not groups:
-            groups.append({"text": tok, "start_ms": start_ms, "last_start_ms": start_ms})
+        text = tok.strip()
+        if _is_nonspoken_sentence_or_quote_token(tok, previous_token, next_token):
+            # Leading quotes (and leading/orphan sentence punctuation) prefix
+            # the next lexical group. Trailing sentence punctuation and closing
+            # quotes attach to the preceding group, including after a decoder
+            # gap, without changing its acoustic end anchor.
+            if pending_prefix:
+                # A leading quote has already consumed the word boundary. Keep
+                # every following punctuation token in source order until the
+                # lexical token it prefixes arrives; do not attach a closing
+                # quote or an ellipsis back to the prior word.
+                pending_prefix.append((tok, start_ms))
+            elif _is_leading_quote_token(text, tok, big_gap, bool(groups)) or not groups:
+                pending_prefix.append((tok, start_ms))
+                if groups:
+                    # The next lexical token may not itself carry a leading
+                    # space because this quote consumed the BPE word boundary.
+                    force_next_word = True
+            else:
+                groups[-1]["text"] += tok
+                if big_gap:
+                    # The punctuation belongs textually to the prior word, but
+                    # the following lexical token still begins a fresh word.
+                    force_next_word = True
+            prev_ts = ts
+            continue
+
+        prefix = "".join(p[0] for p in pending_prefix)
+        pending_prefix.clear()
+        if tok.startswith(" ") or big_gap or force_next_word or not groups:
+            groups.append({
+                "text": prefix + tok,
+                "start_ms": start_ms,
+                "last_acoustic_start_ms": start_ms,
+            })
         else:
-            groups[-1]["text"] += tok
-            groups[-1]["last_start_ms"] = start_ms
+            groups[-1]["text"] += prefix + tok
+            groups[-1]["last_acoustic_start_ms"] = start_ms
+        force_next_word = False
         prev_ts = ts
+    if pending_prefix:
+        pending_text = "".join(p[0] for p in pending_prefix)
+        if groups:
+            # No following lexical token arrived, so preserve the orphan text
+            # with the preceding word without inventing a later acoustic end.
+            groups[-1]["text"] += pending_text
+        else:
+            # A transcript made only of punctuation still retains its text and
+            # positive span. It cannot contaminate any lexical word's endpoint.
+            groups.append({
+                "text": pending_text,
+                "start_ms": pending_prefix[0][1],
+                "last_acoustic_start_ms": pending_prefix[0][1],
+            })
     # Pass 2 — compute each word's end from the (capped) tail to the next word.
     out = []
     for i, g in enumerate(groups):
         next_start = groups[i + 1]["start_ms"] if i + 1 < len(groups) else audio_end_ms
-        tail = min(max(next_start - g["last_start_ms"], 0), STT_TAIL_CAP_MS)
-        end_ms = g["last_start_ms"] + tail
+        tail = min(max(next_start - g["last_acoustic_start_ms"], 0), STT_TAIL_CAP_MS)
+        end_ms = g["last_acoustic_start_ms"] + tail
         text = g["text"].strip()
         if not text:
             continue

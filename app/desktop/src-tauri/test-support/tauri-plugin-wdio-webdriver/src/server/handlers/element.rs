@@ -152,7 +152,8 @@ async fn click_sequence<R: Runtime + 'static>(
     {
         return Err(WebDriverErrorResponse::unsupported_operation(
             "release prior held input before another click",
-        ));
+        )
+        .with_data(session.action_state.input_state_diagnostic()));
     }
 
     let element = session

@@ -21,7 +21,15 @@
 //   resolution fixed now + guided env fetch later).
 // ─────────────────────────────────────────────────────────────────────────────
 
-use cut_native_runtime_context::{RuntimeContext, CONTEXT_ENV};
+mod pinned_executable_bundle;
+
+use cut_native_runtime_context::{
+    context_schema_from_env, RuntimeContext, RuntimeContextSet, CONTEXT_CONTRACT, CONTEXT_ENV,
+    PINNED_EXECUTABLE_BUNDLE_CONTEXT_CONTRACT, SET_CONTEXT_CONTRACT,
+};
+use pinned_executable_bundle::{
+    resolve as pinned_executable_bundle_resolution, PinnedExecutableBundleResolution,
+};
 use std::path::{Path, PathBuf};
 
 /// Env var the engine's ffmpeg/ffprobe resolver reads (cut-media toolpath).
@@ -31,12 +39,20 @@ pub const ENV_FFMPEG_DIR: &str = "SHELLX_CUT_FFMPEG_DIR";
 /// highest-precedence rung (cut-media toolpath ENV_FFMPEG). The shell only
 /// VALIDATES it for honest reporting; the spawned engine reads it itself.
 pub const ENV_FFMPEG_EXE: &str = "SHELLX_CUT_FFMPEG";
+/// Env var: explicit full path to the ffprobe executable. A Runner-pinned
+/// bundle always supplies this independently of ffmpeg.
+pub const ENV_FFPROBE_EXE: &str = "SHELLX_CUT_FFPROBE";
 /// Env var the perception sidecar reads to locate instruments.py + the venv.
 pub const ENV_SIDECAR_DIR: &str = "SHELLX_CUT_SIDECAR_DIR";
 /// Env var that turns on the engine's auto-selection of the best HARDWARE-capable
 /// installed ffmpeg (so GPU "just works" — no user step). The desktop shell always
 /// enables it; a user's explicit `SHELLX_CUT_FFMPEG` override still wins.
 pub const ENV_FFMPEG_AUTO: &str = "SHELLX_CUT_FFMPEG_AUTO";
+
+// The focused resolver tests update the shared Runner locator. Keep every
+// module's environment mutation serial so parallel tests cannot cross-read it.
+#[cfg(test)]
+static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The desktop's independent observation of the Runner-provided runtime.
 /// The shell retains it with its normal tool resolution so it can refuse a
@@ -85,7 +101,67 @@ impl NativeRuntimeResolution {
     }
 }
 
-fn native_runtime_resolution() -> NativeRuntimeResolution {
+const PYTHON_RUNTIME_MEMBER_ID: &str = "python";
+
+fn runtime_context_set_from_env(
+    context_schema: &Result<Option<String>, String>,
+) -> Option<Result<Option<RuntimeContextSet>, String>> {
+    matches!(context_schema, Ok(Some(schema)) if schema == SET_CONTEXT_CONTRACT)
+        .then(RuntimeContextSet::from_env)
+}
+
+fn native_runtime_resolution(
+    context_schema: &Result<Option<String>, String>,
+    context_set: Option<&Result<Option<RuntimeContextSet>, String>>,
+) -> NativeRuntimeResolution {
+    match context_schema {
+        Ok(None) => return NativeRuntimeResolution::Absent,
+        Ok(Some(schema)) if schema == PINNED_EXECUTABLE_BUNDLE_CONTEXT_CONTRACT => {
+            return NativeRuntimeResolution::Absent
+        }
+        Ok(Some(schema)) if schema == SET_CONTEXT_CONTRACT => {
+            return match context_set {
+                Some(Ok(Some(set))) => match set.python_context(PYTHON_RUNTIME_MEMBER_ID) {
+                    Ok(context) => match context
+                        .verify_interpreter()
+                        .and_then(|()| context.verify_imports())
+                    {
+                        Ok(()) => match set.locator() {
+                            Some(locator) => NativeRuntimeResolution::Accepted {
+                                locator: locator.to_path_buf(),
+                                interpreter: context.interpreter.path.clone(),
+                            },
+                            None => NativeRuntimeResolution::Rejected {
+                                reason: "native runtime context locator disappeared during set resolution"
+                                    .into(),
+                            },
+                        },
+                        Err(reason) => NativeRuntimeResolution::Rejected { reason },
+                    },
+                    Err(reason) => NativeRuntimeResolution::Rejected { reason },
+                },
+                Some(Ok(None)) => NativeRuntimeResolution::Absent,
+                Some(Err(reason)) => NativeRuntimeResolution::Rejected {
+                    reason: reason.clone(),
+                },
+                None => NativeRuntimeResolution::Rejected {
+                    reason: "native runtime context set was not loaded".into(),
+                },
+            };
+        }
+        Ok(Some(schema)) if schema != CONTEXT_CONTRACT => {
+            return NativeRuntimeResolution::Rejected {
+                reason: "Runner native runtime context schema is not supported by ShellX Cut"
+                    .into(),
+            };
+        }
+        Err(reason) => {
+            return NativeRuntimeResolution::Rejected {
+                reason: reason.clone(),
+            }
+        }
+        Ok(Some(_)) => {}
+    }
     let locator = std::env::var_os(CONTEXT_ENV).map(PathBuf::from);
     match RuntimeContext::from_env() {
         Ok(None) => NativeRuntimeResolution::Absent,
@@ -93,9 +169,14 @@ fn native_runtime_resolution() -> NativeRuntimeResolution {
             .verify_interpreter()
             .and_then(|()| context.verify_imports())
         {
-            Ok(()) => NativeRuntimeResolution::Accepted {
-                locator: locator.expect("context locator exists when context was loaded"),
-                interpreter: context.interpreter.path,
+            Ok(()) => match locator {
+                Some(locator) => NativeRuntimeResolution::Accepted {
+                    locator,
+                    interpreter: context.interpreter.path,
+                },
+                None => NativeRuntimeResolution::Rejected {
+                    reason: "native runtime context locator disappeared during resolution".into(),
+                },
             },
             Err(reason) => NativeRuntimeResolution::Rejected { reason },
         },
@@ -322,8 +403,9 @@ pub struct ToolResolution {
     /// states the truth about what the engine will actually resolve.
     pub ffmpeg_ok: bool,
     /// Which ladder rung satisfied ffmpeg detection:
-    /// "env" | "manual-override" | "bundled-or-appdata" | "system-dir" |
-    /// "path" | "missing". Reported in logs + tools-doctor so a QA log line
+    /// "runner-pinned-bundle" | "env" | "manual-override" |
+    /// "bundled-or-appdata" | "system-dir" | "path" | "missing". Reported
+    /// in logs + tools-doctor so a QA log line
     /// like ffmpeg_ok=true is auditable to its source.
     pub ffmpeg_source: &'static str,
     /// Directory holding the perception sidecar payload (instruments.py + venv).
@@ -332,6 +414,9 @@ pub struct ToolResolution {
     pub sidecar_ok: bool,
     /// Typed native runtime state independently resolved by the desktop.
     pub native_runtime: NativeRuntimeResolution,
+    /// Typed Runner-pinned ffmpeg+ffprobe observation. When a context is
+    /// present it is a hard launch gate; ordinary discovery is not a fallback.
+    pub pinned_executable_bundle: PinnedExecutableBundleResolution,
 }
 
 impl ToolResolution {
@@ -347,6 +432,17 @@ impl ToolResolution {
     /// executables live under `Contents/MacOS`; checking only `exe_dir` makes the
     /// packaged `perception/` payload invisible on fresh installs.
     pub fn detect_with_resources(exe_dir: &Path, resource_dir: &Path) -> Self {
+        // One fixed Runner locator can carry either the historical Python v1
+        // context or the selected generic executable bundle. Discriminate the
+        // bounded envelope before invoking a typed parser so either supported
+        // schema does not make the other consumer reject it.
+        let context_schema = context_schema_from_env();
+        // Set members are selected from one typed read so the Python and media
+        // consumers observe the same sealed envelope for this desktop launch.
+        let context_set = runtime_context_set_from_env(&context_schema);
+        let native_runtime = native_runtime_resolution(&context_schema, context_set.as_ref());
+        let pinned_executable_bundle =
+            pinned_executable_bundle_resolution(&context_schema, context_set.as_ref());
         // ── ffmpeg — MIRRORS the engine ladder (cut-media::toolpath), same
         // precedence, so ffmpeg_ok never contradicts what the engine resolves:
         //   1a. SHELLX_CUT_FFMPEG (full path)  1b. SHELLX_CUT_FFMPEG_DIR
@@ -356,44 +452,54 @@ impl ToolResolution {
         //   4. PATH
         // The env/manual rungs are validated but NOT re-exported as
         // ffmpeg_dir: the engine reads those sources itself.
-        let env_exe_ok = std::env::var_os(ENV_FFMPEG_EXE)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .is_some_and(|p| p.is_file());
-        let env_dir_hit = std::env::var_os(ENV_FFMPEG_DIR)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .and_then(|d| find_tool_dir("ffmpeg", std::slice::from_ref(&d)));
-
-        let mut ff_dirs = vec![exe_dir.join("ffmpeg")];
-        if resource_dir != exe_dir {
-            ff_dirs.push(resource_dir.join("ffmpeg"));
-        }
-        if let Some(t) = appdata_tools_dir() {
-            ff_dirs.push(t.join("ffmpeg"));
-        }
-        let bundled_hit = find_tool_dir("ffmpeg", &ff_dirs);
-
-        #[cfg(target_os = "macos")]
-        let system_hit = find_tool_dir("ffmpeg", &macos_system_tool_dirs());
-        #[cfg(not(target_os = "macos"))]
-        let system_hit: Option<PathBuf> = None;
-
         let (ffmpeg_ok, ffmpeg_dir, ffmpeg_source): (bool, Option<PathBuf>, &'static str) =
-            if env_exe_ok {
-                (true, None, "env")
-            } else if let Some(d) = env_dir_hit {
-                (true, Some(d), "env")
-            } else if manual_override_ffmpeg().is_some() {
-                (true, None, "manual-override")
-            } else if let Some(d) = bundled_hit {
-                (true, Some(d), "bundled-or-appdata")
-            } else if let Some(d) = system_hit {
-                (true, Some(d), "system-dir")
-            } else if runnable_on_path("ffmpeg", "-version") {
-                (true, None, "path")
-            } else {
-                (false, None, "missing")
+            match &pinned_executable_bundle {
+                PinnedExecutableBundleResolution::Accepted { .. } => {
+                    (true, None, "runner-pinned-bundle")
+                }
+                // A supplied bundle is an explicit product runtime input. Do
+                // not inspect env/app-data/PATH if it fails validation.
+                PinnedExecutableBundleResolution::Rejected { .. } => (false, None, "missing"),
+                PinnedExecutableBundleResolution::Absent => {
+                    let env_exe_ok = std::env::var_os(ENV_FFMPEG_EXE)
+                        .filter(|v| !v.is_empty())
+                        .map(PathBuf::from)
+                        .is_some_and(|p| p.is_file());
+                    let env_dir_hit = std::env::var_os(ENV_FFMPEG_DIR)
+                        .filter(|v| !v.is_empty())
+                        .map(PathBuf::from)
+                        .and_then(|d| find_tool_dir("ffmpeg", std::slice::from_ref(&d)));
+
+                    let mut ff_dirs = vec![exe_dir.join("ffmpeg")];
+                    if resource_dir != exe_dir {
+                        ff_dirs.push(resource_dir.join("ffmpeg"));
+                    }
+                    if let Some(t) = appdata_tools_dir() {
+                        ff_dirs.push(t.join("ffmpeg"));
+                    }
+                    let bundled_hit = find_tool_dir("ffmpeg", &ff_dirs);
+
+                    #[cfg(target_os = "macos")]
+                    let system_hit = find_tool_dir("ffmpeg", &macos_system_tool_dirs());
+                    #[cfg(not(target_os = "macos"))]
+                    let system_hit: Option<PathBuf> = None;
+
+                    if env_exe_ok {
+                        (true, None, "env")
+                    } else if let Some(d) = env_dir_hit {
+                        (true, Some(d), "env")
+                    } else if manual_override_ffmpeg().is_some() {
+                        (true, None, "manual-override")
+                    } else if let Some(d) = bundled_hit {
+                        (true, Some(d), "bundled-or-appdata")
+                    } else if let Some(d) = system_hit {
+                        (true, Some(d), "system-dir")
+                    } else if runnable_on_path("ffmpeg", "-version") {
+                        (true, None, "path")
+                    } else {
+                        (false, None, "missing")
+                    }
+                }
             };
 
         // ── sidecar: beside-exe `perception/` → app-data perception/ ─────────
@@ -424,7 +530,6 @@ impl ToolResolution {
                 )
             })
             .cloned();
-        let native_runtime = native_runtime_resolution();
         let sidecar_dir =
             selected_sidecar_dir(&native_runtime, bundled_sidecar_dir, legacy_sidecar_dir);
         let sidecar_ok = match &native_runtime {
@@ -441,6 +546,7 @@ impl ToolResolution {
             sidecar_dir,
             sidecar_ok,
             native_runtime,
+            pinned_executable_bundle,
         }
     }
 
@@ -463,6 +569,7 @@ impl ToolResolution {
                 "source": if self.sidecar_ok { "bundled-or-appdata" } else { "missing" },
             },
             "nativeRuntime": self.native_runtime.to_json(),
+            "pinnedExecutableBundle": self.pinned_executable_bundle.to_json(),
             "hint": self.bootstrap_hint(),
         })
     }
@@ -486,7 +593,12 @@ impl ToolResolution {
     /// guessing (NO silent failures).
     pub fn bootstrap_hint(&self) -> String {
         let mut lines = Vec::new();
-        if !self.ffmpeg_ok {
+        if !self.ffmpeg_ok
+            && matches!(
+                &self.pinned_executable_bundle,
+                PinnedExecutableBundleResolution::Absent
+            )
+        {
             // Platform-specific fix: the resolver looks beside the exe, then in
             // the app-data tools/ffmpeg dir, then PATH (tools.rs::detect). Only
             // Windows and Linux have an in-app auto-fetcher (fetch.rs BtbN
@@ -507,7 +619,31 @@ impl ToolResolution {
         if let Some(reason) = self.native_runtime.error() {
             lines.push(format!("Prepared native runtime rejected: {reason}"));
         }
+        if let Some(reason) = self.pinned_executable_bundle.error() {
+            lines.push(format!("Pinned executable bundle rejected: {reason}"));
+        }
         lines.join("\n\n")
+    }
+
+    /// Apply only pre-verified Runner bundle paths to a spawned engine. In the
+    /// normal no-bundle case this preserves the existing directory hand-off and
+    /// all ordinary end-user resolution/download behavior.
+    pub fn apply_engine_tool_overrides(&self, command: &mut std::process::Command) {
+        match &self.pinned_executable_bundle {
+            PinnedExecutableBundleResolution::Accepted {
+                ffmpeg, ffprobe, ..
+            } => {
+                command.env(ENV_FFMPEG_EXE, ffmpeg);
+                command.env(ENV_FFPROBE_EXE, ffprobe);
+                command.env_remove(ENV_FFMPEG_DIR);
+            }
+            PinnedExecutableBundleResolution::Absent
+            | PinnedExecutableBundleResolution::Rejected { .. } => {
+                if let Some(ffmpeg_dir) = &self.ffmpeg_dir {
+                    command.env(ENV_FFMPEG_DIR, ffmpeg_dir);
+                }
+            }
+        }
     }
 }
 
@@ -516,15 +652,13 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn sha256(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
     }
 
     #[test]
     fn native_runtime_resolution_accepts_pins_and_rejects_a_present_bad_locator() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let _restore = EnvRestore::capture(&[CONTEXT_ENV]);
         let temp = std::env::temp_dir().join(format!(
             "scut-native-runtime-resolution-{}",
@@ -559,21 +693,28 @@ mod tests {
         let locator = temp.join("native-runtime-context.json");
 
         std::env::remove_var(CONTEXT_ENV);
+        let context_schema = context_schema_from_env();
         assert!(matches!(
-            native_runtime_resolution(),
+            native_runtime_resolution(&context_schema, None),
             NativeRuntimeResolution::Absent
         ));
 
         std::fs::write(&locator, serde_json::to_vec(&context).unwrap()).unwrap();
         std::env::set_var(CONTEXT_ENV, &locator);
+        let context_schema = context_schema_from_env();
         assert!(matches!(
-            native_runtime_resolution(),
+            native_runtime_resolution(&context_schema, None),
             NativeRuntimeResolution::Accepted { .. }
+        ));
+        assert!(matches!(
+            pinned_executable_bundle_resolution(&context_schema, None),
+            PinnedExecutableBundleResolution::Absent
         ));
 
         std::fs::write(&locator, b"not json").unwrap();
+        let context_schema = context_schema_from_env();
         assert!(matches!(
-            native_runtime_resolution(),
+            native_runtime_resolution(&context_schema, None),
             NativeRuntimeResolution::Rejected { .. }
         ));
         let _ = std::fs::remove_dir_all(temp);
@@ -607,7 +748,7 @@ mod tests {
 
     #[test]
     fn detect_in_empty_dir_reports_no_bundled_ffmpeg() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         // A temp dir with nothing in it: ffmpeg_dir must be None (no beside-exe
         // ffmpeg); ffmpeg_ok then reflects whatever PATH has on the build box.
         let tmp = std::env::temp_dir().join(format!("scut-tools-test-{}", std::process::id()));
@@ -655,7 +796,9 @@ mod tests {
 
     const LADDER_ENV_KEYS: &[&str] = &[
         ENV_FFMPEG_EXE,
+        ENV_FFPROBE_EXE,
         ENV_FFMPEG_DIR,
+        CONTEXT_ENV,
         "SHELLX_CUT_HOME",
         "XDG_DATA_HOME",
         "HOME",
@@ -667,7 +810,7 @@ mod tests {
     /// env rung, which detection previously ignored entirely.
     #[test]
     fn detect_env_dir_override_reports_env_source() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
         let tmp = std::env::temp_dir().join(format!("scut-envdir-test-{}", std::process::id()));
         let ffdir = tmp.join("ff");
@@ -693,7 +836,7 @@ mod tests {
     /// contradicts actual product behavior.
     #[test]
     fn detect_manual_override_file_reports_manual_source() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
         let tmp = std::env::temp_dir().join(format!("scut-override-test-{}", std::process::id()));
         let home = tmp.join("cut-home");
@@ -725,6 +868,87 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejected_pinned_bundle_blocks_ambient_ffmpeg_discovery() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture(LADDER_ENV_KEYS);
+        let temp = std::env::temp_dir().join(format!(
+            "scut-rejected-pinned-tool-bundle-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let root = std::fs::canonicalize(&temp).unwrap();
+        let locator = temp.join("native-runtime-context.json");
+        let context = serde_json::json!({
+            "schema": PINNED_EXECUTABLE_BUNDLE_CONTEXT_CONTRACT,
+            "root": root,
+            "manifestSha256": "a".repeat(64),
+            "receiptSha256": "b".repeat(64),
+            "platform": std::env::consts::OS,
+            "architecture": std::env::consts::ARCH,
+            "executables": [],
+            "files": 0,
+            "totalBytes": 0,
+        });
+        std::fs::write(&locator, serde_json::to_vec(&context).unwrap()).unwrap();
+        let ambient = temp.join("ambient-ffmpeg");
+        std::fs::write(&ambient, b"ambient").unwrap();
+        std::env::set_var(CONTEXT_ENV, &locator);
+        std::env::set_var(ENV_FFMPEG_EXE, ambient);
+
+        let resolution = ToolResolution::detect(&temp.join("empty"));
+        assert!(
+            !resolution.ffmpeg_ok,
+            "a rejected pinned bundle must not use ambient ffmpeg"
+        );
+        assert_eq!(resolution.ffmpeg_source, "missing");
+        assert!(matches!(
+            resolution.pinned_executable_bundle,
+            PinnedExecutableBundleResolution::Rejected { .. }
+        ));
+
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn pinned_bundle_exports_exact_pair_and_removes_directory_override() {
+        let resolution = ToolResolution {
+            ffmpeg_dir: Some(PathBuf::from("/ordinary/ffmpeg")),
+            ffmpeg_ok: true,
+            ffmpeg_source: "runner-pinned-bundle",
+            sidecar_dir: None,
+            sidecar_ok: false,
+            native_runtime: NativeRuntimeResolution::Absent,
+            pinned_executable_bundle: PinnedExecutableBundleResolution::Accepted {
+                locator: PathBuf::from("/runner/context.json"),
+                ffmpeg: PathBuf::from("/runner/tree/bin/ffmpeg"),
+                ffprobe: PathBuf::from("/runner/tree/bin/ffprobe"),
+            },
+        };
+        let mut command = std::process::Command::new("cutd");
+        command.env(ENV_FFMPEG_DIR, "/ambient/ffmpeg");
+        resolution.apply_engine_tool_overrides(&mut command);
+        let envs: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            envs.get(ENV_FFMPEG_EXE),
+            Some(&Some("/runner/tree/bin/ffmpeg".into()))
+        );
+        assert_eq!(
+            envs.get(ENV_FFPROBE_EXE),
+            Some(&Some("/runner/tree/bin/ffprobe".into()))
+        );
+        assert_eq!(envs.get(ENV_FFMPEG_DIR), Some(&None));
     }
 
     /// The missing-ffmpeg hint must SAY what was searched (falsifiable report).
@@ -777,7 +1001,7 @@ mod tests {
 
     #[test]
     fn detect_does_not_report_venv_only_sidecar_ready() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!("scut-venv-only-test-{}", std::process::id()));
         let exe_dir = tmp.join("app");
         let appdata = tmp.join("data");

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::element::ElementStore;
@@ -45,6 +46,61 @@ impl ActionState {
     }
     pub fn has_held_input(&self) -> bool {
         !self.pressed_keys.is_empty() || self.pressed_buttons.values().any(|v| !v.is_empty())
+    }
+    /// Stable held-input details for a refused command. The only recovery remains
+    /// the existing explicit `DELETE /actions` release endpoint.
+    pub fn input_state_diagnostic(&self) -> Value {
+        let mut pressed_keys = self.pressed_keys.iter().cloned().collect::<Vec<_>>();
+        pressed_keys.sort();
+        let mut pressed_buttons = self
+            .pressed_buttons
+            .iter()
+            .filter_map(|(source, buttons)| {
+                if buttons.is_empty() {
+                    None
+                } else {
+                    let mut buttons = buttons.iter().copied().collect::<Vec<_>>();
+                    buttons.sort_unstable();
+                    Some((source.clone(), buttons))
+                }
+            })
+            .collect::<Vec<_>>();
+        pressed_buttons.sort_by(|left, right| left.0.cmp(&right.0));
+        let native_pointer_owner = self.native_pointer_owner.as_ref().map(|owner| {
+            let frames = owner
+                .frames
+                .iter()
+                .map(|frame| match frame {
+                    FrameId::Index(index) => json!({"kind": "index", "index": index}),
+                    FrameId::Element(element) => json!({"kind": "element", "element": element}),
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "window": owner.window.as_str(),
+                "frames": frames,
+                "position": [owner.position.0, owner.position.1],
+            })
+        });
+        let release_order = self
+            .release_order
+            .iter()
+            .map(|item| match item {
+                NativeRelease::Key(key) => json!({"kind": "key", "key": key}),
+                NativeRelease::Button(source, button) => {
+                    json!({"kind": "button", "source": source, "button": button})
+                }
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "schema": "tauri-plugin-wdio-webdriver.input-state/v1",
+            "pressed_keys": pressed_keys,
+            "pressed_buttons": pressed_buttons.into_iter().map(|(source, buttons)| {
+                json!({"source": source, "buttons": buttons})
+            }).collect::<Vec<_>>(),
+            "native_pointer_owner": native_pointer_owner,
+            "release_order": release_order,
+            "input_failed": self.input_failed,
+        })
     }
     pub fn modifiers(&self) -> ModifierState {
         let mut value = ModifierState::default();
@@ -331,6 +387,48 @@ mod native_owner_tests {
         state.released(&NativeRelease::Key("\u{E008}".into()));
         assert!(!state.has_held_input());
         assert!(state.native_pointer_owner.is_none());
+    }
+    #[test]
+    fn input_state_diagnostic_is_sorted_and_retains_owner_and_release_order() {
+        let mut state = ActionState::default();
+        state.input_failed = true;
+        state.native_pointer_owner = Some(NativePointerOwner {
+            window: "owned-window".into(),
+            frames: vec![FrameId::Index(2), FrameId::Element("frame-ref".into())],
+            position: (12, 34),
+        });
+        state.retain_key("z");
+        state.retain_key("a");
+        state.retain_button("second", 2);
+        state.retain_button("first", 1);
+        state.retain_button("first", 0);
+        assert_eq!(
+            state.input_state_diagnostic(),
+            json!({
+                "schema": "tauri-plugin-wdio-webdriver.input-state/v1",
+                "pressed_keys": ["a", "z"],
+                "pressed_buttons": [
+                    {"source": "first", "buttons": [0, 1]},
+                    {"source": "second", "buttons": [2]},
+                ],
+                "native_pointer_owner": {
+                    "window": "owned-window",
+                    "frames": [
+                        {"kind": "index", "index": 2},
+                        {"kind": "element", "element": "frame-ref"},
+                    ],
+                    "position": [12, 34],
+                },
+                "release_order": [
+                    {"kind": "key", "key": "z"},
+                    {"kind": "key", "key": "a"},
+                    {"kind": "button", "source": "second", "button": 2},
+                    {"kind": "button", "source": "first", "button": 1},
+                    {"kind": "button", "source": "first", "button": 0},
+                ],
+                "input_failed": true,
+            })
+        );
     }
     #[test]
     fn release_uses_original_owner_after_current_window_and_frame_change() {

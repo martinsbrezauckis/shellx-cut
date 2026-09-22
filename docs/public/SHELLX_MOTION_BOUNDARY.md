@@ -2,6 +2,12 @@
 
 Status: working integration contract.
 
+**v0.6.114 scope:** read-only Motion discovery is included. The existing
+connector, linked-render, tracking and external-editor code is not a completed
+or qualified connection for this release. Its connection testing is deferred;
+the implementation checkpoints below do not establish release acceptance.
+Managed integration remains planned for v0.6.115.
+
 Purpose: keep ShellX Cut aligned with ShellX Motion without duplicating a second
 motion renderer or standalone motion editor inside Cut.
 

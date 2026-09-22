@@ -94,7 +94,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   user's LOCAL CLI subscription agent (claude/codex/grok, `agent:"auto"` =
 >   first installed; no CLI → honest `not_run`) — an agent driving the verbs
 >   can either call them directly (the engine plans) or produce the plan/IR
->   itself per `craft/generate-storyboard-planning.md`. Motion-backed
+>   itself per `craft/generate-storyboard-planning.md`. For v0.6.114, Motion
+>   qualification is limited to read-only discovery. The existing connection
+>   routes below remain unqualified and are outside this release's testing;
+>   do not report them as a completed integration. Motion-backed
 >   templates lower through `motion.template_to_cut` or `motion.script_to_cut`,
 >   which call ShellX Motion and import rendered media when the user chooses
 >   Insert. Cut supplies a stable path-private workspace caller id on every

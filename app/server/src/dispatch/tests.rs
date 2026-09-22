@@ -47,6 +47,7 @@ fn test_actor() -> Actor {
 mod assemble_apply;
 mod assemble_broll_import_failure;
 mod assemble_broll_revision_transition;
+mod assemble_broll_search_transition;
 mod assemble_broll_transition;
 mod assets_fetch_transition;
 mod caption_bulk;
