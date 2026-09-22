@@ -20,7 +20,10 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
   const [capText, setCapText] = useState('')
   const [capPos, setCapPos] = useState<CaptionPosition>('bottom')
   const [capColor, setCapColor] = useState('#FFFFFF')
-  const [capSize, setCapSize] = useState(64)
+  // Keep the user's draft while typing. Clamping each intermediate digit turns
+  // a valid entry such as 105 into 200 before the final digit can arrive.
+  const [capSizeDraft, setCapSizeDraft] = useState('64')
+  const capSize = Math.max(12, Math.min(200, Number(capSizeDraft) || 64))
   const [capNote, setCapNote] = useState<string | null>(null)
   const [transTargetLang, setTransTargetLang] = useState('es')
   const [transBusy, setTransBusy] = useState<'' | 'captions' | 'transcript'>('')
@@ -230,8 +233,9 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
         </label>
         <label className="insp__inline" title="Caption text size (px at project height)">
           <input type="number" className="insp__num" data-cut-caption-size min={12} max={200} step={2}
-            value={capSize} disabled={!project}
-            onChange={(e) => setCapSize(Math.max(12, Math.min(200, Number(e.target.value) || 64)))} />
+            value={capSizeDraft} disabled={!project}
+            onChange={(e) => setCapSizeDraft(e.target.value)}
+            onBlur={() => setCapSizeDraft(String(capSize))} />
         </label>
         <button type="button" className="insp__btn" data-cut-caption-style
           disabled={!project}

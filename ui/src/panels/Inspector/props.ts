@@ -3,6 +3,8 @@ import type { DoctorReport } from '../../lib/doctor'
 
 export interface InspectorProps {
   project: Project | null
+  /** App-owned identity that changes before every confirmed project switch or close. */
+  projectSession: number
   /** Ephemeral project.state revision passed separately from durable Project. */
   projectRevision?: string | null
   /** The selected clip id (Timeline selection). */

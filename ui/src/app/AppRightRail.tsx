@@ -317,6 +317,7 @@ export default function AppRightRail({
                     {activeTab === 'properties' && (
                       <Inspector
                         project={project}
+                        projectSession={projectSession}
                         projectRevision={projectRevision}
                         selectedClipId={selectedClipId}
                         playheadMs={playheadMs}

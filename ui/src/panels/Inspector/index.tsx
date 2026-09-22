@@ -41,6 +41,7 @@ import {
 import { useInspectorAutoVideoControls } from './useInspectorAutoVideoControls'
 import { useInspectorClipActions } from './useInspectorClipActions'
 import { useInspectorColorControls } from './useInspectorColorControls'
+import { engagementScopeKey } from './engagementScope'
 import type { InspectorProps } from './props'
 export type { InspectorProps } from './props'
 import './inspector.css'
@@ -51,7 +52,7 @@ function openDrawer(name: string) {
   document.dispatchEvent(new CustomEvent('cut:open-drawer', { detail: name }))
 }
 
-export default function Inspector({ project, projectRevision, selectedClipId, playheadMs = 0, onSeek, doctor }: InspectorProps) {
+export default function Inspector({ project, projectSession, projectRevision, selectedClipId, playheadMs = 0, onSeek, doctor }: InspectorProps) {
   // Resolve the selected clip + its track kind from project state.
   const sel = useMemo(() => {
     if (!project || !selectedClipId) return null
@@ -283,9 +284,10 @@ export default function Inspector({ project, projectRevision, selectedClipId, pl
 
             {/* ENGAGEMENT (score.clip) — on-demand engagement readout for media
                 clips (video/audio carry the speech+energy+motion the score reads;
-                caption clips have no source media to score). Keyed by clip id so a
-                new selection remounts it and clears the stale score. */}
-            {mediaCapable && <EngagementSection key={sel.clip.id} clipId={sel.clip.id} />}
+                caption clips have no source media to score). Keyed by the App's
+                confirmed project session and clip id so deterministic ids in a new
+                project cannot retain a prior project's score. */}
+            {mediaCapable && <EngagementSection key={engagementScopeKey(projectSession, sel.clip.id)} clipId={sel.clip.id} />}
 
             {/* Fades section — scrubbable fade-in/out sliders replacing the
                 old fixed "Fade 0.5s" buttons (→ edit.fade {in_ms|out_ms}). Gated to
