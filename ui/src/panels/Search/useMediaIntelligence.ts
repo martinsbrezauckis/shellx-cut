@@ -22,6 +22,7 @@ const errorMessage = (error: unknown): string => (
 
 export function useMediaIntelligence(project: Project | null) {
   const identity = useMemo(() => projectIdentity(project), [project])
+  const hasProject = project !== null
   const [status, setStatus] = useState<MediaIntelligenceStatusResult | null>(null)
   const [statusBusy, setStatusBusy] = useState(false)
   const [query, setQuery] = useState('')
@@ -38,7 +39,7 @@ export function useMediaIntelligence(project: Project | null) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
 
   const refreshStatus = useCallback(async (quiet = false) => {
-    if (!project) {
+    if (!hasProject) {
       setStatus(null)
       return
     }
@@ -55,7 +56,7 @@ export function useMediaIntelligence(project: Project | null) {
     } finally {
       if (!quiet) setStatusBusy(false)
     }
-  }, [project])
+  }, [hasProject])
 
   useEffect(() => {
     setStatus(null)
@@ -66,8 +67,8 @@ export function useMediaIntelligence(project: Project | null) {
     setError(null)
     setNotice(null)
     setRebuild(null)
-    if (project) void refreshStatus()
-  }, [identity, project, refreshStatus])
+    if (hasProject) void refreshStatus()
+  }, [identity, hasProject, refreshStatus])
 
   useEffect(() => {
     if (!rebuild) return

@@ -16,6 +16,9 @@ from pathlib import Path, PurePosixPath
 
 CONTEXT_ENV = "RELEASE_RUNNER_NATIVE_RUNTIME_CONTEXT"
 CONTEXT_SCHEMA = "release-runner.native-runtime-context/v1"
+CONTEXT_SET_SCHEMA = "release-runner.native-runtime-context-set/v1"
+EXECUTABLE_BUNDLE_SCHEMA = "release-runner.pinned-executable-bundle-context/v1"
+PYTHON_MEMBER_ID = "python"
 CONTEXT_LIMIT = 1024 * 1024
 PARAKEET_MODELS = frozenset({"nemo-parakeet-tdt-0.6b-v2", "nemo-parakeet-tdt-0.6b-v3"})
 REQUIRED_FILES = frozenset({"config.json", "encoder-model.onnx", "decoder_joint-model.onnx", "vocab.txt"})
@@ -32,6 +35,7 @@ SIGLIP_REQUIRED_FILES = frozenset({
 })
 HASH = re.compile(r"[a-f0-9]{64}\Z")
 FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}\Z")
+MEMBER_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 
 
 class NativeRuntimeModelError(RuntimeError):
@@ -85,6 +89,25 @@ def _context():
     if len(data) > CONTEXT_LIMIT:
         raise NativeRuntimeModelError("native runtime context changed beyond 1 MiB")
     value = json.loads(data, object_pairs_hook=_unique_object)
+    if isinstance(value, dict) and value.get("schema") == CONTEXT_SET_SCHEMA:
+        if set(value) != {"schema", "runtimes"} or not isinstance(value["runtimes"], list) or not 1 <= len(value["runtimes"]) <= 16:
+            raise NativeRuntimeModelError("native runtime context set is invalid")
+        seen = set()
+        selected = None
+        for member in value["runtimes"]:
+            if not isinstance(member, dict) or set(member) != {"id", "context"}:
+                raise NativeRuntimeModelError("native runtime context set member is invalid")
+            member_id, context = member["id"], member["context"]
+            if not isinstance(member_id, str) or not MEMBER_ID.fullmatch(member_id) or member_id in seen:
+                raise NativeRuntimeModelError("native runtime context set member ID is invalid or duplicated")
+            seen.add(member_id)
+            if not isinstance(context, dict) or context.get("schema") not in (CONTEXT_SCHEMA, EXECUTABLE_BUNDLE_SCHEMA):
+                raise NativeRuntimeModelError("native runtime context set member schema is invalid")
+            if member_id == PYTHON_MEMBER_ID:
+                selected = context
+        if selected is None:
+            raise NativeRuntimeModelError("native runtime context set has no python member")
+        value = selected
     keys = {"schema", "root", "manifestSha256", "receiptSha256", "files", "totalBytes", "interpreter", "imports", "models"}
     if not isinstance(value, dict) or set(value) != keys or value["schema"] != CONTEXT_SCHEMA:
         raise NativeRuntimeModelError("native runtime context schema is invalid")
