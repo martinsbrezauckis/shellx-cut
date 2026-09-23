@@ -84,6 +84,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   // prevents ordinary project object replacements from retriggering a full
   // paged journal transfer while this always-mounted panel stays open.
   const [sel, setSel] = useState<Sel | null>(null)
+  const [selectionGestureActive, setSelectionGestureActive] = useState(false)
   /** In-flight cut (verb sent, op_applied not yet seen) — pending tint, rule 8. */
   const [pendingCut, setPendingCut] = useState<Sel | null>(null)
   const [aggr, setAggr] = useState<'' | Aggressiveness>('')
@@ -431,6 +432,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     ) => {
       ev.preventDefault() // suppress native text selection — spans are the unit
       mouseDownRef.current = true
+      setSelectionGestureActive(true)
       draggedRef.current = false
       // shift-click extends from the live selection OR the last clicked word
       const sameSelectionRoute = sel?.asset === asset
@@ -469,6 +471,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     const up = () => {
       if (!mouseDownRef.current) return
       mouseDownRef.current = false
+      setSelectionGestureActive(false)
       if (!draggedRef.current) {
         const route = lastDownRef.current
         setSel((prev) => {
@@ -1120,7 +1123,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
             onRestore={onRestore}
           />
         ))}
-        {toolbar && toolbarXY && (
+        {toolbar && toolbarXY && !selectionGestureActive && (
           <div
             className="tx__cut-toolbar"
             style={{ left: toolbarXY.x, top: toolbarXY.y }}

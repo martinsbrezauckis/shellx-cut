@@ -161,6 +161,18 @@ fn native_key(
         "\u{E014}" => Some(124),
         "\u{E015}" => Some(125),
         "\u{E017}" => Some(117),
+        "\u{E031}" => Some(122), // F1
+        "\u{E032}" => Some(120), // F2
+        "\u{E033}" => Some(99),  // F3
+        "\u{E034}" => Some(118), // F4
+        "\u{E035}" => Some(96),  // F5
+        "\u{E036}" => Some(97),  // F6
+        "\u{E037}" => Some(98),  // F7
+        "\u{E038}" => Some(100), // F8
+        "\u{E039}" => Some(101), // F9
+        "\u{E03A}" => Some(109), // F10
+        "\u{E03B}" => Some(103), // F11
+        "\u{E03C}" => Some(111), // F12
         _ => None,
     };
     if let Some(code) = special {
@@ -849,6 +861,10 @@ pub fn register_webview_handlers<R: Runtime>(webview: &tauri::Webview<R>) {
 
 #[async_trait]
 impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
+    fn preflight_key_event(&self, key: &str) -> Result<(), WebDriverErrorResponse> {
+        native_key(key, &ModifierState::default()).map(|_| ())
+    }
+
     fn option_defer_primary_release(&self) -> bool { true }
 
     fn clear_option_completion(&self) { *self.option_completion_point.lock().unwrap()=None; }
@@ -1693,6 +1709,12 @@ mod native_input_mapping_tests {
         );
         assert!(native_key("\u{E099}", &ModifierState::default()).is_err());
         assert!(native_key("ab", &ModifierState::default()).is_err());
+        let codes = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111];
+        for (index, code) in codes.into_iter().enumerate() {
+            let webdriver_key = char::from_u32(0xE031 + index as u32).unwrap().to_string();
+            assert_eq!(native_key(&webdriver_key, &ModifierState::default()).unwrap(), (code, None));
+        }
+        assert!(native_key("\u{E030}", &ModifierState::default()).is_err());
     }
 
     #[test]

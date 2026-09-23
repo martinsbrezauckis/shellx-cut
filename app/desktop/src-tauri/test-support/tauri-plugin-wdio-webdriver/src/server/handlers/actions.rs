@@ -4,6 +4,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::Deserialize;
+use serde_json::json;
 use tauri::Runtime;
 
 use crate::platform::{PointerEventType,PlatformExecutor};
@@ -118,6 +119,26 @@ fn unsupported() -> WebDriverErrorResponse {
     WebDriverErrorResponse::unsupported_operation("native input supports bounded top-level mouse, keyboard and wheel actions; touch/pen and multiple sources of one type are unsupported")
 }
 
+const MAX_RETAINED_SOURCE_IDS: usize = 32;
+
+fn retained_source_id_budget_exhausted(
+    retained_source_ids: usize,
+    requested_new_source_ids: Vec<String>,
+) -> WebDriverErrorResponse {
+    WebDriverErrorResponse::unsupported_operation(
+        "retained WebDriver action source ID budget exhausted; reuse a prior source ID in this session",
+    )
+    .with_data(json!({
+        "schema": "tauri-plugin-wdio-webdriver.action-source-budget/v1",
+        "reason": "retained-source-id-limit",
+        "scope": "session",
+        "max_source_ids": MAX_RETAINED_SOURCE_IDS,
+        "retained_source_ids": retained_source_ids,
+        "requested_new_source_ids": requested_new_source_ids,
+        "release_actions_clears_source_ids": false,
+    }))
+}
+
 fn key_supported(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(c) = chars.next() else {
@@ -192,6 +213,47 @@ impl ActionSequence {
         }
     }
 }
+
+fn admit_retained_source_ids(
+    input: &crate::webdriver::session::ActionState,
+    request: &ActionsRequest,
+) -> Result<(), WebDriverErrorResponse> {
+    for source in &request.actions {
+        let (id, kind) = source.identity();
+        if input.source_types.get(id).is_some_and(|old| old != kind) {
+            return Err(unsupported());
+        }
+        if kind == "pointer"
+            && input
+                .pressed_buttons
+                .iter()
+                .any(|(old, buttons)| old != id && !buttons.is_empty())
+        {
+            return Err(unsupported());
+        }
+        if kind == "key" && !input.accepts_keyboard_source(id) {
+            return Err(unsupported());
+        }
+    }
+
+    let mut requested_new_source_ids = request
+        .actions
+        .iter()
+        .filter_map(|source| {
+            let (id, _) = source.identity();
+            (!input.source_types.contains_key(id)).then(|| id.to_string())
+        })
+        .collect::<Vec<_>>();
+    requested_new_source_ids.sort();
+    if input.source_types.len() + requested_new_source_ids.len() > MAX_RETAINED_SOURCE_IDS {
+        return Err(retained_source_id_budget_exhausted(
+            input.source_types.len(),
+            requested_new_source_ids,
+        ));
+    }
+    Ok(())
+}
+
 fn valid_origin(origin: &Option<Origin>, pointer: bool) -> bool {
     match origin {
         None => true,
@@ -312,6 +374,22 @@ pub(crate) async fn perform_option_inner<R: Runtime + 'static>(state: &Arc<AppSt
     perform_scoped(state, session_id, request, true).await
 }
 
+fn preflight_keyboard_actions(
+    request: &ActionsRequest,
+    mut preflight: impl FnMut(&str) -> Result<(), WebDriverErrorResponse>,
+) -> Result<(), WebDriverErrorResponse> {
+    for source in &request.actions {
+        if let ActionSequence::Key { actions, .. } = source {
+            for action in actions {
+                if let KeyAction::KeyDown { value } | KeyAction::KeyUp { value } = action {
+                    preflight(value)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn perform_scoped<R: Runtime + 'static>(state: &Arc<AppState<R>>, session_id: &str, request: ActionsRequest, option: bool) -> WebDriverResult {
     validate(&request)?;
     if state
@@ -326,8 +404,27 @@ async fn perform_scoped<R: Runtime + 'static>(state: &Arc<AppState<R>>, session_
             "release prior failed native input before continuing",
         ));
     }
-    let result = perform_sequence(state, session_id, request, option).await;
-    if result.is_err() {
+    if request.actions.iter().any(|source| matches!(source, ActionSequence::Key { .. })) {
+        let (window, timeouts, frames) = {
+            let sessions = state.sessions.read().await;
+            let session = sessions.get(session_id)?;
+            (
+                session.current_window.clone(),
+                session.timeouts.clone(),
+                session.frame_context.clone(),
+            )
+        };
+        let executor = state.get_executor_for_window(&window, timeouts, frames)?;
+        // This pure representability check runs before perform_sequence's
+        // conservative error latch and before any key is retained. A rejected
+        // key has no native effect; a dispatch failure still needs release.
+        preflight_keyboard_actions(&request, |key| executor.preflight_key_event(key))?;
+    }
+    // Target lookup and action admission can fail before native input begins.
+    // Only a dispatch attempt has uncertain native state that needs release.
+    let mut native_dispatch_attempted = false;
+    let result = perform_sequence(state, session_id, request, option, &mut native_dispatch_attempted).await;
+    if result.is_err() && native_dispatch_attempted {
         state
             .sessions
             .write()
@@ -344,6 +441,7 @@ async fn perform_sequence<R: Runtime + 'static>(
     session_id: &str,
     request: ActionsRequest,
     option: bool,
+    native_dispatch_attempted: &mut bool,
 ) -> WebDriverResult {
     validate(&request)?;
     let (window, timeouts, frames, mut input) = {
@@ -357,24 +455,9 @@ async fn perform_sequence<R: Runtime + 'static>(
         )
     };
     input.bind_owner(&window, &frames)?;
+    admit_retained_source_ids(&input, &request)?;
     for source in &request.actions {
         let (id, kind) = source.identity();
-        if input.source_types.get(id).is_some_and(|old| old != kind)
-            || input.source_types.len() >= 32 && !input.source_types.contains_key(id)
-        {
-            return Err(unsupported());
-        }
-        if kind == "pointer"
-            && input
-                .pressed_buttons
-                .iter()
-                .any(|(old, b)| old != id && !b.is_empty())
-        {
-            return Err(unsupported());
-        }
-        if kind == "key" && !input.accepts_keyboard_source(id) {
-            return Err(unsupported());
-        }
         input.source_types.insert(id.into(), kind.into());
     }
     let executor = state.get_executor_for_window(&window, timeouts, frames.clone())?;
@@ -435,6 +518,7 @@ async fn perform_sequence<R: Runtime + 'static>(
                         input.keyboard_source = Some(id.clone());
                         input.retain_key(value);
                         save_input(state, session_id, &input).await?;
+                        *native_dispatch_attempted = true;
                         if option { executor.dispatch_option_key_event(value, true, &input.modifiers()).await?; }
                         else { executor.dispatch_key_event(value, true, &input.modifiers()).await?; }
                     }
@@ -443,6 +527,7 @@ async fn perform_sequence<R: Runtime + 'static>(
                         next.released(&crate::webdriver::session::NativeRelease::Key(
                             value.clone(),
                         ));
+                        *native_dispatch_attempted = true;
                         if option { executor.dispatch_option_key_event(value, false, &next.modifiers()).await?; }
                         else { executor.dispatch_key_event(value, false, &next.modifiers()).await?; }
                         input = next;
@@ -466,6 +551,7 @@ async fn perform_sequence<R: Runtime + 'static>(
                         input.bind_owner(&window, &frames)?;
                         input.retain_button(id, *button);
                         save_input(state, session_id, &input).await?;
+                        *native_dispatch_attempted = true;
                         executor
                             .dispatch_pointer_event(
                                 PointerEventType::Down,
@@ -490,6 +576,7 @@ async fn perform_sequence<R: Runtime + 'static>(
                             id.clone(),
                             *button,
                         ));
+                        *native_dispatch_attempted = true;
                         executor
                             .dispatch_pointer_event(
                                 PointerEventType::Up,
@@ -527,6 +614,7 @@ async fn perform_sequence<R: Runtime + 'static>(
                     interpolate(from.1, target.1, step, steps),
                 );
                 // Failed or rejected movement must not replace the last admitted release coordinates.
+                *native_dispatch_attempted = true;
                 executor
                     .dispatch_pointer_event(
                         PointerEventType::Move,
@@ -551,6 +639,7 @@ async fn perform_sequence<R: Runtime + 'static>(
                                 interpolate(0, *delta_x, step, steps),
                                 interpolate(0, *delta_y, step, steps),
                             );
+                            *native_dispatch_attempted = true;
                             executor
                                 .dispatch_scroll_event(
                                     point.0,
@@ -689,6 +778,33 @@ async fn release_scoped<R: Runtime + 'static>(state: &Arc<AppState<R>>, id: &str
 mod tests {
     use super::*;
     #[test]
+    fn unsupported_native_key_refuses_before_any_input_is_retained() {
+        use crate::webdriver::session::ActionState;
+
+        // U+E016 is a syntactically valid WebDriver key, but a backend may not
+        // have a native representation for it. The same preflight traverses
+        // the request before the first pointer or keyboard dispatch.
+        let request: ActionsRequest = serde_json::from_value(serde_json::json!({
+            "actions": [
+                {"type": "pointer", "id": "mouse", "actions": [{"type": "pointerDown", "button": 0}]},
+                {"type": "key", "id": "keys", "actions": [{"type": "keyDown", "value": "\u{E016}"}]}
+            ]
+        })).unwrap();
+        validate(&request).unwrap();
+        let input = ActionState::default();
+        let mut inspected = Vec::new();
+        let error = preflight_keyboard_actions(&request, |key| {
+            inspected.push(key.to_owned());
+            Err(WebDriverErrorResponse::unsupported_operation("unsupported native key"))
+        }).unwrap_err();
+        assert_eq!(inspected, ["\u{E016}"]);
+        assert_eq!(error.message, "unsupported native key");
+        assert!(!input.has_held_input());
+        assert!(!input.input_failed);
+        assert!(input.release_order.is_empty());
+    }
+
+    #[test]
     fn deferred_popup_cleanup_keeps_original_primary_after_keys_only() {
         use crate::webdriver::session::{ActionState,NativeRelease};
         let mut input=ActionState::default();
@@ -707,6 +823,79 @@ mod tests {
     fn admitted(v: serde_json::Value) -> bool {
         validate(&serde_json::from_value(v).unwrap()).is_ok()
     }
+
+    fn action_request(value: serde_json::Value) -> ActionsRequest {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn retained_source_budget_has_distinct_structured_diagnostic() {
+        use crate::webdriver::session::ActionState;
+
+        let mut input = ActionState::default();
+        for index in 0..31 {
+            input
+                .source_types
+                .insert(format!("existing-{index}"), "none".into());
+        }
+        let request = action_request(serde_json::json!({"actions": [
+            {"type": "pointer", "id": "pointer-32", "actions": []},
+            {"type": "key", "id": "keyboard-33", "actions": []}
+        ]}));
+
+        let error = admit_retained_source_ids(&input, &request).unwrap_err();
+        assert_eq!(error.error, "unsupported operation");
+        assert_eq!(
+            error.message,
+            "retained WebDriver action source ID budget exhausted; reuse a prior source ID in this session"
+        );
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!({
+                "schema": "tauri-plugin-wdio-webdriver.action-source-budget/v1",
+                "reason": "retained-source-id-limit",
+                "scope": "session",
+                "max_source_ids": 32,
+                "retained_source_ids": 31,
+                "requested_new_source_ids": ["keyboard-33", "pointer-32"],
+                "release_actions_clears_source_ids": false,
+            }))
+        );
+    }
+
+    #[test]
+    fn retained_source_id_reuse_at_limit_is_admitted() {
+        use crate::webdriver::session::ActionState;
+
+        let mut input = ActionState::default();
+        input.source_types.insert("mouse".into(), "pointer".into());
+        for index in 0..31 {
+            input
+                .source_types
+                .insert(format!("existing-{index}"), "none".into());
+        }
+        let request = action_request(serde_json::json!({"actions": [
+            {"type": "pointer", "id": "mouse", "actions": []}
+        ]}));
+
+        assert!(admit_retained_source_ids(&input, &request).is_ok());
+    }
+
+    #[test]
+    fn retained_source_type_conflict_keeps_generic_refusal() {
+        use crate::webdriver::session::ActionState;
+
+        let mut input = ActionState::default();
+        input.source_types.insert("shared".into(), "pointer".into());
+        let request = action_request(serde_json::json!({"actions": [
+            {"type": "key", "id": "shared", "actions": []}
+        ]}));
+
+        let error = admit_retained_source_ids(&input, &request).unwrap_err();
+        assert_eq!(error.message, unsupported().message);
+        assert_eq!(error.data, None);
+    }
+
     #[test]
     fn accepts_required_ticks_and_rejects_unknown_sources() {
         assert!(admitted(

@@ -528,6 +528,10 @@ pub fn register_webview_handlers<R: Runtime>(webview: &tauri::Webview<R>) {
 
 #[async_trait]
 impl<R: Runtime + 'static> PlatformExecutor<R> for WindowsExecutor<R> {
+    fn preflight_key_event(&self, key: &str) -> Result<(), WebDriverErrorResponse> {
+        key_parameters(key, true, &ModifierState::default()).map(|_| ())
+    }
+
     fn option_popup_first_key(&self) -> Result<&'static str, WebDriverErrorResponse> {
         // Existing native Home mapping; popup delivery is separately qualified.
         Ok("\u{E011}")

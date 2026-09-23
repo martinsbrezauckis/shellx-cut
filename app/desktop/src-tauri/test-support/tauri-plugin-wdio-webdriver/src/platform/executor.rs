@@ -36,25 +36,34 @@ const OPTION_SNAPSHOT_SCRIPT: &str = r#"// Read-only DOM inspection. Retained re
     };
     const options = Array.from(select.options);
     const index = options.indexOf(target);
+    // Navigate from the first enabled entry after Home. The native fixture must
+    // qualify this popup behavior on each backend.
+    const placeholder = options[0] instanceof HTMLOptionElement &&
+        options[0].parentElement === select && options[0].disabled && options[0].value === '';
+    const navigationSteps = index - (placeholder ? 1 : 0);
     const validChildren = Array.from(select.children).every(e =>
         e instanceof HTMLOptionElement || (e instanceof HTMLOptGroupElement &&
             Array.from(e.children).every(o => o instanceof HTMLOptionElement)));
     if (select.multiple || select.size > 1 || options.length < 1 || options.length > 128 || index < 0 ||
-        !validChildren || hidden(select) || options.some(o => o.disabled || hidden(o) ||
+        !validChildren || hidden(select) || options.some((o, i) => (o.disabled && !(i === 0 && placeholder)) || hidden(o) ||
             (o.parentElement instanceof HTMLOptGroupElement && (o.parentElement.disabled || hidden(o.parentElement))))) {
         return {error: 'unsupported operation'};
     }
+    if (navigationSteps < 0) return {error: 'element not interactable'};
     if (phase === 'prepare') {
         window[key] = {target, select, direct, options, index, value: target.value,
+            navigationSteps, disabled: options.map(o => o.disabled),
             values: options.map(o => o.value), labels: options.map(o => o.label),
             parents: options.map(o => o.parentElement), selected: select.selectedIndex};
         window[container] = select;
     }
     const saved = window[key];
     if (!saved || saved.target !== target || saved.select !== select || saved.direct !== direct ||
-        saved.index !== index || saved.options.length !== options.length || saved.value !== target.value ||
+        saved.index !== index || saved.navigationSteps !== navigationSteps ||
+        saved.options.length !== options.length || saved.value !== target.value ||
         options.some((o, i) => o !== saved.options[i] || o.parentElement !== saved.parents[i] ||
-            o.value !== saved.values[i] || o.label !== saved.labels[i])) return {error: 'stale element reference'};
+            o.value !== saved.values[i] || o.label !== saved.labels[i] ||
+            o.disabled !== saved.disabled[i])) return {error: 'stale element reference'};
     if (phase === 'complete' || phase === 'settle') {
         if (!target.selected || select.selectedIndex !== index || select.value !== saved.value) {
             return {error: 'unknown error', pending: phase === 'settle', message: 'native option selection did not reach the exact retained target; observation=' + JSON.stringify({
@@ -66,7 +75,7 @@ const OPTION_SNAPSHOT_SCRIPT: &str = r#"// Read-only DOM inspection. Retained re
     } else if (select.selectedIndex !== saved.selected) {
         return {error: 'stale element reference', message: 'option selection changed before native commit'};
     }
-    return {index, selected: target.selected};
+    return {index, navigationSteps, selected: target.selected};
 })
 "#;
 
@@ -603,8 +612,8 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
             return Err(WebDriverErrorResponse::new(axum::http::StatusCode::BAD_REQUEST, error,
                 value.get("message").and_then(Value::as_str).unwrap_or(error), None));
         }
-        let index = value.get("index").and_then(Value::as_u64).filter(|v| *v < 128)
-            .ok_or_else(|| WebDriverErrorResponse::unknown_error("invalid option index"))?;
+        let index = value.get("navigationSteps").and_then(Value::as_u64).filter(|v| *v < 128)
+            .ok_or_else(|| WebDriverErrorResponse::unknown_error("invalid option navigation steps"))?;
         let selected = value.get("selected").and_then(Value::as_bool)
             .ok_or_else(|| WebDriverErrorResponse::unknown_error("invalid option selectedness"))?;
         Ok(Some((index as usize, selected)))
@@ -1131,6 +1140,15 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
     // =========================================================================
     // Actions (Keyboard/Pointer)
     // =========================================================================
+
+    /// Reject keys that this backend cannot represent before Actions retains
+    /// any input or posts the first native event. Dispatch failures remain
+    /// uncertain and still require an explicit release.
+    fn preflight_key_event(&self, _key: &str) -> Result<(), WebDriverErrorResponse> {
+        Err(WebDriverErrorResponse::unsupported_operation(
+            "native keyboard input is not supported by this overlay",
+        ))
+    }
 
     /// Dispatch a keyboard event with modifier state
     async fn dispatch_key_event(
