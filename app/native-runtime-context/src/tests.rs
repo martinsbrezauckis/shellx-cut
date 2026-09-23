@@ -113,6 +113,21 @@ fn accepts_context_and_streams_selected_pins() {
 }
 
 #[test]
+fn accepts_runner_admitted_windows_cuda_size_but_rejects_larger_contexts() {
+    let (_temp, path, mut context) = fixture();
+    context.total_bytes = 9_383_536_384;
+    fs::write(&path, serde_json::to_vec(&context).unwrap()).unwrap();
+    assert_eq!(
+        RuntimeContext::from_path(&path).unwrap().total_bytes,
+        9_383_536_384
+    );
+
+    context.total_bytes = MAX_TOTAL_BYTES + 1;
+    fs::write(&path, serde_json::to_vec(&context).unwrap()).unwrap();
+    assert!(RuntimeContext::from_path(&path).is_err());
+}
+
+#[test]
 fn rejects_unknown_field_escape_and_changed_selected_model() {
     let (_temp, path, context) = fixture();
     let mut value = serde_json::to_value(&context).unwrap();

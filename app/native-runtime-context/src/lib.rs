@@ -28,7 +28,9 @@ pub const PINNED_EXECUTABLE_BUNDLE_CONTEXT_CONTRACT: &str =
 pub const SET_CONTEXT_CONTRACT: &str = "release-runner.native-runtime-context-set/v1";
 pub const CONTEXT_MAX_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_FILES: usize = 131_072;
-pub(crate) const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+// Match Runner's admitted native-runtime envelope. The Windows CUDA Python
+// runtime is larger than 8 GiB even though its context is a small sealed file.
+pub(crate) const MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_IMPORTS: usize = 256;
 const MAX_MODELS: usize = 4096;
 
