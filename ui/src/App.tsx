@@ -707,6 +707,7 @@ export default function App() {
       className="app"
       data-cut-app-root
       data-cut-workspace-mode={layout.workspaceMode}
+      data-cut-drawer={activeDrawer ?? undefined}
     >
       {layout.workspaceMode === 'record' ? (
         <RecordingTopBar

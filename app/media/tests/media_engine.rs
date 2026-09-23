@@ -804,8 +804,8 @@ fn loudness_normalize_then_remeasure_closes_the_loop() {
         src_loud.integrated_lufs
     );
     assert!(
-        !got.true_peak_dbtp.is_finite() || got.true_peak_dbtp <= -0.5,
-        "true peak should be capped near -1 dBTP, got {}",
+        got.true_peak_dbtp.is_finite() && got.true_peak_dbtp <= -1.0,
+        "encoded true peak must meet the -1 dBTP delivery limit, got {}",
         got.true_peak_dbtp
     );
 }

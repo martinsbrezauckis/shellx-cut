@@ -610,6 +610,7 @@ for (const file of boundedSources) {
 }
 
 const boundedTests = [
+  "app/perception/src/sidecar/native_runtime_tests.rs",
   "tests/release/models/native-model-backend-contract.test.mjs",
   "tests/release/models/native-model-backends.test.mjs",
   "tests/release/models/native-model-backend-premium.contract.test.mjs",

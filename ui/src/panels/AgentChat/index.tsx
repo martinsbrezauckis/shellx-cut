@@ -30,7 +30,7 @@
 // Callers: App.tsx (rightTab === 'chat'). Deps: lib/client (callVerb + types),
 // lib/doctor (chat-agent state), lib/chatAgentPref (persisted choice).
 
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { callVerb } from '../../lib/client'
 import type { Project, VerbResults } from '../../lib/client'
 import type { AgentChatPrefill } from '../../lib/evidenceAttachments'
@@ -112,6 +112,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
   }, [onSessionChange])
   const evidenceAttachments = useEvidenceAttachments(prefill)
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
+  const [promptLibraryMaxHeight, setPromptLibraryMaxHeight] = useState<number | null>(null)
   const [targetError, setTargetError] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -196,6 +197,29 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey, true)
+    }
+  }, [promptLibraryOpen])
+
+  useLayoutEffect(() => {
+    if (!promptLibraryOpen) return
+    const chips = promptLibraryRef.current
+    const panel = chips?.closest('.chat')
+    if (!chips || !panel) return
+    const measure = () => {
+      // The inspector clips the menu. Limit it to the space above the chips
+      // inside this chat panel, then let the prompt list scroll.
+      const available = Math.floor(chips.getBoundingClientRect().top
+        - Math.max(0, panel.getBoundingClientRect().top) - 14)
+      setPromptLibraryMaxHeight(Math.max(0, Math.min(420, available)))
+    }
+    measure()
+    const resize = new ResizeObserver(measure)
+    resize.observe(chips)
+    resize.observe(panel)
+    window.addEventListener('resize', measure)
+    return () => {
+      resize.disconnect()
+      window.removeEventListener('resize', measure)
     }
   }, [promptLibraryOpen])
 
@@ -672,7 +696,8 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
           <Icon name="chevronUp" size={14} />
         </button>
         {promptLibraryOpen && (
-          <div className="chat__promptlib" role="menu" aria-label="Prompt library" data-cut-chat-prompt-menu>
+          <div className="chat__promptlib" role="menu" aria-label="Prompt library" data-cut-chat-prompt-menu
+            style={promptLibraryMaxHeight == null ? undefined : { maxHeight: promptLibraryMaxHeight }}>
             {AGENT_PROMPT_CATEGORIES.map((category) => (
               <section className="chat__promptlib-group" key={category} data-cut-chat-prompt-group={category}>
                 <h3>{category}</h3>

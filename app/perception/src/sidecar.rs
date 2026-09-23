@@ -24,7 +24,8 @@ mod runtime_cache;
 mod runtime_cache_tests;
 pub use native_runtime::{
     apply_python_command_policy, configured_sidecar_python, native_runtime_context,
-    python_command_args, sidecar_runtime, SidecarRuntime, PYTHONDONTWRITEBYTECODE_ENV,
+    premium_sidecar_runtime, python_command_args, sidecar_runtime, SidecarRuntime,
+    PYTHONDONTWRITEBYTECODE_ENV,
 };
 pub use owned::{
     build_contact_sheet_owned, build_qc_sheet_owned, run_instruments_owned,

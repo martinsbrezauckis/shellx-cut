@@ -191,6 +191,9 @@ fn accepts_a_sorted_typed_runtime_context_set() {
     }
     assert!(set.python_context("media-tools").is_err());
     assert!(set.pinned_executable_bundle("python").is_err());
+    assert!(set.optional_python_context("premium").unwrap().is_none());
+    assert!(set.optional_python_context("python").unwrap().is_some());
+    assert!(set.optional_python_context("media-tools").is_err());
 }
 
 #[test]

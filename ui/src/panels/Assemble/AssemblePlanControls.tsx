@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type InputHTMLAttributes, type KeyboardEvent } from 'react'
 
 import { Icon } from '../../icons'
 import type {
@@ -11,12 +11,6 @@ import type {
 } from './assemblePlanModel'
 
 type AssembleNumberField = 'count' | 'target' | 'minscore'
-
-const assembleNumberFieldAttributes: Record<AssembleNumberField, Record<string, string>> = {
-  count: { 'data-cut-assemble-count': '' },
-  target: { 'data-cut-assemble-target': '' },
-  minscore: { 'data-cut-assemble-minscore': '' },
-}
 
 function clampAssembleNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -94,39 +88,41 @@ function AssembleNumberInput({
     onValueChange(next)
   }
 
-  return <input
-    className="cd-input cd-input--num"
-    type="text"
-    inputMode={step < 1 ? 'decimal' : 'numeric'}
-    role="spinbutton"
-    min={min}
-    max={max}
-    step={step}
-    {...assembleNumberFieldAttributes[field]}
-    value={draft}
-    disabled={disabled}
-    aria-valuemin={min}
-    aria-valuemax={max}
-    aria-valuenow={value}
-    aria-valuetext={draft}
-    onFocus={() => {
+  const inputProps: InputHTMLAttributes<HTMLInputElement> = {
+    className: 'cd-input cd-input--num',
+    type: 'text',
+    inputMode: step < 1 ? 'decimal' : 'numeric',
+    role: 'spinbutton',
+    min,
+    max,
+    step,
+    value: draft,
+    disabled,
+    'aria-valuemin': min,
+    'aria-valuemax': max,
+    'aria-valuenow': value,
+    'aria-valuetext': draft,
+    onFocus: () => {
       editing.current = true
       previewValue.current = null
-    }}
-    onChange={(event) => preview(event.target.value)}
-    onBlur={(event) => {
+    },
+    onChange: (event: ChangeEvent<HTMLInputElement>) => preview(event.target.value),
+    onBlur: (event: ChangeEvent<HTMLInputElement>) => {
       editing.current = false
       commit(event.target.value)
-    }}
-    onKeyDown={(event) => {
+    },
+    onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
       if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
         event.preventDefault()
         stepValue(event.key === 'ArrowUp' ? 1 : -1)
         return
       }
       if (event.key === 'Enter') event.currentTarget.blur()
-    }}
-  />
+    },
+  }
+  if (field === 'count') return <input data-cut-assemble-count="" {...inputProps} />
+  if (field === 'target') return <input data-cut-assemble-target="" {...inputProps} />
+  return <input data-cut-assemble-minscore="" {...inputProps} />
 }
 
 function ApplyPlanControl({

@@ -12303,7 +12303,7 @@
             "type": "integer",
             "minimum": -40,
             "maximum": -5,
-            "description": "Optional target integrated loudness in LUFS. Omitted = no normalization (byte-identical replay). When set, single-pass ffmpeg loudnorm brings the mixed audio to this target (TP -1 dBTP, LRA 11) — closes the measure(lufs check)->target loop. Standard targets: -16 (long-form), -14 (social), -23 (EBU R128)."
+            "description": "Optional target integrated loudness in LUFS. Omitted = no normalization (byte-identical replay). When set, single-pass ffmpeg loudnorm brings the mixed audio to this target (TP -1.5 dBTP before encoding, LRA 11); the encoded output must still meet -1 dBTP. Standard targets: -16 (long-form), -14 (social), -23 (EBU R128)."
           },
           "dry_run": {
             "type": "boolean",

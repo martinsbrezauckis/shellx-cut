@@ -147,6 +147,16 @@ impl RuntimeContextSet {
         }
     }
 
+    /// Select an optional Python member. Absence is distinct from a present
+    /// member of the wrong type; every member was already validated at load.
+    pub fn optional_python_context(&self, id: &str) -> Result<Option<&RuntimeContext>, String> {
+        if self.members.iter().any(|(member_id, _)| member_id == id) {
+            self.python_context(id).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Select a product-owned executable-bundle member by its declared generic
     /// ID.
     pub fn pinned_executable_bundle(

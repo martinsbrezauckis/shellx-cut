@@ -2719,12 +2719,14 @@ fn build_graph(
     };
 
     // Loudness normalization (render.final `normalize_loudness`): single-pass
-    // ffmpeg loudnorm to the target LUFS, true-peak −1 dBTP, LRA 11 (EBU R128
-    // defaults). Single-pass is deterministic (no measured-* two-pass) and only
+    // ffmpeg loudnorm to the target LUFS, true-peak −1.5 dBTP, LRA 11. The
+    // extra 0.5 dB leaves headroom for peak growth during output encoding;
+    // published output still has to pass the measured −1.0 dBTP receipt limit.
+    // Single-pass is deterministic (no measured-* two-pass) and only
     // runs when a target is set, so unnormalized renders stay byte-identical.
     // Closes the measure(lufs check)→target loop.
     if let (Some(t), Some(a)) = (opts.loudness_target, audio_out.clone()) {
-        writeln!(f, "[{a}]loudnorm=I={t}:TP=-1.0:LRA=11[anorm];").unwrap();
+        writeln!(f, "[{a}]loudnorm=I={t}:TP=-1.5:LRA=11[anorm];").unwrap();
         audio_out = Some("anorm".to_string());
     }
 

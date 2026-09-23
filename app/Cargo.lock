@@ -814,6 +814,7 @@ dependencies = [
  "cut-native-runtime-context",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
 ]

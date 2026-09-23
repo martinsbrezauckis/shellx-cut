@@ -23,10 +23,20 @@ pub struct SidecarRuntime {
     pub native_context: Option<RuntimeContext>,
 }
 const PYTHON_RUNTIME_MEMBER_ID: &str = "python";
-fn selected_native_runtime_context() -> Result<Option<RuntimeContext>, String> {
+const PREMIUM_RUNTIME_MEMBER_ID: &str = "premium";
+fn selected_native_runtime_context(prefer_premium: bool) -> Result<Option<RuntimeContext>, String> {
     match context_schema_from_env()? {
         Some(schema) if schema == SET_CONTEXT_CONTRACT => match RuntimeContextSet::from_env()? {
-            Some(set) => Ok(Some(set.python_context(PYTHON_RUNTIME_MEMBER_ID)?.clone())),
+            Some(set) => {
+                let ordinary = set.python_context(PYTHON_RUNTIME_MEMBER_ID)?;
+                let selected = if prefer_premium {
+                    set.optional_python_context(PREMIUM_RUNTIME_MEMBER_ID)?
+                        .unwrap_or(ordinary)
+                } else {
+                    ordinary
+                };
+                Ok(Some(selected.clone()))
+            }
             None => Ok(None),
         },
         Some(_) | None => RuntimeContext::from_env(),
@@ -36,7 +46,17 @@ fn selected_native_runtime_context() -> Result<Option<RuntimeContext>, String> {
 /// retain the established sidecar ladder. Both paths keep the application-owned
 /// `instruments.py` selection.
 pub fn sidecar_runtime() -> Result<SidecarRuntime, CutError> {
-    match selected_native_runtime_context().map_err(native_runtime_error)? {
+    sidecar_runtime_for_member(false)
+}
+
+/// Select a separately sealed premium Python when Runner supplied one. Older
+/// single-Python catalogs retain their existing premium matte behavior.
+pub fn premium_sidecar_runtime() -> Result<SidecarRuntime, CutError> {
+    sidecar_runtime_for_member(true)
+}
+
+fn sidecar_runtime_for_member(prefer_premium: bool) -> Result<SidecarRuntime, CutError> {
+    match selected_native_runtime_context(prefer_premium).map_err(native_runtime_error)? {
         Some(context) => {
             context.verify_interpreter().map_err(native_runtime_error)?;
             context.verify_imports().map_err(native_runtime_error)?;
@@ -60,7 +80,7 @@ pub fn sidecar_runtime() -> Result<SidecarRuntime, CutError> {
 /// Load the supplied context for consumers that need a product-specific asset.
 /// A malformed supplied locator remains an error rather than a legacy fallback.
 pub fn native_runtime_context() -> Result<Option<RuntimeContext>, CutError> {
-    selected_native_runtime_context().map_err(native_runtime_error)
+    selected_native_runtime_context(false).map_err(native_runtime_error)
 }
 
 /// Resolve only an app-managed or explicitly configured sidecar Python.
@@ -154,196 +174,5 @@ fn native_bundled_sidecar_script_from_bases(bases: &[PathBuf]) -> Option<PathBuf
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_runtime_absent_keeps_the_existing_sidecar_ladder() {
-        let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
-        std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
-        let runtime = sidecar_runtime().unwrap();
-        assert!(runtime.native_context.is_none());
-        match prior {
-            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-        }
-    }
-
-    #[test]
-    fn native_runtime_set_selects_the_declared_python_member() {
-        let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
-        let temp = tempfile::tempdir().unwrap();
-        let python_root = temp.path().join("python-runtime");
-        let tools_root = temp.path().join("media-tools");
-        std::fs::create_dir_all(tools_root.join("bin")).unwrap();
-        let interpreter = python_root.join("python");
-        let import = python_root.join("onnx_asr.py");
-        let ffmpeg = tools_root.join("bin").join("ffmpeg");
-        let ffprobe = tools_root.join("bin").join("ffprobe");
-        std::fs::create_dir_all(&python_root).unwrap();
-        for path in [&interpreter, &import, &ffmpeg, &ffprobe] {
-            std::fs::write(path, b"fixture").unwrap();
-        }
-        let python_root = std::fs::canonicalize(python_root).unwrap();
-        let tools_root = std::fs::canonicalize(tools_root).unwrap();
-        let locator = temp.path().join("native-runtime-context.json");
-        let context = serde_json::json!({
-            "schema": cut_native_runtime_context::SET_CONTEXT_CONTRACT,
-            "runtimes": [
-                {"id":"media-tools", "context": {
-                    "schema": cut_native_runtime_context::PINNED_EXECUTABLE_BUNDLE_CONTEXT_CONTRACT,
-                    "root": tools_root,
-                    "manifestSha256": "a".repeat(64),
-                    "receiptSha256": "b".repeat(64),
-                    "platform": std::env::consts::OS,
-                    "architecture": std::env::consts::ARCH,
-                    "executables": [
-                        {"name":"ffmpeg", "path": ffmpeg, "sha256":"c".repeat(64), "bytes":7, "mode":493},
-                        {"name":"ffprobe", "path": ffprobe, "sha256":"d".repeat(64), "bytes":7, "mode":493}
-                    ],
-                    "files":2,
-                    "totalBytes":14
-                }},
-                {"id":"python", "context": {
-                    "schema": cut_native_runtime_context::CONTEXT_CONTRACT,
-                    "root": python_root,
-                    "manifestSha256": "e".repeat(64),
-                    "receiptSha256": "f".repeat(64),
-                    "interpreter":{"path": interpreter, "sha256":"0".repeat(64), "version":"3.12.13"},
-                    "imports":[{"module":"onnx_asr", "path":import, "sha256":"1".repeat(64)}],
-                    "models":[],
-                    "files":2,
-                    "totalBytes":14
-                }}
-            ]
-        });
-        std::fs::write(&locator, serde_json::to_vec(&context).unwrap()).unwrap();
-        std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, &locator);
-        let selected = native_runtime_context().unwrap().unwrap();
-        assert_eq!(selected.interpreter.path, python_root.join("python"));
-        assert_eq!(selected.imports[0].module, "onnx_asr");
-        match prior {
-            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-        }
-    }
-
-    #[test]
-    fn invalid_native_runtime_never_falls_through_to_the_legacy_python() {
-        let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
-        let temp = tempfile::tempdir().unwrap();
-        let invalid = temp.path().join("native-runtime-context.json");
-        std::fs::write(&invalid, b"not json").unwrap();
-        std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, &invalid);
-        assert!(sidecar_runtime().is_err());
-        match prior {
-            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-        }
-    }
-
-    #[test]
-    fn native_python_command_policy_isolated_and_normal_compatible() {
-        let mut normal = Command::new("python");
-        apply_python_command_policy(&mut normal, false);
-        assert_eq!(
-            normal
-                .get_args()
-                .map(|argument| argument.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            ["-B"]
-        );
-
-        let mut command = Command::new("python");
-        apply_python_command_policy(&mut command, true);
-        assert_eq!(
-            command
-                .get_args()
-                .map(|argument| argument.to_string_lossy().into_owned())
-                .collect::<Vec<_>>(),
-            ["-E", "-s", "-B"]
-        );
-        assert_eq!(
-            command
-                .get_envs()
-                .find(|(name, _)| *name == "PYTHONDONTWRITEBYTECODE")
-                .and_then(|(_, value)| value)
-                .and_then(|value| value.to_str()),
-            Some("1")
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn native_python_command_ignores_hostile_pythonpath() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(
-            temp.path().join("sitecustomize.py"),
-            "print('hostile-pythonpath')\n",
-        )
-        .unwrap();
-        let mut command = Command::new("python3");
-        apply_python_command_policy(&mut command, true);
-        command
-            .args(["-c", "print('native-safe')"])
-            .env("PYTHONPATH", temp.path());
-        let output = command
-            .output()
-            .expect("Linux source check requires python3 for the hostile-PYTHONPATH proof");
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            "native-safe\n",
-            "-E must prevent PYTHONPATH from importing hostile sitecustomize"
-        );
-    }
-
-    #[test]
-    fn native_script_resolution_uses_only_installed_resource_candidates() {
-        let temp = tempfile::tempdir().unwrap();
-        let macos = temp.path().join("Contents").join("MacOS");
-        let resources = temp
-            .path()
-            .join("Contents")
-            .join("Resources")
-            .join("perception");
-        std::fs::create_dir_all(&macos).unwrap();
-        std::fs::create_dir_all(&resources).unwrap();
-        let script = resources.join("instruments.py");
-        std::fs::write(&script, b"fixture").unwrap();
-
-        let bases = native_bundled_sidecar_bases(Some(&macos.join("cutd")));
-        assert_eq!(
-            native_bundled_sidecar_script_from_bases(&bases),
-            Some(script),
-            "native selection must resolve the application resource, not app-data or an env override"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn native_script_resolution_supports_the_deb_lib_payload() {
-        let temp = tempfile::tempdir().unwrap();
-        let bin = temp.path().join("usr").join("bin");
-        let resources = temp
-            .path()
-            .join("usr")
-            .join("lib")
-            .join("ShellX Cut")
-            .join("perception");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(&resources).unwrap();
-        let script = resources.join("instruments.py");
-        std::fs::write(&script, b"fixture").unwrap();
-
-        let bases = native_bundled_sidecar_bases(Some(&bin.join("cutd")));
-        assert_eq!(
-            native_bundled_sidecar_script_from_bases(&bases),
-            Some(script),
-            "the native DEB route must bind its packaged /usr/lib payload"
-        );
-    }
-}
+#[path = "native_runtime_tests.rs"]
+mod tests;

@@ -362,6 +362,18 @@ kbd { font:var(--fs-ui-xs) var(--mono); background:var(--surface-2);
 }
 .app__timeline { flex: none; min-height: 160px; max-height: 60%; display: flex; min-width: 0; }
 
+/* The Mask drawer needs the preview as its drawing surface. Reserve its fixed
+   right-hand width and give the preview the remaining editor space while it is
+   open. Otherwise a narrow preview can sit entirely behind the drawer. */
+.app[data-cut-drawer="mask"] .app__middle { padding-right: 420px; }
+.app[data-cut-drawer="mask"] .app__transcript,
+.app[data-cut-drawer="mask"] .app__split > .divider--v,
+.app[data-cut-drawer="mask"] .app__side-expand--left,
+.app[data-cut-drawer="mask"] .app__side-expand--right,
+.app[data-cut-drawer="mask"] .app__comments,
+.app[data-cut-drawer="mask"] .app__rail,
+.app[data-cut-drawer="mask"] .app__middle > .divider--v { display: none; }
+
 /* review/tools rail — pinned mode consumes layout width; overlay mode floats
    above the editor so the timeline keeps the full middle-row width by default. */
 .app__rail {

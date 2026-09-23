@@ -2870,6 +2870,14 @@ mod tests {
             output_report: None,
         };
         assert!(lufs(&mk(-16.5, -2.0), -16.0, 2.0).pass);
+        assert!(
+            lufs(&mk(-14.7, -1.0), -14.0, 2.0).pass,
+            "true peak at the public ceiling passes"
+        );
+        assert!(
+            !lufs(&mk(-14.7, -0.9), -14.0, 2.0).pass,
+            "encoded peak above the public ceiling fails"
+        );
         assert!(!lufs(&mk(-25.0, -2.0), -16.0, 2.0).pass, "too quiet");
         assert!(
             !lufs(&mk(-16.0, -0.2), -16.0, 2.0).pass,

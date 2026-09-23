@@ -20,6 +20,11 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
   const [capText, setCapText] = useState('')
   const [capPos, setCapPos] = useState<CaptionPosition>('bottom')
   const [capColor, setCapColor] = useState('#FFFFFF')
+  const [capColorDraft, setCapColorDraft] = useState('#FFFFFF')
+  const setCaptionColor = (value: string) => {
+    setCapColorDraft(value)
+    if (/^#[0-9a-fA-F]{6}$/.test(value)) setCapColor(value.toLowerCase())
+  }
   // Keep the user's draft while typing. Clamping each intermediate digit turns
   // a valid entry such as 105 into 200 before the final digit can arrive.
   const [capSizeDraft, setCapSizeDraft] = useState('64')
@@ -229,8 +234,13 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
       <div className="insp__row">
         <label className="insp__inline" title="Caption text color">
           <input type="color" data-cut-caption-color value={capColor} disabled={!project}
-            onChange={(e) => setCapColor(e.target.value)} />
+            onChange={(e) => setCaptionColor(e.target.value)} />
         </label>
+        <input type="text" className="insp__text" data-cut-caption-color-hex
+          aria-label="Caption color hex" spellCheck={false} maxLength={7} placeholder="#RRGGBB"
+          style={{ maxWidth: 96 }} value={capColorDraft} disabled={!project}
+          onChange={(e) => setCaptionColor(e.target.value)}
+          onBlur={() => setCapColorDraft(capColor)} />
         <label className="insp__inline" title="Caption text size (px at project height)">
           <input type="number" className="insp__num" data-cut-caption-size min={12} max={200} step={2}
             value={capSizeDraft} disabled={!project}

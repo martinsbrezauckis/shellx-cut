@@ -1961,14 +1961,15 @@ fn loudnorm_applied_only_when_target_set() {
         g0.filter
     );
 
-    // Target -16 LUFS → single-pass loudnorm, audio mapped to anorm.
+    // Social-bundle target -14 LUFS keeps 0.5 dB of peak headroom before
+    // encoding. The output-fact receipt still checks the encoded file at -1.0.
     let opts = RenderOptions {
-        loudness_target: Some(-16),
+        loudness_target: Some(-14),
         ..RenderOptions::default()
     };
     let g = build_graph(&p, &edl, dir, true, true, true, opts, None).unwrap();
     assert!(
-        g.filter.contains("loudnorm=I=-16:TP=-1.0:LRA=11"),
+        g.filter.contains("loudnorm=I=-14:TP=-1.5:LRA=11"),
         "target → loudnorm:\n{}",
         g.filter
     );

@@ -76,7 +76,10 @@ pub(crate) fn prepared_rvm_runtime() -> Result<Option<PreparedRvmRuntime>, CutEr
 pub(crate) fn prepared_matte_runtime(
     model: &MatteModel,
 ) -> Result<Option<PreparedMatteRuntime>, CutError> {
-    let sidecar = cut_perception::sidecar_runtime()?;
+    let sidecar = match model {
+        MatteModel::Rvm => cut_perception::sidecar_runtime()?,
+        MatteModel::Matanyone => cut_perception::premium_sidecar_runtime()?,
+    };
     let Some(context) = sidecar.native_context.as_ref() else {
         return Ok(None);
     };

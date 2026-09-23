@@ -73,7 +73,9 @@ export function resolveTimelineContextSelection(selectedClipIds: string[], itemI
  * edit can never route while locked. */
 export function resolveTimelineContextTarget(args: {
   itemId: string | null
+  laneItemId?: string | null
   gapId: string | null
+  selectedClipIds?: string[]
   trackId: string | null
   headerTrackId?: string | null
   x: number
@@ -85,9 +87,14 @@ export function resolveTimelineContextTarget(args: {
   // A DOM surface may identify at most one item. If an element claims a stale
   // or contradictory id, refuse rather than retargeting the nearest track.
   if (args.itemId && args.gapId) return { kind: 'none' }
-  const itemId = args.gapId ?? args.itemId
+  // The selected audio rubber band is a sibling overlay, not a child of the
+  // clip DOM node. Admit its exact identity only while it is still selected.
+  if (args.laneItemId && (args.gapId || (args.itemId && args.itemId !== args.laneItemId)
+    || !args.selectedClipIds?.includes(args.laneItemId))) return { kind: 'none' }
+  const itemId = args.gapId ?? args.itemId ?? args.laneItemId
   const item = itemId ? args.items.find((candidate) => candidate.id === itemId) ?? null : null
   if (itemId && !item) return { kind: 'none' }
+  if (args.laneItemId && item?.kind !== 'audio') return { kind: 'none' }
   if (item && args.trackId && item.trackId !== args.trackId) return { kind: 'none' }
   if (!item && args.trackId && !args.tracks.some((candidate) => candidate.id === args.trackId)) return { kind: 'none' }
   if (args.headerTrackId) {

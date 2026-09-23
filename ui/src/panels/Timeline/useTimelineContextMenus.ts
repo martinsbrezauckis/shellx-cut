@@ -49,7 +49,9 @@ export function useTimelineContextMenus({
     const gapId = gapElement?.getAttribute('data-cut-gap') ?? null
     const result = resolveTimelineContextTarget({
       itemId: gapId ? null : target.closest('[data-cut-clip]')?.getAttribute('data-cut-clip') ?? null,
+      laneItemId: gapId ? null : target.closest('[data-cut-volume-lane]')?.getAttribute('data-cut-volume-lane') ?? null,
       gapId,
+      selectedClipIds,
       trackId: target.closest('[data-cut-track]')?.getAttribute('data-cut-track') ?? null,
       headerTrackId: target.closest('[data-cut-track-header]')?.getAttribute('data-cut-track-header') ?? null,
       x: event.clientX,

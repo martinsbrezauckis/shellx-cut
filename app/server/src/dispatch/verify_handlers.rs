@@ -329,7 +329,7 @@ pub(super) async fn verify_loudness(state: &AppState, args: Value) -> Result<Ver
         )
     } else {
         format!(
-            "true peak {:.1} dBTP exceeds -1 dBTP — render.final {{normalize_loudness: {target:.0}}} (loudnorm caps TP at -1)",
+            "true peak {:.1} dBTP exceeds -1 dBTP — render.final {{normalize_loudness: {target:.0}}} (loudnorm targets -1.5 dBTP before encoding)",
             m.true_peak_dbtp
         )
     };

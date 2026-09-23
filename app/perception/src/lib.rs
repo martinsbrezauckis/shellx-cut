@@ -34,8 +34,8 @@ pub use prepared_stt::{prepared_stt_model, PreparedSttModel};
 pub use sidecar::{
     appdata_sidecar_dir, apply_python_command_policy, build_contact_sheet,
     build_contact_sheet_owned, build_qc_sheet, build_qc_sheet_owned, configured_sidecar_python,
-    effective_stt_selection, load_report, native_runtime_context, read_stt_setting,
-    run_instruments, run_instruments_owned, run_instruments_owned_ephemeral,
+    effective_stt_selection, load_report, native_runtime_context, premium_sidecar_runtime,
+    read_stt_setting, run_instruments, run_instruments_owned, run_instruments_owned_ephemeral,
     run_instruments_owned_progress, run_instruments_progress, run_subject, run_subject_owned,
     sidecar_paths, sidecar_runtime, stt_settings_path, transcribe, transcribe_owned_progress,
     transcribe_progress, write_stt_setting, EffectiveSttSelection, InstrumentSet, SidecarProgress,
