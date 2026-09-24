@@ -90,6 +90,11 @@ assert.equal(restored.session.log[1]?.actions?.[0]?.verb, 'edit.trim', 'reopen r
 assert.deepEqual(restored.session.log[1]?.target, target, 'reopen retains the immutable target snapshot and revision')
 assert.equal(loadAgentChatHistory(otherIdentity).session.log.length, 0, 'a different immutable project identity cannot load this Chat history')
 
+const serverTarget = { ...target, comment_id: null, position_ms: null } as unknown as ChatTimelineTarget
+const serverTurn = { ...session.log[1]!, target: serverTarget }
+assert.equal(saveAgentChatHistory(identity, { ...session, log: [session.log[0]!, serverTurn] }), 'saved', 'a completed Agent turn accepts the server wire target with null optional fields')
+assert.deepEqual(loadAgentChatHistory(identity).session.log[1]?.target, target, 'the server target restores as the same optional-field-free range')
+
 const interrupted: AgentChatSession = {
   ...session,
   busy: true,

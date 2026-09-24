@@ -5,6 +5,7 @@ import type {
   GenerateTemplateManifest,
   GenerateTemplateSummary,
 } from '../../lib/client'
+import { useState } from 'react'
 import { Icon } from '../../icons'
 import {
   colorValue,
@@ -14,6 +15,72 @@ import {
   type ParamValues,
 } from './model'
 import TemplateCatalog from './TemplateCatalog'
+
+const COLOR_PRESETS = [
+  { name: 'Gold', value: '#FFD24A' },
+  { name: 'Blue', value: '#22AAFF' },
+  { name: 'Mint', value: '#33CC99' },
+  { name: 'Coral', value: '#FF6B6B' },
+  { name: 'White', value: '#FFFFFF' },
+  { name: 'Black', value: '#000000' },
+] as const
+
+function ColorParamField({
+  name,
+  value,
+  common,
+  onParam,
+}: {
+  name: string
+  value: unknown
+  common: { 'data-cut-generate-param': string; 'aria-invalid': boolean | undefined }
+  onParam: (name: string, value: unknown) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const label = fieldLabel(name)
+  return (
+    <div className="gt-color">
+      <button
+        type="button"
+        className="gt-color__swatch"
+        {...common}
+        data-cut-generate-param-control={name}
+        aria-label={`Choose ${label} color`}
+        aria-expanded={open}
+        aria-controls={open ? `gt-color-palette-${name}` : undefined}
+        style={{ backgroundColor: colorValue(value) }}
+        onClick={() => setOpen((wasOpen) => !wasOpen)}
+      />
+      <input
+        className="gt-input gt-input--mono"
+        data-cut-generate-param-text={name}
+        aria-label={`${label} color value`}
+        value={String(value ?? '')}
+        onChange={(e) => onParam(name, e.target.value)}
+      />
+      {open && (
+        <div className="gt-color__palette" id={`gt-color-palette-${name}`} role="group" aria-label={`${label} color presets`}>
+          {COLOR_PRESETS.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              className="gt-color__preset"
+              data-cut-generate-param-control={`${name}-preset-${preset.value}`}
+              aria-label={`${preset.name} ${preset.value}`}
+              aria-pressed={colorValue(value).toUpperCase() === preset.value}
+              title={`${preset.name} ${preset.value}`}
+              style={{ backgroundColor: preset.value }}
+              onClick={() => {
+                onParam(name, preset.value)
+                setOpen(false)
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface TemplatePanelProps {
   kind: KindFilter
@@ -104,22 +171,7 @@ export default function TemplatePanel({
     }
     if (param.type === 'color') {
       return (
-        <div className="gt-color">
-          <input
-            {...common}
-            data-cut-generate-param-control={name}
-            type="color"
-            value={colorValue(value)}
-            onChange={(e) => onParam(name, e.target.value)}
-          />
-          <input
-            className="gt-input gt-input--mono"
-            data-cut-generate-param-text={name}
-            aria-label={`${fieldLabel(name)} color value`}
-            value={String(value ?? '')}
-            onChange={(e) => onParam(name, e.target.value)}
-          />
-        </div>
+        <ColorParamField name={name} value={value} common={common} onParam={onParam} />
       )
     }
     return (
@@ -202,16 +254,19 @@ export default function TemplatePanel({
             </div>
 
             <div className="gt-fields">
-              {Object.entries(manifest.params).map(([name, param]) => (
-                <label className="gt-field" key={name}>
+              {Object.entries(manifest.params).map(([name, param]) => {
+                const content = <>
                   <span className="gt-field__label">
                     {fieldLabel(name)}
                     {param.required && <b>required</b>}
                   </span>
                   {renderField(name, param)}
                   {param.description && <span className="gt-field__hint">{param.description}</span>}
-                </label>
-              ))}
+                </>
+                return param.type === 'color'
+                  ? <div className="gt-field" key={name}>{content}</div>
+                  : <label className="gt-field" key={name}>{content}</label>
+              })}
               <label className="gt-field">
                 <span className="gt-field__label">timeline start</span>
                 <input

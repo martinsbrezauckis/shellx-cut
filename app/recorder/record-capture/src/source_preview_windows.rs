@@ -101,7 +101,7 @@ pub(crate) fn start(
             Handler::start_free_threaded(Settings::new(
                 monitor,
                 CursorCaptureSettings::WithoutCursor,
-                DrawBorderSettings::WithoutBorder,
+                DrawBorderSettings::Default,
                 SecondaryWindowSettings::Default,
                 MinimumUpdateIntervalSettings::Default,
                 DirtyRegionSettings::Default,
@@ -118,7 +118,7 @@ pub(crate) fn start(
             Handler::start_free_threaded(Settings::new(
                 Window::from_raw_hwnd(hwnd.0),
                 CursorCaptureSettings::WithoutCursor,
-                DrawBorderSettings::WithoutBorder,
+                DrawBorderSettings::Default,
                 SecondaryWindowSettings::Default,
                 MinimumUpdateIntervalSettings::Default,
                 DirtyRegionSettings::Default,

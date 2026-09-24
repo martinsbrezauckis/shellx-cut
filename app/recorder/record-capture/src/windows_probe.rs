@@ -60,7 +60,10 @@ pub(crate) fn screen_probe() -> ScreenProbe {
     let settings = Settings::new(
         monitor,
         CursorCaptureSettings::WithoutCursor,
-        DrawBorderSettings::WithoutBorder,
+        // Borderless capture needs a separate Windows capability and consent.
+        // The OS default must match preview and recording so Doctor tests the
+        // same startable path that the user will actually use.
+        DrawBorderSettings::Default,
         SecondaryWindowSettings::Default,
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,

@@ -120,7 +120,7 @@ export default function BulkRelinkPanel({
   }
 
   return (
-    <section className="assets__bulk-relink" data-cut-media-relink-bulk data-cut-media-relink-state={phase}>
+    <section className="assets__bulk-relink" data-cut-media-relink-bulk data-cut-media-relink-state={phase} data-cut-media-relink-scope={scopeKey}>
       <div className="assets__bulk-relink-copy">
         <strong>Recover missing media</strong>
         <span>{offlineCount} offline {offlineCount === 1 ? 'asset' : 'assets'} · exact files only</span>

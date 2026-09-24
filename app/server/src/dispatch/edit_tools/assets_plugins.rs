@@ -3,8 +3,8 @@
 use super::*;
 use crate::dispatch::generated_assets::{
     copy_generation_references, generation_family_id, generation_id, normalize_variation,
-    read_generation_provenance, resolve_generation_references, validate_generation_references,
-    GenerationReference,
+    publish_generated_media, read_generation_provenance, resolve_generation_references,
+    validate_generation_references, GenerationReference,
 };
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 #[path = "assets_plugins/fetch.rs"]
@@ -2348,15 +2348,7 @@ async fn assets_generate_run(
     }
     validate_generation_references(&current_project, &references, &current_dir)?;
 
-    std::fs::rename(&output, &durable_output).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            "publish immutable generated media",
-            e.to_string(),
-        )
-    })?;
-
-    let content_hash = cut_core::hash_file(&durable_output)?;
+    let content_hash = publish_generated_media(&output, &durable_output)?;
     let metadata = generation_metadata(
         &generation_id,
         &family_id,

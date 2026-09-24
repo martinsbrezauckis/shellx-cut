@@ -1774,7 +1774,43 @@ fn generate_storyboard_questions(envelope: &Value) -> (Value, Vec<String>) {
         );
         questions.truncate(1);
     }
-    (Value::Array(questions), warnings)
+    let normalized = questions
+        .into_iter()
+        .filter_map(|question| {
+            let field = question
+                .get("field")
+                .or_else(|| question.get("id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let prompt = question
+                .get("prompt")
+                .or_else(|| question.get("question"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let (Some(field), Some(prompt)) = (field, prompt) else {
+                warnings.push("adapter returned a question without a field and prompt".to_string());
+                return None;
+            };
+            let choices = question
+                .get("choices")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                });
+            let mut result = json!({ "id": field, "field": field, "prompt": prompt });
+            if let Some(choices) = choices {
+                result["choices"] = json!(choices);
+            }
+            Some(result)
+        })
+        .collect();
+    (Value::Array(normalized), warnings)
 }
 
 fn generate_storyboard_result(
@@ -2343,6 +2379,21 @@ pub(crate) async fn generate_storyboard(
         )));
     }
 
+    if status == "needs_input" && questions.as_array().is_none_or(Vec::is_empty) {
+        return Ok(VerbResult::ok(generate_storyboard_result(
+            "error",
+            request,
+            backend,
+            storyboard,
+            questions,
+            validation,
+            evidence,
+            json!("generate storyboard adapter returned no answerable director question"),
+            warnings,
+            generate_storyboard_next_actions("error"),
+        )));
+    }
+
     let final_status = if status == "needs_input"
         || storyboard.get("status").and_then(|v| v.as_str()) == Some("needs_input")
     {
@@ -2454,4 +2505,36 @@ pub(crate) async fn generate_storyboard(
         warnings,
         generate_storyboard_next_actions(final_status),
     )))
+}
+
+#[cfg(test)]
+mod storyboard_question_tests {
+    use super::*;
+
+    #[test]
+    fn director_adapter_question_is_answerable_in_the_ui() {
+        let envelope = json!({"questions": [{
+            "field": "audience",
+            "question": "Who is this for?",
+            "choices": ["customers", "team"]
+        }]});
+        let (questions, warnings) = generate_storyboard_questions(&envelope);
+        assert!(warnings.is_empty());
+        assert_eq!(
+            questions,
+            json!([{
+                "id": "audience", "field": "audience", "prompt": "Who is this for?",
+                "choices": ["customers", "team"]
+            }])
+        );
+    }
+
+    #[test]
+    fn unanswerable_question_is_not_reported_as_renderable() {
+        let (questions, warnings) = generate_storyboard_questions(&json!({
+            "questions": [{"question": "Who is this for?"}]
+        }));
+        assert_eq!(questions, json!([]));
+        assert_eq!(warnings.len(), 1);
+    }
 }

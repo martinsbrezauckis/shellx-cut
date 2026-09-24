@@ -85,7 +85,10 @@ function readTarget(value: unknown, identity: ProjectIdentity): ChatTimelineTarg
   const label = string(candidate.label, 240)
   if (!range || !revision || !label) return null
   const commentId = optionalString(candidate.comment_id, MAX_ID)
-  const parsedPosition = candidate.position_ms === undefined ? undefined : integer(candidate.position_ms)
+  // The server's serde Option fields are present as null for range/selection
+  // targets. Treat that wire form as absent, then retain the same strict point
+  // requirement for comment/position targets below.
+  const parsedPosition = candidate.position_ms == null ? undefined : integer(candidate.position_ms)
   if (parsedPosition === null) return null
   const position = parsedPosition
   if ((kind === 'comment' || kind === 'position') && position !== range[0]) return null

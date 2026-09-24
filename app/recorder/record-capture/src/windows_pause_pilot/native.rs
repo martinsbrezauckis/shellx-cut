@@ -92,7 +92,7 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
         let control = Handler::start_free_threaded(WcSettings::new(
             *monitor,
             CursorCaptureSettings::WithoutCursor,
-            DrawBorderSettings::WithoutBorder,
+            DrawBorderSettings::Default,
             SecondaryWindowSettings::Default,
             MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,

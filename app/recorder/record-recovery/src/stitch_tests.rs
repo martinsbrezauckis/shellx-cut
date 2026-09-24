@@ -101,6 +101,39 @@ fn real_ffmpeg_stitch_pads_sparse_segment_to_measured_capture_span() {
     );
 }
 
+#[test]
+fn real_ffmpeg_stitch_accepts_bounded_encoder_drain_but_rejects_longer_overrun() {
+    let dir = tempdir().unwrap();
+    let mut owner = ManifestOwner::begin(dir.path(), CaptureStart::new("cap", 7_033)).unwrap();
+    // PC2's native 25 fps Stop produced 179 frames (7_160 ms) against a
+    // 7_033 ms capture-clock span. The checked media must not be discarded.
+    let media = publish_ffmpeg_segment(&mut owner, 0, 0, 7_033, 179);
+    assert_eq!(media.duration_ms, 7_160);
+    let source = stitch_complete(
+        dir.path(),
+        &owner.manifest().checkpoints,
+        "ffmpeg",
+        "ffprobe",
+        "source.mp4",
+    )
+    .unwrap();
+    assert_capture_clock_duration(&source, 7_160);
+
+    let mut inconsistent = owner.manifest().checkpoints.clone();
+    inconsistent[0].facts.end_ms = 6_933; // 227 ms short: beyond encoder drain.
+    let error = stitch_complete(
+        dir.path(),
+        &inconsistent,
+        "ffmpeg",
+        "ffprobe",
+        "inconsistent.mp4",
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("checkpoint media exceeds its observed capture span"));
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires native Linux GStreamer"]

@@ -458,6 +458,69 @@ pub(crate) fn copy_generation_references(
     Ok(copied)
 }
 
+/// Publish provider output through a file created by Cut in the project. A
+/// provider sandbox can own its scratch file (Windows CodexSandboxOffline does),
+/// and renaming that inode into `assets/generated` carries the foreign owner
+/// into durable project state. The private stage inherits the project's owner;
+/// no-clobber publication keeps the generated id immutable.
+pub(crate) fn publish_generated_media(
+    source: &Path,
+    destination: &Path,
+) -> Result<String, CutError> {
+    let metadata = std::fs::symlink_metadata(source).map_err(|error| {
+        CutError::new(
+            error_codes::IO,
+            "inspect generated media",
+            error.to_string(),
+        )
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "generated media is not a nonempty regular file",
+            "the provider must write a real file into its generation workspace",
+        ));
+    }
+    let source_hash = cut_core::hash_file(source)?;
+    let parent = destination.parent().ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "generated media has no destination directory",
+            "keep the project generated-assets directory available",
+        )
+    })?;
+    let mut stage = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+        CutError::new(error_codes::IO, "stage generated media", error.to_string())
+    })?;
+    let mut input = std::fs::File::open(source).map_err(|error| {
+        CutError::new(error_codes::IO, "read generated media", error.to_string())
+    })?;
+    std::io::copy(&mut input, stage.as_file_mut()).map_err(|error| {
+        CutError::new(error_codes::IO, "copy generated media", error.to_string())
+    })?;
+    stage.as_file_mut().sync_all().map_err(|error| {
+        CutError::new(error_codes::IO, "sync generated media", error.to_string())
+    })?;
+    drop(input);
+    drop(stage.persist_noclobber(destination).map_err(|error| {
+        CutError::new(
+            error_codes::IO,
+            "publish immutable generated media",
+            error.to_string(),
+        )
+    })?);
+    let published_hash = cut_core::hash_file(destination)?;
+    if published_hash != source_hash {
+        let _ = std::fs::remove_file(destination);
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "generated media changed during publication",
+            "retry generation after the provider has finished writing its output",
+        ));
+    }
+    Ok(published_hash)
+}
+
 fn generation_sidecar_record(
     project: &cut_core::Project,
     asset_id: &str,
@@ -620,6 +683,39 @@ pub(super) async fn assets_generated_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_media_publication_copies_bytes_without_replacing_an_existing_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("provider.png");
+        let destination = dir.path().join("generated.png");
+        std::fs::write(&source, b"real provider bytes").unwrap();
+        let hash = publish_generated_media(&source, &destination).unwrap();
+        assert_eq!(hash, cut_core::hash_file(&source).unwrap());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"real provider bytes");
+        assert!(
+            source.exists(),
+            "the provider workspace remains owned by its cleanup"
+        );
+
+        std::fs::write(&source, b"different provider bytes").unwrap();
+        assert!(publish_generated_media(&source, &destination).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"real provider bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_media_publication_rejects_a_provider_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.png");
+        let source = dir.path().join("provider.png");
+        let destination = dir.path().join("generated.png");
+        std::fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, &source).unwrap();
+        assert!(publish_generated_media(&source, &destination).is_err());
+        assert!(!destination.exists());
+    }
 
     #[test]
     fn base_generation_identity_is_compatible_and_variations_are_distinct() {

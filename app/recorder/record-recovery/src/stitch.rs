@@ -15,6 +15,11 @@ use workspace::StitchWorkspace;
 
 const CONCAT_TOLERANCE_MS: u64 = 120;
 const ELAPSED_TOLERANCE_MS: u64 = 1_120;
+// A native encoder can drain a few already-captured frames after the Stop clock
+// is sampled. Keep this separate from concat/output tolerance: the PC2
+// GStreamer capture measured 7_033 ms while its verified 25 fps file held
+// 7_160 ms (179 frames). Larger overruns still indicate inconsistent input.
+const CAPTURE_DRAIN_TOLERANCE_MS: u64 = 200;
 
 /// A final source path coupled to the exact facts already verified before its
 /// no-replace publication. Consumers must carry these facts forward instead of
@@ -221,7 +226,7 @@ fn capture_span_ms(segment: &Checkpoint, media: &MediaFacts) -> Result<u64, Mani
         .end_ms
         .checked_sub(segment.facts.start_ms)
         .ok_or_else(|| ManifestError::Invalid("checkpoint capture span is negative".into()))?;
-    if media.duration_ms > observed.saturating_add(CONCAT_TOLERANCE_MS) {
+    if media.duration_ms > observed.saturating_add(CAPTURE_DRAIN_TOLERANCE_MS) {
         return Err(ManifestError::Invalid(
             "checkpoint media exceeds its observed capture span".into(),
         ));

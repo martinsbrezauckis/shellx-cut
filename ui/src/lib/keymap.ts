@@ -165,6 +165,19 @@ export function isRemapped(id: string): boolean {
   return readOverrides()[id] !== undefined
 }
 
+function eventKeyName(e: KeyboardEvent): string {
+  // macOS Option changes the character reported by key (Option+1 is often ¡).
+  // Keep an ASCII logical key when present; otherwise use the physical
+  // alphanumeric key so saved Alt+1/Alt+A bindings remain usable.
+  if (e.altKey && !/^[A-Za-z0-9]$/.test(e.key)) {
+    const digit = /^Digit([0-9])$/.exec(e.code)
+    if (digit) return digit[1]
+    const letter = /^Key([A-Z])$/.exec(e.code)
+    if (letter) return letter[1]
+  }
+  return e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key
+}
+
 /** Normalize a KeyboardEvent to a binding string, or null when it's just a
  *  modifier / unusable key. Single keys uppercase ('S'), specials by name
  *  ('Space', '['), modifiers prefixed in fixed order (Ctrl+Alt+Shift+X). */
@@ -172,7 +185,7 @@ export function bindingFromEvent(e: KeyboardEvent): string | null {
   const k = e.key
   if (k === 'Control' || k === 'Alt' || k === 'Shift' || k === 'Meta') return null
   if (k === 'Escape' || k === 'Tab' || k === 'Enter') return null // reserved
-  let name = k === ' ' ? 'Space' : k.length === 1 ? k.toUpperCase() : k
+  let name = eventKeyName(e)
   const mods: string[] = []
   if (e.ctrlKey || e.metaKey) mods.push('Ctrl')
   if (e.altKey) mods.push('Alt')
@@ -192,7 +205,7 @@ export function matchesBinding(e: KeyboardEvent, binding: string): boolean {
   const wantCtrl = parts.includes('Ctrl')
   const wantAlt = parts.includes('Alt')
   const wantShift = parts.includes('Shift')
-  const evKey = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key
+  const evKey = eventKeyName(e)
   if (evKey !== key) return false
   if ((e.ctrlKey || e.metaKey) !== wantCtrl) return false
   if (e.altKey !== wantAlt) return false

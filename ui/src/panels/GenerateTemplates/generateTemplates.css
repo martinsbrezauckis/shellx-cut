@@ -254,13 +254,36 @@
   grid-template-columns: 44px 1fr;
   gap: 8px;
 }
-.gt-color input[type="color"] {
+.gt-color__swatch {
   width: 44px;
   height: 34px;
   padding: 2px;
   border: 1px solid var(--hairline-2);
   border-radius: var(--radius-chip);
-  background: var(--surface-2);
+  cursor: pointer;
+}
+.gt-color__palette {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 2px;
+}
+.gt-color__preset {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+}
+.gt-color__swatch:hover,
+.gt-color__preset:hover {
+  border-color: var(--ink-2);
+}
+.gt-color__swatch:focus-visible,
+.gt-color__preset:focus-visible {
+  outline: 2px solid var(--cut);
+  outline-offset: 2px;
 }
 .gt-check {
   display: flex;

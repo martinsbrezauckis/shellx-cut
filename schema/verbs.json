@@ -14367,7 +14367,7 @@
           }
         }
       },
-      "result": "{status, request, backend?, storyboard?, questions[], validation?, evidence:{policy, mutated, skill_path, scene_count, duration_ms, template_ids, brief_fields}, preview?, insert?, reason?, warnings[], next_actions[]}. policy plan mutates nothing; policy preview returns preview:{policy:'preview',mutated:false,scenes:[{scene_id,index,status,template_id,range_ms,preview_id,path,url,mime,width,height,lowering}],unsupported[],warnings[]}; policy insert returns insert:{policy:'insert',mutated:true,scenes:[{scene_id,index,status,template_id,range_ms,checkpoint,op_ids,clips,assets,lowering,restore_hint}],checkpoints,op_ids,clips,assets,restore_hint}.",
+      "result": "{status, request, backend?, storyboard?, questions:[{id,field,prompt,choices?}], validation?, evidence:{policy, mutated, skill_path, scene_count, duration_ms, template_ids, brief_fields}, preview?, insert?, reason?, warnings[], next_actions[]}. Director answers use the returned question field as the answers key. policy plan mutates nothing; policy preview returns preview:{policy:'preview',mutated:false,scenes:[{scene_id,index,status,template_id,range_ms,preview_id,path,url,mime,width,height,lowering}],unsupported[],warnings[]}; policy insert returns insert:{policy:'insert',mutated:true,scenes:[{scene_id,index,status,template_id,range_ms,checkpoint,op_ids,clips,assets,lowering,restore_hint}],checkpoints,op_ids,clips,assets,restore_hint}.",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {

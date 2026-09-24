@@ -382,7 +382,7 @@ impl Capture for WindowsCapture {
                 Src::Monitor(m) => Handler::start_free_threaded(WcSettings::new(
                     m,
                     CursorCaptureSettings::WithoutCursor,
-                    DrawBorderSettings::WithoutBorder,
+                    DrawBorderSettings::Default,
                     SecondaryWindowSettings::Default,
                     MinimumUpdateIntervalSettings::Default,
                     DirtyRegionSettings::Default,
@@ -392,7 +392,7 @@ impl Capture for WindowsCapture {
                 Src::Window(win) => Handler::start_free_threaded(WcSettings::new(
                     win,
                     CursorCaptureSettings::WithoutCursor,
-                    DrawBorderSettings::WithoutBorder,
+                    DrawBorderSettings::Default,
                     SecondaryWindowSettings::Default,
                     MinimumUpdateIntervalSettings::Default,
                     DirtyRegionSettings::Default,

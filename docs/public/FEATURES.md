@@ -850,6 +850,8 @@ route to the same surface registry.
   `system.wav` through `raw_streams.system`; `raw_has_system` is true only when
   `mux_raw:true` also included it in the optional combined raw output. Otherwise
   screen capture continues and the absent system-audio stream remains explicit.
+- Windows screen recording uses the standard system capture border. Cut does not
+  request the separate borderless-capture permission when starting a recording.
 - Exports and recordings can use a default export folder or per-action Save As;
   default filename collisions are resolved with a numbered sibling file, while
   confirmed Save As targets can replace existing export media/sidecar files.

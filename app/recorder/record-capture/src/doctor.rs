@@ -117,7 +117,7 @@ fn session_locked() -> Option<bool> {
 /// The compiled screen-capture backend for this build (cfg + feature gated).
 fn screen_backend() -> (&'static str, &'static str) {
     if cfg!(all(windows, feature = "capture-windows")) {
-        ("ok", "windows-capture (WGC + DXGI fallback)")
+        ("ok", "Windows Graphics Capture (WGC)")
     } else if cfg!(all(target_os = "macos", feature = "capture-macos")) {
         (
             "ok",
