@@ -251,9 +251,11 @@ fn validate_admission(admission: &Admission) -> Result<(), String> {
     {
         return Err("provider enrollment is malformed".into());
     }
-    validate_code_pin(&enrollment.executable, true)?;
+    // Runner admits the first default Windows command, including npm's .cmd
+    // shim. Cut's existing Windows provider launcher handles that form.
+    validate_code_pin(&enrollment.executable, true, cfg!(windows))?;
     if let Some(entrypoint) = &enrollment.entrypoint {
-        validate_code_pin(entrypoint, false)?;
+        validate_code_pin(entrypoint, false, false)?;
         if entrypoint.path == enrollment.executable.path {
             return Err("provider entrypoint cannot duplicate the executable".into());
         }
@@ -263,7 +265,7 @@ fn validate_admission(admission: &Admission) -> Result<(), String> {
         code_paths.insert(entrypoint.path.as_path());
     }
     for runtime_code in &enrollment.runtime_code {
-        validate_code_pin(runtime_code, true)?;
+        validate_code_pin(runtime_code, true, false)?;
         if !code_paths.insert(runtime_code.path.as_path()) {
             return Err("provider enrollment contains duplicate code paths".into());
         }
@@ -288,7 +290,11 @@ fn validate_logical_provider(value: &str) -> Result<(), String> {
         .map_err(|_| "logical provider must be a bounded lowercase identifier".into())
 }
 
-fn validate_code_pin(pin: &CodePin, executable: bool) -> Result<(), String> {
+fn validate_code_pin(
+    pin: &CodePin,
+    executable: bool,
+    allow_windows_batch_command: bool,
+) -> Result<(), String> {
     if !is_host_absolute_path(&pin.path) || !is_plain_text_path(&pin.path) {
         return Err("provider code path must be a native absolute path".into());
     }
@@ -325,11 +331,10 @@ fn validate_code_pin(pin: &CodePin, executable: bool) -> Result<(), String> {
             "pwsh",
         ]
         .contains(&file_name.as_str())
-            || ["cmd", "bat", "ps1", "sh", "js", "mjs", "py"].contains(&extension.as_str())
+            || (["cmd", "bat"].contains(&extension.as_str()) && !allow_windows_batch_command)
+            || ["ps1", "sh", "js", "mjs", "py"].contains(&extension.as_str())
         {
-            return Err(
-                "provider executable must be native, never a shell or script wrapper".into(),
-            );
+            return Err("provider executable is a shell or unsupported script wrapper".into());
         }
     } else if ["cmd", "bat", "ps1", "sh"].contains(&extension.as_str()) {
         return Err("provider entrypoint cannot be a shell or batch wrapper".into());
@@ -802,6 +807,26 @@ mod tests {
         let shell_path = "/bin/sh";
         shell_program["admission"]["enrollment"]["executable"]["path"] = json!(shell_path);
         assert!(selected_from_context_path(context_file(&shell_program).path(), "claude").is_err());
+    }
+
+    #[test]
+    fn admits_default_windows_batch_command_only_as_the_selected_executable() {
+        for name in ["claude.cmd", "grok.bat"] {
+            let pin = CodePin {
+                path: PathBuf::from(native_path(name)),
+                sha256: "a".repeat(64),
+            };
+            assert!(validate_code_pin(&pin, true, true).is_ok());
+            assert!(validate_code_pin(&pin, true, false).is_err());
+            assert!(validate_code_pin(&pin, false, false).is_err());
+        }
+        for name in ["cmd.exe", "powershell.exe", "provider.ps1"] {
+            let pin = CodePin {
+                path: PathBuf::from(native_path(name)),
+                sha256: "a".repeat(64),
+            };
+            assert!(validate_code_pin(&pin, true, true).is_err());
+        }
     }
 
     #[test]

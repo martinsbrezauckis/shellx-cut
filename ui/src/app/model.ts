@@ -1,6 +1,6 @@
 import type { Project } from '../lib/client'
 import type { GenerateWorkspaceTab } from '../panels/GenerateTemplates/model'
-import type { LeftTab } from '../layout/useLayout'
+import type { LeftTab, WorkspaceMode } from '../layout/useLayout'
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
@@ -56,9 +56,13 @@ export function preferredProjectLeftTab(project: Project | null): Extract<LeftTa
   return hasTranscript ? 'transcript' : 'assets'
 }
 
-/** Decide whether a completed resync should return to Projects.
+/** Decide whether a completed resync should return the editor to Projects.
  * `undefined` means the response was superseded by a newer refresh, while
- * `null` is the server's authoritative "no project open" state. */
-export function shouldReturnToProjectsAfterResync(project: Project | null | undefined): boolean {
-  return project === null
+ * `null` is the server's authoritative "no project open" state. The global
+ * Library and other explicitly selected workspaces are not project tabs. */
+export function shouldReturnToProjectsAfterResync(
+  project: Project | null | undefined,
+  workspaceMode: WorkspaceMode,
+): boolean {
+  return project === null && workspaceMode === 'edit'
 }

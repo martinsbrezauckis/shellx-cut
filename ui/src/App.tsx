@@ -232,7 +232,7 @@ export default function App() {
     setSelectedClipIds,
   })
   const openUiSurface = useAppSurfaceEvents({
-    setLayout: requestLayout,
+    setLayout: requestWorkspaceLayout,
     setCommentsOpen,
     setFocusComment,
     setActiveDrawer,
@@ -410,7 +410,9 @@ export default function App() {
           deferredProjectChange.current = true
           return finish(nextProject)
         }
-        resetProjectScopedUi(true)
+        // Repeated no-project replies on a fresh launch are not project
+        // switches. Preserve an explicit global Library choice during resync.
+        if (projectRef.current !== null) resetProjectScopedUi(true)
         projectRef.current = null
         setProject(null)
       }
@@ -477,18 +479,13 @@ export default function App() {
   /** Full state resync — on connect and after reconnect (WS may have lagged). */
   const resync = useCallback(async () => {
     const activeProject = await syncProject()
-    if (shouldReturnToProjectsAfterResync(activeProject)) {
+    if (activeProject === null) {
       requestLayout((current) => (
-        current.workspaceMode === 'edit'
-        && current.leftTab === 'projects'
-        && !current.leftCollapsed
+        !shouldReturnToProjectsAfterResync(activeProject, current.workspaceMode)
           ? current
-          : {
-              ...current,
-              workspaceMode: 'edit',
-              leftTab: 'projects',
-              leftCollapsed: false,
-            }
+          : current.leftTab === 'projects' && !current.leftCollapsed
+            ? current
+            : { ...current, leftTab: 'projects', leftCollapsed: false }
       ))
     }
     if (needsColdHistoryLoad(activeProject, initialHistoryLoaded.current)) {
