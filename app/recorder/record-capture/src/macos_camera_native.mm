@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/attr.h>
+#include <sys/stat.h>
 
 typedef void (*SxcCameraFrameCallback)(void *context, uint64_t pts_ns, uint64_t duration_ns);
 
@@ -31,6 +32,22 @@ static void sxc_camera_diag(const char *event) {
     pthread_threadid_np(nullptr, &thread_id);
     os_log_error(OS_LOG_DEFAULT, "SXCCameraDiag %{public}s thread=%llu main=%{public}s",
                  event, (unsigned long long)thread_id, [NSThread isMainThread] ? "yes" : "no");
+}
+
+static std::atomic_uint_fast64_t sxc_main_ping_id{0};
+
+static void sxc_camera_main_ping(const char *phase) {
+    const uint64_t ping_id = sxc_main_ping_id.fetch_add(1) + 1;
+    os_log_error(OS_LOG_DEFAULT, "SXCCameraDiag main ping %{public}s queued id=%llu",
+                 phase, (unsigned long long)ping_id);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        uint64_t thread_id = 0;
+        pthread_threadid_np(nullptr, &thread_id);
+        os_log_error(OS_LOG_DEFAULT,
+                     "SXCCameraDiag main ping %{public}s executed id=%llu thread=%llu main=%{public}s",
+                     phase, (unsigned long long)ping_id, (unsigned long long)thread_id,
+                     [NSThread isMainThread] ? "yes" : "no");
+    });
 }
 
 static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_seconds) {
@@ -79,6 +96,15 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
         _deviceLost.store(false);
     }
     return self;
+}
+
+- (void)captureOutput:(AVCaptureFileOutput *)captureOutput
+ didStartRecordingToOutputFileAtURL:(NSURL *)outputFileURL
+      fromConnections:(NSArray<AVCaptureConnection *> *)connections {
+    (void)captureOutput;
+    (void)outputFileURL;
+    (void)connections;
+    sxc_camera_diag("didStartRecording entered");
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output
@@ -133,9 +159,19 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
 @property(nonatomic, strong) AVCaptureVideoDataOutput *samples;
 @property(nonatomic, strong) SxcCameraDelegate *delegate;
 @property(nonatomic, strong) dispatch_queue_t queue;
+@property(nonatomic, strong) NSString *outputPath;
 @end
 @implementation SxcCameraHandle
 @end
+
+static void sxc_camera_diag_movie_state(const char *phase, SxcCameraHandle *handle) {
+    struct stat file_stat = {};
+    const int file_status = stat(handle.outputPath.fileSystemRepresentation, &file_stat);
+    os_log_error(OS_LOG_DEFAULT,
+                 "SXCCameraDiag movie %{public}s isRecording=%{public}d exists=%{public}d bytes=%lld",
+                 phase, handle.movie.isRecording ? 1 : 0, file_status == 0 ? 1 : 0,
+                 file_status == 0 ? (long long)file_stat.st_size : -1LL);
+}
 
 static void sxc_quiesce_samples(SxcCameraHandle *handle) {
     sxc_camera_diag("sample quiescence begin");
@@ -226,6 +262,7 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
             return nullptr;
         }
         SxcCameraHandle *handle = [SxcCameraHandle new];
+        handle.outputPath = path;
         handle.session = [AVCaptureSession new];
         handle.movie = [AVCaptureMovieFileOutput new];
         handle.samples = [AVCaptureVideoDataOutput new];
@@ -260,6 +297,7 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
         NSURL *url = [NSURL fileURLWithPath:path];
         [handle.movie startRecordingToOutputFileURL:url recordingDelegate:handle.delegate];
         sxc_camera_diag("startRecording requested");
+        sxc_camera_main_ping("start");
         // Samples delivered while the session was merely warming up must not
         // enter the shared screen clock. Admit callbacks only after the movie
         // writer owns its destination.
@@ -294,11 +332,16 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
         }
         SxcCameraHandle *handle = (__bridge_transfer SxcCameraHandle *)opaque;
         sxc_camera_diag("Stop entered");
+        sxc_camera_main_ping("stop");
+        sxc_camera_diag_movie_state("before quiesce", handle);
         sxc_quiesce_samples(handle);
-        if (handle.movie.isRecording) {
+        const bool movie_was_recording = handle.movie.isRecording;
+        sxc_camera_diag_movie_state("before stopRecording", handle);
+        if (movie_was_recording) {
             [handle.movie stopRecording];
         }
-        sxc_camera_diag("stopRecording requested");
+        sxc_camera_diag(movie_was_recording ? "stopRecording called" : "stopRecording skipped");
+        sxc_camera_diag_movie_state("after stopRecording", handle);
         // didFinish is required for every recording request, including one
         // that stopped before isRecording could still report true.
         if (!sxc_wait_camera_event(handle.delegate->_finished, 15)) {
