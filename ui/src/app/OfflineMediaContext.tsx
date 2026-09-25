@@ -29,6 +29,21 @@ interface OfflineMediaContextValue {
 
 const EMPTY_IDS = new Set<string>()
 const EMPTY_MODIFIED = new Map<string, number>()
+
+function sameProjectRevision(left: Project | null, right: Project | null): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  const leftIdentity = left.project_identity
+  const rightIdentity = right.project_identity
+  return !!leftIdentity && !!rightIdentity
+    && leftIdentity.schema === 'shellx-cut/project-identity/1'
+    && rightIdentity.schema === leftIdentity.schema
+    && leftIdentity.origin_path_sha256 === rightIdentity.origin_path_sha256
+    && leftIdentity.project_name === rightIdentity.project_name
+    && !!left.project_revision
+    && left.project_revision === right.project_revision
+}
+
 export const OfflineMediaContext = createContext<OfflineMediaContextValue>({
   offlineAssetIds: EMPTY_IDS,
   modifiedMs: EMPTY_MODIFIED,
@@ -80,7 +95,7 @@ export function OfflineMediaProvider({
   }, [refresh])
 
   const maps = useMemo(() => (
-    snapshot.project === project ? offlineMediaMaps(snapshot.rows) : {
+    sameProjectRevision(snapshot.project, project) ? offlineMediaMaps(snapshot.rows) : {
       offlineAssetIds: EMPTY_IDS,
       modifiedMs: EMPTY_MODIFIED,
     }

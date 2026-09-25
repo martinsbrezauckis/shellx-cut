@@ -13,6 +13,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -46,6 +47,7 @@ pub(crate) struct WindowsCheckpointPublisher {
     /// Ordinary WGC can encode frames during start_free_threaded. The private
     /// pause pilot still uses the separate post-open observed-start contract.
     pub(crate) include_native_startup: bool,
+    pub(crate) timing: Option<Arc<Mutex<Option<crate::windows_wgc_timing::WgcTimingRecorder>>>>,
 }
 
 impl WgcCheckpointPublisher for WindowsCheckpointPublisher {
@@ -67,7 +69,13 @@ impl WgcCheckpointPublisher for WindowsCheckpointPublisher {
         staging: &Path,
         facts: record_recovery::CheckpointFacts,
     ) -> Result<record_recovery::Checkpoint> {
-        self.checkpoints.publish(sequence, staging, facts)
+        let timing = self.timing.as_ref().and_then(|slot| {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        });
+        self.checkpoints
+            .publish_windows_wgc(sequence, staging, facts, timing.as_ref())
     }
 }
 
@@ -361,11 +369,16 @@ impl Capture for WindowsCapture {
             range,
         )?;
         let mut selected_window_segment_started = false;
+        let current_wgc_timing = Arc::new(Mutex::new(None));
+        let factory_wgc_timing = current_wgc_timing.clone();
         let mut start_wgc = |target: &Src,
                              destination: &Path|
          -> Result<WgcStartedControl<LiveWgcControl>> {
             let source_lifecycle = cfg.source_lifecycle.clone();
             let timing = crate::windows_wgc_timing::WgcTimingRecorder::new(start, fps, destination);
+            *factory_wgc_timing
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(timing.clone());
             if matches!(target, Src::Window(_)) {
                 if let Some(lifecycle) = source_lifecycle.as_ref() {
                     if selected_window_segment_started {
@@ -437,6 +450,7 @@ impl Capture for WindowsCapture {
                 let publisher = WindowsCheckpointPublisher {
                     checkpoints,
                     include_native_startup: true,
+                    timing: Some(current_wgc_timing),
                 };
                 let mut owner = WgcRunOwner::new(src, start_wgc, publisher);
                 let mut segment = owner.begin(0, || observe_wgc_start(start))?;

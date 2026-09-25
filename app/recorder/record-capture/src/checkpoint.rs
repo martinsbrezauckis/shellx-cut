@@ -16,6 +16,7 @@ use std::time::Duration;
 use record_core::{error_codes, RecordError, Result};
 use record_recovery::{CheckpointFacts, ManifestOwner, MediaFacts, PrivateStaging};
 
+use crate::windows_wgc_timing::WgcTimingRecorder;
 use crate::CheckpointConfig;
 
 pub(crate) struct Checkpoints {
@@ -90,7 +91,22 @@ impl Checkpoints {
     ) -> Result<record_recovery::Checkpoint> {
         let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
-        self.publish_with_tools(sequence, staging, facts, &ffmpeg, &ffprobe)
+        self.publish_with_tools(sequence, staging, facts, &ffmpeg, &ffprobe, None)
+    }
+
+    /// Ordinary WGC owns an independent observation of each accepted native
+    /// frame. Use it only to correct a proven encoder-generated terminal tail.
+    #[cfg_attr(not(all(windows, feature = "capture-windows")), allow(dead_code))]
+    pub(crate) fn publish_windows_wgc(
+        &mut self,
+        sequence: u64,
+        staging: &Path,
+        facts: CheckpointFacts,
+        timing: Option<&WgcTimingRecorder>,
+    ) -> Result<record_recovery::Checkpoint> {
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
+        self.publish_with_tools(sequence, staging, facts, &ffmpeg, &ffprobe, timing)
     }
 
     fn publish_with_tools(
@@ -100,6 +116,7 @@ impl Checkpoints {
         facts: CheckpointFacts,
         ffmpeg: &str,
         ffprobe: &str,
+        timing: Option<&WgcTimingRecorder>,
     ) -> Result<record_recovery::Checkpoint> {
         // A closed encoder file is still not a checkpoint until both the container
         // facts and a full decode succeed. The manifest never names an open or merely
@@ -112,6 +129,11 @@ impl Checkpoints {
         let media = record_recovery::verify_media(ffmpeg, ffprobe, staging)
             .map_err(|e| error(&e.to_string()))?;
         let media = normalize_video_only_checkpoint(staging, media, ffmpeg, ffprobe)?;
+        let media = if let Some(timing) = timing {
+            trim_extrapolated_wgc_tail(staging, &facts, media, timing, ffmpeg, ffprobe)?
+        } else {
+            media
+        };
         self.owner
             .publish(sequence, staging, facts, media)
             .map_err(|e| error(&e.to_string()))
@@ -136,6 +158,64 @@ impl Checkpoints {
         .map_err(|e| error(&e.to_string()))?;
         Ok((stitched.path, stitched.media))
     }
+}
+
+fn trim_extrapolated_wgc_tail(
+    staging: &Path,
+    facts: &CheckpointFacts,
+    media: MediaFacts,
+    timing: &WgcTimingRecorder,
+    ffmpeg: &str,
+    ffprobe: &str,
+) -> Result<MediaFacts> {
+    let span_ms = facts.end_ms.saturating_sub(facts.start_ms);
+    if !timing.explains_extrapolated_tail(
+        facts.start_ms,
+        facts.end_ms,
+        media.duration_ms,
+        media.decoded_video_frames,
+    ) {
+        return Ok(media);
+    }
+    let parent = staging
+        .parent()
+        .ok_or_else(|| error("WGC checkpoint staging path has no parent"))?;
+    let clipped = PrivateStaging::create_windows_wgc(parent)
+        .map_err(|cause| error(&format!("reserve WGC tail correction: {cause}")))?;
+    let duration = format!("{:.3}", span_ms as f64 / 1000.0);
+    let control =
+        cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(60), || false);
+    let output = cut_media::ffmpeg::run_owned_command(
+        Command::new(ffmpeg)
+            .args(["-v", "error", "-n", "-i"])
+            .arg(staging)
+            .args(["-map", "0:v:0", "-an", "-t", &duration, "-c:v", "copy"])
+            .arg(clipped.path()),
+        &control,
+        "clip WGC encoder tail to observed Stop",
+    )
+    .map_err(|cause| error(&cause.to_string()))?;
+    if !output.status.success() {
+        return Err(error("ffmpeg could not clip the WGC encoder tail"));
+    }
+    let corrected = record_recovery::verify_media(ffmpeg, ffprobe, clipped.path())
+        .map_err(|cause| error(&cause.to_string()))?;
+    if corrected.has_audio
+        || corrected.decoded_video_frames < timing.accepted_frames()
+        || corrected.decoded_video_frames >= media.decoded_video_frames
+        || corrected.duration_ms > span_ms.saturating_add(100)
+        || corrected.duration_ms.saturating_add(100) < span_ms
+        || corrected.width != media.width
+        || corrected.height != media.height
+        || corrected.codec_name != media.codec_name
+    {
+        return Err(error(
+            "WGC tail correction did not preserve native frames and capture duration",
+        ));
+    }
+    record_recovery::replace_file_synced(clipped.path(), staging)
+        .map_err(|cause| error(&format!("install corrected WGC checkpoint: {cause}")))?;
+    Ok(corrected)
 }
 
 /// `windows-capture` 2.x always describes an audio stream to Media Foundation,
@@ -198,11 +278,67 @@ fn error(cause: &str) -> RecordError {
 #[cfg(all(test, unix))]
 mod tests {
     use std::fs;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
 
     use record_recovery::{CaptureStart, ManifestOwner};
     use tempfile::tempdir;
 
-    use super::{CheckpointConfig, Checkpoints};
+    use super::{trim_extrapolated_wgc_tail, CheckpointConfig, Checkpoints};
+    use crate::windows_wgc_timing::WgcTimingRecorder;
+
+    #[test]
+    fn proven_wgc_tail_clip_preserves_frames_and_stop_span() {
+        let root = tempdir().unwrap();
+        let staging = root.path().join("source.mp4");
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=32x32:r=60"
+            ])
+            .args(["-t", "7.75", "-c:v", "libx264"])
+            .arg(&staging)
+            .status()
+            .unwrap()
+            .success());
+        let original = record_recovery::verify_media("ffmpeg", "ffprobe", &staging).unwrap();
+        assert_eq!(original.duration_ms, 7_750);
+        assert_eq!(original.decoded_video_frames, 465);
+        let origin = Instant::now();
+        let timing = WgcTimingRecorder::new(origin, 60, &root.path().join("._timing.d/s.mp4"));
+        let first = 5_978_568_688_251i64;
+        timing.accepted_frame(first, origin + Duration::from_millis(477));
+        timing.accepted_frame(first + 11_000_000, origin + Duration::from_millis(1_577));
+        timing.accepted_frame(first + 44_334_192, origin + Duration::from_millis(4_910));
+        timing.control_stopped(origin + Duration::from_millis(7_337), true);
+        let corrected = trim_extrapolated_wgc_tail(
+            &staging,
+            &record_recovery::CheckpointFacts {
+                start_ms: 0,
+                end_ms: 7_338,
+                event_offset_ms: 0,
+                audio_offset_ms: None,
+            },
+            original,
+            &timing,
+            "ffmpeg",
+            "ffprobe",
+        )
+        .unwrap();
+        assert!(corrected.duration_ms.abs_diff(7_338) <= 100);
+        assert!(corrected.decoded_video_frames >= timing.accepted_frames());
+        assert!(corrected.decoded_video_frames < 465);
+        assert_eq!(
+            record_recovery::verify_media("ffmpeg", "ffprobe", &staging)
+                .unwrap()
+                .duration_ms,
+            corrected.duration_ms
+        );
+    }
 
     #[test]
     fn checkpoint_rejects_a_planted_native_output_link_before_media_verification() {
@@ -278,6 +414,7 @@ mod tests {
                 },
                 ffmpeg.to_str().unwrap(),
                 ffprobe.to_str().unwrap(),
+                None,
             )
             .unwrap();
 

@@ -152,6 +152,7 @@ pub(super) fn start_private(
                 WindowsCheckpointPublisher {
                     checkpoints,
                     include_native_startup: false,
+                    timing: None,
                 },
             ))
         },

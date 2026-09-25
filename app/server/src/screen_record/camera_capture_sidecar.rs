@@ -55,23 +55,12 @@ impl CameraCaptureSidecar {
                         record_capture::private_camera_owner::PrivateCameraOwner::reserve(
                             &capture_dir,
                             &capture_id,
-                        )?;
-                    match owner.use_camera(&device_id, &clock, &stop)? {
-                        record_capture::private_camera_owner::PrivateCameraUse::Started => {}
-                        record_capture::private_camera_owner::PrivateCameraUse::Refused(
-                            readiness,
-                        ) => {
+                        )
+                        .map_err(|error| {
                             stop.store(true, Ordering::Release);
-                            return Err(camera_refusal(readiness));
-                        }
-                        record_capture::private_camera_owner::PrivateCameraUse::Unavailable => {
-                            stop.store(true, Ordering::Release);
-                            return Err(camera_error(
-                                "camera capture is unavailable in this build",
-                                "the selected camera has no admitted native owner",
-                            ));
-                        }
-                    }
+                            error
+                        })?;
+                    admit_camera_start(owner.use_camera(&device_id, &clock, &stop), &stop)?;
                     let terminal = await_terminal_command(&terminal_rx)?;
                     owner.stop(terminal)
                 })
@@ -147,6 +136,32 @@ impl CameraCaptureSidecar {
     }
 }
 
+#[cfg(any(windows, target_os = "macos"))]
+fn admit_camera_start(
+    result: record_core::Result<record_capture::private_camera_owner::PrivateCameraUse>,
+    stop: &AtomicBool,
+) -> record_core::Result<()> {
+    use record_capture::private_camera_owner::PrivateCameraUse;
+
+    match result {
+        Ok(PrivateCameraUse::Started) => Ok(()),
+        other => {
+            // A failed camera admission must end its owning screen run. Native
+            // errors need the same Stop signal as typed readiness refusals.
+            stop.store(true, Ordering::Release);
+            match other {
+                Ok(PrivateCameraUse::Refused(readiness)) => Err(camera_refusal(readiness)),
+                Ok(PrivateCameraUse::Unavailable) => Err(camera_error(
+                    "camera capture is unavailable in this build",
+                    "the selected camera has no admitted native owner",
+                )),
+                Err(error) => Err(error),
+                Ok(PrivateCameraUse::Started) => unreachable!(),
+            }
+        }
+    }
+}
+
 impl Drop for CameraCaptureSidecar {
     fn drop(&mut self) {
         #[cfg(any(windows, target_os = "macos"))]
@@ -188,6 +203,33 @@ fn camera_refusal(readiness: record_capture::CameraReadiness) -> RecordError {
         | record_capture::CameraReadiness::Ready { detail, .. } => detail,
     };
     camera_error("the selected camera could not start", &detail)
+}
+
+#[cfg(all(test, any(windows, target_os = "macos")))]
+mod admission_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn native_start_error_stops_the_owning_screen_capture() {
+        let stop = AtomicBool::new(false);
+        let native_error = camera_error("start macOS camera", "AVFoundation failed before a frame");
+        let result = admit_camera_start(Err(native_error.clone()), &stop);
+
+        assert_eq!(result.unwrap_err(), native_error);
+        assert!(stop.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn admitted_camera_leaves_the_screen_capture_running() {
+        let stop = AtomicBool::new(false);
+        assert!(admit_camera_start(
+            Ok(record_capture::private_camera_owner::PrivateCameraUse::Started),
+            &stop,
+        )
+        .is_ok());
+        assert!(!stop.load(Ordering::Acquire));
+    }
 }
 
 fn camera_error(message: &str, cause: &str) -> RecordError {

@@ -32,6 +32,7 @@ struct WgcTimingSummary {
     last: Option<FrameTiming>,
     native_timestamp_regressions: u64,
     max_native_gap_100ns: i64,
+    last_native_gap_100ns: i64,
     close_callback_elapsed_ns: Option<u64>,
     encoder_finish_return_elapsed_ns: Option<u64>,
     encoder_finish_ok: Option<bool>,
@@ -59,6 +60,7 @@ impl WgcTimingRecorder {
                 last: None,
                 native_timestamp_regressions: 0,
                 max_native_gap_100ns: 0,
+                last_native_gap_100ns: 0,
                 close_callback_elapsed_ns: None,
                 encoder_finish_return_elapsed_ns: None,
                 encoder_finish_ok: None,
@@ -85,9 +87,9 @@ impl WgcTimingRecorder {
             if native_timestamp_100ns < previous.native_timestamp_100ns {
                 summary.native_timestamp_regressions += 1;
             } else {
-                summary.max_native_gap_100ns = summary
-                    .max_native_gap_100ns
-                    .max(native_timestamp_100ns.saturating_sub(previous.native_timestamp_100ns));
+                let gap = native_timestamp_100ns.saturating_sub(previous.native_timestamp_100ns);
+                summary.last_native_gap_100ns = gap;
+                summary.max_native_gap_100ns = summary.max_native_gap_100ns.max(gap);
             }
         } else {
             summary.first = Some(sample);
@@ -119,6 +121,65 @@ impl WgcTimingRecorder {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         summary.control_stop_return_elapsed_ns = Some(self.elapsed_ns(at));
         summary.control_stop_ok = Some(ok);
+    }
+
+    /// WGC's encoder makes a constant-rate file from sparse native frames. At
+    /// Stop it can extend the last held frame by the preceding native gap, so
+    /// the file can outlive the capture clock even though every real frame was
+    /// delivered before Stop. Permit clipping only when both independent clocks
+    /// agree on the real frame span and that final-frame extrapolation explains
+    /// the excess. The caller still verifies the clipped video before publish.
+    pub(crate) fn explains_extrapolated_tail(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        media_duration_ms: u64,
+        decoded_frames: u64,
+    ) -> bool {
+        const CLOCK_SLOP_MS: u64 = 100;
+        const ENCODER_SLOP_MS: u64 = 100;
+        let summary = self
+            .summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (Some(first), Some(last), Some(span_ms)) =
+            (summary.first, summary.last, end_ms.checked_sub(start_ms))
+        else {
+            return false;
+        };
+        let Some(native_ticks) = last
+            .native_timestamp_100ns
+            .checked_sub(first.native_timestamp_100ns)
+        else {
+            return false;
+        };
+        let Ok(native_ticks) = u64::try_from(native_ticks) else {
+            return false;
+        };
+        let native_ms = native_ticks / 10_000;
+        let callback_ms = last
+            .capture_clock_elapsed_ns
+            .saturating_sub(first.capture_clock_elapsed_ns)
+            / 1_000_000;
+        let last_callback_ms = last.capture_clock_elapsed_ns / 1_000_000;
+        let last_gap_ms = u64::try_from(summary.last_native_gap_100ns).unwrap_or(0) / 10_000;
+        summary.control_stop_ok == Some(true)
+            && summary.native_timestamp_regressions == 0
+            && summary.accepted_frames >= 2
+            && decoded_frames > summary.accepted_frames
+            && media_duration_ms > span_ms.saturating_add(200)
+            && native_ms.abs_diff(callback_ms) <= CLOCK_SLOP_MS
+            && last_callback_ms <= end_ms.saturating_add(CLOCK_SLOP_MS)
+            && native_ms <= span_ms.saturating_add(CLOCK_SLOP_MS)
+            && last_gap_ms > 0
+            && media_duration_ms.abs_diff(native_ms.saturating_add(last_gap_ms)) <= ENCODER_SLOP_MS
+    }
+
+    pub(crate) fn accepted_frames(&self) -> u64 {
+        self.summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accepted_frames
     }
 
     /// One create-new sidecar per physical segment. The caller treats a write
@@ -191,5 +252,27 @@ mod tests {
         assert_eq!(b["first"]["native_timestamp_100ns"], 20);
         assert_eq!(a["controlStopOk"], false);
         assert!(b["controlStopOk"].is_null());
+    }
+
+    #[test]
+    fn only_clock_proven_sparse_frame_extrapolation_can_clip() {
+        let root = tempfile::tempdir().unwrap();
+        let origin = Instant::now();
+        let timing = WgcTimingRecorder::new(origin, 60, &root.path().join("._tail.d/s.mp4"));
+        let first = 5_978_568_688_251i64;
+        timing.accepted_frame(first, origin + Duration::from_millis(477));
+        timing.accepted_frame(first + 11_000_000, origin + Duration::from_millis(1_577));
+        timing.accepted_frame(first + 44_334_192, origin + Duration::from_millis(4_910));
+        timing.control_stopped(origin + Duration::from_millis(7_337), true);
+        assert!(timing.explains_extrapolated_tail(0, 7_338, 7_750, 465));
+        assert!(!timing.explains_extrapolated_tail(0, 7_338, 7_750, 3));
+        assert!(!timing.explains_extrapolated_tail(0, 7_338, 8_500, 465));
+
+        let unsynchronized =
+            WgcTimingRecorder::new(origin, 60, &root.path().join("._skew.d/s.mp4"));
+        unsynchronized.accepted_frame(first, origin + Duration::from_millis(477));
+        unsynchronized.accepted_frame(first + 44_334_192, origin + Duration::from_millis(3_000));
+        unsynchronized.control_stopped(origin + Duration::from_millis(7_337), true);
+        assert!(!unsynchronized.explains_extrapolated_tail(0, 7_338, 7_750, 465));
     }
 }

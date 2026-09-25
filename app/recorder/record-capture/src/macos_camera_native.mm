@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -21,6 +22,26 @@ static uint64_t sxc_time_ns(CMTime value) {
     long double nanos = (long double)value.value * 1000000000.0L / (long double)value.timescale;
     if (nanos <= 0 || nanos > (long double)UINT64_MAX) return 0;
     return (uint64_t)nanos;
+}
+
+static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_seconds) {
+    // AVCaptureFileOutput may deliver its recording delegate through the
+    // initiating thread's run loop. Blocking that thread on a semaphore can
+    // prevent didFinish from running, then make stopRunning wait for the same
+    // thread. Service its default mode while preserving the existing deadline.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    for (;;) {
+        if (dispatch_semaphore_wait(event, DISPATCH_TIME_NOW) == 0) return true;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        @autoreleasepool {
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
+        if (dispatch_semaphore_wait(event,
+                                    dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_MSEC)) == 0) {
+            return true;
+        }
+    }
 }
 
 @interface SxcCameraDelegate : NSObject <AVCaptureFileOutputRecordingDelegate,
@@ -223,13 +244,11 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
         // enter the shared screen clock. Admit callbacks only after the movie
         // writer owns its destination.
         handle.delegate->_accepting.store(true);
-        if (dispatch_semaphore_wait(handle.delegate->_firstFrame,
-                                    dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0 ||
+        if (!sxc_wait_camera_event(handle.delegate->_firstFrame, 5) ||
             handle.delegate->_deviceLost.load()) {
             handle.delegate->_accepting.store(false);
             if (handle.movie.isRecording) [handle.movie stopRecording];
-            dispatch_semaphore_wait(handle.delegate->_finished,
-                                    dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+            sxc_wait_camera_event(handle.delegate->_finished, 10);
             [handle.session stopRunning];
             [[NSNotificationCenter defaultCenter] removeObserver:handle.delegate];
             sxc_error(error, error_capacity, handle.delegate->_deviceLost.load()
@@ -252,14 +271,13 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
         SxcCameraHandle *handle = (__bridge_transfer SxcCameraHandle *)opaque;
         if (handle.movie.isRecording) {
             [handle.movie stopRecording];
-            if (dispatch_semaphore_wait(handle.delegate->_finished,
-                                        dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)) != 0) {
-                [handle.session stopRunning];
-                sxc_error(error, error_capacity, @"AVFoundation did not finish the camera recording");
-                return -1;
-            }
-        } else {
-            handle.delegate->_accepting.store(false);
+        }
+        // didFinish is required for every recording request, including one
+        // that stopped before isRecording could still report true.
+        if (!sxc_wait_camera_event(handle.delegate->_finished, 15)) {
+            [handle.session stopRunning];
+            sxc_error(error, error_capacity, @"AVFoundation did not finish the camera recording");
+            return -1;
         }
         [handle.session stopRunning];
         const bool lost = handle.delegate->_deviceLost.load();
