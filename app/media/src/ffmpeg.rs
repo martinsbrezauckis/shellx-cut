@@ -187,9 +187,46 @@ pub(crate) fn cgroup_governance_available() -> Result<bool, CutError> {
     soft_limit_available()
 }
 
+// A parent service may place Cut in its own child cgroup and own the whole
+// process tree. Starting a sibling `systemd-run --scope` would move ffmpeg out
+// of that owner's subtree, defeating its lifecycle and cleanup. Ordinary
+// desktop apps live directly in app.slice/*.scope and still get Cut's render
+// MemoryHigh/Max scope below.
+#[cfg(any(target_os = "linux", test))]
+fn externally_owned_cgroup_path(path: &str) -> bool {
+    let mut components = path.trim_end_matches('/').rsplit('/');
+    let current = components.next().unwrap_or("");
+    let parent = components.next().unwrap_or("");
+    !current.is_empty()
+        && !current.ends_with(".slice")
+        && !current.ends_with(".service")
+        && parent.ends_with(".service")
+}
+
+#[cfg(target_os = "linux")]
+fn externally_owned_cgroup() -> bool {
+    std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .is_some_and(|contents| {
+            contents.lines().any(|line| {
+                line.splitn(3, ':')
+                    .nth(2)
+                    .is_some_and(externally_owned_cgroup_path)
+            })
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn externally_owned_cgroup() -> bool {
+    false
+}
+
 /// Probe ONCE whether renders can be cgroup-soft-limited via `systemd-run --user
 /// --scope` (needs Linux + systemd + a working user session). Cached.
 fn soft_limit_available() -> Result<bool, CutError> {
+    if externally_owned_cgroup() {
+        return Ok(false);
+    }
     static AVAIL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if let Some(available) = AVAIL.get() {
         return Ok(*available);
@@ -631,6 +668,19 @@ mod tests {
     fn concat_demuxer_file_line_strips_windows_verbatim_prefix() {
         let got = concat_demuxer_file_line(Path::new(r"\\?\C:\Users\Example\project\seg_01.mp4"));
         assert_eq!(got, r"file 'C:\\Users\\Example\\project\\seg_01.mp4'");
+    }
+
+    #[test]
+    fn nested_service_cgroup_keeps_render_under_its_existing_owner() {
+        assert!(externally_owned_cgroup_path(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/release-runner.service/run-r123"
+        ));
+        assert!(!externally_owned_cgroup_path(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-shellx-cut.scope"
+        ));
+        assert!(!externally_owned_cgroup_path(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice"
+        ));
     }
 
     /// Render thread cap is OFF by default (empty → ffmpeg auto = output

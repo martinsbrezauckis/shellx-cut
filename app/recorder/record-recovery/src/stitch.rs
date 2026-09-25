@@ -227,9 +227,10 @@ fn capture_span_ms(segment: &Checkpoint, media: &MediaFacts) -> Result<u64, Mani
         .checked_sub(segment.facts.start_ms)
         .ok_or_else(|| ManifestError::Invalid("checkpoint capture span is negative".into()))?;
     if media.duration_ms > observed.saturating_add(CAPTURE_DRAIN_TOLERANCE_MS) {
-        return Err(ManifestError::Invalid(
-            "checkpoint media exceeds its observed capture span".into(),
-        ));
+        return Err(ManifestError::Invalid(format!(
+            "checkpoint media exceeds its observed capture span: segment={} media={}ms observed={}ms tolerance={}ms",
+            segment.sequence, media.duration_ms, observed, CAPTURE_DRAIN_TOLERANCE_MS,
+        )));
     }
     Ok(observed.max(media.duration_ms))
 }

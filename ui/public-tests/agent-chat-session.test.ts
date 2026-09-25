@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import type { Project } from '../src/lib/client'
 import {
   boundedAgentChatTurns,
+  emptyAgentChatSession,
   patchAgentChatTurn,
   type AgentChatTurn,
 } from '../src/panels/AgentChat/session'
@@ -64,6 +65,18 @@ assert.equal(afterB.get(keyA)?.input, 'project A review', 'Agent Chat keeps proj
 assert.equal(afterB.get(keyB)?.input, 'project B review', 'Agent Chat writes the switched project into its own session')
 assert.equal(afterRename.get(keyA)?.input, 'project A review', 'a new identity on the same origin cannot reuse the old Chat draft')
 assert.equal(afterRename.get(renamedKeyA)?.input, 'renamed project review', 'the new identity gets its own Chat session')
+
+// AgentChat's child attachment-normalization effect can update the session
+// before the parent's history-hydration effect. That first update must keep
+// the restored turn, including when there are no valid attachments to retain.
+const restoredHistory = { ...emptyAgentChatSession(), log: [makeTurn('saved-agent-turn')], attachments: ['stale'] }
+const afterEarlyNormalization = updateAgentChatSessions(new Map(), keyA,
+  (session) => ({ ...session, attachments: session.attachments.filter((id) => id !== 'stale') }),
+  restoredHistory)
+assert.deepEqual(afterEarlyNormalization.get(keyA)?.log.map((turn) => turn.id), ['saved-agent-turn'],
+  'an early child update cannot replace persisted Agent Chat history with an empty session')
+assert.deepEqual(afterEarlyNormalization.get(keyA)?.attachments, [],
+  'the attachment normalization still applies to restored history')
 
 const unavailableRenderJudgeReport = {
   schema: 'shellx-cut/doctor/1',
