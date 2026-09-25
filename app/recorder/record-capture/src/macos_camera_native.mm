@@ -126,6 +126,20 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
 @implementation SxcCameraHandle
 @end
 
+static bool sxc_stop_camera_session(SxcCameraHandle *handle) {
+    // AVFoundation can synchronously send movie-output graph callbacks to the
+    // thread that started recording. Stop on another queue so that thread can
+    // service its run loop until stopRunning returns.
+    dispatch_semaphore_t stopped = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            [handle.session stopRunning];
+            dispatch_semaphore_signal(stopped);
+        }
+    });
+    return sxc_wait_camera_event(stopped, 15);
+}
+
 extern "C" size_t sxc_macos_camera_devices_json(char *buffer, size_t capacity) {
     @autoreleasepool {
         NSMutableArray *rows = [NSMutableArray array];
@@ -249,7 +263,7 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
             handle.delegate->_accepting.store(false);
             if (handle.movie.isRecording) [handle.movie stopRecording];
             sxc_wait_camera_event(handle.delegate->_finished, 10);
-            [handle.session stopRunning];
+            sxc_stop_camera_session(handle);
             [[NSNotificationCenter defaultCenter] removeObserver:handle.delegate];
             sxc_error(error, error_capacity, handle.delegate->_deviceLost.load()
                 ? @"The selected camera was disconnected before its first frame"
@@ -275,11 +289,14 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
         // didFinish is required for every recording request, including one
         // that stopped before isRecording could still report true.
         if (!sxc_wait_camera_event(handle.delegate->_finished, 15)) {
-            [handle.session stopRunning];
+            sxc_stop_camera_session(handle);
             sxc_error(error, error_capacity, @"AVFoundation did not finish the camera recording");
             return -1;
         }
-        [handle.session stopRunning];
+        if (!sxc_stop_camera_session(handle)) {
+            sxc_error(error, error_capacity, @"AVFoundation did not stop the camera session");
+            return -1;
+        }
         const bool lost = handle.delegate->_deviceLost.load();
         if (device_lost) *device_lost = lost ? 1 : 0;
         [[NSNotificationCenter defaultCenter] removeObserver:handle.delegate];
