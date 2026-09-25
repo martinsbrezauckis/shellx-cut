@@ -236,6 +236,8 @@ mod windows_wgc_run;
 #[cfg(test)]
 mod windows_wgc_run_tests;
 mod windows_wgc_run_types;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod windows_wgc_timing;
 
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows;

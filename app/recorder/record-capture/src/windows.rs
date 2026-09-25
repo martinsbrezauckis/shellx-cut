@@ -365,6 +365,7 @@ impl Capture for WindowsCapture {
                              destination: &Path|
          -> Result<WgcStartedControl<LiveWgcControl>> {
             let source_lifecycle = cfg.source_lifecycle.clone();
+            let timing = crate::windows_wgc_timing::WgcTimingRecorder::new(start, fps, destination);
             if matches!(target, Src::Window(_)) {
                 if let Some(lifecycle) = source_lifecycle.as_ref() {
                     if selected_window_segment_started {
@@ -388,6 +389,7 @@ impl Capture for WindowsCapture {
                 readiness: cfg.readiness.clone(),
                 source_lifecycle: source_lifecycle.clone(),
                 stop: stop.clone(),
+                timing: Some(timing.clone()),
             };
             let control = match *target {
                 Src::Monitor(m) => Handler::start_free_threaded(WcSettings::new(
@@ -415,9 +417,14 @@ impl Capture for WindowsCapture {
             Ok(WgcStartedControl::new(
                 LiveWgcControl {
                     close: Some(Box::new(move || {
-                        control
+                        let result = control
                             .stop()
-                            .map_err(|error| cap_err("finalize WGC checkpoint", error))
+                            .map_err(|error| cap_err("finalize WGC checkpoint", error));
+                        timing.control_stopped(Instant::now(), result.is_ok());
+                        if let Err(error) = timing.persist() {
+                            eprintln!("WGC timing observation could not be retained: {error}");
+                        }
+                        result
                     })),
                     source_lifecycle,
                 },

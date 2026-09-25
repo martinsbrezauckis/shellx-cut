@@ -88,6 +88,7 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
             // satisfy the shared WGC callback contract without inventing a
             // public lifecycle projection.
             stop: Arc::new(AtomicBool::new(false)),
+            timing: None,
         };
         let control = Handler::start_free_threaded(WcSettings::new(
             *monitor,

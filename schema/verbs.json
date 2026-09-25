@@ -9572,7 +9572,7 @@
     {
       "name": "edit.add_marker",
       "domain": "edit",
-      "description": "Add a timeline marker (two-segment name).",
+      "description": "Add a marker at an absolute position on the project timeline.",
       "args": {
         "type": "object",
         "required": [
@@ -9583,7 +9583,8 @@
         "properties": {
           "at_ms": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Absolute project timeline milliseconds from zero; never relative to a selected range or clip."
           },
           "label": {
             "type": "string"

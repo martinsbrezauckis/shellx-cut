@@ -422,6 +422,22 @@ mod tests {
     }
 
     #[test]
+    fn marker_tool_exposes_absolute_timeline_coordinate() {
+        let state = AppState::new();
+        let tool = list_agent_chat_tools(&state)
+            .into_iter()
+            .find(|tool| tool["name"] == "edit_add_marker")
+            .expect("Agent Chat must expose edit.add_marker");
+        assert!(tool["description"].as_str().is_some_and(
+            |description| description.contains("absolute position on the project timeline")
+        ));
+        assert!(tool["inputSchema"]["properties"]["at_ms"]["description"]
+            .as_str()
+            .is_some_and(|description| description
+                .contains("Absolute project timeline milliseconds from zero")));
+    }
+
+    #[test]
     fn deprecated_legacy_inverse_option_survives_mcp_schema_projection() {
         let state = AppState::new();
         let tool = list_tools(&state)

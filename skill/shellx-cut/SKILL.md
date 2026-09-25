@@ -977,6 +977,8 @@ accept/reject them individually in the Review rail. Raw-timeline verbs
 `edit.grade` (color), `edit.add_marker`, `edit.remove_marker`,
 `edit.move_marker`) exist for non-speech work — but if the cut is about *what
 was said*, use a transcript verb so the word-boundary guarantee holds.
+For `edit.add_marker`, `at_ms` is an absolute project-timeline position, not
+an offset from a selected clip or range; honor an exact time in the request.
 
 ### 3b. Audio finish (music bed, ducking, crossfades)
 

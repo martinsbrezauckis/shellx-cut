@@ -223,6 +223,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
   const {
     offlineAssetIds: offline,
     modifiedMs,
+    checking: offlineChecking,
     refresh: refreshOfflineNow,
     relinkAsset,
     relinkingAssetId,
@@ -772,6 +773,8 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
           className={`assets__health assets__health--${mediaHealth.level}`}
           data-cut-media-health
           data-cut-media-health-status={mediaHealth.level}
+          data-cut-media-health-offline-count={mediaHealth.offline}
+          data-cut-media-health-checking={offlineChecking ? 'true' : 'false'}
           title={mediaHealth.hint}
         >
           <div className="assets__health-main">

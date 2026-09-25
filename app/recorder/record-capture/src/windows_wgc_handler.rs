@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use record_core::Result;
 use windows_capture::{
@@ -17,7 +18,7 @@ use windows_capture::{
 
 use crate::{
     region_geometry::NativePixelCrop, windows::cap_err, windows_wgc_run::WgcNativeControl,
-    CaptureReadiness, CaptureSourceLifecycle,
+    windows_wgc_timing::WgcTimingRecorder, CaptureReadiness, CaptureSourceLifecycle,
 };
 
 pub(crate) struct LiveWgcControl {
@@ -48,6 +49,7 @@ pub(crate) struct EncFlags {
     pub(crate) readiness: Option<CaptureReadiness>,
     pub(crate) source_lifecycle: Option<CaptureSourceLifecycle>,
     pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) timing: Option<WgcTimingRecorder>,
 }
 
 /// `windows-capture` handler: frames enter the encoder and a closed exact
@@ -59,6 +61,7 @@ pub(crate) struct Handler {
     readiness: Option<CaptureReadiness>,
     source_lifecycle: Option<CaptureSourceLifecycle>,
     stop: Arc<AtomicBool>,
+    timing: Option<WgcTimingRecorder>,
 }
 
 impl GraphicsCaptureApiHandler for Handler {
@@ -80,6 +83,7 @@ impl GraphicsCaptureApiHandler for Handler {
             readiness: flags.readiness,
             source_lifecycle: flags.source_lifecycle,
             stop: flags.stop,
+            timing: flags.timing,
         })
     }
 
@@ -92,7 +96,21 @@ impl GraphicsCaptureApiHandler for Handler {
             crate::windows_gpu_crop::crop_frame_to_origin(frame, crop, &mut self.crop_surface)?;
         }
         if let Some(encoder) = self.encoder.as_mut() {
+            let sample = self
+                .timing
+                .as_ref()
+                .map(|_| {
+                    frame
+                        .timestamp()
+                        .map(|timestamp| (timestamp.Duration, Instant::now()))
+                })
+                .transpose()?;
             encoder.send_frame(frame)?;
+            if let (Some(timing), Some((native_timestamp_100ns, callback_at))) =
+                (&self.timing, sample)
+            {
+                timing.accepted_frame(native_timestamp_100ns, callback_at);
+            }
             // WGC delivered a native frame and the encoder accepted it. A
             // callback/start success alone is not enough for readiness.
             if let Some(readiness) = self.readiness.as_ref() {
@@ -103,6 +121,9 @@ impl GraphicsCaptureApiHandler for Handler {
     }
 
     fn on_closed(&mut self) -> std::result::Result<(), Self::Error> {
+        if let Some(timing) = &self.timing {
+            timing.close_callback(Instant::now());
+        }
         // Callback delivery means WGC has ended, even when it was not an
         // armed exact-window closure. Revoke ready admission before waking the
         // outer owner so status cannot briefly report an ended stream as ready.
@@ -120,7 +141,11 @@ impl GraphicsCaptureApiHandler for Handler {
         // source loss rather than an ordinary terminal capture event.
         self.stop.store(true, Ordering::Release);
         if let Some(encoder) = self.encoder.take() {
-            encoder.finish()?;
+            let finished = encoder.finish();
+            if let Some(timing) = &self.timing {
+                timing.encoder_finished(Instant::now(), finished.is_ok());
+            }
+            finished?;
         }
         Ok(())
     }
