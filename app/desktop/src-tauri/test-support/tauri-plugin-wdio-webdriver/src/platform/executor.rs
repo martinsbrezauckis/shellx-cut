@@ -29,7 +29,13 @@ const OPTION_SNAPSHOT_SCRIPT: &str = r#"// Read-only DOM inspection. Retained re
     const direct = target.parentElement;
     const select = direct instanceof HTMLOptGroupElement ? direct.parentElement : direct;
     if (!(select instanceof HTMLSelectElement) || !select.isConnected) return {error: 'stale element reference'};
-    if (select.matches(':disabled')) return {error: 'element not interactable'};
+    // The application may disable its SELECT synchronously while handling the
+    // trusted change. Only settle may observe that transition; every check
+    // before Enter still requires an interactable container.
+    if (select.matches(':disabled') && !(phase === 'settle' && select.disabled &&
+        !select.closest('fieldset:disabled'))) {
+        return {error: 'element not interactable'};
+    }
     const hidden = e => {
         const style = getComputedStyle(e);
         return e.hidden || style.display === 'none' || style.visibility !== 'visible';
@@ -38,8 +44,10 @@ const OPTION_SNAPSHOT_SCRIPT: &str = r#"// Read-only DOM inspection. Retained re
     const index = options.indexOf(target);
     // Navigate from the first enabled entry after Home. The native fixture must
     // qualify this popup behavior on each backend.
+    // A disabled first option is a native popup placeholder regardless of
+    // whether the app uses an empty value or a private sentinel value.
     const placeholder = options[0] instanceof HTMLOptionElement &&
-        options[0].parentElement === select && options[0].disabled && options[0].value === '';
+        options[0].parentElement === select && options[0].disabled;
     const navigationSteps = index - (placeholder ? 1 : 0);
     const validChildren = Array.from(select.children).every(e =>
         e instanceof HTMLOptionElement || (e instanceof HTMLOptGroupElement &&
@@ -541,7 +549,8 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
                 var r = el.getBoundingClientRect();
                 var left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
                 var top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
-                if (right <= left || bottom <= top || el.disabled) return {{ error: 'element not interactable' }};
+                if (right <= left || bottom <= top) return {{ error: 'element not interactable', reason: 'no in-view rectangle' }};
+                if (el.disabled) return {{ error: 'element not interactable', reason: 'disabled at click preflight' }};
                 var x = Math.floor((left + right) / 2), y = Math.floor((top + bottom) / 2);
                 var hit = document.elementFromPoint(x, y);
                 if (!hit || (hit !== el && !el.contains(hit))) return {{ error: 'element click intercepted' }};
@@ -558,10 +567,11 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
             if error == "stale element reference" {
                 return Err(WebDriverErrorResponse::stale_element_reference());
             }
+            let detail = value.get("reason").and_then(Value::as_str).unwrap_or(error);
             return Err(WebDriverErrorResponse::new(
                 axum::http::StatusCode::BAD_REQUEST,
                 error,
-                error,
+                detail,
                 None,
             ));
         }
@@ -1148,6 +1158,12 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
         Err(WebDriverErrorResponse::unsupported_operation(
             "native keyboard input is not supported by this overlay",
         ))
+    }
+
+    /// Check native foreground admission before a new ordinary key-down is
+    /// retained. The dispatch path must still recheck because focus can change.
+    async fn preflight_native_key_down(&self) -> Result<(), WebDriverErrorResponse> {
+        Ok(())
     }
 
     /// Dispatch a keyboard event with modifier state

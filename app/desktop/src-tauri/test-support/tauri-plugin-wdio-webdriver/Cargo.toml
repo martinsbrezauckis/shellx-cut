@@ -166,9 +166,9 @@ version = "0.61"
 [target.'cfg(target_os = "macos")'.dependencies.objc2-core-graphics]
 version = "0.3"
 default-features = false
-features = ["std", "libc", "CGEvent", "CGEventSource", "CGEventTypes", "CGGeometry", "CGRemoteOperation"]
+features = ["std", "libc", "CGEvent", "CGEventSource", "CGEventTypes", "CGGeometry", "CGRemoteOperation", "CGWindow"]
 
 [target.'cfg(target_os = "macos")'.dependencies.objc2-core-foundation]
 version = "0.3"
 default-features = false
-features = ["std", "CFMachPort", "CFRunLoop", "CFString"]
+features = ["std", "CFMachPort", "CFRunLoop", "CFString", "CFArray", "CFDictionary", "CFNumber"]

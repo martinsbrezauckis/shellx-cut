@@ -125,12 +125,20 @@ async fn click_inner<R: Runtime + 'static>(
     element_id: &str,
 ) -> WebDriverResult {
     let result = click_sequence(state, session_id, element_id).await;
-    if result.is_err() {
+    if let Err(error) = &result {
         let mut sessions = state.sessions.write().await;
         let input = &mut sessions.get_mut(session_id)?.action_state;
         if input.has_held_input() {
             input.input_failed = true;
         }
+        // WebDriverIO may replace the first server refusal after its clickable
+        // retry. Retain that bounded reason beside native-post diagnostics.
+        eprintln!(
+            "EMBEDDED_CLICK_REFUSAL reason={:?} held={} inputFailed={}",
+            error.message.chars().take(240).collect::<String>(),
+            input.has_held_input(),
+            input.input_failed
+        );
     }
     result
 }
@@ -152,8 +160,7 @@ async fn click_sequence<R: Runtime + 'static>(
     {
         return Err(WebDriverErrorResponse::unsupported_operation(
             "release prior held input before another click",
-        )
-        .with_data(session.action_state.input_state_diagnostic()));
+        ));
     }
 
     let element = session
@@ -175,6 +182,11 @@ async fn click_sequence<R: Runtime + 'static>(
     let mut popup_started = false;
     let defer_release=option.is_some() && executor.option_defer_primary_release();
     let mut release_attempted=false;
+    let mut release_completed=false;
+    // After Enter has been attempted, the application may already have handled
+    // a trusted change and moved focus away from the SELECT. A later refusal
+    // must not turn cleanup Escape into an application-wide cancellation.
+    let mut enter_attempted=false;
     let mut operation = async {
     let first_key = if option.is_some() { Some(executor.option_popup_first_key()?) } else { None };
     let (x, y) = executor.get_element_center(&center_ref).await?;
@@ -239,6 +251,7 @@ async fn click_sequence<R: Runtime + 'static>(
         executor.inspect_option(&js_var, "verify").await?;
         let owner=tokio::time::timeout(std::time::Duration::from_millis(executor.script_timeout_ms().min(2000)),executor.option_completion_owner()).await
             .map_err(|_|WebDriverErrorResponse::unknown_error("option owner observation timed out"))??;
+        enter_attempted=true;
         super::actions::perform_option_inner(state, session_id, option_key_pair("\u{E007}")?).await?;
         // One Enter only. Observe the exact retained target until WebKit commits;
         // every asynchronous read shares this single bounded deadline.
@@ -272,6 +285,7 @@ async fn click_sequence<R: Runtime + 'static>(
         if defer_release {
             release_attempted=true;
             super::actions::release_option_inner(state,session_id,&*executor).await?;
+            release_completed=true;
         }
     }
     Ok(WebDriverResponse::null())
@@ -283,22 +297,37 @@ async fn click_sequence<R: Runtime + 'static>(
                 if defer_release {
                     if release_attempted {return Ok(WebDriverResponse::null());}
                     super::actions::release_option_keys_inner(state,session_id,&*executor).await?;
-                    option_context(state,session_id,&current_window).await?;
-                    super::actions::perform_option_inner(state,session_id,option_key_pair("\u{E00C}")?).await?;
+                    if !enter_attempted {
+                        option_context(state,session_id,&current_window).await?;
+                        super::actions::perform_option_inner(state,session_id,option_key_pair("\u{E00C}")?).await?;
+                    }
+                    // Enter may already have committed a change and moved focus.
+                    // In either phase, release only at the original native point.
                     wait_option_release_ready(state,session_id,&current_window,&*executor).await?;
                     release_attempted=true;
-                    super::actions::release_option_inner(state,session_id,&*executor).await
+                    super::actions::release_option_inner(state,session_id,&*executor).await?;
+                    release_completed=true;
+                    Ok(WebDriverResponse::null())
                 } else {
                     super::actions::release_option_inner(state, session_id, &*executor).await?;
-                    option_context(state, session_id, &current_window).await?;
-                    super::actions::perform_option_inner(state, session_id, option_key_pair("\u{E00C}")?).await
+                    release_completed=true;
+                    if enter_attempted {
+                        // Windows has already released the pointer. Enter may
+                        // have committed even when its later readback refuses;
+                        // keep that refusal and never send Escape to new focus.
+                        Ok(WebDriverResponse::null())
+                    } else {
+                        option_context(state, session_id, &current_window).await?;
+                        super::actions::perform_option_inner(state, session_id, option_key_pair("\u{E00C}")?).await
+                    }
                 }
             }.await;
-            state.sessions.write().await.get_mut(session_id)?.action_state.input_failed = true;
-            if let Err(error) = cleanup { operation = Err(error); }
+            let mut sessions = state.sessions.write().await;
+            let input = &mut sessions.get_mut(session_id)?.action_state;
+            operation = finish_option_cleanup(input, operation, cleanup, release_completed);
         }
         // Always release adapter references, even when native cleanup fails.
-        // Preserve the operation/cleanup error and its retained held-input state.
+        // Preserve the operation error and any unresolved held-input state.
         executor.clear_option_completion();
         let cleared = executor.inspect_option(&js_var, "clear").await;
         if operation.is_ok() { cleared?; }
@@ -306,6 +335,18 @@ async fn click_sequence<R: Runtime + 'static>(
     operation
 }
 
+// A failed click remains a failed click. Only a completed native release may
+// remove its recoverable input latch; a posted but unacknowledged release may
+// never be repeated here or treated as complete.
+fn finish_option_cleanup(
+    input: &mut crate::webdriver::session::ActionState,
+    operation: WebDriverResult,
+    cleanup: WebDriverResult,
+    release_completed: bool,
+) -> WebDriverResult {
+    input.input_failed = !release_completed || cleanup.is_err() || input.has_held_input();
+    operation
+}
 
 fn option_navigation(first: &'static str, index: usize) -> Result<Vec<&'static str>, WebDriverErrorResponse> {
     if index >= 128 { return Err(WebDriverErrorResponse::unsupported_operation("option count exceeds native navigation bound")); }
@@ -362,6 +403,37 @@ mod option_tests {
         assert!(option_navigation("\u{E011}", 128).is_err());
         for key in ["\u{E011}", "\u{E015}", "\u{E007}", "\u{E00C}"] {
             super::super::actions::validate(&option_key_pair(key).unwrap()).unwrap();
+        }
+    }
+    #[test]
+    fn failed_option_click_keeps_original_error_and_releases_only_on_complete_cleanup() {
+        use crate::webdriver::session::ActionState;
+
+        for (release_completed, cleanup_ok, held, refused) in [
+            (true, true, false, false),
+            (false, true, false, true), // release was already attempted, outcome uncertain
+            (false, false, true, true),
+            (true, false, false, true), // later cleanup failed
+            (true, true, true, true),  // a retained key/button still needs release
+        ] {
+            let mut input = ActionState::default();
+            input.input_failed = true;
+            if held {
+                input.retain_button("element-click", 0);
+            }
+            let cleanup = if cleanup_ok {
+                Ok(WebDriverResponse::null())
+            } else {
+                Err(WebDriverErrorResponse::unknown_error("cleanup failed"))
+            };
+            let result = finish_option_cleanup(
+                &mut input,
+                Err(WebDriverErrorResponse::element_not_interactable("original click failure")),
+                cleanup,
+                release_completed,
+            );
+            assert_eq!(result.unwrap_err().message, "original click failure");
+            assert_eq!(input.input_failed, refused);
         }
     }
 }

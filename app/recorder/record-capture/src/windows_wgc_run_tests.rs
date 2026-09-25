@@ -58,6 +58,7 @@ struct FakePublisher {
     log: TestLog,
     next: u64,
     reject_publication: bool,
+    include_native_startup: bool,
 }
 
 impl WgcCheckpointPublisher for FakePublisher {
@@ -69,6 +70,14 @@ impl WgcCheckpointPublisher for FakePublisher {
             .borrow_mut()
             .push(format!("reserve:{sequence}:{}", staging.display()));
         Ok((sequence, staging))
+    }
+
+    fn capture_start_ms(&self, reserved_start_ms: u64, observed_start_ms: u64) -> u64 {
+        if self.include_native_startup {
+            reserved_start_ms
+        } else {
+            observed_start_ms
+        }
     }
 
     fn verify_and_publish_new(
@@ -115,6 +124,13 @@ fn accepted() -> WgcAcceptedCapture {
 }
 
 fn owner(reject_publication: bool) -> (TestOwner, TestLog, TestLog) {
+    owner_with_startup(reject_publication, false)
+}
+
+fn owner_with_startup(
+    reject_publication: bool,
+    include_native_startup: bool,
+) -> (TestOwner, TestLog, TestLog) {
     let log = Rc::new(RefCell::new(Vec::new()));
     let targets = Rc::new(RefCell::new(Vec::new()));
     let factory = FakeFactory {
@@ -125,12 +141,31 @@ fn owner(reject_publication: bool) -> (TestOwner, TestLog, TestLog) {
         log: log.clone(),
         next: 0,
         reject_publication,
+        include_native_startup,
     };
     (
         WgcRunOwner::new("monitor:exact-17".to_string(), factory, publisher),
         log,
         targets,
     )
+}
+
+#[test]
+fn ordinary_wgc_checkpoint_covers_frames_encoded_during_native_startup() {
+    // Retained PC4 native evidence: reserve=0, post-open observation=463,
+    // close=7373, encoded media=7533 ms. The media exceeds a post-open span
+    // by 623 ms, but fits the reserved span with 160 ms of encoder drain.
+    let (mut owner, log, _) = owner_with_startup(false, true);
+    let identity = owner.begin(0, || started(463)).unwrap();
+    assert_eq!(identity.start_ms, 0);
+    assert_eq!(identity.started.start_ms, 463);
+    let sealed = owner
+        .stop(observed_after_close(log, 7373))
+        .unwrap()
+        .unwrap();
+    assert_sealed(&sealed, 1, 0, 7373);
+    assert!(7533 > 7373 - 463 + 200);
+    assert!(7533 <= sealed.boundary.end_ms - sealed.boundary.start_ms + 200);
 }
 
 fn started(start_ms: u64) -> Result<WgcStartObservation> {

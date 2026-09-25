@@ -48,7 +48,7 @@ import AppRightRail from './app/AppRightRail'
 import AppWorkspace from './app/AppWorkspace'
 import { useAppImportEvents } from './app/useAppImportEvents'
 import { useAppLayoutController } from './app/useAppLayoutController'
-import { useRecordingWorkspaceNavigation } from './app/useRecordingWorkspaceNavigation'
+import { useRecordingWorkspaceNavigation, type RequestLayout } from './app/useRecordingWorkspaceNavigation'
 import { useSourceNavigationController } from './app/useSourceNavigationController'
 import { useAppClipboardController } from './app/useAppClipboardController'
 import { useAppKeyboardController } from './app/useAppKeyboardController'
@@ -216,6 +216,14 @@ export default function App() {
     useAppLayoutController(selectedClipIds)
   const { admission: recordingWorkspaceAdmission, reportAdmission: reportRecordingWorkspaceAdmission, requestLayout } =
     useRecordingWorkspaceNavigation(layout, setRawLayout)
+  // A project switch can finish pulling state after the editor becomes
+  // clickable. Keep a workspace choice made during that pull.
+  const workspaceNavigationEpoch = useRef(0)
+  const requestWorkspaceLayout = useCallback<RequestLayout>((update) => {
+    const accepted = requestLayout(update)
+    if (accepted) workspaceNavigationEpoch.current += 1
+    return accepted
+  }, [requestLayout])
   const sourceNavigation = useSourceNavigationController(requestLayout)
   const { clipboardHasContent, clipboardKind, clipboardClipId, clipboardNotice, copyClip, cutClip, pasteClip, clearClipboard } = useAppClipboardController({
     project,
@@ -546,19 +554,13 @@ export default function App() {
     }
     // Invalidate in-flight snapshots and paged history before awaiting the
     // forced state pull; op ids restart at op_000001 across projects.
+    const navigationEpoch = workspaceNavigationEpoch.current
     resetProjectScopedUi()
     const nextProject = await syncProject(true)
-    if (nextProject) {
+    if (workspaceNavigationEpoch.current === navigationEpoch) {
       requestLayout((l) => ({
         ...l,
-        leftTab: preferredProjectLeftTab(nextProject),
-        leftCollapsed: false,
-        workspaceMode: 'edit',
-      }))
-    } else {
-      requestLayout((l) => ({
-        ...l,
-        leftTab: 'projects',
+        leftTab: nextProject ? preferredProjectLeftTab(nextProject) : 'projects',
         leftCollapsed: false,
         workspaceMode: 'edit',
       }))
@@ -774,7 +776,7 @@ export default function App() {
       >
         <AppWorkspace
           layout={layout}
-          setLayout={requestLayout}
+          setLayout={requestWorkspaceLayout}
           onRecordWorkspaceAdmission={reportRecordingWorkspaceAdmission}
           sourceNavigation={sourceNavigation}
           mainRef={mainRef}

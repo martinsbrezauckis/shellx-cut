@@ -113,6 +113,8 @@ impl<C> WgcStartedControl<C> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ScreenRunIdentity {
     pub(crate) physical_generation: u64,
+    /// Checkpoint media boundary. Ordinary WGC may encode during native start,
+    /// before the distinct post-open `started` observation is sampled.
     pub(crate) start_ms: u64,
     pub(crate) started: WgcStartObservation,
     pub(crate) accepted: WgcAcceptedCapture,

@@ -93,6 +93,7 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
     setError(null)
     setStoryboardBusy(null)
     setStoryboardResult(null)
+    setStoryboardAnswers({})
     setStoryboardError(null)
   }, [projectScope])
 
@@ -441,11 +442,13 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
           onStoryboardInput={(value) => {
             setStoryboardInput(value)
             setStoryboardResult(null)
+            setStoryboardAnswers({})
             setStoryboardError(null)
           }}
           onStoryboardMode={(value) => {
             setStoryboardMode(value)
             setStoryboardResult(null)
+            setStoryboardAnswers({})
             setStoryboardError(null)
           }}
           onStoryboardAgent={setStoryboardAgent}

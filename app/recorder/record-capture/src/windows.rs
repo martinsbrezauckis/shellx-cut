@@ -43,11 +43,22 @@ use crate::{
 
 pub(crate) struct WindowsCheckpointPublisher {
     pub(crate) checkpoints: Checkpoints,
+    /// Ordinary WGC can encode frames during start_free_threaded. The private
+    /// pause pilot still uses the separate post-open observed-start contract.
+    pub(crate) include_native_startup: bool,
 }
 
 impl WgcCheckpointPublisher for WindowsCheckpointPublisher {
     fn reserve(&mut self, start_ms: u64) -> Result<(u64, std::path::PathBuf)> {
         self.checkpoints.begin_windows_wgc(start_ms)
+    }
+
+    fn capture_start_ms(&self, reserved_start_ms: u64, observed_start_ms: u64) -> u64 {
+        if self.include_native_startup {
+            reserved_start_ms
+        } else {
+            observed_start_ms
+        }
     }
 
     fn verify_and_publish_new(
@@ -416,7 +427,10 @@ impl Capture for WindowsCapture {
         let (duration_ms, checkpoints) = match Checkpoints::open(cfg.checkpoint.as_ref())? {
             Some(checkpoints) => {
                 let interval_ms = checkpoints.interval_ms();
-                let publisher = WindowsCheckpointPublisher { checkpoints };
+                let publisher = WindowsCheckpointPublisher {
+                    checkpoints,
+                    include_native_startup: true,
+                };
                 let mut owner = WgcRunOwner::new(src, start_wgc, publisher);
                 let mut segment = owner.begin(0, || observe_wgc_start(start))?;
                 let duration_ms = loop {

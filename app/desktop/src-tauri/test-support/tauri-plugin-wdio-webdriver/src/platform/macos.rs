@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::ffi::c_void;
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -8,14 +9,17 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationOptions, NSBitmapImageFileType, NSBitmapImageRep,
-    NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSEventTrackingRunLoopMode, NSImage, NSRunningApplication,
-    NSScreen, NSView, NSWindow, NSWorkspace,
+    NSApplication, NSBitmapImageFileType, NSBitmapImageRep,
+    NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSEventTrackingRunLoopMode, NSImage,
+    NSScreen, NSView, NSWindow, NSWindowNumberListOptions, NSWorkspace,
 };
-use objc2_core_foundation::{CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, CFString, kCFRunLoopCommonModes};
+use objc2_core_foundation::{CFArray, CFDictionary, CFMachPort, CFNumber, CFRetained, CFRunLoop, CFRunLoopSource, CFString, CFType, CGPoint, CGRect, CGSize, kCFRunLoopCommonModes};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
     CGEventType, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGMouseButton, CGPreflightPostEventAccess, CGPreflightListenEventAccess, CGScrollEventUnit,
+    CGWindowListCopyWindowInfo, CGWindowListCreateDescriptionFromArray,
+    CGWindowListOption, CGRectMakeWithDictionaryRepresentation, kCGNullWindowID,
+    kCGWindowBounds, kCGWindowLayer, kCGWindowNumber, kCGWindowOwnerName, kCGWindowOwnerPID,
 };
 use objc2_foundation::{
     NSData, NSDictionary, NSError, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint,
@@ -107,8 +111,233 @@ unsafe fn native_screen_point(wk:&WKWebView,window:&NSWindow,viewport:(i32,i32,f
     Ok(window.convertPointToScreen(wk.convertPoint_toView(p,None)))
 }
 
+// Resolve only the window that actually won the native hit test, and only on
+// refusal. A window number alone cannot distinguish an external occluder from
+// another owned window or a coordinate mismatch. Window titles are not read.
+fn hit_window_info(observed: isize, point_top_left: Option<(f64, f64)>) -> String {
+    if observed <= 0 || observed > u32::MAX as isize {
+        return "hitWindowInfo=invalid-number".into();
+    }
+    let window_id = CFNumber::new_i64(observed as i64);
+    let requested = CFArray::from_objects(&[&*window_id]);
+    let Some(windows) = (unsafe { CGWindowListCreateDescriptionFromArray(Some(requested.as_opaque())) }) else {
+        return "hitWindowInfo=unavailable".into();
+    };
+    // Apple returns CFDictionary rows for the one requested WindowServer ID.
+    let rows: &CFArray<CFDictionary> = unsafe { windows.cast_unchecked() };
+    if rows.len() > 1 { return format!("hitWindowInfo=unexpected-count count={}", rows.len()); }
+    for item in rows.iter() {
+        let row: &CFDictionary<CFString, CFType> = unsafe { item.cast_unchecked() };
+        let number = |key: &CFString| row.get(key)?.downcast::<CFNumber>().ok()?.as_i64();
+        if number(unsafe { kCGWindowNumber }) != Some(observed as i64) { continue; }
+        let owner = number(unsafe { kCGWindowOwnerPID });
+        let layer = number(unsafe { kCGWindowLayer });
+        let name = row.get(unsafe { kCGWindowOwnerName })
+            .and_then(|value| value.downcast::<CFString>().ok())
+            .map(|value| if value.length() > 128 { "\"<long>\"".into() }
+                else { format!("{:?}", value.to_string()) });
+        let bounds = row.get(unsafe { kCGWindowBounds })
+            .and_then(|value| value.downcast::<CFDictionary>().ok())
+            .and_then(|value| {
+                let mut rect = std::mem::MaybeUninit::<CGRect>::uninit();
+                unsafe { CGRectMakeWithDictionaryRepresentation(Some(&value), rect.as_mut_ptr()) }
+                    .then(|| unsafe { rect.assume_init() })
+            })
+            .map(|rect| {
+                let covers_point = point_top_left.map(|(x, y)| x >= rect.origin.x
+                    && x < rect.origin.x + rect.size.width
+                    && y >= rect.origin.y
+                    && y < rect.origin.y + rect.size.height);
+                (format!("({},{},{},{})", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height), covers_point)
+            });
+        return format!("hitWindowInfo=matched ownerPid={owner:?} ownerName={name:?} layer={layer:?} boundsTopLeft={:?} boundsCoverInputPoint={:?}",bounds.as_ref().map(|value|&value.0),bounds.as_ref().and_then(|value|value.1));
+    }
+    format!("hitWindowInfo=not-listed listCount={}", rows.len())
+}
+
+// This is a second, independent observation of the refused point. AX uses
+// top-left screen coordinates and reports the owning process of its topmost
+// element. It is passive: no trust prompt, activation or input is requested.
+// The fixture app may lack Accessibility permission, which is evidence rather
+// than authority to relax the native hit-test refusal.
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+    fn AXUIElementCreateSystemWide() -> *const c_void;
+    fn AXUIElementCopyElementAtPosition(
+        application: *const c_void, x: f32, y: f32, element: *mut *const c_void,
+    ) -> i32;
+    fn AXUIElementGetPid(element: *const c_void, pid: *mut i32) -> i32;
+    fn AXUIElementSetMessagingTimeout(element: *const c_void, timeout: f32) -> i32;
+    fn AXUIElementCopyAttributeValue(element: *const c_void, attribute: *const c_void,
+        value: *mut *const c_void) -> i32;
+    fn AXValueGetTypeID() -> usize;
+    fn AXValueGetValue(value: *const c_void, value_type: u32, output: *mut c_void) -> bool;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(value: *const c_void);
+    fn CFGetTypeID(value: *const c_void) -> usize;
+    fn CFStringGetTypeID() -> usize;
+}
+
+fn ax_attribute(element: *const c_void, name: &'static str) -> Result<*const c_void, i32> {
+    let key=CFString::from_static_str(name);
+    let mut value=std::ptr::null();
+    let status=unsafe { AXUIElementCopyAttributeValue(element, &*key as *const CFString as *const c_void, &mut value) };
+    if status!=0 || value.is_null() {
+        if !value.is_null() { unsafe { CFRelease(value) }; }
+        return Err(status);
+    }
+    Ok(value)
+}
+
+fn ax_role(element: *const c_void) -> String {
+    let value=match ax_attribute(element,"AXRole") {Ok(value)=>value,Err(status)=>return format!("unavailable:{status}")};
+    let role=if unsafe { CFGetTypeID(value)==CFStringGetTypeID() } {
+        let value=unsafe { &*(value as *const CFString) };
+        let text=value.to_string();
+        if text.len()<=48 && text.chars().all(|ch|ch.is_ascii_alphanumeric()) {text}
+        else {"invalid-or-long".into()}
+    } else {"wrong-type".into()};
+    unsafe { CFRelease(value) };
+    role
+}
+
+fn ax_frame(element: *const c_void) -> String {
+    let position=match ax_attribute(element,"AXPosition") {Ok(value)=>value,Err(status)=>return format!("position-status:{status}")};
+    let size=match ax_attribute(element,"AXSize") {Ok(value)=>value,Err(status)=>{
+        unsafe { CFRelease(position) };return format!("size-status:{status}");
+    }};
+    let mut point=CGPoint{x:0.0,y:0.0};let mut extent=CGSize{width:0.0,height:0.0};
+    let valid=unsafe { CFGetTypeID(position)==AXValueGetTypeID()
+        && CFGetTypeID(size)==AXValueGetTypeID()
+        && AXValueGetValue(position,1,&mut point as *mut CGPoint as *mut c_void)
+        && AXValueGetValue(size,2,&mut extent as *mut CGSize as *mut c_void) };
+    unsafe { CFRelease(position);CFRelease(size); }
+    if !valid || !point.x.is_finite() || !point.y.is_finite()
+        || !extent.width.is_finite() || !extent.height.is_finite() {
+        return "invalid-value".into();
+    }
+    format!("({},{},{},{})",point.x,point.y,extent.width,extent.height)
+}
+
+fn appkit_visible_indices(observed:isize, owned:isize, mtm:MainThreadMarker) -> String {
+    let Some(numbers)=NSWindow::windowNumbersWithOptions(NSWindowNumberListOptions::AllApplications,mtm)
+    else {return "appkitVisible=unavailable".into()};
+    let mut observed_index=None;let mut owned_index=None;
+    for (index, number) in numbers.iter().take(512).enumerate() {
+        let number=number.integerValue();
+        if number==observed {observed_index=Some(index);}
+        if number==owned {owned_index=Some(index);}
+    }
+    format!("appkitVisible=front-to-back total={} scanned={} observedIndex={observed_index:?} ownedIndex={owned_index:?}",
+        numbers.len(),numbers.len().min(512))
+}
+
+fn ax_point_owner(point_top_left: Option<(f64, f64)>) -> String {
+    let Some((x, y)) = point_top_left.filter(|(x, y)|
+        x.is_finite() && y.is_finite() && *x >= 0.0 && *y >= 0.0
+            && *x <= f32::MAX as f64 && *y <= f32::MAX as f64)
+    else { return "axPoint=invalid-coordinate".into(); };
+    if !unsafe { AXIsProcessTrusted() } { return "axPoint=untrusted".into(); }
+    let system = unsafe { AXUIElementCreateSystemWide() };
+    if system.is_null() { return "axPoint=system-unavailable".into(); }
+    let timeout_status = unsafe { AXUIElementSetMessagingTimeout(system, 0.25) };
+    if timeout_status != 0 {
+        unsafe { CFRelease(system) };
+        return format!("axPoint=timeout-setup-failed status={timeout_status}");
+    }
+    let mut element = std::ptr::null();
+    let hit_status = unsafe { AXUIElementCopyElementAtPosition(system, x as f32, y as f32, &mut element) };
+    unsafe { CFRelease(system) };
+    if hit_status != 0 {
+        if !element.is_null() { unsafe { CFRelease(element) }; }
+        return format!("axPoint=hit-failed status={hit_status}");
+    }
+    if element.is_null() { return "axPoint=no-element".into(); }
+    let mut pid = 0;
+    let pid_status = unsafe { AXUIElementGetPid(element, &mut pid) };
+    let element_timeout=unsafe { AXUIElementSetMessagingTimeout(element,0.25) };
+    if element_timeout!=0 {
+        unsafe { CFRelease(element) };
+        return format!("axPoint=element-timeout-setup-failed status={element_timeout} pidStatus={pid_status} ownerPid={pid}");
+    }
+    let role=ax_role(element);
+    let frame=ax_frame(element);
+    let window=match ax_attribute(element,"AXWindow") {
+        Ok(owner)=>{
+            let mut window_pid=0;
+            let status=unsafe { AXUIElementGetPid(owner,&mut window_pid) };
+            let timeout_status=unsafe { AXUIElementSetMessagingTimeout(owner,0.25) };
+            let detail=if timeout_status==0 {
+                format!("status=0 pidStatus={status} pid={window_pid} role={} frame={}",ax_role(owner),ax_frame(owner))
+            } else {format!("status=0 pidStatus={status} pid={window_pid} timeoutStatus={timeout_status}")};
+            unsafe { CFRelease(owner) };detail
+        },
+        Err(status)=>format!("status={status}"),
+    };
+    unsafe { CFRelease(element) };
+    if pid_status != 0 || pid <= 0 {
+        return format!("axPoint=pid-unavailable status={pid_status} role={role} frame={frame} window=({window})");
+    }
+    format!("axPoint=matched ownerPid={pid} role={role} frame={frame} window=({window})")
+}
+
+// Failure-only fallback when the QA app cannot use AX. Core Graphics returns
+// on-screen rows front-to-back, but rectangle coverage alone does not prove
+// which window AppKit's mouse hit test selected. Retain only bounded metadata
+// for the first four rows covering the exact refused point; never read titles.
+fn cg_point_windows(point_top_left: Option<(f64, f64)>) -> String {
+    let Some((x, y)) = point_top_left.filter(|(x, y)| x.is_finite() && y.is_finite())
+    else { return "cgPoint=invalid-coordinate".into(); };
+    let Some(windows) = CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly, kCGNullWindowID)
+    else { return "cgPoint=unavailable".into(); };
+    let rows: &CFArray<CFDictionary> = unsafe { windows.cast_unchecked() };
+    let mut covering = 0usize;
+    let mut retained = Vec::new();
+    for (index, item) in rows.iter().take(256).enumerate() {
+        let row: &CFDictionary<CFString, CFType> = unsafe { item.cast_unchecked() };
+        let Some(bounds) = row.get(unsafe { kCGWindowBounds })
+            .and_then(|value| value.downcast::<CFDictionary>().ok())
+            .and_then(|value| {
+                let mut rect = std::mem::MaybeUninit::<CGRect>::uninit();
+                unsafe { CGRectMakeWithDictionaryRepresentation(Some(&value), rect.as_mut_ptr()) }
+                    .then(|| unsafe { rect.assume_init() })
+            }) else { continue; };
+        if !bounds.origin.x.is_finite() || !bounds.origin.y.is_finite()
+            || !bounds.size.width.is_finite() || !bounds.size.height.is_finite()
+            || bounds.size.width <= 0.0 || bounds.size.height <= 0.0
+            || x < bounds.origin.x || x >= bounds.origin.x + bounds.size.width
+            || y < bounds.origin.y || y >= bounds.origin.y + bounds.size.height { continue; }
+        covering += 1;
+        if retained.len() == 4 { continue; }
+        let number = |key: &CFString| row.get(key)?.downcast::<CFNumber>().ok()?.as_i64();
+        retained.push(format!("(index={index},windowId={:?},ownerPid={:?},layer={:?},bounds=({},{},{},{}))",
+            number(unsafe { kCGWindowNumber }), number(unsafe { kCGWindowOwnerPID }),
+            number(unsafe { kCGWindowLayer }), bounds.origin.x, bounds.origin.y,
+            bounds.size.width, bounds.size.height));
+    }
+    format!("cgPoint=on-screen-front-to-back listCount={} scanned={} coveringScanned={covering} retained=[{}]",
+        rows.len(), rows.len().min(256), retained.join(","))
+}
+
 fn option_release_admitted(pin: Option<OptionPointerPin>, window: isize, view: usize, held: bool) -> bool {
     pin.is_some_and(|p| p.marker > 0 && p.window == window && p.view == view) && held
+}
+
+fn can_reassert_owned_key(
+    own_pid: i32,
+    frontmost_pid: Option<i32>,
+    owned_window: isize,
+    current_key: Option<isize>,
+    app_active: bool,
+    window_key: bool,
+    can_become_key: bool,
+) -> bool {
+    app_active && !window_key && can_become_key && frontmost_pid == Some(own_pid)
+        && current_key == Some(owned_window)
 }
 
 fn native_buttons_held() -> bool {
@@ -236,14 +465,14 @@ fn native_key(
         '`' => Some(50),
         _ => None,
     };
-    if code.is_none() && (modifiers.ctrl || modifiers.alt || modifiers.meta) {
+    if code.is_none() && (modifiers.ctrl || modifiers.shift || modifiers.alt || modifiers.meta) {
         return Err(WebDriverErrorResponse::unsupported_operation(
             "modified non-ASCII native key is unsupported",
         ));
     }
     // Shortcut characters must be translated by AppKit from virtual keycode
     // and modifiers. Unicode override is only the plain-text insertion route.
-    let text = if modifiers.ctrl || modifiers.alt || modifiers.meta {
+    let text = if modifiers.ctrl || modifiers.shift || modifiers.alt || modifiers.meta {
         None
     } else {
         Some(key.to_string())
@@ -293,29 +522,44 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
     async fn ensure_owned_foreground(&self) -> Result<(), WebDriverErrorResponse> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut request_activation = true;
+        let mut key_reasserted = false;
         let mut expected_window = None;
         let mut last = String::from("not observed");
         loop {
             let (tx, rx) = oneshot::channel();
             self.window.with_webview(move |view| unsafe {
-                let result=(|| -> Result<(isize,bool,String),String> {
+                let result=(|| -> Result<(isize,bool,bool,String),String> {
                     let mtm=MainThreadMarker::new().ok_or("focus requires main thread")?;
                     let wk: &WKWebView=&*view.inner().cast();
                     let window=wk.window().ok_or("owned window absent")?;
                     let app=NSApplication::sharedApplication(mtm);
                     if expected_window.is_some_and(|id|id!=window.windowNumber()) {return Err("owned window changed during activation".into());}
                     if !window.isVisible() || window.isMiniaturized() || wk.isHiddenOrHasHiddenAncestor() {return Err("hidden/minimized window cannot receive input".into());}
-                    let mut accepted=None;
+                    let frontmost_before=if request_activation {
+                        NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| (
+                            a.processIdentifier(),a.bundleIdentifier().map(|s|s.to_string())))
+                    } else {None};
+                    let mut activation_requested=false;
+                    let mut reasserted=false;
                     if request_activation && !(app.isActive() && window.isKeyWindow()) && std::time::Instant::now()<deadline {
-                        accepted=Some(NSRunningApplication::currentApplication().activateWithOptions(NSApplicationActivationOptions::empty()));
+                        app.activate();
+                        activation_requested=true;
                         window.makeKeyAndOrderFront(None);
+                    } else if !request_activation && !key_reasserted && std::time::Instant::now()<deadline {
+                        let frontmost_pid=NSWorkspace::sharedWorkspace().frontmostApplication().map(|a|a.processIdentifier());
+                        let current_key=app.keyWindow().map(|w|w.windowNumber());
+                        if can_reassert_owned_key(std::process::id() as i32,frontmost_pid,window.windowNumber(),current_key,
+                            app.isActive(),window.isKeyWindow(),window.canBecomeKeyWindow()) {
+                            window.makeKeyAndOrderFront(None);
+                            reasserted=true;
+                        }
                     }
                     let frontmost=NSWorkspace::sharedWorkspace().frontmostApplication().map(|a| (
                         a.processIdentifier(),a.bundleIdentifier().map(|s|s.to_string()),a.localizedName().map(|s|s.to_string())));
-                    let detail=format!("pid={} window={} policy={:?} active={} key={} canBecomeKey={} currentKey={:?} activationRequestAccepted={:?} frontmostPidBundleName={:?}",std::process::id(),window.windowNumber(),app.activationPolicy(),app.isActive(),window.isKeyWindow(),window.canBecomeKeyWindow(),app.keyWindow().map(|w|w.windowNumber()),accepted,frontmost);
-                    if request_activation {eprintln!("ST14A_NATIVE_FOCUS {detail}");}
-                    if accepted==Some(false) {return Err(format!("owned app activation refused: {detail}"));}
-                    Ok((window.windowNumber(),app.isActive() && window.isKeyWindow(),detail))
+                    let detail=format!("pid={} window={} policy={:?} active={} key={} canBecomeKey={} currentKey={:?} activationRequestIssued={} keyReasserted={} frontmostBefore={:?} frontmostPidBundleName={:?}",std::process::id(),window.windowNumber(),app.activationPolicy(),app.isActive(),window.isKeyWindow(),window.canBecomeKeyWindow(),app.keyWindow().map(|w|w.windowNumber()),activation_requested,reasserted,frontmost_before,frontmost);
+                    if request_activation || reasserted {eprintln!("ST14A_NATIVE_FOCUS {detail}");}
+                    Ok((window.windowNumber(),app.isActive() && window.isKeyWindow()
+                        && frontmost.as_ref().is_some_and(|(pid,_,_)|*pid==std::process::id() as i32),reasserted,detail))
                 })();let _=tx.send(result);
             }).map_err(|e|WebDriverErrorResponse::unknown_error(&e.to_string()))?;
             let result = tokio::time::timeout(
@@ -331,7 +575,8 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
             .map_err(|_| WebDriverErrorResponse::unknown_error("owned foreground channel closed"))?
             .map_err(|e| WebDriverErrorResponse::element_not_interactable(&e))?;
             expected_window = Some(result.0);
-            last = result.2;
+            key_reasserted |= result.2;
+            last = result.3;
             if result.1 {
                 return Ok(());
             }
@@ -427,8 +672,22 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 let option_down = option_scope && matches!(&input, NativeInput::Pointer { event_type: PointerEventType::Down, .. });
                 let location = if let Some((x,y,width,height))=viewport {
                     let screen=native_screen_point(wk,&window,(x,y,width,height))?;
-                    if !releasing && NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen,0,mtm)!=window.windowNumber() {
-                        return Err("owned window is not frontmost at native input point".into());
+                    if !releasing {
+                        let observed=NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen,0,mtm);
+                        if observed!=window.windowNumber() {
+                            let frontmost=NSWorkspace::sharedWorkspace().frontmostApplication().map(|app|app.processIdentifier());
+                            let frame=window.frame();
+                            let within_frame=screen.x>=frame.origin.x && screen.x<frame.origin.x+frame.size.width
+                                && screen.y>=frame.origin.y && screen.y<frame.origin.y+frame.size.height;
+                            let primary_frame=NSScreen::screens(mtm).firstObject().map(|primary| primary.frame());
+                            let posted_point=primary_frame.map(|frame|
+                                (screen.x,frame.origin.y+frame.size.height-screen.y));
+                            let appkit_visible=appkit_visible_indices(observed,window.windowNumber(),mtm);
+                            let cg_point=cg_point_windows(posted_point);
+                            let ax_owner=ax_point_owner(posted_point);
+                            let cg_info=hit_window_info(observed,posted_point);
+                            return Err(format!("owned window is not frontmost at native input point: expectedWindow={} observedWindow={observed} screenPoint=({},{}) inputPointTopLeft={posted_point:?} primaryScreenBottomLeft={primary_frame:?} ownedFrameBottomLeft=({},{},{},{}) pointWithinOwnedFrame={within_frame} ownedWindowIgnoresMouse={} ownedWindowLevel={} webViewBounds={:?} webViewFlipped={} domViewport=({x},{y},{width},{height}) appActive={} windowKey={} frontmostPid={frontmost:?} {ax_owner} {cg_info} {cg_point} {appkit_visible}",window.windowNumber(),screen.x,screen.y,frame.origin.x,frame.origin.y,frame.size.width,frame.size.height,window.ignoresMouseEvents(),window.level(),wk.bounds(),wk.isFlipped(),app.isActive(),window.isKeyWindow()));
+                        }
                     }
                     if option_down {
                         *completion_point.lock().unwrap()=Some(OptionCompletionPoint {window:window.windowNumber(),view:wk as *const WKWebView as usize,viewport:(x,y,width,height),screen});
@@ -444,29 +703,29 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 let mut input=input;
                 if let NativeInput::Key{key,code,text,down}=&mut input {
                     let owner=(window.windowNumber(),key.clone());
-                    let previous=KEY_REPRESENTATIONS.with(|keys|keys.borrow().get(&owner).copied());
+                    let previous=KEY_REPRESENTATIONS.with(|keys|keys.borrow().get(&owner).cloned());
                     if !*down && previous.is_none() { return Err("key release has no retained native representation; no event posted".into()); }
-                    let plain=!(modifiers.ctrl || modifiers.shift || modifiers.alt || modifiers.meta);
-                    let character_route=use_character_route(previous,*down,plain,text.is_some());
+                    let character=character_route_text(previous.as_ref(),*down,&modifiers,key,text.is_some());
                     if *down && KEY_REPRESENTATIONS.with(|keys|keys.borrow().len()>=256) { return Err("native held key representations exceed bound".into()); }
-                    if character_route {
+                    if let Some(character)=character {
                         let responder=window.firstResponder();
                         if !responder.as_ref().and_then(|r|r.downcast_ref::<NSView>()).is_some_and(|view|view.isDescendantOf(wk)) {
                             return Err("native character key requires owned webview responder".into());
                         }
-                        let characters=NSString::from_str(key);
+                        let characters=NSString::from_str(&character);
+                        let ignoring_modifiers=NSString::from_str(key);
                         let event=NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-                            if *down { NSEventType::KeyDown } else { NSEventType::KeyUp }, NSPoint::new(0.0,0.0),NSEventModifierFlags(native_flags(modifiers).0 as usize),NSProcessInfo::processInfo().systemUptime(),window.windowNumber(),None,&characters,&characters,false,*code
+                            if *down { NSEventType::KeyDown } else { NSEventType::KeyUp }, NSPoint::new(0.0,0.0),NSEventModifierFlags(native_flags(modifiers).0 as usize),NSProcessInfo::processInfo().systemUptime(),window.windowNumber(),None,&characters,&ignoring_modifiers,false,*code
                         ).ok_or("native character key event unavailable")?;
                         // Pin the representation before dispatch; common owns the
                         // original window and key lifecycle across requests.
-                        if *down { KEY_REPRESENTATIONS.with(|keys|keys.borrow_mut().insert(owner.clone(),KeyRepresentation::Character)); }
+                        if *down { KEY_REPRESENTATIONS.with(|keys|keys.borrow_mut().insert(owner.clone(),KeyRepresentation::Character(character))); }
                         if *down { wk.keyDown(&event); } else { wk.keyUp(&event); *completed_release.lock().unwrap()=Some(owner); }
                         eprintln!("ST14A_NATIVE_DELIVERY route=character-responder down={down} ownerWindow={}",window.windowNumber());
                         if let Some(tx)=posted_completion.lock().unwrap().take() { let _=tx.send(Ok(())); }
                         return Ok(());
                     }
-                    if let Some(KeyRepresentation::Hardware{code:original,..})=previous { *code=original; *text=None; }
+                    if let Some(KeyRepresentation::Hardware{code:original,..})=previous.as_ref() { *code=*original; *text=None; }
                     if *down && previous.is_none() {
                         let mapped=native_key(key,&modifiers).map_err(|error|error.message)?;
                         *code=mapped.0;*text=mapped.1;
@@ -796,21 +1055,37 @@ impl<R:Runtime> Drop for PopupObserverCleanup<R> {
 // A monitor is only an acknowledgement of our marked event entering AppKit.
 // Queue completion after that dispatch so a following Up cannot change the HID
 // button state before WebKit constructs the preceding Down event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum KeyRepresentation {
-    Character,
+    Character(String),
     Hardware { code: u16, held: bool },
 }
-fn use_character_route(
-    previous: Option<KeyRepresentation>,
+fn character_route_text(
+    previous: Option<&KeyRepresentation>,
     down: bool,
-    plain: bool,
+    modifiers: &ModifierState,
+    key: &str,
     printable: bool,
-) -> bool {
+) -> Option<String> {
     match previous {
-        Some(KeyRepresentation::Character) => true,
-        Some(KeyRepresentation::Hardware { .. }) => false,
-        None => down && plain && printable,
+        Some(KeyRepresentation::Character(character)) => Some(character.clone()),
+        Some(KeyRepresentation::Hardware { .. }) => None,
+        None if down && printable && !(modifiers.ctrl || modifiers.alt || modifiers.meta) => {
+            if modifiers.shift {
+                // WebKit did not translate Shift plus a physical letter into an
+                // uppercase character in the controlled Mac Actions fixture.
+                // Keep other modified keys on the established hardware route.
+                match key.as_bytes() {
+                    [b'a'..=b'z'] => Some((key.as_bytes()[0].to_ascii_uppercase() as char).to_string()),
+                    [b'A'..=b'Z'] => Some(key.to_owned()),
+                    [b'-'] => Some("_".into()),
+                    _ => None,
+                }
+            } else {
+                Some(key.to_owned())
+            }
+        }
+        None => None,
     }
 }
 thread_local! {
@@ -863,6 +1138,10 @@ pub fn register_webview_handlers<R: Runtime>(webview: &tauri::Webview<R>) {
 impl<R: Runtime + 'static> PlatformExecutor<R> for MacOSExecutor<R> {
     fn preflight_key_event(&self, key: &str) -> Result<(), WebDriverErrorResponse> {
         native_key(key, &ModifierState::default()).map(|_| ())
+    }
+
+    async fn preflight_native_key_down(&self) -> Result<(), WebDriverErrorResponse> {
+        self.ensure_owned_foreground().await
     }
 
     fn option_defer_primary_release(&self) -> bool { true }
@@ -1633,6 +1912,20 @@ impl WebDriverUIDelegate {
 #[cfg(test)]
 mod native_input_mapping_tests {
     #[test]
+    fn key_reassertion_requires_the_same_frontmost_app_and_no_foreign_key_window() {
+        let allowed=|frontmost,current_key,active,key,can_become|super::can_reassert_owned_key(
+            42,frontmost,7,current_key,active,key,can_become);
+        assert!(allowed(Some(42),Some(7),true,false,true));
+        assert!(!allowed(Some(42),None,true,false,true));
+        assert!(!allowed(Some(43),Some(7),true,false,true));
+        assert!(!allowed(None,Some(7),true,false,true));
+        assert!(!allowed(Some(42),Some(8),true,false,true));
+        assert!(!allowed(Some(42),Some(7),false,false,true));
+        assert!(!allowed(Some(42),Some(7),true,true,true));
+        assert!(!allowed(Some(42),Some(7),true,false,false));
+    }
+
+    #[test]
     fn popup_receipt_ignores_unrelated_markers_and_completes_once() {
         let seen=std::cell::Cell::new(false);
         assert!(!super::popup_first_receipt(12,Some(13),&seen));assert!(!seen.get());
@@ -1736,35 +2029,53 @@ mod native_input_mapping_tests {
             .unwrap(),
             (0, None)
         );
+        let shift = ModifierState { shift: true, ..Default::default() };
+        assert_eq!(native_key("a", &shift).unwrap(), (0, None));
+        assert_eq!(native_key("-", &shift).unwrap(), (27, None));
+        assert!(native_key("é", &shift).is_err());
+        assert_eq!(native_key("A", &ModifierState::default()).unwrap(), (0, Some("A".into())));
     }
 
     #[test]
     fn original_key_representation_survives_modifier_changes_and_repeat() {
         for down in [true, false] {
-            assert!(use_character_route(
-                Some(KeyRepresentation::Character),
+            assert_eq!(character_route_text(
+                Some(&KeyRepresentation::Character("A".into())),
                 down,
-                false,
+                &ModifierState::default(),
+                "a",
                 true
-            ));
-            assert!(!use_character_route(
-                Some(KeyRepresentation::Hardware {
+            ), Some("A".into()));
+            assert_eq!(character_route_text(
+                Some(&KeyRepresentation::Hardware {
                     code: 0,
                     held: true
                 }),
                 down,
-                true,
+                &ModifierState::default(),
+                "a",
                 true
-            ));
+            ), None);
         }
     }
 
     #[test]
-    fn new_character_pair_requires_plain_printable_down() {
-        assert!(use_character_route(None, true, true, true));
-        assert!(!use_character_route(None, false, true, true));
-        assert!(!use_character_route(None, true, false, true));
-        assert!(!use_character_route(None, true, true, false));
+    fn shifted_ascii_character_route_preserves_native_key_identity() {
+        let plain=ModifierState::default();
+        let shift=ModifierState { shift:true, ..Default::default() };
+        assert_eq!(character_route_text(None,true,&plain,"A",true),Some("A".into()));
+        assert_eq!(character_route_text(None,true,&plain,"é",true),Some("é".into()));
+        assert_eq!(character_route_text(None,true,&plain,"e\u{301}",true),Some("e\u{301}".into()));
+        assert_eq!(character_route_text(None,true,&shift,"a",true),Some("A".into()));
+        assert_eq!(character_route_text(None,true,&shift,"-",true),Some("_".into()));
+        assert_eq!(character_route_text(None,true,&shift,"A",true),Some("A".into()));
+        assert_eq!(character_route_text(None,true,&shift,"1",true),None);
+        assert_eq!(character_route_text(None,true,&shift,"\u{E011}",false),None);
+        assert_eq!(character_route_text(None,true,&shift,"\u{E015}",false),None);
+        assert_eq!(character_route_text(None,false,&shift,"a",true),None);
+        assert_eq!(character_route_text(None,true,&plain,"a",false),None);
+        assert_eq!(character_route_text(None,true,&ModifierState {ctrl:true,shift:true,..Default::default()},"a",true),None);
+        assert_eq!(character_route_text(None,true,&ModifierState {meta:true,..Default::default()},"a",true),None);
     }
 
     #[test]

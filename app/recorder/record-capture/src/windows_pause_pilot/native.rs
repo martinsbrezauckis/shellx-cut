@@ -148,7 +148,10 @@ pub(super) fn start_private(
                 WindowsPausePilotWgcFactory {
                     fps: profile_for_factory.fps(),
                 },
-                WindowsCheckpointPublisher { checkpoints },
+                WindowsCheckpointPublisher {
+                    checkpoints,
+                    include_native_startup: false,
+                },
             ))
         },
         Box::new(RequiredWindowsPauseInputFactory),

@@ -42,7 +42,6 @@ pub struct WebDriverErrorResponse {
     pub error: String,
     pub message: String,
     pub stacktrace: Option<String>,
-    pub data: Option<Value>,
 }
 
 impl WebDriverErrorResponse {
@@ -52,14 +51,7 @@ impl WebDriverErrorResponse {
             error: error.to_string(),
             message: message.to_string(),
             stacktrace,
-            data: None,
         }
-    }
-
-    /// Adds command-specific diagnostics to W3C `value.data`.
-    pub fn with_data(mut self, data: Value) -> Self {
-        self.data = Some(data);
-        self
     }
 
     pub fn invalid_session_id(session_id: &str) -> Self {
@@ -187,23 +179,17 @@ impl WebDriverErrorResponse {
             None,
         )
     }
-
-    fn error_value(&self) -> Value {
-        let mut value = json!({
-            "error": self.error,
-            "message": self.message,
-            "stacktrace": self.stacktrace.as_deref().unwrap_or_default(),
-        });
-        if let Some(data) = &self.data {
-            value["data"] = data.clone();
-        }
-        value
-    }
 }
 
 impl IntoResponse for WebDriverErrorResponse {
     fn into_response(self) -> Response {
-        let body = json!({"value": self.error_value()});
+        let body = json!({
+            "value": {
+                "error": self.error,
+                "message": self.message,
+                "stacktrace": self.stacktrace.unwrap_or_default()
+            }
+        });
 
         (
             self.status,
@@ -251,20 +237,5 @@ mod tests {
         let err = WebDriverErrorResponse::stale_element_reference();
         assert_eq!(err.status, StatusCode::NOT_FOUND);
         assert_eq!(err.error, "stale element reference");
-    }
-
-    #[test]
-    fn command_diagnostic_is_emitted_under_w3c_value_data() {
-        let err = WebDriverErrorResponse::unsupported_operation("held input")
-            .with_data(json!({"releaseRequired": true}));
-        assert_eq!(
-            err.error_value(),
-            json!({
-                "error": "unsupported operation",
-                "message": "held input",
-                "stacktrace": "",
-                "data": {"releaseRequired": true},
-            })
-        );
     }
 }

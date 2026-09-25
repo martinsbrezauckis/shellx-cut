@@ -43,6 +43,13 @@ pub(crate) trait WgcCheckpointPublisher {
     /// Reserve the only open WGC staging path for a new physical checkpoint.
     fn reserve(&mut self, start_ms: u64) -> Result<(u64, PathBuf)>;
 
+    /// A native factory can begin encoding before it returns its control.
+    /// Publishers that own that earlier capture clock may use the reserved
+    /// boundary; the default preserves the post-open observation contract.
+    fn capture_start_ms(&self, _reserved_start_ms: u64, observed_start_ms: u64) -> u64 {
+        observed_start_ms
+    }
+
     /// Verify a closed encoder result, then publish it with the no-replace
     /// checkpoint operation. The returned record is the immutable publication fact.
     fn verify_and_publish_new(
@@ -216,9 +223,19 @@ where
                 return Err(error);
             }
         };
+        let start_ms = self
+            .publisher
+            .capture_start_ms(reserved_start_ms, observation.start_ms);
+        if start_ms > observation.start_ms {
+            self.stopped = true;
+            let _ = started.control.close();
+            return Err(state_error(
+                "WGC capture boundary follows native start observation",
+            ));
+        }
         let identity = ScreenRunIdentity {
             physical_generation,
-            start_ms: observation.start_ms,
+            start_ms,
             started: observation,
             accepted: started.accepted,
         };
