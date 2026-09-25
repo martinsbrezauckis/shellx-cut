@@ -64,6 +64,32 @@
   transform: rotate(0deg);
 }
 
+.chat__model-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink-4);
+  font-size: var(--fs-ui-xs);
+}
+.chat__model-control input {
+  min-width: 0;
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-button, 8px);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+}
+.chat__model-control input:focus-visible {
+  outline: 1px solid var(--cut);
+}
+.chat__model-control input:disabled {
+  opacity: 0.5;
+}
+
 /* The dropdown listbox — absolutely positioned under the trigger. */
 .chat__agentmenu {
   position: absolute;

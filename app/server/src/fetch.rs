@@ -270,7 +270,7 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
 
     // ---- 6. report version from the freshly-installed binary ----------------
     progress(0.97, "probing version");
-    let primary = install_dir.join(exe_name(spec.binaries[0]));
+    let primary = install_dir.join("bin").join(exe_name(spec.binaries[0]));
     let version = probe_version(&primary);
 
     progress(1.0, "done");

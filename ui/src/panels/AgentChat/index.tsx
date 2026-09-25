@@ -130,6 +130,9 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
   // chat state from the doctor (null state until first load). `agentsLoaded`
   // gates the trigger badge so it doesn't flash "install" before the scan lands.
   const [agent, setAgent] = useState<ChatAgentName>(() => getChatAgent())
+  // Keep overrides separate so switching providers never sends one CLI's model
+  // name to another. An empty value leaves that CLI's own default in control.
+  const [agentModels, setAgentModels] = useState<Partial<Record<ChatAgentName, string>>>({})
   const [options, setOptions] = useState<ChatAgentOption[]>(() => chatAgentsFrom(null))
   const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -311,6 +314,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
       const r = await callVerb('agent.chat', {
         message,
         agent,
+        model: agentModels[agent]?.trim() || undefined,
         attachments: turnAttachments.length > 0 ? turnAttachments.map((attachment) => attachment.id) : undefined,
         target: turnTarget ?? undefined,
         ...evidenceIdentity,
@@ -558,6 +562,22 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
           </ul>
         )}
       </div>
+      <label className="chat__model-control">
+        <span>Model</span>
+        <input
+          data-cut-action="chat-model"
+          data-cut-chat-model
+          aria-label={`${agent} model override`}
+          type="text"
+          maxLength={128}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="CLI default"
+          value={agentModels[agent] ?? ''}
+          disabled={busy}
+          onChange={(event) => setAgentModels((current) => ({ ...current, [agent]: event.target.value }))}
+        />
+      </label>
       <div className="chat__log" ref={logRef} data-cut-chat-log>
         {log.length === 0 && (
           <div className="chat__empty" data-cut-chat-empty>

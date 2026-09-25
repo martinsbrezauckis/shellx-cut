@@ -455,7 +455,9 @@ route to the same surface registry.
   need an external speech service, rendering, delivery, or verification tell the
   user to open the relevant Transcript Tools, Clips, or Review > QC surface;
   pre-filling text does not grant or execute those capabilities.
-  Agent Chat launches the user's installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses
+  Agent Chat launches the user's installed Claude Code, Codex, Grok, or Antigravity CLI.
+  The optional Model field passes a model name only to the selected provider;
+  leaving it empty uses that CLI's configured default. Claude uses
   Cut's contained capability route in a disposable cwd with native CLI tools
   disabled. Provider version text is informational only and each route's required
   containment flags are verified before each turn. Codex keeps the user's normal configuration, native sandbox, and

@@ -832,6 +832,10 @@ curl -sS http://127.0.0.1:6161/api/verb/agent.chat \
 The server validates every ID against the open project, rejects duplicates, and
 caps each turn at eight attachments. The response echoes the validated IDs in
 `result.attachments` on both the success and structured no-edit paths.
+An optional `model` string selects the model for that turn on the named `agent`;
+omit it to use the CLI's configured default. Agent Chat's Model field sends this
+same argument and keeps each provider's entered value separate while the panel
+is open.
 
 Find > Moment citations use a separate index-bound attachment contract. Resolve
 them provider-free first, then send the same ids and exact index snapshot:
