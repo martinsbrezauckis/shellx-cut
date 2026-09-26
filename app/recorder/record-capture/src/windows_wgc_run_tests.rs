@@ -164,7 +164,7 @@ fn ordinary_wgc_checkpoint_covers_frames_encoded_during_native_startup() {
         .unwrap()
         .unwrap();
     assert_sealed(&sealed, 1, 0, 7373);
-    assert!(7533 > 7373 - 463 + 200);
+    assert!(7533 > 7373 - identity.started.start_ms + 200);
     assert!(7533 <= sealed.boundary.end_ms - sealed.boundary.start_ms + 200);
 }
 

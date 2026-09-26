@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Path, State};
 use axum::Json;
@@ -19,6 +20,13 @@ pub struct FindElementRequest {
 #[derive(Debug, Deserialize)]
 pub struct SendKeysRequest {
     pub text: String,
+}
+
+static CLICK_TRACE_ID: AtomicU64 = AtomicU64::new(1);
+
+struct ClickTrace {
+    phase: &'static str,
+    point: Option<(i32, i32)>,
 }
 
 /// POST `/session/{session_id}/element` - Find element
@@ -124,7 +132,11 @@ async fn click_inner<R: Runtime + 'static>(
     session_id: &str,
     element_id: &str,
 ) -> WebDriverResult {
-    let result = click_sequence(state, session_id, element_id).await;
+    let click_id = CLICK_TRACE_ID.fetch_add(1, Ordering::Relaxed);
+    let mut trace = ClickTrace { phase: "session", point: None };
+    let result = crate::platform::NATIVE_CLICK_TRACE_ID
+        .scope(click_id, click_sequence(state, session_id, element_id, &mut trace))
+        .await;
     if let Err(error) = &result {
         let mut sessions = state.sessions.write().await;
         let input = &mut sessions.get_mut(session_id)?.action_state;
@@ -134,10 +146,14 @@ async fn click_inner<R: Runtime + 'static>(
         // WebDriverIO may replace the first server refusal after its clickable
         // retry. Retain that bounded reason beside native-post diagnostics.
         eprintln!(
-            "EMBEDDED_CLICK_REFUSAL reason={:?} held={} inputFailed={}",
+            "EMBEDDED_CLICK_REFUSAL reason={:?} held={} inputFailed={} clickId={} phase={} point={:?} element={:?}",
             error.message.chars().take(240).collect::<String>(),
             input.has_held_input(),
-            input.input_failed
+            input.input_failed,
+            click_id,
+            trace.phase,
+            trace.point,
+            element_id.chars().take(64).collect::<String>()
         );
     }
     result
@@ -147,6 +163,7 @@ async fn click_sequence<R: Runtime + 'static>(
     state: &Arc<AppState<R>>,
     session_id: &str,
     element_id: &str,
+    trace: &mut ClickTrace,
 ) -> WebDriverResult {
     let sessions = state.sessions.read().await;
     let session = sessions.get(session_id)?;
@@ -174,9 +191,11 @@ async fn click_sequence<R: Runtime + 'static>(
     let frame_context = session.frame_context.clone();
     drop(sessions);
 
+    trace.phase = "executor";
     let executor =
         state.get_executor_for_window(&current_window, timeouts, frame_context.clone())?;
     use crate::platform::PointerEventType;
+    trace.phase = "option-inspection";
     let option = executor.inspect_option(&js_var, "prepare").await?;
     let center_ref = if option.is_some() { format!("{js_var}_select") } else { js_var.clone() };
     let mut popup_started = false;
@@ -189,12 +208,16 @@ async fn click_sequence<R: Runtime + 'static>(
     let mut enter_attempted=false;
     let mut operation = async {
     let first_key = if option.is_some() { Some(executor.option_popup_first_key()?) } else { None };
+    trace.phase = "center";
     let (x, y) = executor.get_element_center(&center_ref).await?;
+    trace.point = Some((x, y));
     if let Some((_, selected)) = option {
+        trace.phase = "option-center-recheck";
         executor.inspect_option(&js_var, "verify").await?;
         option_context(state, session_id, &current_window).await?;
         if selected { return Ok(WebDriverResponse::null()); }
     }
+    trace.phase = "move";
     executor
         .dispatch_pointer_event(
             PointerEventType::Move,
@@ -208,10 +231,16 @@ async fn click_sequence<R: Runtime + 'static>(
     if option.is_some() {
         option_context(state, session_id, &current_window).await?;
         executor.inspect_option(&js_var, "verify").await?;
-        if executor.get_element_center(&center_ref).await? != (x, y) {
-            return Err(WebDriverErrorResponse::element_not_interactable("select container moved before native click"));
-        }
     }
+    // A native Move can wait for a window transition. Recheck the same DOM
+    // target and hit point before retaining Down, including ordinary buttons.
+    trace.phase = "center-recheck";
+    if executor.get_element_center(&center_ref).await? != (x, y) {
+        return Err(WebDriverErrorResponse::element_not_interactable(
+            "element center changed before native click; no Down posted",
+        ));
+    }
+    trace.phase = "retain-down";
     {
         let mut sessions = state.sessions.write().await;
         let state = &mut sessions.get_mut(session_id)?.action_state;
@@ -222,6 +251,7 @@ async fn click_sequence<R: Runtime + 'static>(
     popup_started = option.is_some();
     for (event_type, buttons) in [(PointerEventType::Down, 1), (PointerEventType::Up, 0)] {
         if defer_release && matches!(event_type,PointerEventType::Up) {continue;}
+        trace.phase = if matches!(event_type,PointerEventType::Down) { "down" } else { "up" };
         if option.is_some() {
             executor.dispatch_option_pointer_event(event_type, x, y, 0, buttons,
                 &crate::platform::ModifierState::default()).await?;
@@ -229,8 +259,10 @@ async fn click_sequence<R: Runtime + 'static>(
             executor.dispatch_pointer_event(event_type, x, y, 0, buttons,
                 &crate::platform::ModifierState::default()).await?;
         }
+        trace.phase = if matches!(event_type,PointerEventType::Down) { "down-complete" } else { "up-complete" };
     }
     if !defer_release {
+    trace.phase = "release-bookkeeping";
     state
         .sessions
         .write()
@@ -241,6 +273,7 @@ async fn click_sequence<R: Runtime + 'static>(
     }
 
     if let Some((index, _)) = option {
+        trace.phase = "option-commit";
         executor.inspect_option(&js_var, "verify").await?;
         for key in option_navigation(first_key.unwrap(), index)? {
             option_context(state, session_id, &current_window).await?;
@@ -329,6 +362,7 @@ async fn click_sequence<R: Runtime + 'static>(
         // Always release adapter references, even when native cleanup fails.
         // Preserve the operation error and any unresolved held-input state.
         executor.clear_option_completion();
+        if operation.is_ok() { trace.phase = "option-clear"; }
         let cleared = executor.inspect_option(&js_var, "clear").await;
         if operation.is_ok() { cleared?; }
     }

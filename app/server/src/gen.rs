@@ -492,9 +492,10 @@ pub fn build_command(
                     "image_gen".into(),
                     "--output-format".into(),
                     "streaming-json".into(),
-                    "--max-turns".into(),
-                    "2".into(),
                 ]);
+                // image_gen can complete on a later turn after local tool
+                // discovery. The operation deadline and single completed-image
+                // validator bound this route without truncating its tool result.
             } else {
                 args.extend([
                     "--output-format".into(),
@@ -567,7 +568,7 @@ pub fn build_prompt(
     reference_paths: &[String],
 ) -> String {
     if provider == "grok" && kind == "image" && reference_paths.is_empty() {
-        let lines = vec![
+        let lines = [
             "Generate exactly one real image by calling image_gen exactly once.".to_string(),
             format!("Use this user description: {}", serde_json::to_string(description).unwrap_or_default()),
             "Do not create a placeholder or retry a failed tool call. If image_gen is unavailable, report the failure.".to_string(),
@@ -713,6 +714,60 @@ pub fn grok_image_tool_path(stdout: &str) -> Result<PathBuf, String> {
         ));
     }
     Ok(generated.remove(0))
+}
+
+/// Summarize only the shape of a failed native image run. Provider output can
+/// contain prompts, paths, and credentials, so none of its text is returned.
+pub fn grok_image_exit_diagnostic(
+    stdout: &[u8],
+    stderr: &[u8],
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+) -> String {
+    let mut calls = std::collections::BTreeSet::new();
+    let mut completed = std::collections::BTreeSet::new();
+    for line in String::from_utf8_lossy(stdout).lines() {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(id) = event.get("toolCallId").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        match event.get("type").and_then(|value| value.as_str()) {
+            Some("tool_call")
+                if event.get("toolName").and_then(|value| value.as_str()) == Some("image_gen") =>
+            {
+                calls.insert(id.to_string());
+            }
+            Some("tool_call_update")
+                if calls.contains(id)
+                    && event.get("status").and_then(|value| value.as_str())
+                        == Some("completed")
+                    && event
+                        .pointer("/rawOutput/type")
+                        .and_then(|value| value.as_str())
+                        == Some("ImageGen") =>
+            {
+                completed.insert(id.to_string());
+            }
+            _ => {}
+        }
+    }
+    let category = if stdout_truncated {
+        "partial_trace"
+    } else if calls.is_empty() {
+        "no_image_gen_call_observed"
+    } else if completed.is_empty() {
+        "image_gen_not_completed"
+    } else {
+        "image_gen_completed_before_exit"
+    };
+    format!(
+        "diagnostic: {category}; image_gen calls={}, completed={}; stderr_present={}; stdout_truncated={stdout_truncated}; stderr_truncated={stderr_truncated}",
+        calls.len(),
+        completed.len(),
+        !stderr.is_empty(),
+    )
 }
 
 /// Resolve Grok's generated-image session directory from the effective child
@@ -1264,6 +1319,7 @@ mod tests {
             .args
             .windows(2)
             .any(|w| w == ["--output-format", "streaming-json"]));
+        assert!(!c.args.contains(&"--max-turns".to_string()));
         assert!(!c.args.contains(&"bypassPermissions".to_string()));
         assert!(!c.args.contains(&"--no-memory".to_string()));
     }
@@ -1272,9 +1328,11 @@ mod tests {
     fn grok_video_and_reference_images_keep_existing_file_output_route() {
         let c = build_command("grok", "video", false, "/scratch", None).unwrap();
         assert!(c.args.windows(2).any(|w| w == ["--output-format", "json"]));
+        assert!(c.args.windows(2).any(|w| w == ["--max-turns", "20"]));
         assert!(!c.args.contains(&"image_gen".to_string()));
         let c = build_command("grok", "image", true, "/scratch", None).unwrap();
         assert!(c.args.windows(2).any(|w| w == ["--output-format", "json"]));
+        assert!(c.args.windows(2).any(|w| w == ["--max-turns", "20"]));
         assert!(!c.args.contains(&"image_gen".to_string()));
     }
 
@@ -1385,6 +1443,32 @@ Save the final PNG EXACTLY this path:\n\
         assert!(grok_image_tool_path("{\"type\":\"result\",\"text\":\"/fake.png\"}").is_err());
         let duplicate = format!("{stdout}\n{{\"type\":\"tool_call_update\",\"toolCallId\":\"native-1\",\"status\":\"completed\",\"rawOutput\":{{\"type\":\"ImageGen\",\"path\":\"/second.png\"}}}}");
         assert!(grok_image_tool_path(&duplicate).is_err());
+    }
+
+    #[test]
+    fn grok_image_exit_diagnostic_reports_only_observed_tool_state() {
+        let stdout = br#"{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id","prompt":"secret-looking-token"}
+{"type":"tool_call_update","toolCallId":"other-id","status":"completed","rawOutput":{"type":"ImageGen","path":"/private/image.png"}}
+{"type":"result","text":"secret-looking-token /private/image.png"}"#;
+        let diagnostic = grok_image_exit_diagnostic(stdout, b"secret-looking-token", false, false);
+        assert_eq!(diagnostic, "diagnostic: image_gen_not_completed; image_gen calls=1, completed=0; stderr_present=true; stdout_truncated=false; stderr_truncated=false");
+        assert!(!diagnostic.contains("secret-looking-token"));
+        assert!(!diagnostic.contains("private-id"));
+        assert!(!diagnostic.contains("/private/image.png"));
+
+        let completed = br#"{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id"}
+{"type":"tool_call_update","toolCallId":"private-id","status":"completed","rawOutput":{"type":"ImageGen","path":"/private/image.png"}}"#;
+        assert_eq!(grok_image_exit_diagnostic(completed, b"", false, false), "diagnostic: image_gen_completed_before_exit; image_gen calls=1, completed=1; stderr_present=false; stdout_truncated=false; stderr_truncated=false");
+    }
+
+    #[test]
+    fn grok_image_exit_diagnostic_keeps_unknown_output_private() {
+        let diagnostic =
+            grok_image_exit_diagnostic(b"secret-looking-token", b"private stderr", false, true);
+        assert_eq!(diagnostic, "diagnostic: no_image_gen_call_observed; image_gen calls=0, completed=0; stderr_present=true; stdout_truncated=false; stderr_truncated=true");
+        let truncated = grok_image_exit_diagnostic(b"secret-looking-token", b"", true, false);
+        assert!(truncated.contains("diagnostic: partial_trace"));
+        assert!(!truncated.contains("secret-looking-token"));
     }
 
     #[test]

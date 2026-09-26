@@ -33,7 +33,7 @@ import TranscriptPhraseList from './TranscriptPhraseList'
 import TranscriptSetupCard from './TranscriptSetupCard'
 import type { TimelineWord } from '../../lib/client'
 import { chaptersOf, isObject, numberField, reelSnippet, searchResultFrom, selRange, timelineEntriesFrom, type Aggressiveness, type ReelSpan, type Sel } from './model'
-import { type ChapterAssetAvailability, type TranscriptChapter } from './chapterNavigationModel'
+import { TRANSCRIPT_CHAPTER_REQUEST_LIMIT, type ChapterAssetAvailability, type TranscriptChapter } from './chapterNavigationModel'
 import { activeCutSpans, dispatchVerb, fmtDur, fmtTc, seekPlayhead, type CutSpan } from '../Review/shared'
 import { sourceAtPlayhead } from '../Timeline/layout'
 import { Icon } from '../../icons'
@@ -717,7 +717,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
     setChapterResult(null)
     setChapterAvailability('checking')
     setToolsOpen(false)
-    const r = await callVerb('transcript.chapters', { asset })
+    const r = await callVerb('transcript.chapters', { asset, max_chapters: TRANSCRIPT_CHAPTER_REQUEST_LIMIT })
     if (request !== chapterRequestRef.current) return
     if (r.ok && r.result) {
       const chapters = chaptersOf(r.result)

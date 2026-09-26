@@ -29,11 +29,10 @@ const OPTION_SNAPSHOT_SCRIPT: &str = r#"// Read-only DOM inspection. Retained re
     const direct = target.parentElement;
     const select = direct instanceof HTMLOptGroupElement ? direct.parentElement : direct;
     if (!(select instanceof HTMLSelectElement) || !select.isConnected) return {error: 'stale element reference'};
-    // The application may disable its SELECT synchronously while handling the
-    // trusted change. Only settle may observe that transition; every check
-    // before Enter still requires an interactable container.
-    if (select.matches(':disabled') && !(phase === 'settle' && select.disabled &&
-        !select.closest('fieldset:disabled'))) {
+    // The application may disable this SELECT or its fieldset while saving the
+    // trusted change. Completion observes the committed choice, not new input.
+    // Every check before Enter still requires an interactable container.
+    if (phase !== 'settle' && select.matches(':disabled')) {
         return {error: 'element not interactable'};
     }
     const hidden = e => {
@@ -90,6 +89,10 @@ const OPTION_SNAPSHOT_SCRIPT: &str = r#"// Read-only DOM inspection. Retained re
 // Native input is process-global. Refuse overlapping input requests instead of
 // introducing another queue or interleaving two balanced button sequences.
 static NATIVE_INPUT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+tokio::task_local! {
+    pub static NATIVE_CLICK_TRACE_ID: u64;
+}
 
 pub fn native_input_guard() -> Result<tokio::sync::MutexGuard<'static, ()>, WebDriverErrorResponse>
 {

@@ -57,6 +57,7 @@ static constexpr int kSxcCameraClosed = 2;
     std::atomic_int _sampleState;
     std::atomic_uint_fast64_t _movieStartPtsNs;
     std::atomic_uint_fast64_t _movieLastPtsNs;
+    uint64_t _moviePenultimatePtsNs;
     std::atomic_uint_fast64_t _movieLastDurationNs;
     std::atomic_uint_fast64_t _movieLastCadenceNs;
     SxcCameraFrameCallback _callback;
@@ -76,6 +77,7 @@ static constexpr int kSxcCameraClosed = 2;
         _sampleState.store(kSxcCameraPending);
         _movieStartPtsNs.store(0);
         _movieLastPtsNs.store(0);
+        _moviePenultimatePtsNs = 0;
         _movieLastDurationNs.store(0);
         _movieLastCadenceNs.store(0);
         _callback = callback;
@@ -124,10 +126,23 @@ static constexpr int kSxcCameraClosed = 2;
         const uint64_t pts = sxc_time_ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
         const uint64_t duration = sxc_time_ns(CMSampleBufferGetDuration(sampleBuffer));
         if (pts == 0 || duration > UINT64_MAX - pts) return;
-        const uint64_t previous = _movieLastPtsNs.load();
-        if (previous > 0 && pts > previous) _movieLastCadenceNs.store(pts - previous);
-        _movieLastPtsNs.store(pts);
-        _movieLastDurationNs.store(duration);
+        // File-output callbacks can include warmup samples. Keep the two
+        // greatest presentation timestamps, regardless of arrival order, so
+        // the native final sample names the same timeline endpoint as the
+        // encoded packet proof. A later unencoded sample still fails that proof.
+        @synchronized (self) {
+            const uint64_t greatest = _movieLastPtsNs.load();
+            if (pts > greatest) {
+                _moviePenultimatePtsNs = greatest;
+                _movieLastPtsNs.store(pts);
+                _movieLastDurationNs.store(duration);
+            } else if (pts < greatest && pts > _moviePenultimatePtsNs) {
+                _moviePenultimatePtsNs = pts;
+            }
+            if (_moviePenultimatePtsNs > 0) {
+                _movieLastCadenceNs.store(_movieLastPtsNs.load() - _moviePenultimatePtsNs);
+            }
+        }
         return;
     }
     if (_sampleState.load() != kSxcCameraAccepting || !_callback) return;
@@ -359,10 +374,12 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
             sxc_error(error, error_capacity, handle.delegate->_terminalError.localizedDescription);
             return -1;
         }
-        if (movie_start_pts_ns) *movie_start_pts_ns = handle.delegate->_movieStartPtsNs.load();
-        if (movie_last_pts_ns) *movie_last_pts_ns = handle.delegate->_movieLastPtsNs.load();
-        if (movie_last_duration_ns) *movie_last_duration_ns = handle.delegate->_movieLastDurationNs.load();
-        if (movie_last_cadence_ns) *movie_last_cadence_ns = handle.delegate->_movieLastCadenceNs.load();
+        @synchronized (handle.delegate) {
+            if (movie_start_pts_ns) *movie_start_pts_ns = handle.delegate->_movieStartPtsNs.load();
+            if (movie_last_pts_ns) *movie_last_pts_ns = handle.delegate->_movieLastPtsNs.load();
+            if (movie_last_duration_ns) *movie_last_duration_ns = handle.delegate->_movieLastDurationNs.load();
+            if (movie_last_cadence_ns) *movie_last_cadence_ns = handle.delegate->_movieLastCadenceNs.load();
+        }
         return 0;
     }
 }

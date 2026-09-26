@@ -481,6 +481,86 @@ fn native_key(
 }
 
 impl<R: Runtime + 'static> MacOSExecutor<R> {
+    // Fullscreen exit can leave another window over the WebView briefly after
+    // the DOM returns to its normal layout. Wait only before a no-button Move,
+    // when no part of this gesture has been posted or held.
+    async fn wait_for_owned_point(
+        &self,
+        viewport: (i32, i32, f64, f64),
+    ) -> Result<(usize, isize, NSPoint), WebDriverErrorResponse> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1200);
+        let mut pin: Option<(usize, isize, NSPoint)> = None;
+        loop {
+            let (tx, rx) = oneshot::channel();
+            self.window
+                .with_webview(move |view| unsafe {
+                    let result = (|| -> Result<(usize, isize, NSPoint, isize), String> {
+                        let mtm = MainThreadMarker::new().ok_or("point preflight requires main thread")?;
+                        let wk: &WKWebView = &*view.inner().cast();
+                        let window = wk.window().ok_or("owned WebView has no native window")?;
+                        let app = NSApplication::sharedApplication(mtm);
+                        let frontmost = NSWorkspace::sharedWorkspace()
+                            .frontmostApplication()
+                            .map(|app| app.processIdentifier());
+                        if !app.isActive()
+                            || !window.isKeyWindow()
+                            || !window.isVisible()
+                            || window.isMiniaturized()
+                            || wk.isHiddenOrHasHiddenAncestor()
+                            || frontmost != Some(std::process::id() as i32)
+                            || native_buttons_held()
+                        {
+                            return Err("owned foreground or released buttons changed".into());
+                        }
+                        let point = native_screen_point(wk, &window, viewport)?;
+                        let observed = NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(
+                            point, 0, mtm,
+                        );
+                        Ok((wk as *const WKWebView as usize, window.windowNumber(), point, observed))
+                    })();
+                    let _ = tx.send(result);
+                })
+                .map_err(|error| WebDriverErrorResponse::unknown_error(&format!(
+                    "stage=point-preflight dispatch=none {error}"
+                )))?;
+            let sample = tokio::time::timeout(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                rx,
+            )
+            .await
+            .map_err(|_| WebDriverErrorResponse::element_not_interactable(
+                "stage=point-preflight dispatch=none main-thread readiness timed out",
+            ))?
+            .map_err(|_| WebDriverErrorResponse::unknown_error(
+                "stage=point-preflight dispatch=none main-thread channel closed",
+            ))?
+            .map_err(|reason| WebDriverErrorResponse::element_not_interactable(&format!(
+                "stage=point-preflight dispatch=none {reason}"
+            )))?;
+            let current = (sample.0, sample.1, sample.2);
+            if let Some(original) = pin {
+                if current != original {
+                    return Err(WebDriverErrorResponse::element_not_interactable(
+                        "stage=point-preflight dispatch=none owned window, WebView or point changed",
+                    ));
+                }
+            } else {
+                pin = Some(current);
+            }
+            if sample.3 == sample.1 {
+                return Ok(current);
+            }
+            if std::time::Instant::now() >= deadline {
+                let reason = format!(
+                    "stage=point-preflight dispatch=none owned point remained covered expectedWindow={} observedWindow={}",
+                    sample.1, sample.3
+                );
+                return Err(WebDriverErrorResponse::element_not_interactable(&reason));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     async fn remove_popup_observer(&self, marker:i64) -> Result<(),WebDriverErrorResponse> {
         let (tx,rx)=oneshot::channel();
         self.window.run_on_main_thread(move || { remove_popup_tap(marker);let _=tx.send(()); })
@@ -641,6 +721,28 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
         } else {
             None
         };
+        let point_pin = if matches!(
+            &input,
+            NativeInput::Pointer {
+                event_type: PointerEventType::Move,
+                buttons: 0,
+                ..
+            }
+        ) {
+            let point = viewport.ok_or_else(|| {
+                    WebDriverErrorResponse::invalid_argument("native move requires a point")
+                })?;
+            let outcome = self.wait_for_owned_point(point).await;
+            match outcome {
+                Ok(pin) => Some(pin),
+                Err(error) => {
+                    eprintln!("EMBEDDED_NATIVE_REFUSAL {}", error.message);
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         let (tx, rx) = oneshot::channel();
         let option_state = self.option_pointer.clone();
         let completion_point = self.option_completion_point.clone();
@@ -655,6 +757,7 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
         let release_proof = release_was_held.clone();
         let completion = Arc::new(std::sync::Mutex::new(Some(tx)));
         let marker = DELIVERY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let click_trace_id = crate::platform::NATIVE_CLICK_TRACE_ID.try_with(|id| *id).ok();
         let posted_completion = completion.clone();
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let pending = cancelled.clone();
@@ -672,6 +775,14 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 let option_down = option_scope && matches!(&input, NativeInput::Pointer { event_type: PointerEventType::Down, .. });
                 let location = if let Some((x,y,width,height))=viewport {
                     let screen=native_screen_point(wk,&window,(x,y,width,height))?;
+                    if let Some((view, owner, point)) = point_pin {
+                        if view != wk as *const WKWebView as usize
+                            || owner != window.windowNumber()
+                            || point != screen
+                        {
+                            return Err("stage=point-post-check dispatch=none owned window, WebView or point changed".into());
+                        }
+                    }
                     if !releasing {
                         let observed=NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(screen,0,mtm);
                         if observed!=window.windowNumber() {
@@ -773,7 +884,7 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 CGEvent::set_flags(Some(&event),native_flags(modifiers));
                 // This is the selected standard native route, not a fallback. The
                 // caller holds the Runner desktop lease and common original-owner pin.
-                eprintln!("ST14A_NATIVE_POST route=hid pid={} type={:?} point={:?} window={} active=true key=true postAccess=true",
+                eprintln!("ST14A_NATIVE_POST route=hid pid={} type={:?} point={:?} window={} active=true key=true postAccess=true clickId={click_trace_id:?}",
                     std::process::id(),CGEvent::r#type(Some(&event)),location,window.windowNumber());
                 CGEvent::set_integer_value_field(Some(&event),CGEventField::EventSourceUserData,marker);
                 if popup_observer {
@@ -848,7 +959,7 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                     let marked=incoming.CGEvent().is_some_and(|cg|
                         CGEvent::integer_value_field(Some(&cg),CGEventField::EventSourceUserData)==marker);
                     let actual_window=incoming.windowNumber();
-                    if marked { eprintln!("ST14A_NATIVE_DELIVERY marker={marker} eventType={:?} window={actual_window} expectedWindow={expected_window}",incoming.r#type()); }
+                    if marked { eprintln!("ST14A_NATIVE_DELIVERY marker={marker} eventType={:?} window={actual_window} expectedWindow={expected_window} clickId={click_trace_id:?}",incoming.r#type()); }
                     if marked && !keyboard && actual_window!=expected_window {
                         // Diagnose only this exact owned marked input. The narrow
                         // missing-object mouse-move binding below is separately checked.
@@ -968,7 +1079,12 @@ impl<R: Runtime + 'static> MacOSExecutor<R> {
                 }
                 Ok(())
             }
-            Ok(Ok(Err(e))) => Err(WebDriverErrorResponse::element_not_interactable(&e)),
+            Ok(Ok(Err(e))) => {
+                if e.starts_with("stage=point-post-check") {
+                    eprintln!("EMBEDDED_NATIVE_REFUSAL {e}");
+                }
+                Err(WebDriverErrorResponse::element_not_interactable(&e))
+            },
             Ok(Err(_)) => Err(WebDriverErrorResponse::unknown_error(
                 "native posting channel closed",
             )),

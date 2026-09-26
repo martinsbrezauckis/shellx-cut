@@ -11,6 +11,7 @@ use cut_media::ffmpeg::{run_owned_command, OwnedProcessControl};
 use record_core::{error_codes, RecordError, Result};
 use serde::Deserialize;
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_PACKET_ROW_BYTES: u64 = 64;
 const PROBE_BASE_SECONDS: u64 = 60;
@@ -49,6 +50,7 @@ struct Format {
     duration: String,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(super) fn verify_movie_timing(
     ffprobe: &str,
     path: &Path,
@@ -288,9 +290,10 @@ fn verify_probe<R: BufRead>(
     let tick_ns = to_ns(1, numerator, denominator)?.max(1);
     let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns);
     if native_elapsed.abs_diff(last_pts) > tick_ns {
-        return Err(bad(
-            "last encoded packet is not the last MovieFileOutput sample",
-        ));
+        return Err(bad(&format!(
+            "last encoded packet is not the last MovieFileOutput sample: native_start_ns={}, native_last_ns={}, native_elapsed_ns={native_elapsed}, encoded_last_pts_ns={last_pts}, track_tick_ns={tick_ns}",
+            native.start_pts_ns, native.last_pts_ns,
+        )));
     }
     let cadence = u128::from(native.last_cadence_ns);
     if last_duration > cadence.saturating_mul(2).saturating_add(tick_ns) {
@@ -433,6 +436,25 @@ mod tests {
         // DataOutput's first accepted sample was 100.03ms after movie start,
         // and its 7.966s interval was 32ms shorter than the MP4 container.
         assert_ne!(7_966, result.duration_ms);
+    }
+
+    #[test]
+    fn out_of_order_movie_samples_still_require_the_greatest_native_pts() {
+        // The packet probe uses presentation time, not row/arrival order.
+        // A native collector retaining the last callback (797577) would fail;
+        // retaining its greatest PTS (798410) matches the encoded endpoint.
+        let rows = b"0,833\n798410,833\n797577,833\n";
+        let facts = metadata("7.998060", "1/100000");
+        let verified = verify_probe(&facts, &rows[..], native(), 7_998, 3).unwrap();
+        assert_eq!(verified.duration_ms, 7_992);
+        let mut arrival_last = native();
+        arrival_last.last_pts_ns = arrival_last.start_pts_ns + 7_975_770_000;
+        let error = verify_probe(&facts, &rows[..], arrival_last, 7_998, 3).unwrap_err();
+        assert_eq!(error.message, "verify macOS camera movie clock");
+        assert_eq!(
+            error.cause,
+            "last encoded packet is not the last MovieFileOutput sample: native_start_ns=34421447440000, native_last_ns=34429423210000, native_elapsed_ns=7975770000, encoded_last_pts_ns=7984100000, track_tick_ns=10000"
+        );
     }
 
     #[test]

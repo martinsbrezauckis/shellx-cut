@@ -406,20 +406,25 @@ export default function GenerateDrawer({
   const cancelGeneration = async () => {
     const active = activeJobRef.current
     if (!active) return
+    const retry = activeRetryRef.current
     setPhase('Cancelling…')
     let response
     try {
       response = await callVerb('jobs.cancel', { job_id: active })
     } catch {
+      if (activeJobRef.current !== active) return
       setPhase('Waiting for server…')
       setErr('Server unreachable; the generation job is still being tracked.')
       return
     }
+    // Polling may have observed the terminal cancellation while this response
+    // was in flight. It already settled the same job and restored its retry
+    // target; a late cancel response must not clear that state or a newer job.
+    if (activeJobRef.current !== active) return
     if (!response.ok) {
       setErr(`${response.error?.code ?? 'failed'}: ${response.error?.message ?? 'could not cancel generation'}`)
       return
     }
-    const retry = activeRetryRef.current
     activeJobRef.current = null
     activeRetryRef.current = null
     localStorage.removeItem(GENERATION_JOB_STORAGE_KEY)

@@ -2296,7 +2296,16 @@ async fn assets_generate_run(
     // --- parse the CLI's result + validate the file ---------------------------
     if a.provider == "grok" && kind == "image" && reference_paths.is_empty() {
         if !out.status.success() {
-            return degrade(format!("Grok image_gen exited with {}", out.status));
+            let diagnostic = crate::gen::grok_image_exit_diagnostic(
+                &out.stdout,
+                &out.stderr,
+                out.stdout_truncated,
+                out.stderr_truncated,
+            );
+            return degrade(format!(
+                "Grok image_gen exited with {}; {diagnostic}",
+                out.status
+            ));
         }
         let native_path = match crate::gen::grok_image_tool_path(&stdout) {
             Ok(path) => path,

@@ -18,6 +18,9 @@ export type ChapterNavigationDisposition =
 
 /** The compact Chapter rail pages instead of mounting every generated chapter. */
 export const CHAPTER_RENDER_LIMIT = 12
+// The engine accepts up to 50 generated chapters. Ask for more than one
+// rendered page so the Chapter page control can expose long transcripts.
+export const TRANSCRIPT_CHAPTER_REQUEST_LIMIT = 50
 
 /**
  * Make a navigation decision from the already-authoritative occurrence route.

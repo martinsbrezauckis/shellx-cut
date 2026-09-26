@@ -121,10 +121,10 @@
       "sha256": "1da2232b3fee163f8a9f2b69b22893c20f2a8be3f0c26bca259983e03fef6bd5"
     },
     {
-      "bytes": 71745,
+      "bytes": 71759,
       "mode": 420,
       "path": "src/platform/executor.rs",
-      "sha256": "d0339df8f53253bb740acfa9c9b80161e672a931245470c9f24ceece12d50596"
+      "sha256": "2154bce1ac890d1481257997e9a449488c6193a6408defbc91ca044c76f23284"
     },
     {
       "bytes": 12076,
@@ -139,10 +139,10 @@
       "sha256": "80f155d9f88cc8dd11cb2a32425dc76e0eb93f470e23f2f60a886c7e082547b2"
     },
     {
-      "bytes": 109492,
+      "bytes": 115113,
       "mode": 420,
       "path": "src/platform/macos.rs",
-      "sha256": "543ac8351a30282a470de4da148897ab2bf3317b12836966c7897d09e883d0ca"
+      "sha256": "6c8915c9db69ff4810e54c44da27a1694b73ba0226192f7d4494e93a6242c2b9"
     },
     {
       "bytes": 2886,
@@ -187,10 +187,10 @@
       "sha256": "69a2ea8862964c915e44ef1a0fcc8c5a393f2889b124e4956f02657df88dfcf5"
     },
     {
-      "bytes": 39918,
+      "bytes": 41326,
       "mode": 420,
       "path": "src/server/handlers/element.rs",
-      "sha256": "c244612e7ff701eb47960be00d5353fae318762c639fbafebae909cb6cb67985"
+      "sha256": "9caa5e45299a9313e4cc3c1519060539b0ca5dde5d6954eac60008170e9fff9b"
     },
     {
       "bytes": 4630,
@@ -310,11 +310,11 @@
     },
     {
       "path": "src/platform/executor.rs",
-      "sha256": "d0339df8f53253bb740acfa9c9b80161e672a931245470c9f24ceece12d50596"
+      "sha256": "2154bce1ac890d1481257997e9a449488c6193a6408defbc91ca044c76f23284"
     },
     {
       "path": "src/platform/macos.rs",
-      "sha256": "543ac8351a30282a470de4da148897ab2bf3317b12836966c7897d09e883d0ca"
+      "sha256": "6c8915c9db69ff4810e54c44da27a1694b73ba0226192f7d4494e93a6242c2b9"
     },
     {
       "path": "src/platform/windows.rs",
@@ -326,7 +326,7 @@
     },
     {
       "path": "src/server/handlers/element.rs",
-      "sha256": "c244612e7ff701eb47960be00d5353fae318762c639fbafebae909cb6cb67985"
+      "sha256": "9caa5e45299a9313e4cc3c1519060539b0ca5dde5d6954eac60008170e9fff9b"
     },
     {
       "path": "src/server/handlers/session.rs",
