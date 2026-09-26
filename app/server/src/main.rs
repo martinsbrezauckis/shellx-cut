@@ -137,10 +137,70 @@ fn main() -> anyhow::Result<()> {
             ..
         }
     ));
+    #[cfg(target_os = "macos")]
+    if matches!(&cli.command, Command::Serve { .. }) {
+        return run_macos_serve_with_main_run_loop(cli);
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(run(cli))
+}
+
+// AVCaptureMovieFileOutput may need the process main run loop while a camera
+// worker synchronously stops its session. Only Serve moves its Tokio runtime;
+// MCP and Verb retain their original process-main execution path.
+#[cfg(target_os = "macos")]
+fn run_macos_serve_with_main_run_loop(cli: Cli) -> anyhow::Result<()> {
+    use std::ffi::c_void;
+    use std::sync::mpsc::{self, TryRecvError};
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRunLoopGetMain() -> *mut c_void;
+        fn CFRunLoopWakeUp(run_loop: *mut c_void);
+        fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, return_after_source: u8) -> i32;
+        static kCFRunLoopDefaultMode: *const c_void;
+    }
+
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker = std::thread::Builder::new()
+        .name("cutd-serve-runtime".into())
+        .spawn(move || {
+            let result = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(anyhow::Error::from)
+                .and_then(|runtime| runtime.block_on(run(cli)));
+            let _ = sender.send(result);
+            unsafe { CFRunLoopWakeUp(CFRunLoopGetMain()) };
+        })?;
+
+    loop {
+        match receiver.try_recv() {
+            Ok(result) => {
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("cutd Serve worker panicked"))?;
+                return result;
+            }
+            Err(TryRecvError::Disconnected) => {
+                worker
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("cutd Serve worker panicked"))?;
+                anyhow::bail!("cutd Serve worker exited without a result");
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        // A bounded slice keeps the main dispatch queue live and checks worker
+        // completion even when no run-loop source wakes it. The worker also
+        // wakes the loop immediately on normal completion.
+        let status = unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.025, 0) };
+        if status == 1 {
+            // kCFRunLoopRunFinished: avoid a hot loop when there are no sources.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
