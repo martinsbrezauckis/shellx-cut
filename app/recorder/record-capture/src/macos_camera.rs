@@ -90,7 +90,7 @@ impl CameraSessionBackend for MacosCameraAdapter {
         private_readiness(&request.device_id)
     }
 
-    fn start(&mut self, intent: &CameraUseIntent, _screen_origin: Instant) -> Result<()> {
+    fn start(&mut self, intent: &CameraUseIntent, screen_origin: Instant) -> Result<()> {
         if self.active.is_some() {
             return Err(camera_error(
                 "start macOS camera capture",
@@ -109,6 +109,7 @@ impl CameraSessionBackend for MacosCameraAdapter {
             &self.capture_directory,
             &intent.request().capture_id,
             &selected.uid,
+            screen_origin,
         ) {
             Ok(run) => {
                 *self

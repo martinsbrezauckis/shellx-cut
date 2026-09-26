@@ -2153,14 +2153,20 @@ async fn assets_generate_run(
     let out_str = output.to_string_lossy().into_owned();
     let reference_paths = copy_generation_references(&project, &references, &dir, &ws)?;
 
-    let cmd =
-        crate::gen::build_command(&a.provider, &ws_str, a.model.as_deref()).ok_or_else(|| {
-            CutError::new(
-                error_codes::INVALID_ARGS,
-                "no command for provider",
-                "codex|grok",
-            )
-        })?;
+    let cmd = crate::gen::build_command(
+        &a.provider,
+        &kind,
+        !reference_paths.is_empty(),
+        &ws_str,
+        a.model.as_deref(),
+    )
+    .ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "no command for provider",
+            "codex|grok",
+        )
+    })?;
     let prompt =
         crate::gen::build_prompt(&a.provider, &kind, &a.prompt, &out_str, &reference_paths);
     let timeout = std::time::Duration::from_millis(
@@ -2288,7 +2294,25 @@ async fn assets_generate_run(
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     // --- parse the CLI's result + validate the file ---------------------------
-    if let Some(parsed) = crate::gen::parse_output_json(&stdout) {
+    if a.provider == "grok" && kind == "image" && reference_paths.is_empty() {
+        if !out.status.success() {
+            return degrade(format!("Grok image_gen exited with {}", out.status));
+        }
+        let native_path = match crate::gen::grok_image_tool_path(&stdout) {
+            Ok(path) => path,
+            Err(reason) => return degrade(reason),
+        };
+        let sessions_root =
+            match crate::gen::grok_sessions_root(provider_child.admitted_environment()) {
+                Ok(root) => root,
+                Err(reason) => return degrade(reason),
+            };
+        if let Err(reason) =
+            crate::gen::copy_grok_image_tool_output(&native_path, &output, &sessions_root)
+        {
+            return degrade(reason);
+        }
+    } else if let Some(parsed) = crate::gen::parse_output_json(&stdout) {
         if !parsed.ok {
             return degrade(
                 parsed

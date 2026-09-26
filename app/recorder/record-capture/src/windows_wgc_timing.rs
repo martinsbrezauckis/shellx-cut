@@ -126,9 +126,10 @@ impl WgcTimingRecorder {
     /// WGC's encoder makes a constant-rate file from sparse native frames. At
     /// Stop it can extend the last held frame by the preceding native gap, so
     /// the file can outlive the capture clock even though every real frame was
-    /// delivered before Stop. Permit clipping only when both independent clocks
-    /// agree on the real frame span and that final-frame extrapolation explains
-    /// the excess. The caller still verifies the clipped video before publish.
+    /// delivered before Stop. The retained PC4 case matched the largest earlier
+    /// native gap rather than the last gap. Permit clipping only when both
+    /// independent clocks agree on the real frame span and one observed gap
+    /// explains the excess. The caller still verifies the clipped video.
     pub(crate) fn explains_extrapolated_tail(
         &self,
         start_ms: u64,
@@ -162,8 +163,15 @@ impl WgcTimingRecorder {
             .saturating_sub(first.capture_clock_elapsed_ns)
             / 1_000_000;
         let last_callback_ms = last.capture_clock_elapsed_ns / 1_000_000;
+        let stop_return_ms = summary.control_stop_return_elapsed_ns.unwrap_or(0) / 1_000_000;
         let last_gap_ms = u64::try_from(summary.last_native_gap_100ns).unwrap_or(0) / 10_000;
+        let max_gap_ms = u64::try_from(summary.max_native_gap_100ns).unwrap_or(0) / 10_000;
+        let explains_tail = [last_gap_ms, max_gap_ms].into_iter().any(|gap_ms| {
+            gap_ms > 0
+                && media_duration_ms.abs_diff(native_ms.saturating_add(gap_ms)) <= ENCODER_SLOP_MS
+        });
         summary.control_stop_ok == Some(true)
+            && stop_return_ms.abs_diff(end_ms) <= CLOCK_SLOP_MS
             && summary.native_timestamp_regressions == 0
             && summary.accepted_frames >= 2
             && decoded_frames > summary.accepted_frames
@@ -171,8 +179,7 @@ impl WgcTimingRecorder {
             && native_ms.abs_diff(callback_ms) <= CLOCK_SLOP_MS
             && last_callback_ms <= end_ms.saturating_add(CLOCK_SLOP_MS)
             && native_ms <= span_ms.saturating_add(CLOCK_SLOP_MS)
-            && last_gap_ms > 0
-            && media_duration_ms.abs_diff(native_ms.saturating_add(last_gap_ms)) <= ENCODER_SLOP_MS
+            && explains_tail
     }
 
     pub(crate) fn accepted_frames(&self) -> u64 {
@@ -274,5 +281,54 @@ mod tests {
         unsynchronized.accepted_frame(first + 44_334_192, origin + Duration::from_millis(3_000));
         unsynchronized.control_stopped(origin + Duration::from_millis(7_337), true);
         assert!(!unsynchronized.explains_extrapolated_tail(0, 7_338, 7_750, 465));
+    }
+
+    #[test]
+    fn earlier_max_gap_explains_measured_pc4_cfr_tail_without_moving_stop() {
+        // Retained 839 PC4 segment: 69 native frames, 476 decoded CFR frames,
+        // 7,933 ms media and a separately observed 7,499 ms Stop boundary.
+        let root = tempfile::tempdir().unwrap();
+        let origin = Instant::now();
+        let timing = WgcTimingRecorder::new(origin, 60, &root.path().join("._pc4.d/s.mp4"));
+        let first = 6_146_209_642_756i64;
+        let last = 6_146_255_143_426i64;
+        timing.accepted_frame(first, origin + Duration::from_nanos(479_874_400));
+        let mut timestamp = first + 34_000_076; // 3,400.008 ms earlier gap.
+        timing.accepted_frame(timestamp, origin + Duration::from_nanos(3_879_882_000));
+        for _ in 0..66 {
+            timestamp += 171_726;
+            timing.accepted_frame(
+                timestamp,
+                origin + Duration::from_nanos(479_874_400 + ((timestamp - first) as u64) * 100),
+            );
+        }
+        assert!(timestamp < last - 166_655);
+        timing.accepted_frame(last, origin + Duration::from_nanos(5_028_166_500));
+        timing.control_stopped(origin + Duration::from_nanos(7_497_007_500), true);
+        assert_eq!(timing.accepted_frames(), 69);
+        assert!(timing.explains_extrapolated_tail(0, 7_499, 7_933, 476));
+        assert!(!timing.explains_extrapolated_tail(0, 7_499, 8_500, 476));
+        assert!(!timing.explains_extrapolated_tail(0, 7_499, 7_933, 68));
+        assert!(!timing.explains_extrapolated_tail(0, 7_600, 7_933, 476));
+        timing.control_stopped(origin + Duration::from_nanos(7_497_007_500), false);
+        assert!(!timing.explains_extrapolated_tail(0, 7_499, 7_933, 476));
+
+        let regressed =
+            WgcTimingRecorder::new(origin, 60, &root.path().join("._regressed.d/s.mp4"));
+        regressed.accepted_frame(first, origin + Duration::from_nanos(479_874_400));
+        regressed.accepted_frame(
+            first + 34_000_076,
+            origin + Duration::from_nanos(3_879_882_000),
+        );
+        regressed.accepted_frame(
+            first + 45_000_000,
+            origin + Duration::from_nanos(4_979_874_400),
+        );
+        regressed.accepted_frame(
+            first + 44_000_000,
+            origin + Duration::from_nanos(4_879_874_400),
+        );
+        regressed.control_stopped(origin + Duration::from_millis(7_399), true);
+        assert!(!regressed.explains_extrapolated_tail(0, 7_400, 7_800, 476));
     }
 }

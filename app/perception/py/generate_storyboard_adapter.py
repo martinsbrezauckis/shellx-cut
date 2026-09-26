@@ -44,6 +44,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import suppress
 
 import provider_child_launch
@@ -458,18 +459,32 @@ def main():
     budget_ms = req.get("timeout_ms")
     if not isinstance(budget_ms, int) or budget_ms <= 0:
         budget_ms = DEFAULT_TIMEOUT_MS
-    total_s = max(10.0, budget_ms / 1000.0 - 5.0)
-    slice_s = max(10.0, total_s / len(candidates))
+    # Leave time for the JSON envelope before cutd's outer deadline. Recompute
+    # each provider's share after the previous provider exits: an immediate
+    # authentication failure should give that unused time to the next CLI.
+    deadline = time.monotonic() + max(1.0, budget_ms / 1000.0 - 5.0)
 
     warnings = []
     backend = None
     fails = []
-    for name, path in candidates:
+    for index, (name, path) in enumerate(candidates):
         backend = {"provider": name, "model": None}
         errors = None
-        for attempt, share in ((1, 0.6), (2, 0.4)):
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            fails.append(f"{name}: no time remains in the storyboard request")
+            continue
+        provider_deadline = now + remaining / (len(candidates) - index)
+        for attempt in (1, 2):
+            attempt_budget = provider_deadline - time.monotonic()
+            if attempt_budget <= 0:
+                fail = f"{name} exceeded its storyboard time share"
+                fails.append(f"{name}: {fail}")
+                warnings.append(f"agent {name} failed, trying next: {fail}")
+                break
             prompt = build_prompt(req, errors=errors)
-            answer, model, fail = spawn_cli(name, path, prompt, slice_s * share)
+            answer, model, fail = spawn_cli(name, path, prompt, attempt_budget)
             if fail:
                 # HARD failure (spawn/auth/exit/timeout): fall through to the
                 # next installed CLI instead of dying on the first.

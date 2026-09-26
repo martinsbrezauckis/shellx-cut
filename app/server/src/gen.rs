@@ -3,8 +3,8 @@
 //! Clean-room port of ShellX Canvas's `media-provider` adapter (the design, not the
 //! code). NO model is hosted — the user's installed codex (gpt-image), grok
 //! (grok-imagine), or Antigravity (`agy`) CLI does the generation; cutd just (1) DETECTS the CLI, (2) spawns
-//! it with a strict prompt that tells it to write the binary to an exact path, (3)
-//! validates the result via the NORMAL import probe (ffprobe — a fake/placeholder
+//! it with a scoped prompt (or Grok's native image_gen tool for plain images), (3)
+//! validates the resulting binary via the NORMAL import probe (ffprobe — a fake/placeholder
 //! file fails to probe), and (4) imports it like any upload through `record_import`.
 //! This is the Openverse philosophy applied to generation: integration, not hosting.
 //!
@@ -441,8 +441,15 @@ pub struct GenCommand {
 }
 
 /// Build the agent-CLI invocation for `provider`. `workspace` is the scratch
-/// cwd; `model` is optional.
-pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Option<GenCommand> {
+/// cwd; `model` is optional. Grok images with registered references retain
+/// their existing file-output route until native reference use is verified.
+pub fn build_command(
+    provider: &str,
+    kind: &str,
+    has_references: bool,
+    workspace: &str,
+    model: Option<&str>,
+) -> Option<GenCommand> {
     match provider {
         "codex" => {
             let mut args = vec![
@@ -466,25 +473,40 @@ pub fn build_command(provider: &str, workspace: &str, model: Option<&str>) -> Op
             })
         }
         "grok" => {
-            // Prompt is written to a file; the caller substitutes the path for the
-            // PROMPT_FILE placeholder. The flags keep generation headless,
-            // offline, and bounded.
+            // Grok's native image tool reports the actual generated file in a
+            // streaming tool_call_update. Video keeps the established agent
+            // file-output route until a native video result is verified.
             let mut args = vec![
                 "--prompt-file".into(),
                 "__PROMPT_FILE__".into(),
-                "--output-format".into(),
-                "json".into(),
                 "--cwd".into(),
                 workspace.into(),
-                "--permission-mode".into(),
-                "bypassPermissions".into(),
-                "--always-approve".into(),
                 "--disable-web-search".into(),
                 "--no-subagents".into(),
-                "--no-plan".into(),
-                "--max-turns".into(),
-                "20".into(),
             ];
+            if kind == "image" && !has_references {
+                args.extend([
+                    "--tools".into(),
+                    "image_gen".into(),
+                    "--allow".into(),
+                    "image_gen".into(),
+                    "--output-format".into(),
+                    "streaming-json".into(),
+                    "--max-turns".into(),
+                    "2".into(),
+                ]);
+            } else {
+                args.extend([
+                    "--output-format".into(),
+                    "json".into(),
+                    "--permission-mode".into(),
+                    "bypassPermissions".into(),
+                    "--always-approve".into(),
+                    "--no-plan".into(),
+                    "--max-turns".into(),
+                    "20".into(),
+                ]);
+            }
             if let Some(model) = model.filter(|model| !model.is_empty()) {
                 args.push("--model".into());
                 args.push(model.into());
@@ -544,6 +566,14 @@ pub fn build_prompt(
     output_path: &str,
     reference_paths: &[String],
 ) -> String {
+    if provider == "grok" && kind == "image" && reference_paths.is_empty() {
+        let lines = vec![
+            "Generate exactly one real image by calling image_gen exactly once.".to_string(),
+            format!("Use this user description: {}", serde_json::to_string(description).unwrap_or_default()),
+            "Do not create a placeholder or retry a failed tool call. If image_gen is unavailable, report the failure.".to_string(),
+        ];
+        return lines.join("\n");
+    }
     // AGY's native image turn works best as the direct user request it is. A
     // larger agent-protocol prompt (load a skill, emit JSON, and explain honest
     // failure) can make the CLI reason about capability admission instead of
@@ -635,6 +665,147 @@ pub struct GenJson {
     pub ok: bool,
     pub path: Option<String>,
     pub reason: Option<String>,
+}
+
+/// Return the single image created by Grok's native image_gen tool. The path is
+/// taken only from a completed tool result paired with its tool-call ID, never
+/// from the assistant's prose or a suggested filename.
+pub fn grok_image_tool_path(stdout: &str) -> Result<PathBuf, String> {
+    let mut calls = std::collections::BTreeSet::new();
+    let mut generated = Vec::new();
+    for line in stdout.lines() {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(id) = event.get("toolCallId").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        match event.get("type").and_then(|value| value.as_str()) {
+            Some("tool_call")
+                if event.get("toolName").and_then(|value| value.as_str()) == Some("image_gen") =>
+            {
+                calls.insert(id.to_string());
+            }
+            Some("tool_call_update")
+                if calls.contains(id)
+                    && event.get("status").and_then(|value| value.as_str())
+                        == Some("completed")
+                    && event
+                        .pointer("/rawOutput/type")
+                        .and_then(|value| value.as_str())
+                        == Some("ImageGen") =>
+            {
+                let path = event
+                    .pointer("/rawOutput/path")
+                    .and_then(|value| value.as_str())
+                    .filter(|path| !path.trim().is_empty())
+                    .ok_or("Grok image_gen completed without an image path")?;
+                generated.push(PathBuf::from(path));
+            }
+            _ => {}
+        }
+    }
+    if calls.len() != 1 || generated.len() != 1 {
+        return Err(format!(
+            "Grok image_gen made {} calls and returned {} completed images; expected one of each",
+            calls.len(),
+            generated.len()
+        ));
+    }
+    Ok(generated.remove(0))
+}
+
+/// Resolve Grok's generated-image session directory from the effective child
+/// profile. This inspects environment names only; it never opens provider auth.
+pub fn grok_sessions_root(
+    admitted_environment: Option<&BTreeMap<String, String>>,
+) -> Result<PathBuf, String> {
+    let preferred = if cfg!(windows) {
+        ["USERPROFILE", "HOME"]
+    } else {
+        ["HOME", "USERPROFILE"]
+    };
+    let home = if let Some(environment) = admitted_environment {
+        preferred
+            .iter()
+            .find_map(|name| environment.get(*name))
+            .map(PathBuf::from)
+    } else {
+        home_dir()
+    }
+    .ok_or("Grok image_gen has no admitted user home")?;
+    if !home.is_absolute() {
+        return Err("Grok image_gen user home is not absolute".into());
+    }
+    Ok(home.join(".grok").join("sessions"))
+}
+
+fn grok_image_session_relative_path_is_valid(path: &Path) -> bool {
+    let components: Vec<_> = path.components().collect();
+    if components.len() != 4 {
+        return false;
+    }
+    let project = components[0].as_os_str().to_string_lossy();
+    let session = components[1].as_os_str().to_string_lossy();
+    let folder = components[2].as_os_str().to_string_lossy();
+    let file = components[3].as_os_str().to_string_lossy();
+    let uuid = session.as_bytes();
+    let uuid_valid = uuid.len() == 36
+        && uuid.iter().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    let (number, extension) = file.rsplit_once('.').unwrap_or(("", ""));
+    !project.is_empty()
+        && uuid_valid
+        && folder == "images"
+        && !number.is_empty()
+        && !number.starts_with('0')
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg"
+        )
+}
+
+/// Copy only a numbered native image under that profile's Grok session tree.
+/// Media probing still decides whether the bytes are actually an image.
+pub fn copy_grok_image_tool_output(
+    source: &Path,
+    output: &Path,
+    sessions_root: &Path,
+) -> Result<(), String> {
+    if !source.is_absolute() {
+        return Err("Grok image_gen returned a non-absolute path".into());
+    }
+    let root = std::fs::canonicalize(sessions_root)
+        .map_err(|_| "Grok image_gen session directory is unavailable")?;
+    let canonical_source =
+        std::fs::canonicalize(source).map_err(|_| "Grok image_gen output is missing")?;
+    let relative = canonical_source
+        .strip_prefix(&root)
+        .map_err(|_| "Grok image_gen output is outside its generated-image session directory")?;
+    if !grok_image_session_relative_path_is_valid(relative) {
+        return Err("Grok image_gen output is not a session-generated image path".into());
+    }
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|error| format!("Grok image_gen output is missing: {error}"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("Grok image_gen output is not a regular image file".into());
+    }
+    if !(64..=64 * 1024 * 1024).contains(&metadata.len()) {
+        return Err("Grok image_gen output is outside the supported image size".into());
+    }
+    let copied = std::fs::copy(source, output)
+        .map_err(|error| format!("copy Grok image_gen output: {error}"))?;
+    if copied != metadata.len() || !(64..=64 * 1024 * 1024).contains(&copied) {
+        let _ = std::fs::remove_file(output);
+        return Err("Grok image_gen output changed during copy".into());
+    }
+    Ok(())
 }
 
 /// Parse the agent CLI's stdout for the `{ok, path, reason}` JSON. Tries, in
@@ -1069,7 +1240,7 @@ mod tests {
 
     #[test]
     fn codex_command_is_exec_stdin() {
-        let c = build_command("codex", "/scratch", Some("gpt-image-1")).unwrap();
+        let c = build_command("codex", "image", false, "/scratch", Some("gpt-image-1")).unwrap();
         assert_eq!(c.cmd, "codex");
         assert_eq!(c.prompt_transport, PromptTransport::Stdin);
         assert!(c.args.contains(&"exec".to_string()));
@@ -1080,20 +1251,43 @@ mod tests {
     }
 
     #[test]
-    fn grok_command_uses_prompt_file() {
-        let c = build_command("grok", "/scratch", None).unwrap();
+    fn grok_image_command_admits_native_tool_and_streams_its_result() {
+        let c = build_command("grok", "image", false, "/scratch", None).unwrap();
         assert_eq!(c.cmd, "grok");
         assert_eq!(c.prompt_transport, PromptTransport::PromptFile);
         assert!(c.args.contains(&"__PROMPT_FILE__".to_string()));
         assert!(!c.args.contains(&"--model".to_string()));
         assert!(c.args.contains(&"--no-subagents".to_string()));
-        assert!(c.args.contains(&"--no-plan".to_string()));
+        assert!(c.args.windows(2).any(|w| w == ["--tools", "image_gen"]));
+        assert!(c.args.windows(2).any(|w| w == ["--allow", "image_gen"]));
+        assert!(c
+            .args
+            .windows(2)
+            .any(|w| w == ["--output-format", "streaming-json"]));
+        assert!(!c.args.contains(&"bypassPermissions".to_string()));
         assert!(!c.args.contains(&"--no-memory".to_string()));
     }
 
     #[test]
+    fn grok_video_and_reference_images_keep_existing_file_output_route() {
+        let c = build_command("grok", "video", false, "/scratch", None).unwrap();
+        assert!(c.args.windows(2).any(|w| w == ["--output-format", "json"]));
+        assert!(!c.args.contains(&"image_gen".to_string()));
+        let c = build_command("grok", "image", true, "/scratch", None).unwrap();
+        assert!(c.args.windows(2).any(|w| w == ["--output-format", "json"]));
+        assert!(!c.args.contains(&"image_gen".to_string()));
+    }
+
+    #[test]
     fn antigravity_generation_keeps_normal_image_behavior_enabled() {
-        let c = build_command("antigravity", "/scratch", Some("Gemini 3.5 Flash")).unwrap();
+        let c = build_command(
+            "antigravity",
+            "image",
+            false,
+            "/scratch",
+            Some("Gemini 3.5 Flash"),
+        )
+        .unwrap();
         assert_eq!(c.cmd, "agy");
         assert_eq!(c.prompt_transport, PromptTransport::Argument);
         assert!(c.args.contains(&"--new-project".to_string()));
@@ -1151,7 +1345,20 @@ Save the final PNG EXACTLY this path:\n\
     }
 
     #[test]
-    fn prompt_lists_only_copied_reference_paths() {
+    fn grok_native_image_prompt_requests_one_tool_call() {
+        let p = build_prompt(
+            "grok",
+            "image",
+            "keep the palette",
+            "/scratch/generated.png",
+            &[],
+        );
+        assert!(p.contains("keep the palette"));
+        assert!(p.contains("calling image_gen exactly once"));
+    }
+
+    #[test]
+    fn grok_reference_image_prompt_keeps_copied_reference_paths() {
         let paths = vec!["/scratch/reference-1.png".to_string()];
         let p = build_prompt(
             "grok",
@@ -1162,6 +1369,88 @@ Save the final PNG EXACTLY this path:\n\
         );
         assert!(p.contains("Reference 1: /scratch/reference-1.png"));
         assert!(p.contains("Do not overwrite them"));
+        assert!(!p.contains("calling image_gen exactly once"));
+    }
+
+    #[test]
+    fn grok_image_accepts_only_one_completed_native_tool_result() {
+        let stdout = r#"{"type":"tool_call","toolName":"image_gen","toolCallId":"native-1"}
+{"type":"tool_call_update","toolCallId":"other","status":"completed","rawOutput":{"type":"ImageGen","path":"/wrong.png"}}
+{"type":"tool_call_update","toolCallId":"native-1","status":"completed","rawOutput":{"type":"ImageGen","path":"/real.png"}}
+{"type":"result","text":"/fake.png"}"#;
+        assert_eq!(
+            grok_image_tool_path(stdout).unwrap(),
+            PathBuf::from("/real.png")
+        );
+        assert!(grok_image_tool_path("{\"type\":\"result\",\"text\":\"/fake.png\"}").is_err());
+        let duplicate = format!("{stdout}\n{{\"type\":\"tool_call_update\",\"toolCallId\":\"native-1\",\"status\":\"completed\",\"rawOutput\":{{\"type\":\"ImageGen\",\"path\":\"/second.png\"}}}}");
+        assert!(grok_image_tool_path(&duplicate).is_err());
+    }
+
+    #[test]
+    fn grok_image_copy_accepts_only_native_session_image_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join(".grok/sessions");
+        let image_dir = sessions.join("project/123e4567-e89b-12d3-a456-426614174000/images");
+        std::fs::create_dir_all(&image_dir).unwrap();
+        let output = dir.path().join("output.png");
+        let unrelated = dir.path().join("provider-auth.png");
+        std::fs::write(&unrelated, vec![7u8; 64]).unwrap();
+        assert!(copy_grok_image_tool_output(&unrelated, &output, &sessions).is_err());
+        assert!(!output.exists());
+        let invalid = sessions.join("project/auth.json");
+        std::fs::write(&invalid, vec![7u8; 64]).unwrap();
+        assert!(copy_grok_image_tool_output(&invalid, &output, &sessions).is_err());
+        let wrong_name = image_dir.join("auth.png");
+        std::fs::write(&wrong_name, vec![7u8; 64]).unwrap();
+        assert!(copy_grok_image_tool_output(&wrong_name, &output, &sessions).is_err());
+        assert!(copy_grok_image_tool_output(&image_dir, &output, &sessions).is_err());
+        let source = image_dir.join("1.png");
+        std::fs::write(&source, vec![7u8; 64]).unwrap();
+        copy_grok_image_tool_output(&source, &output, &sessions).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), vec![7u8; 64]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grok_image_copy_rejects_session_symlink_to_other_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join(".grok/sessions");
+        let image_dir = sessions.join("project/123e4567-e89b-12d3-a456-426614174000/images");
+        std::fs::create_dir_all(&image_dir).unwrap();
+        let unrelated = dir.path().join("private.png");
+        std::fs::write(&unrelated, vec![7u8; 64]).unwrap();
+        let link = image_dir.join("1.png");
+        std::os::unix::fs::symlink(&unrelated, &link).unwrap();
+        assert!(
+            copy_grok_image_tool_output(&link, &dir.path().join("output.png"), &sessions).is_err()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn grok_sessions_root_uses_admitted_home() {
+        let environment = BTreeMap::from([("HOME".into(), "/admitted/home".into())]);
+        assert_eq!(
+            grok_sessions_root(Some(&environment)).unwrap(),
+            PathBuf::from("/admitted/home/.grok/sessions")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn grok_sessions_root_uses_windows_userprofile_and_session_path_shape() {
+        let environment = BTreeMap::from([
+            ("HOME".into(), r"C:\other-home".into()),
+            ("USERPROFILE".into(), r"C:\Users\Cut".into()),
+        ]);
+        assert_eq!(
+            grok_sessions_root(Some(&environment)).unwrap(),
+            PathBuf::from(r"C:\Users\Cut\.grok\sessions")
+        );
+        assert!(grok_image_session_relative_path_is_valid(Path::new(
+            r"encoded-cwd\123e4567-e89b-12d3-a456-426614174000\images\1.jpg"
+        )));
     }
 
     #[test]

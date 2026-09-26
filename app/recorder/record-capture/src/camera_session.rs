@@ -289,14 +289,6 @@ impl<B: CameraSessionBackend> CameraSession<B> {
             .end_frame_offset_ms
             .checked_sub(range.first_frame_offset_ms)
             .ok_or_else(|| invalid("camera session observed frame range underflowed"))?;
-        #[cfg(target_os = "macos")]
-        unsafe {
-            sxc_macos_camera_diag_projection(
-                range.first_frame_offset_ms,
-                range.end_frame_offset_ms,
-                seal.media().duration_ms,
-            );
-        }
         if seal.media().duration_ms != observed_duration_ms {
             return Err(invalid(
                 "finalized camera duration projection does not match the observed CaptureClock interval",
@@ -304,15 +296,6 @@ impl<B: CameraSessionBackend> CameraSession<B> {
         }
         Ok(())
     }
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn sxc_macos_camera_diag_projection(
-        first_offset_ms: u64,
-        end_offset_ms: u64,
-        media_duration_ms: u64,
-    );
 }
 
 impl<B: CameraSessionBackend> Drop for CameraSession<B> {

@@ -10,6 +10,9 @@ use record_core::{error_codes, CameraMediaFacts, RecordError, Result};
 use sha2::{Digest, Sha256};
 
 use crate::camera_finalization::CameraMediaSeal;
+use crate::macos_camera_movie_timing::{
+    verify_movie_timing, NativeMovieTiming, VerifiedMovieTiming,
+};
 
 pub(super) struct MacCameraStage {
     capture_dir: PathBuf,
@@ -54,7 +57,10 @@ impl MacCameraStage {
         &self.stage_path
     }
 
-    pub(super) fn finalize(mut self) -> Result<CameraMediaSeal> {
+    pub(super) fn finalize(
+        mut self,
+        native_timing: NativeMovieTiming,
+    ) -> Result<(CameraMediaSeal, VerifiedMovieTiming)> {
         let before = plain_file(&self.stage_path)?;
         let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
@@ -97,6 +103,15 @@ impl MacCameraStage {
                 "camera output changed during verification",
             ));
         }
+        // Decode proves the media is playable; packet and native output clocks
+        // independently prove the exact movie interval before publication.
+        let movie_timing = verify_movie_timing(
+            &ffprobe,
+            &self.stage_path,
+            native_timing,
+            facts.duration_ms,
+            facts.decoded_video_frames,
+        )?;
         let mut permissions = before.permissions();
         permissions.set_mode(0o444);
         fs::set_permissions(&self.stage_path, permissions)
@@ -121,7 +136,7 @@ impl MacCameraStage {
                 "published camera bytes changed",
             ));
         }
-        CameraMediaSeal::verified_publication(
+        let seal = CameraMediaSeal::verified_publication(
             self.artifact_id.clone(),
             self.video.clone(),
             CameraMediaFacts {
@@ -130,11 +145,12 @@ impl MacCameraStage {
                 fps_num,
                 fps_den,
                 frame_count: facts.decoded_video_frames,
-                duration_ms: facts.duration_ms,
+                duration_ms: movie_timing.duration_ms,
                 sha256,
             },
             bytes,
-        )
+        )?;
+        Ok((seal, movie_timing))
     }
 }
 

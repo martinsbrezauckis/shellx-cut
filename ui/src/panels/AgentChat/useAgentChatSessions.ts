@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type SetStateAction } from 'react'
 import type { Project } from '../../lib/client'
+import type { ChatAgentName } from '../../lib/doctor'
 import { emptyAgentChatSession, type AgentChatSession } from './session'
 import {
   loadAgentChatHistory,
@@ -8,6 +9,33 @@ import {
 } from './history'
 
 const MAX_PROJECT_SESSIONS = 6
+export type AgentModelOverrides = Partial<Record<ChatAgentName, string>>
+
+/** Model choices are in-memory and project-keyed; chat history never writes them to disk. */
+export function useAgentModelOverrides(project: Project | null, projectSession: number): {
+  models: AgentModelOverrides
+  setModels: (update: SetStateAction<AgentModelOverrides>) => void
+} {
+  const key = agentChatSessionKey(project, projectSession)
+  const [byProject, setByProject] = useState<Map<string, AgentModelOverrides>>(() => new Map())
+  const models = key ? byProject.get(key) ?? {} : {}
+  const setModels = useCallback((update: SetStateAction<AgentModelOverrides>) => {
+    if (!key) return
+    setByProject((current) => {
+      const next = new Map(current)
+      const previous = next.get(key) ?? {}
+      next.delete(key)
+      next.set(key, typeof update === 'function' ? update(previous) : update)
+      while (next.size > MAX_PROJECT_SESSIONS) {
+        const oldest = next.keys().next().value
+        if (oldest === undefined) break
+        next.delete(oldest)
+      }
+      return next
+    })
+  }, [key])
+  return { models, setModels }
+}
 
 /**
  * Keep a small in-memory LRU above the tab, which unmounts as the right rail

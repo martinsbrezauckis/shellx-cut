@@ -9,6 +9,7 @@ import {
   type CaptionPosition,
 } from './model'
 import CaptionBulkSection from './CaptionBulkSection'
+import './caption-presets.css'
 
 interface ProjectCaptionsSectionProps {
   project: Project | null
@@ -16,11 +17,17 @@ interface ProjectCaptionsSectionProps {
   onSeek: (atMs: number) => void
 }
 
+const CAPTION_COLOR_PRESETS = [
+  { name: 'White', value: '#ffffff' },
+  { name: 'Yellow', value: '#ffe14d' },
+  { name: 'Mint', value: '#33cc88' },
+] as const
+
 export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: ProjectCaptionsSectionProps) {
   const [capText, setCapText] = useState('')
   const [capPos, setCapPos] = useState<CaptionPosition>('bottom')
-  const [capColor, setCapColor] = useState('#FFFFFF')
-  const [capColorDraft, setCapColorDraft] = useState('#FFFFFF')
+  const [capColor, setCapColor] = useState('#ffffff')
+  const [capColorDraft, setCapColorDraft] = useState('#ffffff')
   const setCaptionColor = (value: string) => {
     setCapColorDraft(value)
     if (/^#[0-9a-fA-F]{6}$/.test(value)) setCapColor(value.toLowerCase())
@@ -236,6 +243,15 @@ export default function ProjectCaptionsSection({ project, playheadMs, onSeek }: 
           <input type="color" data-cut-caption-color value={capColor} disabled={!project}
             onChange={(e) => setCaptionColor(e.target.value)} />
         </label>
+        <div className="insp__caption-presets" role="group" aria-label="Caption color presets">
+          {CAPTION_COLOR_PRESETS.map(({ name, value }) => (
+            <button key={value} type="button" className="insp__caption-preset"
+              data-cut-action="caption-color" value={value}
+              aria-label={`${name} caption color`} aria-pressed={capColor === value}
+              title={`${name} caption color`} style={{ backgroundColor: value }}
+              disabled={!project} onClick={() => setCaptionColor(value)} />
+          ))}
+        </div>
         <input type="text" className="insp__text" data-cut-caption-color-hex
           aria-label="Caption color hex" spellCheck={false} maxLength={7} placeholder="#RRGGBB"
           style={{ maxWidth: 96 }} value={capColorDraft} disabled={!project}

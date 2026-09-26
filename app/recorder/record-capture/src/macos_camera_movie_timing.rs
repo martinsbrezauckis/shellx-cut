@@ -1,0 +1,501 @@
+//! Independent MovieFileOutput and encoded-packet clock proof for a camera seal.
+
+use std::fs;
+use std::io::{BufRead, BufReader, Read};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+use cut_media::ffmpeg::{run_owned_command, OwnedProcessControl};
+use record_core::{error_codes, RecordError, Result};
+use serde::Deserialize;
+
+const MAX_METADATA_BYTES: usize = 64 * 1024;
+const MAX_PACKET_ROW_BYTES: u64 = 64;
+const PROBE_BASE_SECONDS: u64 = 60;
+const PROBE_FRAMES_PER_STEP: u64 = 1_000;
+const PROBE_SECONDS_PER_FRAME_STEP: u64 = 5;
+const PROBE_BYTES_PER_STEP: u64 = 128 * 1024 * 1024;
+const PROBE_SECONDS_PER_BYTE_STEP: u64 = 2;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NativeMovieTiming {
+    pub(super) start_pts_ns: u64,
+    pub(super) last_pts_ns: u64,
+    pub(super) last_duration_ns: u64,
+    pub(super) last_cadence_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct VerifiedMovieTiming {
+    pub(super) duration_ms: u64,
+    pub(super) start_pts_ns: u64,
+}
+
+#[derive(Deserialize)]
+struct Probe {
+    streams: Vec<Stream>,
+    format: Format,
+}
+
+#[derive(Deserialize)]
+struct Stream {
+    time_base: String,
+}
+
+#[derive(Deserialize)]
+struct Format {
+    duration: String,
+}
+
+pub(super) fn verify_movie_timing(
+    ffprobe: &str,
+    path: &Path,
+    native: NativeMovieTiming,
+    duration_ms: u64,
+    decoded_frames: u64,
+) -> Result<VerifiedMovieTiming> {
+    let limit = packet_file_limit(decoded_frames)?;
+    let movie = fs::metadata(path)
+        .map_err(|cause| bad(&format!("inspect staged camera movie: {cause}")))?;
+    if !movie.is_file() {
+        return Err(bad("staged camera movie is not a regular file"));
+    }
+    // Full decode already established the frame count. A long or large movie
+    // gets a proportionate finite process budget, while the owned child tree
+    // is still cancelled and reaped if it stalls past that budget.
+    let probe_timeout = probe_timeout(decoded_frames, movie.len())?;
+    let mut metadata_command = Command::new(ffprobe);
+    metadata_command
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=time_base:format=duration",
+            "-of",
+            "json",
+        ])
+        .arg(path);
+    let metadata_control =
+        OwnedProcessControl::bounded(probe_timeout, || false).with_output_cap(MAX_METADATA_BYTES);
+    let metadata = run_owned_command(
+        &mut metadata_command,
+        &metadata_control,
+        "probe macOS camera movie time base",
+    )
+    .map_err(|cause| bad(&format!("movie metadata probe failed: {cause}")))?;
+    if !metadata.status.success() || metadata.stdout.len() >= MAX_METADATA_BYTES {
+        return Err(bad(
+            "movie metadata probe failed or exceeded its bounded output",
+        ));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| bad("camera staging parent is missing"))?;
+    let packet_file = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|cause| bad(&format!("reserve private packet proof: {cause}")))?;
+    let packet_path = packet_file.path().to_path_buf();
+    let original = packet_file
+        .as_file()
+        .metadata()
+        .map_err(|cause| bad(&format!("inspect private packet proof: {cause}")))?;
+    if !original.file_type().is_file() || original.permissions().mode() & 0o777 != 0o600 {
+        return Err(bad("private packet proof is not a plain 0600 file"));
+    }
+    let mut packet_command = Command::new(ffprobe);
+    packet_command
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_packets",
+            "-show_entries",
+            "packet=pts,duration",
+            "-of",
+            "csv=p=0",
+            "-o",
+        ])
+        .arg(&packet_path)
+        .arg(path);
+    // The owned process polls this predicate every 20ms and reaps its tree on
+    // excess growth. The cap scales from the independently decoded frame count
+    // while the parser retains at most one 64-byte row in memory.
+    let growth_path = packet_path.clone();
+    let packet_control = OwnedProcessControl::bounded(probe_timeout, move || {
+        fs::metadata(&growth_path).is_ok_and(|metadata| metadata.len() > limit)
+    })
+    .with_output_cap(MAX_METADATA_BYTES);
+    let output = run_owned_command(
+        &mut packet_command,
+        &packet_control,
+        "probe macOS camera packets",
+    )
+    .map_err(|cause| bad(&format!("packet probe failed: {cause}")))?;
+    if !output.status.success() || !output.stdout.is_empty() {
+        return Err(bad("packet probe failed or wrote unexpected stdout"));
+    }
+    let after = fs::symlink_metadata(&packet_path)
+        .map_err(|cause| bad(&format!("inspect private packet proof: {cause}")))?;
+    if !after.file_type().is_file()
+        || after.dev() != original.dev()
+        || after.ino() != original.ino()
+        || after.len() > limit
+    {
+        return Err(bad(
+            "packet proof was replaced, linked, or exceeded its frame-count bound",
+        ));
+    }
+    verify_probe(
+        &metadata.stdout,
+        BufReader::new(packet_file.as_file()),
+        native,
+        duration_ms,
+        decoded_frames,
+    )
+}
+
+fn probe_timeout(decoded_frames: u64, movie_bytes: u64) -> Result<Duration> {
+    if decoded_frames == 0 || movie_bytes == 0 {
+        return Err(bad("camera movie workload is empty"));
+    }
+    packet_file_limit(decoded_frames)?;
+    let frame_seconds = decoded_frames
+        .div_ceil(PROBE_FRAMES_PER_STEP)
+        .checked_mul(PROBE_SECONDS_PER_FRAME_STEP)
+        .ok_or_else(|| bad("camera movie probe frame budget overflowed"))?;
+    let byte_seconds = movie_bytes
+        .div_ceil(PROBE_BYTES_PER_STEP)
+        .checked_mul(PROBE_SECONDS_PER_BYTE_STEP)
+        .ok_or_else(|| bad("camera movie probe byte budget overflowed"))?;
+    let seconds = PROBE_BASE_SECONDS
+        .checked_add(frame_seconds)
+        .and_then(|value| value.checked_add(byte_seconds))
+        .ok_or_else(|| bad("camera movie probe budget overflowed"))?;
+    Ok(Duration::from_secs(seconds))
+}
+
+fn packet_file_limit(decoded_frames: u64) -> Result<u64> {
+    decoded_frames
+        .checked_mul(MAX_PACKET_ROW_BYTES)
+        .and_then(|bytes| bytes.checked_add(4_096))
+        .filter(|_| decoded_frames > 0)
+        .ok_or_else(|| bad("decoded frame count cannot bound packet proof"))
+}
+
+fn verify_probe<R: BufRead>(
+    metadata_bytes: &[u8],
+    mut packet_rows: R,
+    native: NativeMovieTiming,
+    duration_ms: u64,
+    decoded_frames: u64,
+) -> Result<VerifiedMovieTiming> {
+    let probe: Probe = serde_json::from_slice(metadata_bytes)
+        .map_err(|cause| bad(&format!("movie metadata is malformed: {cause}")))?;
+    let stream = probe
+        .streams
+        .first()
+        .ok_or_else(|| bad("video time base is missing"))?;
+    let (numerator, denominator) = parse_time_base(&stream.time_base)?;
+    let container_ns = parse_seconds_ns(&probe.format.duration)?;
+    let measured_ms = u64::try_from(
+        container_ns
+            .checked_add(500_000)
+            .ok_or_else(|| bad("container duration overflowed"))?
+            / 1_000_000,
+    )
+    .map_err(|_| bad("movie duration overflows milliseconds"))?;
+    if measured_ms == 0 || measured_ms != duration_ms {
+        return Err(bad(
+            "packet container duration disagrees with decoded media facts",
+        ));
+    }
+    if native.start_pts_ns == 0
+        || native.last_pts_ns < native.start_pts_ns
+        || native.last_cadence_ns == 0
+    {
+        return Err(bad(
+            "MovieFileOutput start or final sample timing is missing",
+        ));
+    }
+    let mut first_pts = u128::MAX;
+    let mut last_pts = 0_u128;
+    let mut last_duration = 0_u128;
+    let mut max_end = 0_u128;
+    let mut packet_count = 0_u64;
+    loop {
+        let mut row = Vec::with_capacity(MAX_PACKET_ROW_BYTES as usize);
+        let read = (&mut packet_rows)
+            .take(MAX_PACKET_ROW_BYTES + 1)
+            .read_until(b'\n', &mut row)
+            .map_err(|cause| bad(&format!("read packet proof: {cause}")))?;
+        if read == 0 {
+            break;
+        }
+        if read as u64 > MAX_PACKET_ROW_BYTES || row.last() != Some(&b'\n') {
+            return Err(bad("packet proof contains an oversized or incomplete row"));
+        }
+        let row = std::str::from_utf8(&row[..row.len() - 1])
+            .map_err(|_| bad("packet proof is not UTF-8"))?;
+        let (pts, duration) = row
+            .split_once(',')
+            .ok_or_else(|| bad("packet proof row is malformed"))?;
+        let pts = pts
+            .parse::<i64>()
+            .map_err(|_| bad("packet PTS is malformed"))?;
+        let duration = duration
+            .parse::<i64>()
+            .map_err(|_| bad("packet duration is malformed"))?;
+        packet_count = packet_count
+            .checked_add(1)
+            .ok_or_else(|| bad("packet count overflowed"))?;
+        if packet_count > decoded_frames {
+            return Err(bad("video packet count exceeds decoded frame count"));
+        }
+        if pts < 0 || duration <= 0 {
+            return Err(bad("video packet has negative PTS or no duration"));
+        }
+        let pts = to_ns(pts as u128, numerator, denominator)?;
+        let duration = to_ns(duration as u128, numerator, denominator)?;
+        let end = pts
+            .checked_add(duration)
+            .ok_or_else(|| bad("packet end overflowed"))?;
+        if duration == 0 || end > container_ns {
+            return Err(bad("video packet exceeds the container duration"));
+        }
+        first_pts = first_pts.min(pts);
+        if pts >= last_pts {
+            last_pts = pts;
+            last_duration = duration;
+        }
+        max_end = max_end.max(end);
+    }
+    if packet_count != decoded_frames {
+        return Err(bad("video packet count disagrees with decoded frame count"));
+    }
+    if first_pts != 0 || last_duration == 0 || last_pts.checked_add(last_duration) != Some(max_end)
+    {
+        return Err(bad(
+            "movie packets do not begin at zero with a final sample",
+        ));
+    }
+    // One track tick accounts for CMTime->nanosecond truncation and ffprobe's
+    // integer time base. The independent file-output callback must identify
+    // the last encoded presentation timestamp, not merely a DataOutput frame.
+    let tick_ns = to_ns(1, numerator, denominator)?.max(1);
+    let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns);
+    if native_elapsed.abs_diff(last_pts) > tick_ns {
+        return Err(bad(
+            "last encoded packet is not the last MovieFileOutput sample",
+        ));
+    }
+    let cadence = u128::from(native.last_cadence_ns);
+    if last_duration > cadence.saturating_mul(2).saturating_add(tick_ns) {
+        return Err(bad(
+            "final packet duration exceeds native movie sample cadence",
+        ));
+    }
+    if native.last_duration_ns != 0
+        && last_duration
+            > u128::from(native.last_duration_ns)
+                .saturating_mul(2)
+                .saturating_add(tick_ns)
+    {
+        return Err(bad(
+            "final packet duration exceeds native movie sample duration",
+        ));
+    }
+    // The container may end after the final packet because AVFoundation writes
+    // a movie time range. Bound that tail by one measured encoded packet; a
+    // truncated or extended file cannot pass just by changing its duration.
+    if container_ns < max_end || container_ns - max_end > last_duration.saturating_add(tick_ns) {
+        return Err(bad(
+            "movie container end is not bounded by its final packet",
+        ));
+    }
+    let packet_duration_ms = u64::try_from(
+        max_end
+            .checked_add(500_000)
+            .ok_or_else(|| bad("encoded movie interval overflowed"))?
+            / 1_000_000,
+    )
+    .map_err(|_| bad("encoded movie interval overflows milliseconds"))?;
+    if packet_duration_ms == 0 {
+        return Err(bad("encoded movie interval is empty"));
+    }
+    Ok(VerifiedMovieTiming {
+        duration_ms: packet_duration_ms,
+        start_pts_ns: native.start_pts_ns,
+    })
+}
+
+fn parse_time_base(value: &str) -> Result<(u128, u128)> {
+    let (num, den) = value
+        .split_once('/')
+        .ok_or_else(|| bad("invalid video time base"))?;
+    let num = num
+        .parse::<u128>()
+        .map_err(|_| bad("invalid video time base"))?;
+    let den = den
+        .parse::<u128>()
+        .map_err(|_| bad("invalid video time base"))?;
+    if num == 0 || den == 0 {
+        return Err(bad("invalid video time base"));
+    }
+    Ok((num, den))
+}
+
+fn parse_seconds_ns(value: &str) -> Result<u128> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 9
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(bad("invalid container duration"));
+    }
+    let whole = whole
+        .parse::<u128>()
+        .map_err(|_| bad("invalid container duration"))?;
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<u128>()
+            .map_err(|_| bad("invalid container duration"))?
+            * 10_u128.pow((9 - fraction.len()) as u32)
+    };
+    whole
+        .checked_mul(1_000_000_000)
+        .and_then(|v| v.checked_add(fraction))
+        .ok_or_else(|| bad("container duration overflowed"))
+}
+
+fn to_ns(ticks: u128, numerator: u128, denominator: u128) -> Result<u128> {
+    ticks
+        .checked_mul(numerator)
+        .and_then(|v| v.checked_mul(1_000_000_000))
+        .map(|v| v / denominator)
+        .ok_or_else(|| bad("movie time base overflowed"))
+}
+
+fn bad(cause: &str) -> RecordError {
+    RecordError::new(
+        error_codes::CAPTURE,
+        "verify macOS camera movie clock",
+        cause,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn native() -> NativeMovieTiming {
+        NativeMovieTiming {
+            start_pts_ns: 34_421_447_440_000,
+            last_pts_ns: 34_429_431_540_000,
+            last_duration_ns: 0,
+            last_cadence_ns: 8_330_000,
+        }
+    }
+
+    fn metadata(duration: &str, time_base: &str) -> Vec<u8> {
+        format!(
+            r#"{{"streams":[{{"time_base":"{time_base}"}}],"format":{{"duration":"{duration}"}}}}"#
+        )
+        .into_bytes()
+    }
+
+    fn fixture(
+        duration: &str,
+        last_pts: i64,
+        last_duration: i64,
+        frames: u64,
+    ) -> Result<VerifiedMovieTiming> {
+        let rows = format!("0,833\n{last_pts},{last_duration}\n");
+        verify_probe(
+            &metadata(duration, "1/100000"),
+            rows.as_bytes(),
+            native(),
+            parse_seconds_ns(duration)? as u64 / 1_000_000,
+            frames,
+        )
+    }
+
+    #[test]
+    fn movie_start_excludes_warmup_and_data_output_offset() {
+        let result = fixture("7.998060", 798410, 833, 2).unwrap();
+        assert_eq!(result.start_pts_ns, native().start_pts_ns);
+        assert_eq!(result.duration_ms, 7_992);
+        // DataOutput's first accepted sample was 100.03ms after movie start,
+        // and its 7.966s interval was 32ms shorter than the MP4 container.
+        assert_ne!(7_966, result.duration_ms);
+    }
+
+    #[test]
+    fn packet_duration_and_bad_or_truncated_output_fail_closed() {
+        assert!(fixture("7.998060", 798410, 0, 2).is_err());
+        assert!(fixture("7.990000", 798410, 833, 2).is_err());
+        assert!(fixture("8.050000", 798410, 833, 2).is_err());
+        assert!(fixture("7.998060", 798410, 833, 3).is_err());
+        assert!(fixture("7.998060", 798000, 833, 2).is_err());
+        assert!(verify_probe(b"{\"streams\":[", "0,833\n".as_bytes(), native(), 7_998, 2).is_err());
+        assert!(verify_probe(
+            &metadata("7.998060", "1/100000"),
+            "0,833\n798410,".as_bytes(),
+            native(),
+            7_998,
+            2
+        )
+        .is_err());
+        assert!(packet_file_limit(0).is_err());
+        assert!(packet_file_limit(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn movie_probe_budget_scales_with_verified_workload() {
+        let short = probe_timeout(476, 64 * 1024 * 1024).unwrap();
+        let thirty_minutes_4k = probe_timeout(54_000, 5 * 1024 * 1024 * 1024).unwrap();
+        assert_eq!(short, Duration::from_secs(67));
+        assert_eq!(thirty_minutes_4k, Duration::from_secs(410));
+        assert!(thirty_minutes_4k > short);
+        assert!(probe_timeout(0, 1).is_err());
+        assert!(probe_timeout(1, 0).is_err());
+        assert!(probe_timeout(u64::MAX, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn long_recording_streams_more_than_eight_megabytes_of_packets() {
+        use std::io::{BufWriter, Seek, SeekFrom, Write};
+        let mut file = tempfile::tempfile().unwrap();
+        let frame_count = 1_000_000_u64;
+        {
+            let mut writer = BufWriter::new(&mut file);
+            for pts in 0..frame_count {
+                writeln!(writer, "{pts},1").unwrap();
+            }
+            writer.flush().unwrap();
+        }
+        assert!(file.metadata().unwrap().len() > 8 * 1024 * 1024);
+        assert!(file.metadata().unwrap().len() <= packet_file_limit(frame_count).unwrap());
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let native = NativeMovieTiming {
+            start_pts_ns: 34_421_447_440_000,
+            last_pts_ns: 34_421_447_440_000 + (frame_count - 1) * 1_000_000,
+            last_duration_ns: 1_000_000,
+            last_cadence_ns: 1_000_000,
+        };
+        let result = verify_probe(
+            &metadata("1000.000000", "1/1000"),
+            BufReader::new(&file),
+            native,
+            1_000_000,
+            frame_count,
+        )
+        .unwrap();
+        assert_eq!(result.duration_ms, 1_000_000);
+    }
+}

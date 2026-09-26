@@ -1,16 +1,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <Foundation/Foundation.h>
-#import <os/log.h>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
-#include <pthread.h>
 #include <sys/attr.h>
-#include <sys/stat.h>
 
 typedef void (*SxcCameraFrameCallback)(void *context, uint64_t pts_ns, uint64_t duration_ns);
 
@@ -25,29 +22,6 @@ static uint64_t sxc_time_ns(CMTime value) {
     long double nanos = (long double)value.value * 1000000000.0L / (long double)value.timescale;
     if (nanos <= 0 || nanos > (long double)UINT64_MAX) return 0;
     return (uint64_t)nanos;
-}
-
-static void sxc_camera_diag(const char *event) {
-    uint64_t thread_id = 0;
-    pthread_threadid_np(nullptr, &thread_id);
-    os_log_error(OS_LOG_DEFAULT, "SXCCameraDiag %{public}s thread=%llu main=%{public}s",
-                 event, (unsigned long long)thread_id, [NSThread isMainThread] ? "yes" : "no");
-}
-
-static std::atomic_uint_fast64_t sxc_main_ping_id{0};
-
-static void sxc_camera_main_ping(const char *phase) {
-    const uint64_t ping_id = sxc_main_ping_id.fetch_add(1) + 1;
-    os_log_error(OS_LOG_DEFAULT, "SXCCameraDiag main ping %{public}s queued id=%llu",
-                 phase, (unsigned long long)ping_id);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        uint64_t thread_id = 0;
-        pthread_threadid_np(nullptr, &thread_id);
-        os_log_error(OS_LOG_DEFAULT,
-                     "SXCCameraDiag main ping %{public}s executed id=%llu thread=%llu main=%{public}s",
-                     phase, (unsigned long long)ping_id, (unsigned long long)thread_id,
-                     [NSThread isMainThread] ? "yes" : "no");
-    });
 }
 
 static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_seconds) {
@@ -82,9 +56,9 @@ static constexpr int kSxcCameraClosed = 2;
 @public
     std::atomic_int _sampleState;
     std::atomic_uint_fast64_t _movieStartPtsNs;
-    std::atomic_uint_fast64_t _movieFirstPtsNs;
-    std::atomic_uint_fast64_t _movieLastEndPtsNs;
-    std::atomic_uint_fast64_t _movieVideoSamples;
+    std::atomic_uint_fast64_t _movieLastPtsNs;
+    std::atomic_uint_fast64_t _movieLastDurationNs;
+    std::atomic_uint_fast64_t _movieLastCadenceNs;
     SxcCameraFrameCallback _callback;
     void *_context;
     dispatch_semaphore_t _firstFrame;
@@ -101,9 +75,9 @@ static constexpr int kSxcCameraClosed = 2;
     if (self) {
         _sampleState.store(kSxcCameraPending);
         _movieStartPtsNs.store(0);
-        _movieFirstPtsNs.store(0);
-        _movieLastEndPtsNs.store(0);
-        _movieVideoSamples.store(0);
+        _movieLastPtsNs.store(0);
+        _movieLastDurationNs.store(0);
+        _movieLastCadenceNs.store(0);
         _callback = callback;
         _context = context;
         _firstFrame = dispatch_semaphore_create(0);
@@ -126,7 +100,6 @@ static constexpr int kSxcCameraClosed = 2;
     (void)captureOutput;
     (void)outputFileURL;
     (void)connections;
-    sxc_camera_diag("didStartRecording entered");
     int expected = kSxcCameraPending;
     _sampleState.compare_exchange_strong(expected, kSxcCameraAccepting);
 }
@@ -151,10 +124,10 @@ static constexpr int kSxcCameraClosed = 2;
         const uint64_t pts = sxc_time_ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
         const uint64_t duration = sxc_time_ns(CMSampleBufferGetDuration(sampleBuffer));
         if (pts == 0 || duration > UINT64_MAX - pts) return;
-        uint64_t expected = 0;
-        _movieFirstPtsNs.compare_exchange_strong(expected, pts);
-        _movieLastEndPtsNs.store(pts + duration);
-        _movieVideoSamples.fetch_add(1);
+        const uint64_t previous = _movieLastPtsNs.load();
+        if (previous > 0 && pts > previous) _movieLastCadenceNs.store(pts - previous);
+        _movieLastPtsNs.store(pts);
+        _movieLastDurationNs.store(duration);
         return;
     }
     if (_sampleState.load() != kSxcCameraAccepting || !_callback) return;
@@ -172,19 +145,11 @@ static constexpr int kSxcCameraClosed = 2;
     (void)captureOutput;
     (void)outputFileURL;
     (void)connections;
-    sxc_camera_diag("didFinishRecording entered");
-    os_log_error(OS_LOG_DEFAULT,
-                 "SXCCameraDiag file-output video start_pts_ns=%llu first_pts_ns=%llu last_end_pts_ns=%llu samples=%llu",
-                 (unsigned long long)_movieStartPtsNs.load(),
-                 (unsigned long long)_movieFirstPtsNs.load(),
-                 (unsigned long long)_movieLastEndPtsNs.load(),
-                 (unsigned long long)_movieVideoSamples.load());
     if (error && ![error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] boolValue]) {
         _terminalError = error;
     }
     _sampleState.store(kSxcCameraClosed);
     dispatch_semaphore_signal(_finished);
-    sxc_camera_diag("didFinishRecording signaled");
 }
 
 - (void)captureDeviceDisconnected:(NSNotification *)notification {
@@ -210,46 +175,14 @@ static constexpr int kSxcCameraClosed = 2;
 @property(nonatomic, strong) AVCaptureVideoDataOutput *samples;
 @property(nonatomic, strong) SxcCameraDelegate *delegate;
 @property(nonatomic, strong) dispatch_queue_t queue;
-@property(nonatomic, strong) NSString *outputPath;
 @end
 @implementation SxcCameraHandle
 @end
 
-static void sxc_camera_diag_movie_state(const char *phase, SxcCameraHandle *handle) {
-    struct stat file_stat = {};
-    const int file_status = stat(handle.outputPath.fileSystemRepresentation, &file_stat);
-    os_log_error(OS_LOG_DEFAULT,
-                 "SXCCameraDiag movie %{public}s isRecording=%{public}d exists=%{public}d bytes=%lld",
-                 phase, handle.movie.isRecording ? 1 : 0, file_status == 0 ? 1 : 0,
-                 file_status == 0 ? (long long)file_stat.st_size : -1LL);
-}
-
-extern "C" void sxc_macos_camera_diag_samples(uint64_t first_pts_ns,
-                                                 uint64_t last_end_pts_ns,
-                                                 uint64_t count) {
-    os_log_error(OS_LOG_DEFAULT,
-                 "SXCCameraDiag accepted samples first_pts_ns=%llu last_end_pts_ns=%llu count=%llu interval_ns=%llu",
-                 (unsigned long long)first_pts_ns, (unsigned long long)last_end_pts_ns,
-                 (unsigned long long)count,
-                 (unsigned long long)(last_end_pts_ns - first_pts_ns));
-}
-
-extern "C" void sxc_macos_camera_diag_projection(uint64_t first_offset_ms,
-                                                    uint64_t end_offset_ms,
-                                                    uint64_t media_duration_ms) {
-    os_log_error(OS_LOG_DEFAULT,
-                 "SXCCameraDiag duration projection first_offset_ms=%llu end_offset_ms=%llu observed_ms=%llu media_ms=%llu",
-                 (unsigned long long)first_offset_ms, (unsigned long long)end_offset_ms,
-                 (unsigned long long)(end_offset_ms - first_offset_ms),
-                 (unsigned long long)media_duration_ms);
-}
-
 static void sxc_quiesce_samples(SxcCameraHandle *handle) {
-    sxc_camera_diag("sample quiescence begin");
     handle.delegate->_sampleState.store(kSxcCameraClosed);
     [handle.samples setSampleBufferDelegate:nil queue:nil];
     dispatch_sync(handle.queue, ^{});
-    sxc_camera_diag("sample quiescence drained");
 }
 
 extern "C" size_t sxc_macos_camera_devices_json(char *buffer, size_t capacity) {
@@ -333,7 +266,6 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
             return nullptr;
         }
         SxcCameraHandle *handle = [SxcCameraHandle new];
-        handle.outputPath = path;
         handle.session = [AVCaptureSession new];
         handle.movie = [AVCaptureMovieFileOutput new];
         handle.samples = [AVCaptureVideoDataOutput new];
@@ -368,19 +300,14 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
         }
         NSURL *url = [NSURL fileURLWithPath:path];
         [handle.movie startRecordingToOutputFileURL:url recordingDelegate:handle.delegate];
-        sxc_camera_diag("startRecording requested");
-        sxc_camera_main_ping("start");
         // didStartRecording admits samples only after the asynchronous movie
         // writer has started; callbacks before it are warm-up observations.
         if (!sxc_wait_camera_event(handle.delegate->_firstFrame, 5) ||
             handle.delegate->_deviceLost.load()) {
             sxc_quiesce_samples(handle);
             if (handle.movie.isRecording) [handle.movie stopRecording];
-            sxc_camera_diag("failed Start stopRecording requested");
             sxc_wait_camera_event(handle.delegate->_finished, 10);
-            sxc_camera_diag("failed Start stopRunning enter");
             [handle.session stopRunning];
-            sxc_camera_diag("failed Start stopRunning exit");
             handle.movie.delegate = nil;
             [[NSNotificationCenter defaultCenter] removeObserver:handle.delegate];
             sxc_error(error, error_capacity, handle.delegate->_deviceLost.load()
@@ -388,44 +315,40 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
                 : @"AVFoundation started without a camera frame");
             return nullptr;
         }
-        sxc_camera_diag("first frame admitted");
         return (__bridge_retained void *)handle;
     }
 }
 
 extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error_capacity,
-                                            int32_t *device_lost) {
+                                            int32_t *device_lost, uint64_t *movie_start_pts_ns,
+                                            uint64_t *movie_last_pts_ns,
+                                            uint64_t *movie_last_duration_ns,
+                                            uint64_t *movie_last_cadence_ns) {
     @autoreleasepool {
         if (device_lost) *device_lost = 0;
+        if (movie_start_pts_ns) *movie_start_pts_ns = 0;
+        if (movie_last_pts_ns) *movie_last_pts_ns = 0;
+        if (movie_last_duration_ns) *movie_last_duration_ns = 0;
+        if (movie_last_cadence_ns) *movie_last_cadence_ns = 0;
         if (!opaque) {
             sxc_error(error, error_capacity, @"Camera owner is missing");
             return -1;
         }
         SxcCameraHandle *handle = (__bridge_transfer SxcCameraHandle *)opaque;
-        sxc_camera_diag("Stop entered");
-        sxc_camera_main_ping("stop");
-        sxc_camera_diag_movie_state("before quiesce", handle);
         sxc_quiesce_samples(handle);
         const bool movie_was_recording = handle.movie.isRecording;
-        sxc_camera_diag_movie_state("before stopRecording", handle);
         if (movie_was_recording) {
             [handle.movie stopRecording];
         }
-        sxc_camera_diag(movie_was_recording ? "stopRecording called" : "stopRecording skipped");
-        sxc_camera_diag_movie_state("after stopRecording", handle);
         // didFinish is required for every recording request, including one
         // that stopped before isRecording could still report true.
         if (!sxc_wait_camera_event(handle.delegate->_finished, 15)) {
-            sxc_camera_diag("didFinish timeout; stopRunning enter");
             [handle.session stopRunning];
-            sxc_camera_diag("didFinish timeout; stopRunning exit");
             handle.movie.delegate = nil;
             sxc_error(error, error_capacity, @"AVFoundation did not finish the camera recording");
             return -1;
         }
-        sxc_camera_diag("didFinish observed; stopRunning enter");
         [handle.session stopRunning];
-        sxc_camera_diag("stopRunning exit");
         handle.movie.delegate = nil;
         const bool lost = handle.delegate->_deviceLost.load();
         if (device_lost) *device_lost = lost ? 1 : 0;
@@ -436,6 +359,10 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
             sxc_error(error, error_capacity, handle.delegate->_terminalError.localizedDescription);
             return -1;
         }
+        if (movie_start_pts_ns) *movie_start_pts_ns = handle.delegate->_movieStartPtsNs.load();
+        if (movie_last_pts_ns) *movie_last_pts_ns = handle.delegate->_movieLastPtsNs.load();
+        if (movie_last_duration_ns) *movie_last_duration_ns = handle.delegate->_movieLastDurationNs.load();
+        if (movie_last_cadence_ns) *movie_last_cadence_ns = handle.delegate->_movieLastCadenceNs.load();
         return 0;
     }
 }

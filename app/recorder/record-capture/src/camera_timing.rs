@@ -1,12 +1,14 @@
 //! Exact camera-sample timing carried from a native adapter to the session seal.
 //!
-//! A frame start is not a media-duration boundary. Adapters must report the
-//! actual interval covered by every delivered sample so the final artifact can
-//! describe the end of the final sample without guessing from its start.
+//! A frame start is not a media-duration boundary. Sample-driven adapters
+//! report delivered intervals. The macOS MovieFileOutput adapter instead
+//! reports one verified encoded interval from first packet to final packet end;
+//! its separate DataOutput samples anchor that interval to CaptureClock.
 
 use std::time::Instant;
 
-/// One delivered camera sample measured on the screen owner's monotonic clock.
+/// A delivered sample or a separately verified encoded movie interval measured
+/// on the screen owner's monotonic clock.
 ///
 /// Values remain private because native adapters must not expose host timing
 /// details through recorder arguments, responses, or device enumeration.

@@ -59,6 +59,7 @@ import {
   type AgentChatSession,
   type AgentChatTurn,
 } from './session'
+import type { AgentModelOverrides } from './useAgentChatSessions'
 import './chat.css'
 
 type ChatResult = VerbResults['agent.chat']
@@ -76,9 +77,11 @@ export interface AgentChatProps {
   onSessionChange: (update: (current: AgentChatSession) => AgentChatSession) => void
   /** Bounded Chat history is local to this device and project identity. */
   historyStatus: AgentChatHistoryStatus
+  modelOverrides: AgentModelOverrides
+  onModelOverridesChange: (update: SetStateAction<AgentModelOverrides>) => void
 }
 
-export default function AgentChat({ project, prefill, session, onSessionChange, historyStatus }: AgentChatProps) {
+export default function AgentChat({ project, prefill, session, onSessionChange, historyStatus, modelOverrides, onModelOverridesChange }: AgentChatProps) {
   const { log, input, attachments, target, busy } = session
   const setLog = useCallback((update: SetStateAction<AgentChatTurn[]>) => {
     onSessionChange((current) => {
@@ -130,9 +133,8 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
   // chat state from the doctor (null state until first load). `agentsLoaded`
   // gates the trigger badge so it doesn't flash "install" before the scan lands.
   const [agent, setAgent] = useState<ChatAgentName>(() => getChatAgent())
-  // Keep overrides separate so switching providers never sends one CLI's model
-  // name to another. An empty value leaves that CLI's own default in control.
-  const [agentModels, setAgentModels] = useState<Partial<Record<ChatAgentName, string>>>({})
+  // The parent keeps these project-keyed in memory across right-tab unmounts.
+  // An empty value leaves the selected CLI's own default in control.
   const [options, setOptions] = useState<ChatAgentOption[]>(() => chatAgentsFrom(null))
   const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -314,7 +316,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
       const r = await callVerb('agent.chat', {
         message,
         agent,
-        model: agentModels[agent]?.trim() || undefined,
+        model: modelOverrides[agent]?.trim() || undefined,
         attachments: turnAttachments.length > 0 ? turnAttachments.map((attachment) => attachment.id) : undefined,
         target: turnTarget ?? undefined,
         ...evidenceIdentity,
@@ -379,7 +381,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
     } finally {
       setBusy(false)
     }
-  }, [input, busy, agent, attachments, attachmentOptions, evidenceAttachments, project, setAttachments, setBusy, setInput, setLog, setTarget, target])
+  }, [input, busy, agent, modelOverrides, attachments, attachmentOptions, evidenceAttachments, project, setAttachments, setBusy, setInput, setLog, setTarget, target])
 
   // A Comment already contains an explicit request, so its Make changes action
   // may send through the normal Chat turn after the target reaches this mounted
@@ -573,9 +575,9 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
           autoComplete="off"
           spellCheck={false}
           placeholder="CLI default"
-          value={agentModels[agent] ?? ''}
+          value={modelOverrides[agent] ?? ''}
           disabled={busy}
-          onChange={(event) => setAgentModels((current) => ({ ...current, [agent]: event.target.value }))}
+          onChange={(event) => onModelOverridesChange((current) => ({ ...current, [agent]: event.target.value }))}
         />
       </label>
       <div className="chat__log" ref={logRef} data-cut-chat-log>

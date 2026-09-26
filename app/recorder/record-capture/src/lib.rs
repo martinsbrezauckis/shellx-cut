@@ -286,6 +286,8 @@ mod macos;
 mod macos_camera;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_camera_finalization;
+#[cfg(all(unix, any(test, all(target_os = "macos", feature = "capture-macos"))))]
+mod macos_camera_movie_timing;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_camera_native;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]

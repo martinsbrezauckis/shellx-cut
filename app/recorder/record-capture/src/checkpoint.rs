@@ -341,6 +341,60 @@ mod tests {
     }
 
     #[test]
+    fn earlier_max_gap_clip_verifies_real_mp4_at_observed_stop() {
+        let root = tempdir().unwrap();
+        let staging = root.path().join("source.mp4");
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=32x32:r=60",
+            ])
+            .args(["-t", "7.933", "-c:v", "libx264"])
+            .arg(&staging)
+            .status()
+            .unwrap()
+            .success());
+        let original = record_recovery::verify_media("ffmpeg", "ffprobe", &staging).unwrap();
+        assert_eq!(original.duration_ms, 7_933);
+        assert_eq!(original.decoded_video_frames, 476);
+
+        let origin = Instant::now();
+        let timing = WgcTimingRecorder::new(origin, 60, &root.path().join("._timing.d/s.mp4"));
+        let first = 6_146_209_642_756i64;
+        timing.accepted_frame(first, origin + Duration::from_millis(480));
+        timing.accepted_frame(first + 34_000_076, origin + Duration::from_millis(3_880));
+        timing.accepted_frame(first + 45_500_670, origin + Duration::from_millis(5_030));
+        timing.control_stopped(origin + Duration::from_millis(7_497), true);
+        let corrected = trim_extrapolated_wgc_tail(
+            &staging,
+            &record_recovery::CheckpointFacts {
+                start_ms: 0,
+                end_ms: 7_499,
+                event_offset_ms: 0,
+                audio_offset_ms: None,
+            },
+            original,
+            &timing,
+            "ffmpeg",
+            "ffprobe",
+        )
+        .unwrap();
+        assert!(corrected.duration_ms.abs_diff(7_499) <= 100);
+        assert!(corrected.decoded_video_frames >= timing.accepted_frames());
+        assert!(corrected.decoded_video_frames < 476);
+        assert_eq!(
+            record_recovery::verify_media("ffmpeg", "ffprobe", &staging)
+                .unwrap()
+                .duration_ms,
+            corrected.duration_ms
+        );
+    }
+
+    #[test]
     fn checkpoint_rejects_a_planted_native_output_link_before_media_verification() {
         use std::os::unix::fs::symlink;
 

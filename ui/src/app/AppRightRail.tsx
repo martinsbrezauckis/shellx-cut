@@ -15,7 +15,7 @@ import {
 import type { LayoutState, RightTab } from '../layout/useLayout'
 import PanelErrorBoundary from '../components/PanelErrorBoundary'
 import type { ReviewTab, ReviewTabRequest } from '../panels/Review'
-import { useAgentChatSession } from '../panels/AgentChat/useAgentChatSessions'
+import { useAgentChatSession, useAgentModelOverrides } from '../panels/AgentChat/useAgentChatSessions'
 
 const Inspector = lazy(() => import('../panels/Inspector'))
 const AgentChat = lazy(() => import('../panels/AgentChat'))
@@ -120,6 +120,7 @@ export default function AppRightRail({
     updateSession: updateAgentChatSession,
     historyStatus: agentChatHistoryStatus,
   } = useAgentChatSession(project, projectSession)
+  const { models: agentModels, setModels: setAgentModels } = useAgentModelOverrides(project, projectSession)
 
   // ---- crash-safe tab mounting ---------------------------------------------
   // A right-tab body that previously took the WebView down (blocklisted by
@@ -342,6 +343,8 @@ export default function AppRightRail({
                         session={agentChatSession}
                         onSessionChange={updateAgentChatSession}
                         historyStatus={agentChatHistoryStatus}
+                        modelOverrides={agentModels}
+                        onModelOverridesChange={setAgentModels}
                       />
                     )}
                     <PanelPaintConfirm tab={activeTab} />

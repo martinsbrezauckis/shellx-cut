@@ -48,9 +48,6 @@ hound = { version = "3", optional = true }
 cc = "1"
 
 [dev-dependencies]
-# Native checkpoint and system-audio tests run on macOS as well as Linux; keep
-# their temporary-file helper test-only so production capture dependencies stay
-# unchanged.
 tempfile.workspace = true
 
 # windows-capture (WGC) only exists on the windows target.
@@ -89,6 +86,7 @@ libc = "0.2"
 # windows-capture (WGC): per-window/display enumeration + SCStream + SCRecordingOutput
 # direct-to-file (feature macos_15_0). The supported macOS range provides these APIs.
 [target.'cfg(target_os = "macos")'.dependencies]
+tempfile.workspace = true
 # 8.0.1 separates its private Swift bridge from apple-cf's CoreMediaBridge.
 screencapturekit = { version = "8.0.1", optional = true, features = ["macos_15_0"] }
 

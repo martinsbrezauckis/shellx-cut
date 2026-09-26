@@ -1,0 +1,9 @@
+.insp__caption-presets { display: inline-flex; align-items: center; gap: 4px; }
+.insp__caption-preset {
+  width: 28px; height: 28px; padding: 0; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
+}
+.insp__caption-preset:hover { border-color: var(--ink-2, #d6dae0); }
+.insp__caption-preset[aria-pressed='true'] { outline: 2px solid var(--cut, #2563eb); outline-offset: 1px; }
+.insp__caption-preset:focus-visible { outline: 2px solid var(--cut, #2563eb); outline-offset: 2px; }
+.insp__caption-preset:disabled { cursor: default; opacity: 0.55; }
