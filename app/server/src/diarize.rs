@@ -125,8 +125,20 @@ pub(crate) async fn media_diarize(state: &AppState, args: Value) -> Result<VerbR
         max_speakers: Option<u32>,
     }
     let a: Args = crate::dispatch::parse_args(args)?;
-    let (src, hash) = crate::dispatch::asset_info(state, &a.asset).await?;
     let (dir, receipts, _p) = crate::dispatch::project_paths(state).await?;
+    // Keep the selected project stable from asset lookup through job
+    // registration. Project replacement drains this tracked worker before B
+    // becomes current, so its later receipt write-back cannot target B.
+    let _project_transition = state.project_transition.lock().await;
+    let (current_dir, _, _) = crate::dispatch::project_paths(state).await?;
+    if current_dir != dir {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "the open project changed before diarization started",
+            "retry media.diarize against the current project",
+        ));
+    }
+    let (src, hash) = crate::dispatch::asset_info(state, &a.asset).await?;
 
     // The bridge must be wired before the job starts, otherwise the UI shows a
     // running job that can only fail later with setup work the user could do now.

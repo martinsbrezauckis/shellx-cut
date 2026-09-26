@@ -89,6 +89,7 @@ pub(super) fn rebuild(
         apply_record(&mut project, &ops[index], &ops[..index])?;
         project.sync_active_sequence();
     }
+    validate_replayed_asset_ids(&project)?;
     let stats = ReplayStats {
         snapshot_prefix,
         replayed_ops: prefix_len - snapshot_prefix,
@@ -135,8 +136,7 @@ pub(super) fn write(dir: &Path, journal: &JournalView, project: &Project) -> Res
         project_hash: project_hash(project)?,
         project: project.clone(),
     };
-    let root = snapshot_dir(dir);
-    std::fs::create_dir_all(&root)?;
+    let root = checked_snapshot_dir(dir, true)?.expect("created snapshot directory");
     let path = snapshot_path(&root, snapshot.prefix_len);
     atomic_write(&path, &serde_json::to_vec_pretty(&snapshot)?)?;
     prune_old_snapshots(&root);
@@ -150,7 +150,12 @@ fn nearest_verified_snapshot(
 ) -> Result<(Option<Snapshot>, bool), CutError> {
     let mut rejected = false;
     let mut nearest: Option<Snapshot> = None;
-    for path in snapshot_paths(&snapshot_dir(dir)) {
+    let root = match checked_snapshot_dir(dir, false) {
+        Ok(Some(root)) => root,
+        Ok(None) => return Ok((None, false)),
+        Err(_) => return Ok((None, true)),
+    };
+    for path in snapshot_paths(&root) {
         let Ok(bytes) = std::fs::read(&path) else {
             rejected = true;
             let _ = std::fs::remove_file(&path);
@@ -210,6 +215,42 @@ fn snapshot_dir(dir: &Path) -> PathBuf {
     dir.join(SNAPSHOT_DIR)
 }
 
+fn checked_snapshot_dir(dir: &Path, create: bool) -> Result<Option<PathBuf>, CutError> {
+    let project = dir.canonicalize()?;
+    let root = snapshot_dir(&project);
+    if create {
+        match std::fs::create_dir(&root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let metadata = match std::fs::symlink_metadata(&root) {
+        Ok(metadata) => metadata,
+        Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    if !metadata.file_type().is_dir()
+        || metadata.file_type().is_symlink()
+        || reparse
+        || root.canonicalize()? != root
+    {
+        return Err(CutError::new(
+            codes::INVALID_ARGS,
+            "project snapshot cache is not a plain directory",
+            format!("refusing linked snapshot directory {}", root.display()),
+        ));
+    }
+    Ok(Some(root))
+}
+
 fn snapshot_path(root: &Path, prefix_len: usize) -> PathBuf {
     root.join(format!("snapshot-{prefix_len:012}.json"))
 }
@@ -223,7 +264,10 @@ fn snapshot_paths(root: &Path) -> Vec<PathBuf> {
         .filter_map(|entry| {
             let name = entry.file_name();
             let name = name.to_str()?;
-            (name.starts_with("snapshot-") && name.ends_with(".json")).then(|| entry.path())
+            (name.starts_with("snapshot-")
+                && name.ends_with(".json")
+                && entry.file_type().ok()?.is_file())
+            .then(|| entry.path())
         })
         .collect();
     paths.sort();

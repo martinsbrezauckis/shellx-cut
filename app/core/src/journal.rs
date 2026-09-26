@@ -8,8 +8,8 @@ use crate::error::{codes, CutError};
 use crate::mutation_request::RequestIndex;
 use crate::ops::{JournalRecovery, OpRecord};
 use serde::Serialize;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::fs::{File, Metadata, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
 
 pub(crate) struct JournalScan {
@@ -102,6 +102,68 @@ fn sync_parent(path: &Path) {
     }
 }
 
+fn same_file(left: &Metadata, right: &Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        left.len() == right.len() && left.modified().ok() == right.modified().ok()
+    }
+}
+
+/// Check the literal journal leaf before opening it, and keep recovery tied to
+/// the same file that was parsed. A project-supplied symlink must never turn a
+/// crash-tail repair into a write to an unrelated local file.
+pub(crate) fn open_plain_journal(
+    path: &Path,
+    write: bool,
+    append: bool,
+    expected: Option<&Metadata>,
+) -> Result<File, CutError> {
+    let leaf = std::fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        leaf.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    if !leaf.file_type().is_file() || leaf.file_type().is_symlink() || reparse {
+        return Err(CutError::new(
+            codes::INVALID_ARGS,
+            "operation journal is not a plain file",
+            format!("refusing linked or non-file journal {}", path.display()),
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(write).append(append);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(target_os = "linux")]
+        const O_NOFOLLOW: i32 = 0o400000;
+        #[cfg(target_os = "macos")]
+        const O_NOFOLLOW: i32 = 0x100;
+        options.custom_flags(O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file()
+        || !same_file(&leaf, &opened)
+        || expected.is_some_and(|original| !same_file(original, &opened))
+    {
+        return Err(CutError::new(
+            codes::CONFLICT,
+            "operation journal changed while opening",
+            format!("journal identity changed at {}", path.display()),
+        ));
+    }
+    Ok(file)
+}
+
 fn unique_recovery_names(path: &Path) -> (String, String) {
     let base = path
         .file_name()
@@ -117,6 +179,7 @@ fn unique_recovery_names(path: &Path) -> (String, String) {
 
 fn recover_tail(
     path: &Path,
+    journal_file: &File,
     bytes: &[u8],
     start: usize,
     cause: &str,
@@ -153,9 +216,8 @@ fn recover_tail(
     note_out.write_all(b"\n")?;
     note_out.sync_all()?;
 
-    let journal = OpenOptions::new().write(true).open(path)?;
-    journal.set_len(start as u64)?;
-    journal.sync_all()?;
+    journal_file.set_len(start as u64)?;
+    journal_file.sync_all()?;
     sync_parent(path);
 
     Ok(JournalRecovery {
@@ -175,10 +237,37 @@ fn next_sequence(records: &[OpRecord]) -> u64 {
 }
 
 pub(crate) fn open_and_recover(path: &Path) -> Result<JournalScan, CutError> {
-    let bytes = std::fs::read(path)?;
+    let mut read_file = open_plain_journal(path, false, false, None)?;
+    let original = read_file.metadata()?;
+    let mut bytes = Vec::new();
+    read_file.read_to_end(&mut bytes)?;
     let parsed = parse(&bytes)?;
+    // Acquire the write handle before creating recovery evidence. If the
+    // journal changed after the read, fail without creating sidecars or editing.
+    let mut write_file =
+        if parsed.torn_tail.is_some() || (!bytes.is_empty() && bytes.last() != Some(&b'\n')) {
+            let file = open_plain_journal(path, true, false, Some(&original))?;
+            if file.metadata()?.len() != bytes.len() as u64 {
+                return Err(CutError::new(
+                    codes::CONFLICT,
+                    "operation journal changed during recovery",
+                    format!("journal length changed at {}", path.display()),
+                ));
+            }
+            Some(file)
+        } else {
+            None
+        };
     let recovery = match parsed.torn_tail {
-        Some((start, cause)) => Some(recover_tail(path, &bytes, start, &cause)?),
+        Some((start, cause)) => Some(recover_tail(
+            path,
+            write_file
+                .as_ref()
+                .expect("recovery has a checked write handle"),
+            &bytes,
+            start,
+            &cause,
+        )?),
         None => None,
     };
     let byte_len = recovery
@@ -189,7 +278,11 @@ pub(crate) fn open_and_recover(path: &Path) -> Result<JournalScan, CutError> {
     // directly after it would concatenate two objects. Canonicalize that
     // boundary once at open.
     if recovery.is_none() && byte_len > 0 && bytes.last() != Some(&b'\n') {
-        let mut file = OpenOptions::new().append(true).open(path)?;
+        let file = write_file
+            .as_mut()
+            .expect("newline has a checked write handle");
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::End(0))?;
         file.write_all(b"\n")?;
         file.sync_all()?;
     }
@@ -313,5 +406,21 @@ mod tests {
         let error = log.append(&op(0)).unwrap_err();
         assert_eq!(error.code, codes::CONFLICT);
         assert!(error.message.contains("changed outside"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_journal_is_rejected_before_tail_recovery_touches_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("unrelated.jsonl");
+        let torn = b"{not-json";
+        std::fs::write(&outside, torn).unwrap();
+        let project = dir.path().join("project.cutproj");
+        std::fs::create_dir(&project).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("ops.jsonl")).unwrap();
+
+        assert!(OpLog::open(&project.join("ops.jsonl")).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), torn);
+        assert_eq!(std::fs::read_dir(&project).unwrap().count(), 1);
     }
 }

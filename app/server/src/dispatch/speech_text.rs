@@ -3773,13 +3773,12 @@ pub(super) async fn transcript_translate(
     };
 
     // Persist the sibling artifact (does NOT overwrite the source transcript).
-    let rel = format!("receipts/{asset_id}.{lang}.words.json", lang = target_lang);
-    let path = dir.join(&rel);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CutError::new(error_codes::IO, "create receipts dir", e.to_string()))?;
-    }
-    std::fs::write(
+    validate_path_component_arg("asset", &asset_id)?;
+    let receipts = super::rendering::checked_internal_dir(&dir, Path::new("receipts"))?;
+    let name = format!("{asset_id}.{target_lang}.words.json");
+    let rel = format!("receipts/{name}");
+    let path = receipts.join(name);
+    write_output_atomic(
         &path,
         serde_json::to_vec_pretty(&translated)
             .map_err(|e| CutError::new(error_codes::IO, "serialize transcript", e.to_string()))?,

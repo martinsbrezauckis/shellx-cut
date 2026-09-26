@@ -1007,6 +1007,25 @@ mod tests {
         state
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_media_route_refuses_linked_read_root() {
+        use std::os::unix::fs::symlink;
+
+        let scratch = tempfile::tempdir().unwrap();
+        let project = scratch.path().join("p.cutproj");
+        let state = open_project(&project).await;
+        let outside = scratch.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("private.mp4"), b"private").unwrap();
+        std::fs::remove_dir(project.join("proxies")).unwrap();
+        symlink(&outside, project.join("proxies")).unwrap();
+
+        let response =
+            serve_project_file(&state, "proxies", "private.mp4", &HeaderMap::new()).await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
     /// GET returning (status, body bytes). 4xx/5xx surface through ureq as a
     /// StatusCode error with no readable body, so those come back empty.
     fn get_bytes(url: &str) -> (u16, Vec<u8>) {
@@ -1162,6 +1181,30 @@ mod tests {
             "the absolute route must not retain a linked project exports target as a root"
         );
         crate::output_paths::set_session_output_dir(None);
+    }
+
+    #[tokio::test]
+    async fn html_export_has_opaque_origin_and_streams_without_a_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("review.html");
+        let file = std::fs::File::create(&html).unwrap();
+        file.set_len(512 * 1024 * 1024).unwrap();
+        let no_range = serve_authorized_export(html.clone(), &HeaderMap::new()).await;
+        assert_eq!(no_range.status(), axum::http::StatusCode::OK);
+        assert_eq!(no_range.headers()["content-length"], "536870912");
+        assert!(no_range.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("sandbox allow-scripts allow-downloads;"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::RANGE, "bytes=0-3".parse().unwrap());
+        let range = serve_authorized_export(html, &headers).await;
+        assert_eq!(range.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+        assert!(range.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("sandbox allow-scripts allow-downloads;"));
     }
 
     /// With an output folder configured, a BASENAME request may match different
@@ -1572,8 +1615,8 @@ async fn serve_authorized_export(
         _ => return (StatusCode::BAD_REQUEST, "unsupported file type").into_response(),
     };
     // RANGE (a <video> previewing an exported render seeks): seek + capped chunk
-    // so a large render never loads WHOLE into RAM (S2). No-range (a download
-    // click) keeps the full body. Mirrors serve_source / serve_project_file.
+    // so a large render never loads whole into RAM. HTML stays sandboxed even
+    // for range requests: project files must not inherit the editor origin.
     if let Some(spec) = headers
         .get(axum::http::header::RANGE)
         .and_then(|v| v.to_str().ok())
@@ -1598,7 +1641,7 @@ async fn serve_authorized_export(
                 if f.read_exact(&mut buf).await.is_err() {
                     return (StatusCode::INTERNAL_SERVER_ERROR, "read failed").into_response();
                 }
-                return (
+                let mut response = (
                     StatusCode::PARTIAL_CONTENT,
                     [
                         (axum::http::header::CONTENT_TYPE, ct.to_string()),
@@ -1611,6 +1654,10 @@ async fn serve_authorized_export(
                     buf,
                 )
                     .into_response();
+                if ext == "html" {
+                    rh::isolate_html_export(&mut response);
+                }
+                return response;
             }
             None => {
                 return (
@@ -1624,18 +1671,12 @@ async fn serve_authorized_export(
             }
         }
     }
-    // Generated reviewer HTML needs its complete bounded document in memory so
-    // review_http can hash-pin the exact inline script. Every other no-Range
-    // export, including multi-gigabyte media, streams from disk in fixed-size
-    // chunks instead of allocating O(asset-size) server memory.
-    if ext == "html" {
-        match tokio::fs::read(&canon_path).await {
-            Ok(bytes) => rh::export_response(&ext, ct, bytes),
-            Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
-        }
-    } else {
-        stream_file_response(&canon_path, ct, true).await
+    // Stream every no-Range export, including untrusted HTML, in fixed chunks.
+    let mut response = stream_file_response(&canon_path, ct, true).await;
+    if ext == "html" && response.status() == StatusCode::OK {
+        rh::isolate_html_export(&mut response);
     }
+    response
 }
 
 /// GET /api/library-blob/:file — serve a content-addressed blob from the GLOBAL
@@ -2008,20 +2049,31 @@ async fn serve_project_file(
     if file.is_empty() || file.contains('/') || file.contains('\\') || file.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid file name").into_response();
     }
-    let dir = {
+    let project_dir = {
         let guard = state.project.read().await;
         match guard.as_ref() {
-            Some(store) => store.dir.join(subdir),
+            Some(store) => store.dir.clone(),
             None => return (StatusCode::NOT_FOUND, "no project open").into_response(),
         }
     };
+    let dir = match crate::output_paths::existing_plain_project_relative_dir(
+        &project_dir,
+        std::path::Path::new(subdir),
+    ) {
+        Ok(dir) => dir,
+        Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
     // Canonicalize both and verify the file stays inside the subdir (defence in
     // depth on top of the bare-filename check).
-    let (canon_dir, canon_path) = match (dir.canonicalize(), dir.join(file).canonicalize()) {
-        (Ok(d), Ok(p)) => (d, p),
+    let (canon_project, canon_dir, canon_path) = match (
+        project_dir.canonicalize(),
+        dir.canonicalize(),
+        dir.join(file).canonicalize(),
+    ) {
+        (Ok(project), Ok(d), Ok(p)) => (project, d, p),
         _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
-    if !canon_path.starts_with(&canon_dir) {
+    if !canon_dir.starts_with(&canon_project) || !canon_path.starts_with(&canon_dir) {
         return (StatusCode::BAD_REQUEST, "path escapes project dir").into_response();
     }
     let ct = match canon_path

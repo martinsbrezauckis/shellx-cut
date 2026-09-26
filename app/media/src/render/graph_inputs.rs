@@ -99,42 +99,54 @@ pub(super) fn segment_video_track_visible(project: &Project, seg: &EdlSegment) -
     }
 }
 
-static ALPHA_BAKE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 pub(super) fn bake_mask_png_atomic(
     mask: &cut_core::ClipMask,
     w: u32,
     h: u32,
     alpha_path: &Path,
 ) -> Result<(), CutError> {
-    if alpha_path.exists() {
+    if let Some(parent) = alpha_path.parent() {
+        let cache = parent.parent().ok_or_else(|| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "mask cache has no parent",
+                parent.display().to_string(),
+            )
+        })?;
+        let project = cache.parent().ok_or_else(|| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "mask cache has no project",
+                cache.display().to_string(),
+            )
+        })?;
+        super::ensure_plain_internal_child(project, cache)?;
+        super::ensure_plain_internal_child(cache, parent)?;
+    }
+    if super::plain_internal_file_exists(alpha_path)? {
         return Ok(());
     }
-    if let Some(parent) = alpha_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let seq = ALPHA_BAKE_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let file_name = alpha_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("alpha.png");
-    let tmp = alpha_path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), seq));
+    let parent = alpha_path
+        .parent()
+        .expect("mask cache parent checked above");
+    let reserved = tempfile::Builder::new()
+        .prefix(".cut-mask-")
+        .suffix(".png")
+        .tempfile_in(parent)?;
+    let tmp = reserved.into_temp_path();
     crate::mask::bake_mask_png(mask, w, h, &tmp)?;
+    super::plain_internal_file_exists(alpha_path)?;
     match std::fs::rename(&tmp, alpha_path) {
         Ok(()) => Ok(()),
-        Err(e) if alpha_path.exists() => {
-            let _ = std::fs::remove_file(&tmp);
+        Err(e) if super::plain_internal_file_exists(alpha_path)? => {
             drop(e);
             Ok(())
         }
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(CutError::new(
-                error_codes::FFMPEG,
-                "mask PNG publish failed",
-                e.to_string(),
-            ))
-        }
+        Err(e) => Err(CutError::new(
+            error_codes::FFMPEG,
+            "mask PNG publish failed",
+            e.to_string(),
+        )),
     }
 }
 
@@ -324,7 +336,7 @@ pub(super) fn collect_graph_inputs(
             if input_idx.contains_key(&key) {
                 continue;
             }
-            if !alpha_path.exists() {
+            if !super::plain_internal_file_exists(&alpha_path)? {
                 return Err(CutError::new(
                     error_codes::NOT_FOUND,
                     format!(
@@ -338,6 +350,11 @@ pub(super) fn collect_graph_inputs(
                     "re-apply edit.matte on the clip to bake its alpha (the matting sidecar must be reachable), then render",
                 ));
             }
+            let matte_dir = alpha_path.parent().expect("matte alpha has a parent");
+            super::require_plain_internal_dir(
+                matte_dir.parent().expect("matte cache has a parent"),
+            )?;
+            super::require_plain_internal_dir(matte_dir)?;
             input_idx.insert(key, inputs.len());
             inputs.push(GraphInput {
                 path: alpha_path,

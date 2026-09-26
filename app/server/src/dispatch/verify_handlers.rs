@@ -14,6 +14,20 @@ pub(super) fn resolve_receipt_path(
     receipts: &Path,
     render_id: Option<&str>,
 ) -> Result<PathBuf, CutError> {
+    let project_dir = receipts.parent().ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "invalid receipts directory",
+            receipts.display().to_string(),
+        )
+    })?;
+    if super::rendering::checked_internal_dir(project_dir, Path::new("receipts"))? != receipts {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "invalid receipts directory",
+            receipts.display().to_string(),
+        ));
+    }
     let path = match render_id {
         Some(id) => {
             if !safe_receipt_id(id) {
@@ -48,7 +62,7 @@ pub(super) fn resolve_receipt_path(
             }
         }
     };
-    if !path.is_file() {
+    if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file()) {
         return Err(CutError::new(
             error_codes::NOT_FOUND,
             format!("no receipt for '{}'", render_id.unwrap_or_default()),
@@ -1025,7 +1039,28 @@ pub(super) fn attach_judge_to_receipt(
     receipt_path: &Path,
     envelope: Value,
 ) -> Result<cut_core::RenderReceipt, CutError> {
-    let receipt_path = fenced_existing_file_under_dir(
+    let project_dir = receipts_dir.parent().ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "invalid receipts directory",
+            receipts_dir.display().to_string(),
+        )
+    })?;
+    let plain_receipts =
+        super::rendering::checked_internal_dir(project_dir, Path::new("receipts"))?;
+    if plain_receipts != receipts_dir
+        || receipt_path.parent() != Some(receipts_dir)
+        || !std::fs::symlink_metadata(receipt_path)?
+            .file_type()
+            .is_file()
+    {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            "receipt is not a plain project-owned file",
+            receipt_path.display().to_string(),
+        ));
+    }
+    fenced_existing_file_under_dir(
         receipts_dir,
         receipt_path,
         "render receipt",
@@ -1034,7 +1069,7 @@ pub(super) fn attach_judge_to_receipt(
     let mut receipt: cut_core::RenderReceipt =
         serde_json::from_str(&std::fs::read_to_string(&receipt_path)?)?;
     receipt.judge = Some(envelope);
-    std::fs::write(&receipt_path, serde_json::to_string_pretty(&receipt)?)?;
+    write_output_atomic(receipt_path, serde_json::to_string_pretty(&receipt)?)?;
     state.events.publish(Event::ReceiptReady {
         receipt: receipt.clone(),
     });
@@ -1114,6 +1149,13 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
         let receipt_path = resolve_receipt_path(&receipts, a.render_id.as_deref())?;
         let receipt: cut_core::RenderReceipt =
             serde_json::from_str(&std::fs::read_to_string(&receipt_path)?)?;
+        if !safe_receipt_id(&receipt.render_id) {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "invalid receipt render id",
+                receipt.render_id,
+            ));
+        }
         let render_abs = PathBuf::from(&receipt.output_path);
         if !render_abs.is_file() {
             return Err(CutError::new(
@@ -1135,7 +1177,10 @@ pub(super) async fn verify_judge(state: &AppState, args: Value) -> Result<VerbRe
         // stage their own execution root when required (for example Claude's
         // restricted copied-frame root); keep this caller-owned directory
         // project-local, never /tmp.
-        let bundle_dir = store.dir.join(".scratch/judge").join(&receipt.render_id);
+        let bundle_dir = super::rendering::checked_internal_dir(
+            &store.dir,
+            Path::new(&format!(".scratch/judge/{}", receipt.render_id)),
+        )?;
         (
             receipts,
             receipt_path,

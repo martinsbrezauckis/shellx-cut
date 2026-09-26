@@ -803,6 +803,9 @@
 .tb-export .tb-menu {
   width: min(360px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .tb-menu button {
   all: unset;

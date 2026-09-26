@@ -22,6 +22,55 @@ use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// Internal media outputs are project-owned files, never linked directory or
+/// file entries supplied by an imported project.
+pub(crate) fn require_plain_internal_dir(path: &Path) -> Result<(), CutError> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_dir() && !meta.file_type().is_symlink() && !is_reparse_point(&meta) {
+        return Ok(());
+    }
+    Err(CutError::new(
+        error_codes::IO,
+        format!("unsafe media cache directory: {}", path.display()),
+        "internal output directories must be plain directories",
+    ))
+}
+
+pub(crate) fn ensure_plain_internal_child(parent: &Path, child: &Path) -> Result<(), CutError> {
+    require_plain_internal_dir(parent)?;
+    match std::fs::create_dir(child) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(e) => return Err(e.into()),
+    }
+    require_plain_internal_dir(child)
+}
+
+pub(crate) fn plain_internal_file_exists(path: &Path) -> Result<bool, CutError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() && !is_reparse_point(&meta) => Ok(true),
+        Ok(_) => Err(CutError::new(
+            error_codes::IO,
+            format!("unsafe media cache file: {}", path.display()),
+            "internal output files must be plain regular files",
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(windows)]
+fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes() & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// Progress callback: fraction 0.0..=1.0, called from the render thread.
 /// Boxed dyn so the server can forward into its WS event bus.
 pub type ProgressFn = Box<dyn Fn(f32) + Send + Sync>;
@@ -982,6 +1031,15 @@ pub fn prepare_stabilization(
 /// through one temp file into ffmpeg (one input, no PNG round-trip).
 pub fn encode_title_overlay(spec: &crate::title::TitleSpec, out: &Path) -> Result<(), CutError> {
     use std::io::Write as _;
+    let parent = out.parent().ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "title output has no parent",
+            out.display().to_string(),
+        )
+    })?;
+    require_plain_internal_dir(parent)?;
+    plain_internal_file_exists(out)?;
     let n = crate::title::frame_count(spec);
     // Backstop against a pathological spec (the verb layer caps duration at 10 min,
     // but ANY caller that builds a TitleSpec directly is bounded here too): each
@@ -1035,7 +1093,7 @@ pub fn encode_title_overlay(spec: &crate::title::TitleSpec, out: &Path) -> Resul
         "qtrle".into(),
         outpath,
     ];
-    run_ffmpeg(&args)?;
+    crate::ffmpeg::run_ffmpeg_atomic_output(&args, out)?;
     Ok(())
 }
 
@@ -3762,7 +3820,15 @@ fn render_window_video(
     // concat (stream-copy) carries it into the final file. Empty on default rec709.
     args.extend(output_color_args(&project.settings.color));
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
-    args.push(seg_path.display().to_string());
+    let parent = seg_path.parent().expect("segment cache path has a parent");
+    require_plain_internal_dir(parent)?;
+    plain_internal_file_exists(seg_path)?;
+    let reserved = tempfile::Builder::new()
+        .prefix(".cut-segment-")
+        .suffix(".tmp.mp4")
+        .tempfile_in(parent)?;
+    let staged = reserved.into_temp_path();
+    args.push(staged.display().to_string());
     // Per-window cgroup cap + thread share so N windows run concurrently without
     // collectively exceeding the RAM budget. See plan_seg_resources.
     crate::ffmpeg::run_render_window(
@@ -3772,7 +3838,11 @@ fn render_window_video(
         caps.high,
         caps.max,
         caps.threads,
-    )
+    )?;
+    plain_internal_file_exists(&staged)?;
+    plain_internal_file_exists(seg_path)?;
+    std::fs::rename(&staged, seg_path)?;
+    Ok(())
 }
 
 /// Per-window governance caps for a parallel segmented render.
@@ -3890,7 +3960,9 @@ pub fn render_segmented(
 
     // Per-render working dir (segment cache + intermediates) under the project.
     let work = project_dir.join(".cache").join("segrender");
-    std::fs::create_dir_all(&work)?;
+    let cache = project_dir.join(".cache");
+    ensure_plain_internal_child(project_dir, &cache)?;
+    ensure_plain_internal_child(&cache, &work)?;
 
     // --- 1. video windows (governed, content-hash cached, rendered in PARALLEL)
     let overlays = overlay_track_count(project);
@@ -3909,6 +3981,9 @@ pub fn render_segmented(
             work.join(format!("{key}.mp4"))
         })
         .collect();
+    for path in &seg_files {
+        plain_internal_file_exists(path)?;
+    }
     let todo: Vec<usize> = (0..windows.len())
         .filter(|&i| !seg_files[i].exists())
         .collect();
@@ -3961,8 +4036,10 @@ pub fn render_segmented(
     for p in &seg_files {
         writeln!(list, "{}", concat_demuxer_file_line(p)).unwrap();
     }
+    plain_internal_file_exists(&list_path)?;
     std::fs::write(&list_path, &list)?;
     let video_only = work.join("video.mp4");
+    plain_internal_file_exists(&video_only)?;
     let mut cargs: Vec<String> = vec![
         "-f".into(),
         "concat".into(),
@@ -3975,7 +4052,7 @@ pub fn render_segmented(
     ];
     cargs.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     cargs.push(video_only.display().to_string());
-    run_ffmpeg(&cargs)?;
+    crate::ffmpeg::run_ffmpeg_atomic_output(&cargs, &video_only)?;
 
     // --- 3. audio single-pass over the FULL EDL + mux ----------------------
     // Build the audio-only graph (no overlay cost). If the timeline has audio,
@@ -4103,8 +4180,10 @@ pub fn reframe_video(
         .unwrap_or((in_w, in_h, 0, 0));
     let script = crate::reframe::sendcmd_script(&rects, fps);
 
-    // sendcmd staged on disk; clean up after.
-    let cmds_path = out_path.with_extension("reframe.sendcmd.txt");
+    // A private temporary directory keeps the sendcmd script out of the
+    // project's predictable output namespace.
+    let cmds_dir = tempfile::tempdir()?;
+    let cmds_path = cmds_dir.path().join("reframe.sendcmd.txt");
     std::fs::write(&cmds_path, script)?;
 
     // The crop window is a FIXED size (cw×ch); sendcmd only pans its x/y each frame.
@@ -4131,9 +4210,7 @@ pub fn reframe_video(
     args.push(out_path.display().to_string());
 
     let cb: ProgressFn = on_progress.unwrap_or_else(|| Box::new(|_| {}));
-    let result = run_ffmpeg_with_progress(&args, dur_ms, cb.as_ref());
-    let _ = std::fs::remove_file(&cmds_path); // best-effort cleanup either way
-    result?;
+    run_progress_atomic(&args, out_path, dur_ms, cb.as_ref())?;
 
     Ok(RenderOutput {
         pipeline: None,
@@ -4260,8 +4337,9 @@ pub fn render_preview(
         )
         .with_at_ms(at_ms));
     }
-    std::fs::create_dir_all(out_dir)?;
+    ensure_plain_internal_child(project_dir, out_dir)?;
     let out = out_dir.join(format!("preview_{at_ms}_{duration_ms}.mp4"));
+    plain_internal_file_exists(&out)?;
     // Preview always uses default framing (contain + project geometry) — it is
     // a fast proxy-grade view, not the final framing decision.
     let mut graph = build_graph(
@@ -4323,7 +4401,7 @@ pub fn render_preview(
     }
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     args.push(out.display().to_string());
-    run_ffmpeg(&args)?;
+    crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
     Ok(out)
 }
 

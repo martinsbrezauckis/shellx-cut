@@ -85,8 +85,21 @@ function kitFromDraft(draft: BrandDraft): BrandKit {
 type Cell<T> = T | null | undefined
 
 const JUDGE_JOB_STORAGE_KEY = 'shellx-cut:qc:judge-job'
+interface PendingJudge { jobId: string; renderId: string; projectId: string }
+const judgeStorageKey = (projectId: string) => `${JUDGE_JOB_STORAGE_KEY}:${projectId}`
+
+function readPendingJudge(projectId: string): PendingJudge | null {
+  if (!projectId) return null
+  try {
+    const value = JSON.parse(localStorage.getItem(judgeStorageKey(projectId)) ?? 'null') as Partial<PendingJudge> | null
+    return value?.projectId === projectId && typeof value.jobId === 'string' && !!value.jobId
+      && typeof value.renderId === 'string' && !!value.renderId
+      ? value as PendingJudge : null
+  } catch { return null }
+}
 
 export default function QC({ project }: { project: Project | null }) {
+  const projectId = project?.project_identity?.origin_path_sha256 ?? ''
   const [pacing, setPacing] = useState<Cell<PacingResult>>(undefined)
   const [captions, setCaptions] = useState<Cell<CaptionsResult>>(undefined)
   const [delivery, setDelivery] = useState<Cell<DeliveryResult>>(undefined)
@@ -105,48 +118,61 @@ export default function QC({ project }: { project: Project | null }) {
 
   const flash = (t: string) => { setNote(t); setTimeout(() => setNote(null), 4000) }
 
-  const pollJudgeJob = useCallback((jobId: string, delayMs = 1000) => {
+  const pollJudgeJob = useCallback((pending: PendingJudge, delayMs = 1000) => {
     if (judgeTimer.current) window.clearTimeout(judgeTimer.current)
     const poll = async () => {
-      const j = await callVerb('jobs.status', { job_id: jobId })
+      if (pending.projectId !== projectId) return
+      const j = await callVerb('jobs.status', { job_id: pending.jobId })
+      if (pending.projectId !== projectId) return
       if (j.ok && j.result) {
+        if (j.result.job_id !== pending.jobId || j.result.kind !== 'judge') {
+          setJudge({ status: 'error', reason: 'The pending AI review no longer matches this project.' })
+          setJudging(false)
+          localStorage.removeItem(judgeStorageKey(pending.projectId))
+          return
+        }
         const st = j.result.state
         if (st === 'done') {
-          setJudge((j.result.result as JudgeJobResult) ?? null)
+          const result = j.result.result as JudgeJobResult | undefined
+          setJudge(result?.render_id === pending.renderId ? result : {
+            status: 'error', reason: 'The AI review result belongs to a different render.',
+          })
           setJudging(false)
-          localStorage.removeItem(JUDGE_JOB_STORAGE_KEY)
+          localStorage.removeItem(judgeStorageKey(pending.projectId))
           return
         }
         if (st === 'failed') {
           setJudge({ status: 'error', reason: j.result.error?.message ?? 'judge job failed' })
           setJudging(false)
-          localStorage.removeItem(JUDGE_JOB_STORAGE_KEY)
+          localStorage.removeItem(judgeStorageKey(pending.projectId))
           return
         }
       }
       judgeTimer.current = window.setTimeout(() => void poll(), 1200)
     }
     judgeTimer.current = window.setTimeout(() => void poll(), delayMs)
-  }, [])
+  }, [projectId])
 
-  const resumeJudgeJob = useCallback((jobId: string) => {
+  const resumeJudgeJob = useCallback((pending: PendingJudge) => {
     setJudging(true)
     setJudge(undefined)
-    pollJudgeJob(jobId, 0)
+    pollJudgeJob(pending, 0)
   }, [pollJudgeJob])
 
-  // Clear only the UI timer on unmount. The job id stays in localStorage so a
-  // remounted QC tab resumes the subscription-CLI result instead of abandoning it.
+  // A pending job is scoped to the immutable project identity and render. Clear
+  // only the timer on unmount so remounting this project can resume its job.
   useEffect(() => {
-    const jobId = localStorage.getItem(JUDGE_JOB_STORAGE_KEY)
-    if (jobId) resumeJudgeJob(jobId)
+    // Legacy job IDs carried no project identity and cannot be resumed safely.
+    localStorage.removeItem(JUDGE_JOB_STORAGE_KEY)
+    const pending = readPendingJudge(projectId)
+    if (pending) resumeJudgeJob(pending)
     return () => { if (judgeTimer.current) window.clearTimeout(judgeTimer.current) }
-  }, [resumeJudgeJob])
+  }, [projectId, resumeJudgeJob])
 
   // verify.judge → poll jobs.status (mirror Autopilot's loop exactly). Explicit
   // click only — NEVER auto-run: the judge spends a real subscription-CLI call.
   const runJudge = useCallback(async () => {
-    if (judging) return
+    if (judging || !projectId) return
     setJudging(true)
     setJudge(undefined) // drop any prior verdict so the busy card shows
     const r = await callVerb('verify.judge', {})
@@ -157,13 +183,19 @@ export default function QC({ project }: { project: Project | null }) {
       const sa = r.error?.suggested_action
       setJudge({ status: 'not_run', reason: sa ? `${msg} — ${sa}` : msg })
       setJudging(false)
-      localStorage.removeItem(JUDGE_JOB_STORAGE_KEY)
+      if (projectId) localStorage.removeItem(judgeStorageKey(projectId))
       return
     }
-    const jobId = (r.result as { job_id: string }).job_id
-    localStorage.setItem(JUDGE_JOB_STORAGE_KEY, jobId)
-    pollJudgeJob(jobId, 1000)
-  }, [judging, pollJudgeJob])
+    const { job_id: jobId, render_id: renderId } = r.result as { job_id?: string; render_id?: string }
+    if (!jobId || !renderId) {
+      setJudge({ status: 'error', reason: 'The AI review did not return a bound project and render.' })
+      setJudging(false)
+      return
+    }
+    const pending = { jobId, renderId, projectId }
+    localStorage.setItem(judgeStorageKey(projectId), JSON.stringify(pending))
+    pollJudgeJob(pending, 1000)
+  }, [judging, pollJudgeJob, projectId])
 
   // Run the three no-arg receipts together (each read-only, cheap, no render).
   const runChecks = useCallback(async () => {
@@ -272,7 +304,7 @@ export default function QC({ project }: { project: Project | null }) {
         </button>
         {/* AI perceptual review of the latest render (verify.judge). Async — the
             engine runs a subscription CLI on sampled frames, so it can take ~1 min. */}
-        <button className="qc__run" data-cut-action="judge-run" disabled={judging} onClick={() => void runJudge()}>
+        <button className="qc__run" data-cut-action="judge-run" disabled={judging || !projectId} onClick={() => void runJudge()}>
           {judging ? 'reviewing…' : <><Icon name="agent" size={14} /> Get AI review</>}
         </button>
         {note && <span className="qc__note" data-cut-qc-note>{note}</span>}

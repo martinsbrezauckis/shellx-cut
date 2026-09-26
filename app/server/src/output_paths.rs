@@ -324,10 +324,11 @@ pub(crate) fn fence_project_directory_path(
 /// Windows reparse point before it can redirect creation outside the canonical
 /// project root. It intentionally does not claim to resist a concurrent local
 /// path swap; that actor is outside Cut's project-input threat boundary.
-fn ensure_plain_project_relative_dir(
+pub(crate) fn ensure_plain_project_relative_dir(
     project_dir: &Path,
     relative: &Path,
 ) -> Result<PathBuf, CutError> {
+    require_plain_project_dir(project_dir)?;
     let mut current = project_dir.to_path_buf();
     for component in relative.components() {
         let Component::Normal(component) = component else {
@@ -358,6 +359,33 @@ fn ensure_plain_project_relative_dir(
             Err(error) => return Err(output_directory_error(&child, error)),
         }
         current = child;
+    }
+    Ok(current)
+}
+
+/// Admit an existing internal project directory without creating anything.
+/// Read routes use this before treating a project-owned subdirectory as an
+/// authority root: canonicalizing a linked root would otherwise accept files
+/// outside the project as if they were project files.
+pub(crate) fn existing_plain_project_relative_dir(
+    project_dir: &Path,
+    relative: &Path,
+) -> Result<PathBuf, CutError> {
+    require_plain_project_dir(project_dir)?;
+    let mut current = project_dir.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            if matches!(component, Component::CurDir) {
+                continue;
+            }
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                format!("project directory {} is not relative", relative.display()),
+                "project directories must use literal child components",
+            ));
+        };
+        current.push(component);
+        require_plain_project_dir(&current)?;
     }
     Ok(current)
 }

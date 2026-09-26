@@ -1332,8 +1332,10 @@ pub(crate) async fn prepare_download_target(url: String) -> Result<VettedDownloa
 /// Redirects remain disabled so a redirect cannot introduce a second origin.
 pub(crate) fn download_vetted_to(
     target: VettedDownloadTarget,
+    project_dir: &Path,
     dest: &Path,
 ) -> Result<u64, CutError> {
+    let parent = admit_provider_download_destination(project_dir, dest)?;
     // Connect only to the addresses accepted above. The request URI remains
     // unchanged, so HTTPS still sends the hostname as SNI and verifies its
     // certificate against that hostname. Proxies are disabled because a CONNECT
@@ -1345,26 +1347,75 @@ pub(crate) fn download_vetted_to(
         .header("User-Agent", &user_agent())
         .call()
         .map_err(|e| CutError::new(error_codes::IO, "asset download failed", e.to_string()))?;
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| CutError::new(error_codes::IO, "create asset dir", e.to_string()))?;
-    }
     let mut reader = resp.into_body().into_reader();
-    let mut file = std::fs::File::create(dest)
-        .map_err(|e| CutError::new(error_codes::IO, "create asset file", e.to_string()))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&parent)
+        .map_err(|e| CutError::new(error_codes::IO, "create asset staging file", e.to_string()))?;
     // Bounded copy: take MAX+1 so we can detect an over-cap response.
     let mut limited = std::io::Read::take(&mut reader, MAX_FETCH_BYTES + 1);
-    let written = std::io::copy(&mut limited, &mut file)
+    let written = std::io::copy(&mut limited, temporary.as_file_mut())
         .map_err(|e| CutError::new(error_codes::IO, "write asset file", e.to_string()))?;
     if written > MAX_FETCH_BYTES {
-        let _ = std::fs::remove_file(dest);
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             "asset exceeds the fetch size cap",
             format!("> {} MB", MAX_FETCH_BYTES / (1024 * 1024)),
         ));
     }
+    temporary.as_file_mut().sync_all()?;
+    let (_, staged) = temporary.keep().map_err(|error| error.error)?;
+    crate::output_paths::publish_output_atomic(&staged, dest)?;
     Ok(written)
+}
+
+fn admit_provider_download_destination(
+    project_dir: &Path,
+    dest: &Path,
+) -> Result<PathBuf, CutError> {
+    let parent = dest.parent().ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "asset destination has no parent",
+            "",
+        )
+    })?;
+    let relative_parent = parent.strip_prefix(project_dir).map_err(|_| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "asset destination is outside the open project",
+            dest.display().to_string(),
+        )
+    })?;
+    crate::output_paths::ensure_plain_project_relative_dir(project_dir, relative_parent)?;
+    match std::fs::symlink_metadata(dest) {
+        Ok(metadata) if !plain_regular_file(&metadata) => {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "asset destination is not a plain regular file",
+                dest.display().to_string(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(parent.to_path_buf())
+}
+
+fn plain_regular_file(metadata: &std::fs::Metadata) -> bool {
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1545,6 +1596,38 @@ fn stickers_resolve(id: &str) -> Result<ProviderHit, CutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_download_refuses_linked_parent_and_leaf_before_network() {
+        use std::os::unix::fs::symlink;
+
+        let scratch = tempfile::tempdir().unwrap();
+        let project = scratch.path().join("project.cutproj");
+        let outside = scratch.path().join("outside");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.bin");
+        std::fs::write(&sentinel, b"keep me").unwrap();
+
+        let linked_parent = project.join("assets/providers/openverse");
+        std::fs::create_dir_all(linked_parent.parent().unwrap()).unwrap();
+        symlink(&outside, &linked_parent).unwrap();
+        assert!(
+            admit_provider_download_destination(&project, &linked_parent.join("item.bin")).is_err()
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep me");
+
+        std::fs::remove_file(&linked_parent).unwrap();
+        std::fs::create_dir(&linked_parent).unwrap();
+        let linked_leaf = linked_parent.join("item.bin");
+        symlink(&sentinel, &linked_leaf).unwrap();
+        assert!(admit_provider_download_destination(&project, &linked_leaf).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep me");
+
+        std::fs::remove_file(&linked_leaf).unwrap();
+        assert!(admit_provider_download_destination(&project, &linked_leaf).is_ok());
+    }
 
     #[test]
     fn provider_catalog_matches_registry() {

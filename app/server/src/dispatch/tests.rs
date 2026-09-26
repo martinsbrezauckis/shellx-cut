@@ -59,6 +59,7 @@ mod generation_cli;
 mod group_review_request_idempotency;
 mod jobs_retry;
 mod linked_insert;
+mod media_async_transition;
 #[cfg(unix)]
 mod motion_project_transition;
 mod nest_media_io;
@@ -8180,6 +8181,65 @@ async fn media_remove_cleans_only_project_owned_generated_sources() {
         external.display().to_string()
     );
     assert!(external.is_file(), "ordinary imported source must be kept");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn media_remove_does_not_delete_through_linked_generated_directory() {
+    use std::os::unix::fs::symlink;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let project = scratch.path().join("linked.cutproj");
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"linked","dir":project}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let outside = scratch.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let source = outside.join("gen-test.png");
+    let sidecar = outside.join("gen-test.json");
+    std::fs::write(&source, b"keep source").unwrap();
+    std::fs::write(&sidecar, b"keep sidecar").unwrap();
+    std::fs::create_dir_all(project.join("assets")).unwrap();
+    symlink(&outside, project.join("assets/generated")).unwrap();
+    let linked_source = project.join("assets/generated/gen-test.png");
+    {
+        let mut guard = state.project.write().await;
+        guard
+            .as_mut()
+            .unwrap()
+            .record_import(
+                Some("generated".into()),
+                cut_core::Asset {
+                    path: linked_source.display().to_string(),
+                    hash: "sha256:generated".into(),
+                    probe: None,
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                test_actor(),
+                None,
+            )
+            .unwrap();
+    }
+    let removed = dispatch(
+        &state,
+        "media.remove",
+        json!({"asset":"generated"}),
+        test_actor(),
+    )
+    .await;
+    assert!(removed.ok, "{:?}", removed.error);
+    assert_eq!(removed.result.unwrap()["source_deleted"], false);
+    assert_eq!(std::fs::read(source).unwrap(), b"keep source");
+    assert_eq!(std::fs::read(sidecar).unwrap(), b"keep sidecar");
 }
 
 /// the checkpoint-cursor contract — project.ops{since} accepts a checkpoint id/name (not just a raw

@@ -110,6 +110,18 @@ async fn assets_fetch_admitted(
                 }
             })
             .collect();
+        if hit.provider.is_empty()
+            || !hit
+                .provider
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "provider name is not a single directory component",
+                "the resolved provider must have a plain name",
+            ));
+        }
         let dest = proj_dir
             .join("assets")
             .join("providers")
@@ -117,9 +129,10 @@ async fn assets_fetch_admitted(
             .join(format!("{safe_id}.{ext}"));
         let url = hit.download_url.clone();
         let dest_c = dest.clone();
+        let proj_dir_c = proj_dir.clone();
         let target = crate::providers::prepare_download_target(url).await?;
         let n = tokio::task::spawn_blocking(move || {
-            crate::providers::download_vetted_to(target, &dest_c)
+            crate::providers::download_vetted_to(target, &proj_dir_c, &dest_c)
         })
         .await
         .map_err(|e| CutError::new(error_codes::IO, "download task panicked", e.to_string()))??;

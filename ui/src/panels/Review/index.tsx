@@ -422,7 +422,7 @@ export default function Review({ project, playheadMs, ops, receipts, reviewTabRe
           />
         )}
         {tab === 'receipts' && <Receipts receipts={receipts} onSeek={seek} />}
-        {tab === 'qc' && <QC project={project} />}
+        {tab === 'qc' && <QC key={project?.project_identity?.origin_path_sha256 ?? 'no-project'} project={project} />}
         {tab === 'scopes' && <Scopes playheadMs={playheadMs} />}
         {tab === 'diff' && <DiffView project={project} ops={ops} onSeek={seek} request={reviewTabRequest?.diff ? { ...reviewTabRequest.diff, nonce: reviewTabRequest.nonce } : null} />}
       </div>

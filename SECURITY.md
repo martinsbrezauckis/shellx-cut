@@ -43,10 +43,11 @@ local deployment contract, not an omitted same-user security feature.
 - Origin, Host, and browser Fetch Metadata checks mitigate browser cross-origin
   and DNS-rebinding requests. They are not authentication: native local callers
   can omit Origin and can forge headers. Do not treat them as same-user isolation.
-- Native LAN/public listening is unsupported and refused by default. The
-  `SHELLX_CUT_ALLOW_NON_LOCAL=1` escape changes that bind check only; Cut does
-  not add or verify a remote token, capability, or caller identity. Any
-  Remote use is supported only through an independently authenticated and
+- Native LAN/public listening is unsupported and refused in packaged/release
+  builds. In debug builds only, `SHELLX_CUT_ALLOW_NON_LOCAL=1` permits a
+  non-loopback bind for development; it also bypasses the browser Host/Origin
+  guard. Cut does not add or verify a remote token, capability, or caller identity.
+  Any remote use is supported only through an independently authenticated and
   authorized SSH/VPN/ShellX broker or equivalent transport. That protection
   belongs to the transport and must be separately evidenced; otherwise remote
   access must be refused. Exposing the port directly exposes the full editing
@@ -54,7 +55,7 @@ local deployment contract, not an omitted same-user security feature.
 - Shared or multi-user machines, untrusted local apps/services, containers
   sharing host networking, and exposed ports are outside this default trust
   boundary. Per-caller or per-user capability authentication is future
-hardening, not present in the current source. Under the stated deployment assumption,
+  hardening, not present in the current source. Under the stated deployment assumption,
   lack of that token is **NOT A DEFECT**.
 - See [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
   for assets, abuse paths, mitigations, and residual risk.

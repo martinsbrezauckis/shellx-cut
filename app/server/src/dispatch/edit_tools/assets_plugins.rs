@@ -616,6 +616,7 @@ pub(in crate::dispatch) async fn assets_search(
 /// `project.revert{to}` deliberately restores the complete timeline prefix.
 async fn agent_chat_turn_review(
     state: &AppState,
+    project_dir: &std::path::Path,
     ops_before: usize,
     baseline: &str,
     turn_actor_name: &str,
@@ -625,6 +626,13 @@ async fn agent_chat_turn_review(
     let (project, all) = {
         let guard = state.project.read().await;
         let store = guard.as_ref().ok_or_else(no_project)?;
+        if store.dir != project_dir {
+            return Err(CutError::new(
+                error_codes::CONFLICT,
+                "Agent Chat project changed before review",
+                "the turn's edits cannot be reviewed against a different project",
+            ));
+        }
         (store.project.clone(), store.log.read_all()?)
     };
     let tail = all.iter().skip(ops_before).collect::<Vec<_>>();
@@ -678,6 +686,153 @@ async fn agent_chat_turn_review(
     ))
 }
 
+#[cfg(test)]
+mod agent_chat_project_binding_tests {
+    use super::*;
+
+    struct PlacementGateReset;
+
+    impl Drop for PlacementGateReset {
+        fn drop(&mut self) {
+            *generated_placement_gate().lock().unwrap() = None;
+        }
+    }
+
+    #[tokio::test]
+    async fn review_rejects_a_turn_after_the_open_project_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a.cutproj");
+        let b = root.path().join("b.cutproj");
+        let state = AppState::new();
+        for (name, path) in [("a", &a), ("b", &b)] {
+            let created = dispatch(
+                &state,
+                "project.create",
+                json!({"name": name, "dir": path}),
+                Actor::system(),
+            )
+            .await;
+            assert!(created.ok, "project fixture failed: {:?}", created.error);
+        }
+        let error = agent_chat_turn_review(
+            &state,
+            &a,
+            0,
+            "baseline-from-a",
+            "turn-from-a",
+            "chat-from-a",
+            None,
+        )
+        .await
+        .expect_err("a turn from A must not review B's operation log");
+        assert_eq!(error.code, error_codes::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn generated_replacement_commits_in_a_before_b_can_open() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a.cutproj");
+        let b = root.path().join("b.cutproj");
+        let source = root.path().join("source.mp4");
+        std::fs::write(&source, b"stub media").unwrap();
+        let state = AppState::new();
+        for (name, path) in [("a", &a), ("b", &b)] {
+            let created = dispatch(
+                &state,
+                "project.create",
+                json!({"name": name, "dir": path}),
+                Actor::system(),
+            )
+            .await;
+            assert!(created.ok, "project fixture failed: {:?}", created.error);
+        }
+        let opened = dispatch(&state, "project.open", json!({"path": a}), Actor::system()).await;
+        assert!(opened.ok, "A reopen failed: {:?}", opened.error);
+        let imported = dispatch(
+            &state,
+            "media.import",
+            json!({"path": source, "proxy": false}),
+            Actor::system(),
+        )
+        .await;
+        assert!(imported.ok, "fixture import failed: {:?}", imported.error);
+        let asset = imported.result.unwrap()["asset_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let inserted = dispatch(
+            &state,
+            "edit.insert",
+            json!({"asset": asset, "track": "v1", "at_ms": 0, "src_range_ms": [0, 1000]}),
+            Actor::system(),
+        )
+        .await;
+        assert!(inserted.ok, "fixture insert failed: {:?}", inserted.error);
+        let clip = inserted.result.unwrap()["clip_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let gate = GeneratedPlacementGate {
+            clip: clip.clone(),
+            before_edit: std::sync::Arc::new(tokio::sync::Notify::new()),
+            resume: std::sync::Arc::new(tokio::sync::Notify::new()),
+        };
+        *generated_placement_gate().lock().unwrap() = Some(gate.clone());
+        let _reset = PlacementGateReset;
+        let before_edit = gate.before_edit.notified();
+        let placement_state = state.clone();
+        let a_dir = a.clone();
+        let placement = tokio::spawn(async move {
+            apply_generated_placement(
+                &placement_state,
+                VerbResult::ok(json!({"asset_id": asset})),
+                Some(&PreparedGenerationPlacement::Replace {
+                    target_clip: clip,
+                    track: "v1".into(),
+                    duration_ms: 1000,
+                }),
+                "image",
+                &a_dir,
+                Actor::system(),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), before_edit)
+            .await
+            .expect("placement did not reach held edit");
+        assert!(state.project_transition.try_lock().is_err());
+        let open_state = state.clone();
+        let open = tokio::spawn(async move {
+            dispatch(
+                &open_state,
+                "project.open",
+                json!({"path": b}),
+                Actor::system(),
+            )
+            .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !open.is_finished(),
+            "B must wait until A replacement commits"
+        );
+        gate.resume.notify_one();
+        let placed = tokio::time::timeout(std::time::Duration::from_secs(2), placement)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(placed.result.unwrap()["placement"]["state"], "applied");
+        let opened_b = tokio::time::timeout(std::time::Duration::from_secs(2), open)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(opened_b.ok, "B open failed: {:?}", opened_b.error);
+        let project = state.project.read().await;
+        assert_eq!(project.as_ref().unwrap().project.name, "b");
+        assert!(project.as_ref().unwrap().project.assets.is_empty());
+    }
+}
+
 /// Natural-language editing through one verified local provider route. The
 /// handler drops project locks before launch, attributes every MCP edit, echoes
 /// validated asset/evidence identities, and always returns an explicit success
@@ -708,6 +863,26 @@ pub(in crate::dispatch) async fn agent_chat(
             "empty chat message",
             "type what you want changed, e.g. \"add a marker at 1 second\"",
         ));
+    }
+    // A turn's attachments, baseline, MCP edits, and review must all refer to
+    // the same open project. project.open/create/close take this same gate; hold
+    // it until the provider exits and its attributed op-log tail is reviewed.
+    let (project_dir, project_identity) = {
+        let project = state.project.read().await;
+        let store = project.as_ref().ok_or_else(no_project)?;
+        (store.dir.clone(), path_free_project_identity(store)?)
+    };
+    let _project_transition = state.project_transition.lock().await;
+    {
+        let project = state.project.read().await;
+        let store = project.as_ref().ok_or_else(no_project)?;
+        if store.dir != project_dir || path_free_project_identity(store)? != project_identity {
+            return Err(CutError::new(
+                error_codes::CONFLICT,
+                "Agent Chat project changed before the turn started",
+                "the request belongs to a different open project",
+            ));
+        }
     }
     // Resolve references and the immutable target before the provider starts.
     let (attachments, timeline_target) =
@@ -1075,6 +1250,7 @@ pub(in crate::dispatch) async fn agent_chat(
         Err(error) => {
             let (actions, review) = agent_chat_turn_review(
                 state,
+                &project_dir,
                 ops_before,
                 &baseline,
                 &turn_actor_name,
@@ -1118,6 +1294,7 @@ pub(in crate::dispatch) async fn agent_chat(
     let result = crate::chat::parse_result(&stdout);
     let (actions, review) = agent_chat_turn_review(
         state,
+        &project_dir,
         ops_before,
         &baseline,
         &turn_actor_name,
@@ -1236,22 +1413,7 @@ fn generation_metadata(
 fn write_generation_provenance(path: &Path, metadata: &Value, hash: &str) -> Result<(), CutError> {
     let mut document = metadata.clone();
     document["content_hash"] = json!(hash);
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&document)?).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            "write generated-asset provenance",
-            e.to_string(),
-        )
-    })?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        CutError::new(
-            error_codes::IO,
-            "publish generated-asset provenance",
-            e.to_string(),
-        )
-    })
+    crate::output_paths::write_output_atomic(path, serde_json::to_vec_pretty(&document)?)
 }
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
@@ -1485,6 +1647,10 @@ async fn prepare_generation_placement(
         return Ok(None);
     };
     let (project, _, project_dir, _) = snapshot(state).await?;
+    // Reserving a placeholder spans its import job and the timeline insert.
+    // Keep the captured project current across both commits and cleanup.
+    let project_transition = state.project_transition.lock().await;
+    require_generation_project(state, &project_dir).await?;
     match requested {
         GenerationPlacementArgs::Replace { target_clip } => {
             let (track_id, index) = project.find_clip(target_clip).ok_or_else(|| {
@@ -1560,14 +1726,10 @@ async fn prepare_generation_placement(
                 ));
             }
 
-            let placeholder_dir = project_dir.join("assets/placeholders");
-            std::fs::create_dir_all(&placeholder_dir).map_err(|error| {
-                CutError::new(
-                    error_codes::IO,
-                    "create generated-media placeholder directory",
-                    error.to_string(),
-                )
-            })?;
+            let placeholder_dir = crate::output_paths::ensure_plain_project_relative_dir(
+                &project_dir,
+                Path::new("assets/placeholders"),
+            )?;
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1598,14 +1760,18 @@ async fn prepare_generation_placement(
                 cx.saturating_add(ring / 3),
                 cy.saturating_add(ring / 5),
             );
-            if let Err(error) =
-                cut_media::mask::render_svg_png(&svg, width, height, &placeholder_path)
-            {
-                let _ = std::fs::remove_file(&placeholder_path);
+            let stage = tempfile::Builder::new()
+                .prefix(".cut-placeholder-")
+                .suffix(".png")
+                .tempfile_in(&placeholder_dir)?;
+            let (_, staged_path) = stage.keep().map_err(|error| error.error)?;
+            if let Err(error) = cut_media::mask::render_svg_png(&svg, width, height, &staged_path) {
+                let _ = std::fs::remove_file(&staged_path);
                 return Err(error);
             }
+            crate::output_paths::publish_output_atomic(&staged_path, &placeholder_path)?;
 
-            let imported: VerbResult = media_import(
+            let imported: VerbResult = crate::dispatch::media::media_import_under_transition(
                 state,
                 json!({
                     "path": placeholder_path.display().to_string(),
@@ -1614,6 +1780,7 @@ async fn prepare_generation_placement(
                     "rationale": format!("pending generated media {generation_id}"),
                 }),
                 actor.clone(),
+                &project_transition,
             )
             .await
             .into();
@@ -1733,11 +1900,22 @@ async fn apply_generated_placement(
         return outcome;
     };
 
+    // Probe, replacement, and placeholder cleanup form one project-bound
+    // materialization. The expected owner check and edits share this gate.
+    let project_transition = state.project_transition.lock().await;
+
     let placement_result = async {
         require_generation_project(state, expected_project_dir).await?;
         if kind == "video" {
-            media_probe(state, json!({"asset": asset_id})).await?;
+            crate::dispatch::media::media_probe_under_transition(
+                state,
+                json!({"asset": asset_id}),
+                &project_transition,
+            )
+            .await?;
         }
+        #[cfg(test)]
+        wait_for_generated_placement_gate(placement.target_clip()).await;
         let mut replace_args = json!({
             "target_clip": placement.target_clip(),
             "asset": asset_id,
@@ -1828,6 +2006,35 @@ async fn apply_generated_placement(
         }
     }
     outcome
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct GeneratedPlacementGate {
+    clip: String,
+    before_edit: std::sync::Arc<tokio::sync::Notify>,
+    resume: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn generated_placement_gate() -> &'static std::sync::Mutex<Option<GeneratedPlacementGate>> {
+    static GATE: std::sync::OnceLock<std::sync::Mutex<Option<GeneratedPlacementGate>>> =
+        std::sync::OnceLock::new();
+    GATE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+async fn wait_for_generated_placement_gate(clip: &str) {
+    let gate = generated_placement_gate()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|gate| gate.clip == clip)
+        .cloned();
+    if let Some(gate) = gate {
+        gate.before_edit.notify_one();
+        gate.resume.notified().await;
+    }
 }
 
 async fn require_generation_project(state: &AppState, expected_dir: &Path) -> Result<(), CutError> {
@@ -2004,13 +2211,10 @@ async fn assets_generate_run(
     );
     let generation_id = generation_id(&family_id, variation.as_deref());
     let durable_dir = dir.join("assets/generated");
-    std::fs::create_dir_all(&durable_dir).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            "create generated-assets directory",
-            e.to_string(),
-        )
-    })?;
+    crate::output_paths::ensure_plain_project_relative_dir(
+        &dir,
+        std::path::Path::new("assets/generated"),
+    )?;
     let extension = if kind == "video" { "mp4" } else { "png" };
     let durable_output = durable_dir.join(format!("{generation_id}.{extension}"));
     let provenance_path = durable_dir.join(format!("{generation_id}.json"));
@@ -2309,7 +2513,15 @@ async fn assets_generate_run(
         }
         let native_path = match crate::gen::grok_image_tool_path(&stdout) {
             Ok(path) => path,
-            Err(reason) => return degrade(reason),
+            Err(reason) => {
+                let diagnostic = crate::gen::grok_image_exit_diagnostic(
+                    &out.stdout,
+                    &out.stderr,
+                    out.stdout_truncated,
+                    out.stderr_truncated,
+                );
+                return degrade(format!("{reason}; {diagnostic}"));
+            }
         };
         let sessions_root =
             match crate::gen::grok_sessions_root(provider_child.admitted_environment()) {

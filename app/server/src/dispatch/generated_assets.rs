@@ -621,11 +621,17 @@ pub(super) async fn assets_generated_list(
         (store.project.clone(), store.dir.clone())
     };
     let generated_dir = dir.join("assets/generated");
-    if !generated_dir.is_dir() {
+    if std::fs::symlink_metadata(&generated_dir)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
         return Ok(VerbResult::ok(
             json!({"items": [], "total": 0, "verified": 0}),
         ));
     }
+    let generated_dir = crate::output_paths::existing_plain_project_relative_dir(
+        &dir,
+        Path::new("assets/generated"),
+    )?;
     let generated_root = generated_dir.canonicalize().map_err(|error| {
         CutError::new(
             error_codes::IO,

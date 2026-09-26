@@ -39,13 +39,13 @@ pub fn make_filmstrip(
     duration_ms: u64,
 ) -> Result<PathBuf, CutError> {
     let out = out_dir.join(format!("{asset_id}.jpg"));
-    if out.exists() {
+    require_live_output_dir(out_dir)?;
+    if crate::render::plain_internal_file_exists(&out)? {
         if crate::image_cache::existing_image_cache_is_complete(&out) {
             return Ok(out);
         }
         let _ = std::fs::remove_file(&out);
     }
-    require_live_output_dir(out_dir)?;
 
     let dur_s = (duration_ms as f64 / 1000.0).max(0.1);
     let n = frame_count(duration_ms);
@@ -107,13 +107,13 @@ pub fn make_window_thumbs(
     let count = count.clamp(MIN_FRAMES, MAX_FRAMES);
     let h = h.clamp(24, 240);
     let out = out_dir.join(window_thumb_name(asset_id, start_ms, end_ms, count, h));
-    if out.exists() {
+    require_live_output_dir(out_dir)?;
+    if crate::render::plain_internal_file_exists(&out)? {
         if crate::image_cache::existing_image_cache_is_complete(&out) {
             return Ok(out);
         }
         let _ = std::fs::remove_file(&out);
     }
-    require_live_output_dir(out_dir)?;
 
     let start_s = start_ms as f64 / 1000.0;
     // Guard a degenerate/inverted window to a small positive span so fps is finite.
@@ -150,13 +150,13 @@ pub fn make_window_thumbs(
 /// dir as the video filmstrip. Idempotent.
 pub fn make_image_thumb(src: &Path, out_dir: &Path, asset_id: &str) -> Result<PathBuf, CutError> {
     let out = out_dir.join(format!("{asset_id}.jpg"));
-    if out.exists() {
+    require_live_output_dir(out_dir)?;
+    if crate::render::plain_internal_file_exists(&out)? {
         if crate::image_cache::existing_image_cache_is_complete(&out) {
             return Ok(out);
         }
         let _ = std::fs::remove_file(&out);
     }
-    require_live_output_dir(out_dir)?;
     let args: Vec<String> = vec![
         "-i".into(),
         src.display().to_string(),
@@ -173,17 +173,7 @@ pub fn make_image_thumb(src: &Path, out_dir: &Path, asset_id: &str) -> Result<Pa
 }
 
 fn require_live_output_dir(dir: &Path) -> Result<(), CutError> {
-    if dir.is_dir() {
-        return Ok(());
-    }
-    Err(CutError::new(
-        cut_core::error::codes::IO,
-        "could not generate thumbnails because the project is no longer open",
-        format!(
-            "the project filmstrip directory no longer exists: {}",
-            dir.display()
-        ),
-    ))
+    crate::render::require_plain_internal_dir(dir)
 }
 
 #[cfg(test)]
@@ -238,5 +228,19 @@ mod tests {
 
         assert_eq!(error.code, cut_core::error::codes::IO);
         assert!(!project.exists(), "the deleted project must stay deleted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_filmstrip_directory_is_rejected_before_cache_reuse() {
+        use std::os::unix::fs::symlink;
+        let root = crate::atomic_output::private_test_tempdir();
+        let unrelated = root.path().join("unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+        let linked = root.path().join("filmstrip");
+        symlink(&unrelated, &linked).unwrap();
+        let error = make_image_thumb(Path::new("missing.png"), &linked, "a1").unwrap_err();
+        assert_eq!(error.code, cut_core::error::codes::IO);
+        assert_eq!(std::fs::read_dir(&unrelated).unwrap().count(), 0);
     }
 }

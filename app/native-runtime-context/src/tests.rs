@@ -164,6 +164,42 @@ fn accepts_pinned_executable_bundle_and_rehashes_selected_pair() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn accepts_only_declared_or_runner_sealed_executable_modes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_temp, path, fixture) = bundle_fixture();
+    for executable in &fixture.executables {
+        fs::set_permissions(&executable.path, fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    let context = PinnedExecutableBundleContext::from_path(&path).unwrap();
+    for executable in &context.executables {
+        assert_eq!(executable.mode, 0o755, "manifest mode remains declared");
+        context.verify_executable(executable).unwrap();
+    }
+
+    let ffmpeg = &context.executable("ffmpeg").unwrap().path;
+    for mode in [0o700, 0o555, 0o501, 0o400] {
+        fs::set_permissions(ffmpeg, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(
+            context
+                .verify_executable(context.executable("ffmpeg").unwrap())
+                .is_err(),
+            "unexpected observed mode {mode:o} must not pass"
+        );
+    }
+    fs::set_permissions(ffmpeg, fs::Permissions::from_mode(0o755)).unwrap();
+    context
+        .verify_executable(context.executable("ffmpeg").unwrap())
+        .unwrap();
+
+    let mut tampered_context = fixture.clone();
+    tampered_context.executables[0].mode = 0o500;
+    fs::write(&path, serde_json::to_vec(&tampered_context).unwrap()).unwrap();
+    assert!(PinnedExecutableBundleContext::from_path(&path).is_err());
+}
+
 #[test]
 fn accepts_a_sorted_typed_runtime_context_set() {
     let (_python_temp, _python_path, python) = fixture();

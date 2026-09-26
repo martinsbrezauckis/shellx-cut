@@ -26,7 +26,7 @@
 //! Dependencies: ffmpeg.rs (run_ffmpeg), cut-core (Project/Edl). Primary
 //! caller: server render.preview{draft:true} (dispatch.rs).
 
-use crate::ffmpeg::{concat_demuxer_file_line, run_ffmpeg, DETERMINISM_FLAGS};
+use crate::ffmpeg::{concat_demuxer_file_line, DETERMINISM_FLAGS};
 use crate::render::RenderPreset;
 use cut_core::{error_codes, CutError, Edl, Project};
 use serde::Serialize;
@@ -170,7 +170,14 @@ pub fn render_preview_incremental(
         )
         .with_suggested_action("insert at least one clip before render.preview draft"));
     }
-    std::fs::create_dir_all(cache_dir)?;
+    let cache_parent = cache_dir.parent().ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "preview cache has no parent",
+            cache_dir.display().to_string(),
+        )
+    })?;
+    crate::render::ensure_plain_internal_child(cache_parent, cache_dir)?;
     let base = edl.base_video_track().ok_or_else(|| {
         CutError::new(
             error_codes::INVALID_ARGS,
@@ -286,7 +293,7 @@ pub fn render_preview_incremental(
     let mut rendered = Vec::new();
     let mut reused = Vec::new();
     for p in &plans {
-        if p.cache_path.exists() {
+        if crate::render::plain_internal_file_exists(&p.cache_path)? {
             reused.push(p.cache_name.clone());
             continue;
         }
@@ -303,8 +310,10 @@ pub fn render_preview_incremental(
         // concat demuxer needs absolute paths, single-quoted.
         writeln!(list, "{}", concat_demuxer_file_line(&p.cache_path)).unwrap();
     }
+    crate::render::plain_internal_file_exists(&list_path)?;
     std::fs::write(&list_path, &list)?;
     let out = cache_dir.join("preview.mp4");
+    crate::render::plain_internal_file_exists(&out)?;
     let mut args: Vec<String> = vec![
         "-f".into(),
         "concat".into(),
@@ -317,7 +326,7 @@ pub fn render_preview_incremental(
     ];
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     args.push(out.display().to_string());
-    run_ffmpeg(&args)?;
+    crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
 
     Ok(PreviewResult {
         path: out,
@@ -336,8 +345,9 @@ pub fn render_preview_incremental(
 /// the concat demuxer can stream-copy them without re-encoding.
 fn render_one_segment(p: &SegPlan, fps: f64, preset: &RenderPreset) -> Result<(), CutError> {
     if let Some(parent) = p.cache_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::render::require_plain_internal_dir(parent)?;
     }
+    crate::render::plain_internal_file_exists(&p.cache_path)?;
     let fps_s = if fps.fract() == 0.0 {
         format!("{}", fps as u64)
     } else {
@@ -474,7 +484,7 @@ fn render_one_segment(p: &SegPlan, fps: f64, preset: &RenderPreset) -> Result<()
     );
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     args.push(p.cache_path.display().to_string());
-    run_ffmpeg(&args)?;
+    crate::ffmpeg::run_ffmpeg_atomic_output(&args, &p.cache_path)?;
     Ok(())
 }
 

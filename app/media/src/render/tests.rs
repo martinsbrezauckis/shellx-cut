@@ -1518,6 +1518,17 @@ fn bake_mask_png_atomic_publishes_final_without_temp_artifacts() {
         leftovers.is_empty(),
         "atomic publish should clean temp files: {leftovers:?}"
     );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let unrelated = dir.path().join("unrelated.png");
+        std::fs::write(&unrelated, b"keep").unwrap();
+        let linked = out.parent().unwrap().join("linked.png");
+        symlink(&unrelated, &linked).unwrap();
+        assert!(bake_mask_png_atomic(&mask, 64, 64, &linked).is_err());
+        assert_eq!(std::fs::read(unrelated).unwrap(), b"keep");
+    }
 }
 
 /// the proxy-crop contract: source→proxy crop mapping. The exact regression scenario is a 4K

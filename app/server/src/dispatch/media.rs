@@ -8,7 +8,52 @@ use std::io::Read;
 use std::sync::Arc;
 
 mod cache_cleanup;
-use cache_cleanup::remove_owned_cache_outputs_locked;
+use cache_cleanup::{remove_asset_receipts, remove_owned_cache_outputs_locked};
+
+fn plain_generated_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Capture the request's open project before waiting for a concurrent switch,
+/// then verify that owner while holding the transition gate. The returned
+/// guard keeps subsequent source selection and write-back on that project.
+async fn pin_media_project<'a>(
+    state: &'a AppState,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, CutError> {
+    let (dir, identity) = {
+        let project = state.project.read().await;
+        let store = project.as_ref().ok_or_else(no_project)?;
+        (store.dir.clone(), path_free_project_identity(store)?)
+    };
+    let transition = state.project_transition.lock().await;
+    let project = state.project.read().await;
+    let store = project.as_ref().ok_or_else(no_project)?;
+    if store.dir != dir || path_free_project_identity(store)? != identity {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "the open project changed before media work started",
+            "retry the media request against the current project",
+        ));
+    }
+    drop(project);
+    Ok(transition)
+}
 
 fn pending_rebuild_cleanup_outputs(
     project_dir: &std::path::Path,
@@ -45,7 +90,11 @@ pub(crate) async fn project_paths(
 ) -> Result<(PathBuf, PathBuf, PathBuf), CutError> {
     let guard = state.project.read().await;
     let store = guard.as_ref().ok_or_else(no_project)?;
-    Ok((store.dir.clone(), store.receipts_dir(), store.proxies_dir()))
+    let receipts =
+        crate::output_paths::ensure_plain_project_relative_dir(&store.dir, Path::new("receipts"))?;
+    let proxies =
+        crate::output_paths::ensure_plain_project_relative_dir(&store.dir, Path::new("proxies"))?;
+    Ok((store.dir.clone(), receipts, proxies))
 }
 
 /// Look up an asset's source path + hash (job inputs).
@@ -94,6 +143,14 @@ pub(crate) async fn update_asset(
 /// `ProjectStore::open`'s reconcile pass re-point it from disk like the others.
 /// Best-effort (a write failure must not fail the import/probe verb).
 async fn persist_probe_file(state: &AppState, asset_id: &str, probe: &Value) {
+    if asset_id.is_empty()
+        || asset_id.len() > 128
+        || !asset_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return;
+    }
     let dir = {
         let guard = state.project.read().await;
         match guard.as_ref() {
@@ -101,10 +158,16 @@ async fn persist_probe_file(state: &AppState, asset_id: &str, probe: &Value) {
             None => return,
         }
     };
-    let receipts = dir.join("receipts");
-    let _ = std::fs::create_dir_all(&receipts);
+    let Ok(receipts) =
+        crate::output_paths::ensure_plain_project_relative_dir(&dir, Path::new("receipts"))
+    else {
+        return;
+    };
     if let Ok(text) = serde_json::to_string(probe) {
-        let _ = std::fs::write(receipts.join(format!("{asset_id}.probe.json")), text);
+        let _ = crate::output_paths::write_output_atomic(
+            &receipts.join(format!("{asset_id}.probe.json")),
+            text,
+        );
     }
 }
 
@@ -359,6 +422,48 @@ pub(crate) async fn media_import(
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
+    // Keep project selection stable from source admission through the import
+    // op and its tracked background job registration.
+    let expected_project = {
+        let project = state.project.read().await;
+        match project.as_ref() {
+            Some(store) => Some((store.dir.clone(), path_free_project_identity(store)?)),
+            None => None,
+        }
+    };
+    let had_project = expected_project.is_some();
+    let _project_transition = state.project_transition.lock().await;
+    if let Some((dir, identity)) = expected_project {
+        let project = state.project.read().await;
+        let store = project.as_ref().ok_or_else(no_project)?;
+        if store.dir != dir || path_free_project_identity(store)? != identity {
+            return Err(CutError::new(
+                error_codes::CONFLICT,
+                "the open project changed before media import started",
+                "retry the import against the current project",
+            ));
+        }
+    }
+    media_import_admitted(state, args, actor, had_project).await
+}
+
+/// Internal callers that already own the project transition use the same
+/// admission body without recursively locking the non-reentrant gate.
+pub(super) async fn media_import_under_transition(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+    _transition: &tokio::sync::MutexGuard<'_, ()>,
+) -> Result<VerbResult, CutError> {
+    media_import_admitted(state, args, actor, true).await
+}
+
+async fn media_import_admitted(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+    had_project: bool,
+) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         path: String,
@@ -418,6 +523,9 @@ pub(crate) async fn media_import(
         proxy: None,
         filmstrip: None,
     };
+    if !had_project {
+        return Err(no_project());
+    }
     let (asset_id, op) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
@@ -440,6 +548,8 @@ pub(crate) async fn media_import(
     };
     let op_id = op.op_id.clone();
     state.events.publish(Event::OpApplied { op: op.clone() });
+    #[cfg(test)]
+    wait_for_media_import_transition_gate(&src).await;
     // Kick the chain job. Result contract (schema/verbs.json):
     // {asset_id, job_id}; the op record rides along for the UI.
     let manifest_meta = manifest
@@ -448,12 +558,14 @@ pub(crate) async fn media_import(
     let job = spawn_import_chain(
         state.clone(),
         asset_id.clone(),
-        src,
+        src.clone(),
         hash,
         manifest,
         a.proxy.unwrap_or(true),
         true,
     );
+    #[cfg(test)]
+    wait_for_media_import_admission_gate(&src).await;
     // Keep the shared result shape. New import records have no legacy inverse.
     let mut result = json!({"asset_id": asset_id, "job_id": job, "op": op_for_result(&op, wants_legacy_inverse(&args))});
     if let Some(meta) = manifest_meta {
@@ -595,7 +707,7 @@ pub(super) async fn media_remove(
     // reservation through metadata publication, so it can never publish an
     // old source after this mutation commits.
     let _cache_lease = state.cache_lifecycle_lease.write().await;
-    let (removed, op, dir, receipts, source_deleted, mut freed) = {
+    let (removed, op, dir, source_deleted, mut freed) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
         if !store.project.assets.contains_key(&a.asset) {
@@ -631,7 +743,6 @@ pub(super) async fn media_remove(
         }
         // Capture the derived-file roots before the mutating borrow.
         let dir = store.dir.clone();
-        let receipts = store.receipts_dir();
         // record_remove_asset drops the record AND commits the replay-safe op (which
         // appends to ops.jsonl + saves project.json). It returns the removed Asset so
         // we can unlink its derived files; it NEVER deletes `removed.path` (the source).
@@ -645,28 +756,30 @@ pub(super) async fn media_remove(
         let mut source_deleted = false;
         let mut freed: Vec<String> = Vec::new();
         let source = PathBuf::from(&removed.path);
-        let generated_root = dir.join("assets/generated");
+        let generated_root = crate::output_paths::existing_plain_project_relative_dir(
+            &dir,
+            Path::new("assets/generated"),
+        );
         let still_referenced = store
             .project
             .assets
             .values()
             .any(|asset| Path::new(&asset.path) == source);
         if !still_referenced {
-            if let (Ok(root), Ok(source_path)) =
-                (generated_root.canonicalize(), source.canonicalize())
-            {
-                if source_path.parent() == Some(root.as_path()) {
-                    let sidecar = source_path.with_extension("json");
-                    if std::fs::remove_file(&source_path).is_ok() {
+            if let Ok(root) = generated_root {
+                if source.parent() == Some(root.as_path()) && plain_generated_file(&source) {
+                    let sidecar = source.with_extension("json");
+                    if std::fs::remove_file(&source).is_ok() {
                         source_deleted = true;
                         freed.push(
-                            source_path
+                            source
                                 .strip_prefix(&dir)
-                                .unwrap_or(&source_path)
+                                .unwrap_or(&source)
                                 .display()
                                 .to_string(),
                         );
-                        if sidecar.is_file() && std::fs::remove_file(&sidecar).is_ok() {
+                        if plain_generated_file(&sidecar) && std::fs::remove_file(&sidecar).is_ok()
+                        {
                             freed.push(
                                 sidecar
                                     .strip_prefix(&dir)
@@ -679,7 +792,7 @@ pub(super) async fn media_remove(
                 }
             }
         }
-        (removed, op, dir, receipts, source_deleted, freed)
+        (removed, op, dir, source_deleted, freed)
     };
     let op_id = op.op_id.clone();
     state.events.publish(Event::OpApplied { op: op.clone() });
@@ -709,22 +822,14 @@ pub(super) async fn media_remove(
         &mut freed,
         &mut warnings,
     );
-    // Transcript/perception are not owned by the cache ledger. They retain the
-    // established best-effort project-local cleanup behavior.
-    for rel in [removed.transcript.as_deref(), removed.perception.as_deref()]
-        .into_iter()
-        .flatten()
-    {
-        let p = dir.join(rel);
-        if p.exists() && std::fs::remove_file(&p).is_ok() {
-            freed.push(rel.to_string());
-        }
-    }
-    // The probe receipt (receipts/<id>.probe.json), if one was written.
-    let probe_receipt = receipts.join(format!("{}.probe.json", a.asset));
-    if probe_receipt.exists() {
-        let _ = std::fs::remove_file(&probe_receipt);
-    }
+    remove_asset_receipts(
+        &dir,
+        &a.asset,
+        removed.transcript.as_deref(),
+        removed.perception.as_deref(),
+        &mut freed,
+        &mut warnings,
+    );
     Ok(VerbResult::ok_with_ops(
         json!({
             "removed": true,
@@ -758,6 +863,9 @@ pub(super) async fn media_relink(
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
+    // Hash/probe may yield before the relink op, and a changed hash starts an
+    // import job after the op. Both must stay attached to this project.
+    let _project_transition = pin_media_project(state).await?;
     #[derive(serde::Deserialize)]
     struct Args {
         asset: String,
@@ -785,7 +893,7 @@ pub(super) async fn media_relink(
     // See media.remove: acquire before committing the source change so a cache
     // rebuild cannot race from old input bytes into a new asset revision.
     let _cache_lease = state.cache_lifecycle_lease.write().await;
-    let (old, op, mut warnings, dir, receipts) = {
+    let (old, op, mut warnings, dir) = {
         let mut guard = state.project.write().await;
         let store = guard.as_mut().ok_or_else(no_project)?;
         let old = store.project.assets.get(&a.asset).cloned().ok_or_else(|| {
@@ -854,7 +962,7 @@ pub(super) async fn media_relink(
                 rationale,
             )
         })?;
-        (old, op, warnings, store.dir.clone(), store.receipts_dir())
+        (old, op, warnings, store.dir.clone())
     };
     let op_id = op.op_id.clone();
     state.events.publish(Event::OpApplied { op: op.clone() });
@@ -889,21 +997,14 @@ pub(super) async fn media_relink(
             &mut freed,
             &mut warnings,
         );
-        // Transcript/perception are deliberately outside the cache-ownership
-        // ledger, so their long-standing best-effort cleanup is unchanged.
-        for rel in [old.transcript.as_deref(), old.perception.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            let p = dir.join(rel);
-            if p.exists() && std::fs::remove_file(&p).is_ok() {
-                freed.push(rel.to_string());
-            }
-        }
-        let probe_receipt = receipts.join(format!("{}.probe.json", a.asset));
-        if probe_receipt.exists() {
-            let _ = std::fs::remove_file(&probe_receipt);
-        }
+        remove_asset_receipts(
+            &dir,
+            &a.asset,
+            old.transcript.as_deref(),
+            old.perception.as_deref(),
+            &mut freed,
+            &mut warnings,
+        );
         job_id = Some(spawn_import_chain(
             state.clone(),
             a.asset.clone(),
@@ -1296,6 +1397,9 @@ pub(super) async fn media_bin_list(state: &AppState, _args: Value) -> Result<Ver
 /// the existing strip if present). For assets imported before the feature, or to
 /// build one on demand. Video assets WITH a proxy only; returns {filmstrip}.
 pub(super) async fn media_filmstrip(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
+    // The generated file and asset field must belong to the same project as
+    // the source/proxy selected before the blocking thumbnail operation.
+    let _project_transition = pin_media_project(state).await?;
     #[derive(serde::Deserialize)]
     struct Args {
         asset: String,
@@ -2121,6 +2225,20 @@ fn spawn_enrich_chain(
 
 /// media.probe{asset} — synchronous probe + cache write-back (not an op).
 pub(super) async fn media_probe(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
+    // Pin the project through both the probe receipt and asset write-back.
+    let _project_transition = pin_media_project(state).await?;
+    media_probe_admitted(state, args).await
+}
+
+pub(super) async fn media_probe_under_transition(
+    state: &AppState,
+    args: Value,
+    _transition: &tokio::sync::MutexGuard<'_, ()>,
+) -> Result<VerbResult, CutError> {
+    media_probe_admitted(state, args).await
+}
+
+async fn media_probe_admitted(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         asset: String,
@@ -2214,6 +2332,9 @@ pub(super) async fn media_transcribe(
     state: &AppState,
     args: Value,
 ) -> Result<VerbResult, CutError> {
+    // Bind source/receipt selection to registration in the current project's
+    // job manager; project replacement drains that tracked worker.
+    let _project_transition = pin_media_project(state).await?;
     #[derive(serde::Deserialize)]
     struct Args {
         asset: String,
@@ -2286,6 +2407,7 @@ pub(super) async fn media_perception(
     state: &AppState,
     args: Value,
 ) -> Result<VerbResult, CutError> {
+    let _project_transition = pin_media_project(state).await?;
     #[derive(serde::Deserialize)]
     struct Args {
         asset: String,
@@ -2430,5 +2552,55 @@ mod media_security_tests {
             .get(&asset_id)
             .unwrap();
         assert_eq!(asset.hash, format!("sha256:{expected_sha256}"));
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct MediaImportTransitionGate {
+    pub source: PathBuf,
+    pub committed: Arc<tokio::sync::Notify>,
+    pub resume: Arc<tokio::sync::Notify>,
+    pub admitted: Arc<tokio::sync::Notify>,
+    pub resume_admitted: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn media_import_transition_gate() -> &'static std::sync::Mutex<Option<MediaImportTransitionGate>> {
+    static GATE: std::sync::OnceLock<std::sync::Mutex<Option<MediaImportTransitionGate>>> =
+        std::sync::OnceLock::new();
+    GATE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(super) fn install_media_import_transition_gate(gate: Option<MediaImportTransitionGate>) {
+    *media_import_transition_gate().lock().unwrap() = gate;
+}
+
+#[cfg(test)]
+async fn wait_for_media_import_transition_gate(source: &Path) {
+    let gate = media_import_transition_gate()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|gate| gate.source == source)
+        .cloned();
+    if let Some(gate) = gate {
+        gate.committed.notify_one();
+        gate.resume.notified().await;
+    }
+}
+
+#[cfg(test)]
+async fn wait_for_media_import_admission_gate(source: &Path) {
+    let gate = media_import_transition_gate()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|gate| gate.source == source)
+        .cloned();
+    if let Some(gate) = gate {
+        gate.admitted.notify_one();
+        gate.resume_admitted.notified().await;
     }
 }

@@ -104,7 +104,8 @@ pub fn make_proxy_with_progress(
     on_progress: &dyn Fn(f32),
 ) -> Result<PathBuf, CutError> {
     let out = proxies_dir.join(format!("{asset_id}.mp4"));
-    if out.exists() && validate_proxy_output(&out).is_ok() {
+    require_live_output_dir(proxies_dir)?;
+    if crate::render::plain_internal_file_exists(&out)? && validate_proxy_output(&out).is_ok() {
         on_progress(1.0);
         return Ok(out);
     }
@@ -159,11 +160,12 @@ fn make_proxy_with(
     encode: impl FnOnce(&[String], &Path) -> Result<(), CutError>,
 ) -> Result<PathBuf, CutError> {
     let out = proxies_dir.join(format!("{asset_id}.mp4"));
-    if out.exists() && validate_proxy_output(&out).is_ok() {
+    require_live_output_dir(proxies_dir)?;
+    let existing = crate::render::plain_internal_file_exists(&out)?;
+    if existing && validate_proxy_output(&out).is_ok() {
         return Ok(out);
     }
-    require_live_output_dir(proxies_dir)?;
-    if out.exists() {
+    if existing {
         // This is a project-local regenerable cache file. Do not let a failed
         // encode leave a known-invalid final path for later cache lookups.
         std::fs::remove_file(&out)?;
@@ -173,17 +175,7 @@ fn make_proxy_with(
 }
 
 fn require_live_output_dir(dir: &Path) -> Result<(), CutError> {
-    if dir.is_dir() {
-        return Ok(());
-    }
-    Err(CutError::new(
-        cut_core::error::codes::IO,
-        "could not generate a proxy because the project is no longer open",
-        format!(
-            "the project proxy directory no longer exists: {}",
-            dir.display()
-        ),
-    ))
+    crate::render::require_plain_internal_dir(dir)
 }
 
 #[cfg(test)]
@@ -211,6 +203,24 @@ mod tests {
 
         assert_eq!(error.code, cut_core::error::codes::IO);
         assert!(!project.exists(), "the deleted project must stay deleted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_proxy_leaf_is_rejected_before_probe_or_encode() {
+        use std::os::unix::fs::symlink;
+        let root = crate::atomic_output::private_test_tempdir();
+        let proxies = root.path().join("proxies");
+        private_proxy_dir(&proxies);
+        let unrelated = root.path().join("unrelated.mp4");
+        std::fs::write(&unrelated, b"keep").unwrap();
+        symlink(&unrelated, proxies.join("a1.mp4")).unwrap();
+        let error = make_proxy_with(Path::new("missing.mp4"), &proxies, "a1", |_, _| {
+            panic!("linked cache must be refused before encode")
+        })
+        .unwrap_err();
+        assert_eq!(error.code, error_codes::IO);
+        assert_eq!(std::fs::read(unrelated).unwrap(), b"keep");
     }
 
     #[test]

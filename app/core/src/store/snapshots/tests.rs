@@ -108,6 +108,34 @@ fn deleting_snapshots_falls_back_to_full_journal_replay() {
     assert_eq!(stats.replayed_ops, ops.len());
 }
 
+#[cfg(unix)]
+#[test]
+fn linked_snapshot_cache_is_neither_read_pruned_nor_written() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = ProjectStore::create(temp.path(), "history", None).unwrap();
+    store
+        .apply(
+            "edit.add_marker",
+            json!({"at_ms": 10, "label": "one"}),
+            actor(),
+            None,
+        )
+        .unwrap();
+    let outside = temp.path().join("unrelated");
+    std::fs::create_dir(&outside).unwrap();
+    let victim = outside.join("snapshot-000000000001.json");
+    std::fs::write(&victim, b"unrelated data").unwrap();
+    std::os::unix::fs::symlink(&outside, snapshot_dir(&store.dir)).unwrap();
+
+    let journal = store.log.replay_view().unwrap();
+    assert!(write(&store.dir, &journal, &store.project).is_err());
+    drop(journal);
+    let reopened = ProjectStore::open(&store.dir).unwrap();
+    assert_eq!(reopened.project.markers.len(), 1);
+    assert_eq!(std::fs::read(&victim).unwrap(), b"unrelated data");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+}
+
 #[test]
 fn a_rejected_snapshot_is_healed_from_the_journal_on_open() {
     let temp = tempfile::tempdir().unwrap();

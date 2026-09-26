@@ -136,7 +136,88 @@ pub struct MotionLinkRefreshResult {
 }
 
 fn asset_id_number(id: &str) -> Option<u64> {
-    id.strip_prefix('a').and_then(|x| x.parse::<u64>().ok())
+    id.strip_prefix('a')
+        .filter(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|digits| digits.parse::<u64>().ok())
+}
+
+fn validate_asset_id(id: &str) -> Result<(), CutError> {
+    // Callers can supply descriptive IDs (for example `audio-background`),
+    // while automatic allocation uses aN. Both must remain one safe filename
+    // component when later used for derived receipt/cache paths.
+    if (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Ok(());
+    }
+    Err(CutError::new(
+        codes::INVALID_ARGS,
+        format!("invalid asset id '{id}'"),
+        "asset IDs must be single ASCII alphanumeric, underscore or hyphen filename components of at most 128 bytes",
+    ))
+}
+
+fn validate_replayed_asset_ids(project: &Project) -> Result<(), CutError> {
+    for id in project.assets.keys() {
+        validate_asset_id(id)?;
+    }
+    Ok(())
+}
+
+fn validate_internal_output_roots(dir: &Path) -> Result<(), CutError> {
+    // These names belong to Cut's generated project state, not the user's
+    // selected media source paths. Check parents too, before create_dir_all can
+    // follow a linked parent while opening an untrusted project.
+    const ROOTS: &[&str] = &[
+        "receipts",
+        "proxies",
+        "proxies/preview-cache",
+        "filmstrip",
+        "frames",
+        "previews",
+        ".cache",
+        ".cache/segrender",
+        "cache",
+        "cache/matte",
+        "cache/mask",
+        "cache/gwindow",
+        "stab",
+        "assets",
+        "assets/generated",
+        "assets/placeholders",
+    ];
+    for relative in ROOTS {
+        let path = dir.join(relative);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = false;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() || reparse {
+            return Err(CutError::new(
+                codes::INVALID_ARGS,
+                "project output directory is not a plain directory",
+                format!(
+                    "refusing linked or non-directory project output {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn is_lower_hex_sha256(value: &str) -> bool {
@@ -400,6 +481,7 @@ impl ProjectStore {
                 "pass the .cutproj directory path",
             ));
         }
+        validate_internal_output_roots(dir)?;
         // Derived-output roots are part of the live project layout. Background
         // workers require these directories to already exist so a late worker
         // cannot recreate a project after project.delete removes it.
@@ -1335,6 +1417,7 @@ impl ProjectStore {
                 format!("a{}", live_n.max(log_n) + 1)
             }
         };
+        validate_asset_id(&id)?;
         let mut next = self.project.clone();
         if next.assets.contains_key(&id) {
             return Err(CutError::new(
@@ -4376,6 +4459,7 @@ pub fn apply_record(
                     ))
                 })
                 .ok_or_else(|| replay_corrupt(op, "import effect payload missing"))?;
+            validate_asset_id(&id).map_err(|_| replay_corrupt(op, "invalid asset id"))?;
             project
                 .assets
                 .insert(id, serde_json::from_value::<Asset>(asset)?);
@@ -4794,6 +4878,7 @@ pub fn rebuild_from_log(ops: &[OpRecord]) -> Result<Project, CutError> {
         apply_record(&mut project, op, &ops[..i])?;
         project.sync_active_sequence();
     }
+    validate_replayed_asset_ids(&project)?;
     Ok(project)
 }
 
@@ -4840,6 +4925,7 @@ pub fn rebuild_skipping(ops: &[OpRecord], skip_idx: usize) -> Result<Project, Cu
         }
         project.sync_active_sequence();
     }
+    validate_replayed_asset_ids(&project)?;
     Ok(project)
 }
 
@@ -5123,6 +5209,66 @@ mod undo_redo_tests {
 
         let (next, _) = s.record_import(None, asset(), actor(), None).unwrap();
         assert_eq!(next, "a4", "removed historical ids must not be reused");
+    }
+
+    #[test]
+    fn supplied_and_replayed_asset_ids_must_be_safe_filename_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = ProjectStore::create(dir.path(), "demo", None).unwrap();
+        for invalid in ["/tmp/unrelated", "../outside", "a+1", "a1/other"] {
+            assert!(store
+                .record_import(Some(invalid.into()), asset(), actor(), None)
+                .is_err());
+        }
+        store
+            .record_import(Some("audio-background".into()), asset(), actor(), None)
+            .unwrap();
+        assert!(ProjectStore::open(&store.dir).is_ok());
+        let (_, mut imported) = store.record_import(None, asset(), actor(), None).unwrap();
+        let mut records = store.log.read_all().unwrap();
+        let outside_prefix = dir.path().join("unrelated");
+        let outside_receipt = dir.path().join("unrelated.probe.json");
+        std::fs::write(&outside_receipt, b"keep this file").unwrap();
+        imported.effects[0].detail["asset_id"] = json!(outside_prefix.display().to_string());
+        *records.last_mut().unwrap() = imported;
+        let forged_journal = records
+            .iter()
+            .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+            .collect::<String>();
+        std::fs::write(store.dir.join("ops.jsonl"), forged_journal).unwrap();
+
+        assert!(ProjectStore::open(&store.dir).is_err());
+        assert_eq!(std::fs::read(&outside_receipt).unwrap(), b"keep this file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_project_rejects_linked_internal_output_roots() {
+        for relative in [
+            "receipts",
+            "proxies",
+            "filmstrip",
+            "frames",
+            "previews",
+            ".cache/segrender",
+            "assets/generated",
+            "assets/placeholders",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = ProjectStore::create(temp.path(), "demo", None).unwrap();
+            let project_dir = store.dir.clone();
+            drop(store);
+            let outside = temp.path().join("unrelated");
+            std::fs::create_dir(&outside).unwrap();
+            let link = project_dir.join(relative);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            if link.exists() {
+                std::fs::remove_dir(&link).unwrap();
+            }
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(ProjectStore::open(&project_dir).is_err(), "{relative}");
+            assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        }
     }
 
     #[test]

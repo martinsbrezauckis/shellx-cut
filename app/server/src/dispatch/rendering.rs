@@ -45,6 +45,30 @@ pub(crate) async fn snapshot_for_media_io(
     Ok((project, edl, dir, at_op))
 }
 
+/// Internal render artifacts use the same plain-component directory admission
+/// as other project-owned outputs.
+pub(super) fn checked_internal_dir(
+    project_dir: &Path,
+    relative: &Path,
+) -> Result<PathBuf, CutError> {
+    crate::output_paths::ensure_plain_project_relative_dir(project_dir, relative)
+}
+
+fn copy_internal_file_atomic(source: &Path, target: &Path) -> Result<(), CutError> {
+    let parent = target.parent().ok_or_else(|| {
+        CutError::new(
+            error_codes::INVALID_ARGS,
+            "invalid internal output",
+            target.display().to_string(),
+        )
+    })?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    std::io::copy(&mut std::fs::File::open(source)?, temporary.as_file_mut())?;
+    temporary.as_file_mut().sync_all()?;
+    let temporary_path = temporary.into_temp_path();
+    publish_output_atomic(temporary_path.as_ref(), target)
+}
+
 /// Default preview window length — MUST match the `default` advertised for
 /// `duration_ms` in schema/verbs.json (render.preview). A dispatch test
 /// asserts the two stay in sync (the value drifted to 3000 once).
@@ -76,7 +100,7 @@ pub(super) async fn render_preview(state: &AppState, args: Value) -> Result<Verb
 
     if a.draft {
         // Incremental whole-timeline draft preview.
-        let cache_dir = dir.join("proxies").join("preview-cache");
+        let cache_dir = checked_internal_dir(&dir, Path::new("proxies/preview-cache"))?;
         let preset =
             cut_media::render::RenderPreset::named("draft").expect("draft is a registered preset");
         let r = run_blocking("render.preview.draft", move || {
@@ -108,11 +132,21 @@ pub(super) async fn render_preview(state: &AppState, args: Value) -> Result<Verb
             "pass at_ms, or pass draft:true for the whole-timeline incremental preview",
         )
     })?;
-    let out_dir = dir.join("previews");
-    std::fs::create_dir_all(&out_dir)?;
+    let out_dir = checked_internal_dir(&dir, Path::new("previews"))?;
     let duration_ms = a.duration_ms.unwrap_or(PREVIEW_DEFAULT_DURATION_MS);
     let path = run_blocking("render.preview", move || {
-        cut_media::render::render_preview(&project, &edl, &dir, at_ms, duration_ms, &out_dir)
+        let temporary_dir = tempfile::tempdir_in(&out_dir)?;
+        let rendered = cut_media::render::render_preview(
+            &project,
+            &edl,
+            &dir,
+            at_ms,
+            duration_ms,
+            temporary_dir.path(),
+        )?;
+        let published = out_dir.join(format!("preview_{at_ms}_{duration_ms}.mp4"));
+        publish_output_atomic(&rendered, &published)?;
+        Ok(published)
     })
     .await?;
     Ok(VerbResult::ok(json!({"path": path, "mime": "video/mp4"})))
@@ -972,10 +1006,9 @@ pub(super) async fn render_frame(state: &AppState, args: Value) -> Result<VerbRe
     let height = a.h.unwrap_or(cut_media::render::SCRUB_DEFAULT_HEIGHT);
     let (bytes, used_fast) = scrub_frame_bytes(state, a.at_ms, height, a.compose).await?;
     let (_project, _e, dir, _a2) = snapshot(state).await?;
-    let frames = dir.join("frames");
-    std::fs::create_dir_all(&frames)?;
+    let frames = checked_internal_dir(&dir, Path::new("frames"))?;
     let path = frames.join(format!("frame_{}_{}.jpg", a.at_ms, height));
-    std::fs::write(&path, &bytes)?;
+    write_output_atomic(&path, &bytes)?;
     // Report the served frame's true pixel geometry (from the JPEG header) so
     // the caller never has to guess what scale=-2:h produced.
     let (w, h) = jpeg_dimensions(&bytes).unwrap_or((0, height));
@@ -1039,10 +1072,23 @@ struct StoryboardScratch {
 
 impl StoryboardScratch {
     fn prepare(path: PathBuf) -> Result<Self, CutError> {
-        if path.exists() {
-            std::fs::remove_dir_all(&path)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(_)
+                if !record_recovery::is_plain_dir(&path).map_err(|e| {
+                    CutError::new(error_codes::IO, "inspect storyboard scratch", e.to_string())
+                })? =>
+            {
+                return Err(CutError::new(
+                    error_codes::INVALID_ARGS,
+                    "linked storyboard scratch directory",
+                    path.display().to_string(),
+                ));
+            }
+            Ok(_) => std::fs::remove_dir_all(&path)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-        std::fs::create_dir_all(&path)?;
+        std::fs::create_dir(&path)?;
         Ok(Self { path })
     }
 
@@ -1142,8 +1188,7 @@ pub(super) async fn render_storyboard(
         .with_suggested_action("insert at least one clip first"));
     }
     let dur = edl.duration_ms;
-    let frames_dir = dir.join("frames");
-    std::fs::create_dir_all(&frames_dir)?;
+    let frames_dir = checked_internal_dir(&dir, Path::new("frames"))?;
     // Engine-owned scratch subdir for the per-frame JPEGs (cleaned up after).
     let scratch = StoryboardScratch::prepare(frames_dir.join(".sb_tmp"))?;
     // Extract `count` frames at the MIDPOINT of each equal slice. A contact
@@ -1190,6 +1235,12 @@ pub(super) async fn render_storyboard(
         "scale={tw}:{th}:force_original_aspect_ratio=decrease,\
          pad={tw}:{th}:-1:-1:color=black,tile={cols}x{rows}:padding=4:color=black"
     );
+    let reserved = tempfile::Builder::new()
+        .prefix(".storyboard-")
+        .suffix(".jpg")
+        .tempfile_in(&frames_dir)?;
+    let tmp_out = reserved.path().to_path_buf();
+    let _temporary_path = reserved.into_temp_path();
     let ff_args: Vec<String> = vec![
         "-y".into(),
         "-framerate".into(),
@@ -1200,13 +1251,14 @@ pub(super) async fn render_storyboard(
         vf,
         "-frames:v".into(),
         "1".into(),
-        out.to_string_lossy().into_owned(),
+        tmp_out.to_string_lossy().into_owned(),
     ];
     run_blocking("render.storyboard", move || {
         cut_media::ffmpeg::run_ffmpeg(&ff_args)
     })
     .await
     .map_err(storyboard_assembly_error)?;
+    publish_output_atomic(&tmp_out, &out)?;
     let mut result = json!({
         "path": out, "mime": "image/jpeg",
         "count": count, "grid": [cols, rows],
@@ -1225,6 +1277,53 @@ pub(super) async fn render_storyboard(
 #[cfg(test)]
 mod storyboard_internal_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_render_directory_rejects_linked_components() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project.cutproj");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("frames")).unwrap();
+        assert!(checked_internal_dir(&project, Path::new("frames")).is_err());
+        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+        assert!(checked_internal_dir(&project, Path::new("receipts"))
+            .unwrap()
+            .is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_render_write_replaces_linked_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project.cutproj");
+        std::fs::create_dir(&project).unwrap();
+        let frames = checked_internal_dir(&project, Path::new("frames")).unwrap();
+        let outside = root.path().join("outside.jpg");
+        std::fs::write(&outside, b"outside").unwrap();
+        let frame = frames.join("frame_100_180.jpg");
+        std::os::unix::fs::symlink(&outside, &frame).unwrap();
+        write_output_atomic(&frame, b"frame").unwrap();
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+        assert_eq!(std::fs::read(&frame).unwrap(), b"frame");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_sheet_copy_replaces_linked_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.jpg");
+        let outside = root.path().join("outside.jpg");
+        let target = root.path().join("qc.jpg");
+        std::fs::write(&source, b"sheet").unwrap();
+        std::fs::write(&outside, b"outside").unwrap();
+        std::os::unix::fs::symlink(&outside, &target).unwrap();
+        copy_internal_file_atomic(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"sheet");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+    }
 
     #[test]
     fn preview_frame_size_limit_preserves_4k_and_export_controls() {
@@ -1838,8 +1937,7 @@ pub(super) async fn render_final(
         audio_args = cut_media::render::set_audio_bitrate(audio_args, akbps);
     }
     // render_id = next receipts/render_*.json index (unique per project).
-    let receipts = dir.join("receipts");
-    std::fs::create_dir_all(&receipts)?;
+    let receipts = checked_internal_dir(&dir, Path::new("receipts"))?;
     // Count only the CANONICAL receipt files `render_NNN.json` — NOT the
     // `render_NNN.output.perception.json` sidecar each render also writes (which
     // also starts with "render_" and ends ".json"). Counting both double-counted
@@ -2089,7 +2187,7 @@ pub(super) async fn render_final(
                 };
                 receipt.compute_pass();
                 let rpath = receipts.join(format!("{render_id}.json"));
-                if let Err(e) = std::fs::write(
+                if let Err(e) = write_output_atomic(
                     &rpath,
                     serde_json::to_string_pretty(&receipt).unwrap_or_default(),
                 ) {
@@ -2309,14 +2407,14 @@ pub(super) fn write_bundle_caption_sidecars(
     let srt_path = plat_dir.join("clip.srt");
     let vtt_path = plat_dir.join("clip.vtt");
     let mut errors = Vec::new();
-    let caption_path = match std::fs::write(&srt_path, srt) {
+    let caption_path = match write_output_atomic(&srt_path, srt) {
         Ok(()) => Some(srt_path.display().to_string()),
         Err(e) => {
             errors.push(format!("{}: {e}", srt_path.display()));
             None
         }
     };
-    let vtt_path_out = match std::fs::write(&vtt_path, vtt) {
+    let vtt_path_out = match write_output_atomic(&vtt_path, vtt) {
         Ok(()) => Some(vtt_path.display().to_string()),
         Err(e) => {
             errors.push(format!("{}: {e}", vtt_path.display()));
@@ -2364,7 +2462,7 @@ fn compute_bundle_receipt(
     };
     receipt.compute_pass();
     let rpath = receipts_dir.join(format!("{render_id}.json"));
-    std::fs::write(
+    write_output_atomic(
         &rpath,
         serde_json::to_string_pretty(&receipt).unwrap_or_default(),
     )
@@ -2417,9 +2515,8 @@ pub(super) async fn render_direct(
             "insert at least one clip before reframe.direct",
         ));
     }
-    let receipts = dir.join("receipts");
-    std::fs::create_dir_all(&receipts)?;
-    std::fs::create_dir_all(dir.join("exports"))?; // the draft temp renders here
+    let receipts = checked_internal_dir(&dir, Path::new("receipts"))?;
+    checked_internal_dir(&dir, Path::new("exports"))?; // the draft temp renders here
     let n = std::fs::read_dir(&receipts)?
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("direct_"))
@@ -2468,7 +2565,10 @@ pub(super) async fn render_direct(
 
         st.jobs
             .progress(&jid, 0.6, Some("building contact sheet".into()));
-        let cs_dir = receipts.join(format!("{direct_id}.contact"));
+        let cs_dir = match checked_internal_dir(&dir, Path::new(&format!("receipts/{direct_id}.contact"))) {
+            Ok(path) => path,
+            Err(error) => return st.jobs.fail(&jid, error),
+        };
         let (t3, csd, pr) = (temp.clone(), cs_dir.clone(), preset.clone());
         let cancellation = crate::jobs::current_job_cancellation();
         let sidecar_cancellation = cancellation.clone();
@@ -2491,11 +2591,9 @@ pub(super) async fn render_direct(
             .get("contact_sheet")
             .and_then(|v| v.as_str())
             .and_then(|src| {
-                let frames = dir.join("frames");
-                let _ = std::fs::create_dir_all(&frames);
+                let frames = checked_internal_dir(&dir, Path::new("frames")).ok()?;
                 let name = format!("{direct_id}.contact.jpg");
-                std::fs::copy(src, frames.join(&name))
-                    .ok()
+                copy_internal_file_atomic(Path::new(src), &frames.join(&name)).ok()
                     .map(|_| format!("/frames/{name}"))
             });
         st.jobs.finish(
@@ -2584,8 +2682,7 @@ pub(super) async fn render_qc(
     let preset = a.preset.clone().unwrap_or_else(|| "talking_head".into());
     let (_project, _edl, dir, _at_op) = snapshot(state).await?;
     let output = resolve_reframe_output_for_qc(&dir, &rid)?;
-    let receipts = dir.join("receipts");
-    std::fs::create_dir_all(&receipts)?;
+    checked_internal_dir(&dir, Path::new("receipts"))?;
     let rid_ret = rid.clone();
     let job = state.jobs.create("reframe-qc");
     let job_id = job.job_id.clone();
@@ -2594,7 +2691,10 @@ pub(super) async fn render_qc(
     jobs.spawn_limited(&job_id, "analysis", ANALYSIS_MAX_RUNNING, async move {
         let jid = job.job_id.clone();
         st.jobs.progress(&jid, 0.1, Some("reviewing output".into()));
-        let qc_dir = receipts.join(format!("{rid}.qc"));
+        let qc_dir = match checked_internal_dir(&dir, Path::new(&format!("receipts/{rid}.qc"))) {
+            Ok(path) => path,
+            Err(error) => return st.jobs.fail(&jid, error),
+        };
         let (o2, q2, p2) = (output.clone(), qc_dir.clone(), preset.clone());
         let cancellation = crate::jobs::current_job_cancellation();
         let sidecar_cancellation = cancellation.clone();
@@ -2614,11 +2714,9 @@ pub(super) async fn render_qc(
             .get("qc_sheet")
             .and_then(|v| v.as_str())
             .and_then(|src| {
-                let frames = dir.join("frames");
-                let _ = std::fs::create_dir_all(&frames);
+                let frames = checked_internal_dir(&dir, Path::new("frames")).ok()?;
                 let name = format!("{rid}.qc.jpg");
-                std::fs::copy(src, frames.join(&name))
-                    .ok()
+                copy_internal_file_atomic(Path::new(src), &frames.join(&name)).ok()
                     .map(|_| format!("/frames/{name}"))
             });
         st.jobs.finish(
@@ -2679,8 +2777,7 @@ pub(super) async fn render_reframe(
             "insert at least one clip before render.reframe",
         ));
     }
-    let receipts = dir.join("receipts");
-    std::fs::create_dir_all(&receipts)?;
+    let receipts = checked_internal_dir(&dir, Path::new("receipts"))?;
     let n = std::fs::read_dir(&receipts)?
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("reframe_"))
@@ -2867,7 +2964,7 @@ pub(super) async fn render_reframe(
                 )
             }
         };
-        if let Err(e) = std::fs::write(&rpath, receipt_text) {
+        if let Err(e) = write_output_atomic(&rpath, receipt_text) {
             return st.jobs.fail(
                 &jid,
                 CutError::new(
@@ -2995,8 +3092,10 @@ pub(super) async fn render_bundle(
     let jobs = state.jobs.clone();
     jobs.spawn_limited(&job_id, "render", RENDER_MAX_RUNNING, async move {
         let jid = job.job_id.clone();
-        let receipts = dir.join("receipts");
-        let _ = std::fs::create_dir_all(&receipts);
+        let receipts = match checked_internal_dir(&dir, Path::new("receipts")) {
+            Ok(receipts) => receipts,
+            Err(error) => return st.jobs.fail(&jid, error),
+        };
         let n = dims.len().max(1);
         let mut platforms_out: Vec<Value> = Vec::new();
         let mut receipt_ids: Vec<String> = Vec::new();
@@ -3029,9 +3128,6 @@ pub(super) async fn render_bundle(
                 Ok(p) => p,
                 Err(e) => return st.jobs.fail(&jid, e),
             };
-            if let Some(parent) = out_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
             let opts = cut_media::render::RenderOptions {
                 fit: cut_media::render::Fit::Cover,
                 resolution: cut_media::render::Resolution::Explicit {

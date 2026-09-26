@@ -716,41 +716,93 @@ pub fn grok_image_tool_path(stdout: &str) -> Result<PathBuf, String> {
     Ok(generated.remove(0))
 }
 
-/// Summarize only the shape of a failed native image run. Provider output can
-/// contain prompts, paths, and credentials, so none of its text is returned.
+/// Summarize only fixed event shapes for a failed native image run or parse.
+/// Provider output can contain prompts, paths, and credentials, so no event
+/// strings, call IDs, or file paths are returned.
 pub fn grok_image_exit_diagnostic(
     stdout: &[u8],
     stderr: &[u8],
     stdout_truncated: bool,
     stderr_truncated: bool,
 ) -> String {
-    let mut calls = std::collections::BTreeSet::new();
-    let mut completed = std::collections::BTreeSet::new();
-    for line in String::from_utf8_lossy(stdout).lines() {
+    let mut calls = std::collections::BTreeMap::new();
+    let mut updates = Vec::new();
+    let mut json_lines = 0usize;
+    let mut invalid_lines = 0usize;
+    let mut updates_without_id = 0usize;
+    for (line_number, line) in String::from_utf8_lossy(stdout).lines().enumerate() {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            invalid_lines += 1;
             continue;
         };
-        let Some(id) = event.get("toolCallId").and_then(|value| value.as_str()) else {
-            continue;
-        };
+        json_lines += 1;
         match event.get("type").and_then(|value| value.as_str()) {
             Some("tool_call")
                 if event.get("toolName").and_then(|value| value.as_str()) == Some("image_gen") =>
             {
-                calls.insert(id.to_string());
+                if let Some(id) = event.get("toolCallId").and_then(|value| value.as_str()) {
+                    calls.entry(id.to_string()).or_insert(line_number);
+                }
             }
-            Some("tool_call_update")
-                if calls.contains(id)
-                    && event.get("status").and_then(|value| value.as_str())
-                        == Some("completed")
-                    && event
-                        .pointer("/rawOutput/type")
-                        .and_then(|value| value.as_str())
-                        == Some("ImageGen") =>
-            {
-                completed.insert(id.to_string());
+            Some("tool_call_update") => {
+                if let Some(id) = event.get("toolCallId").and_then(|value| value.as_str()) {
+                    updates.push((line_number, id.to_string(), event));
+                } else {
+                    updates_without_id += 1;
+                }
             }
             _ => {}
+        }
+    }
+    let mut completed = std::collections::BTreeSet::new();
+    let mut matched = 0usize;
+    let mut early = 0usize;
+    let mut unmatched = 0usize;
+    let mut status_completed = 0usize;
+    let mut status_failed = 0usize;
+    let mut status_other = 0usize;
+    let mut status_missing = 0usize;
+    let mut completed_image_gen = 0usize;
+    let mut completed_other_type = 0usize;
+    let mut completed_missing_type = 0usize;
+    let mut completed_image_path = 0usize;
+    for (line_number, id, event) in &updates {
+        match calls.get(id) {
+            Some(call_line) if line_number > call_line => matched += 1,
+            Some(_) => {
+                early += 1;
+                continue;
+            }
+            None => {
+                unmatched += 1;
+                continue;
+            }
+        }
+        match event.get("status").and_then(|value| value.as_str()) {
+            Some("completed") => {
+                status_completed += 1;
+                match event
+                    .pointer("/rawOutput/type")
+                    .and_then(|value| value.as_str())
+                {
+                    Some("ImageGen") => {
+                        completed_image_gen += 1;
+                        if event
+                            .pointer("/rawOutput/path")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|path| !path.trim().is_empty())
+                        {
+                            completed_image_path += 1;
+                        }
+                        completed.insert(id.clone());
+                    }
+                    Some(_) => completed_other_type += 1,
+                    None => completed_missing_type += 1,
+                }
+            }
+            Some("failed") => status_failed += 1,
+            Some(_) => status_other += 1,
+            None => status_missing += 1,
         }
     }
     let category = if stdout_truncated {
@@ -763,10 +815,8 @@ pub fn grok_image_exit_diagnostic(
         "image_gen_completed_before_exit"
     };
     format!(
-        "diagnostic: {category}; image_gen calls={}, completed={}; stderr_present={}; stdout_truncated={stdout_truncated}; stderr_truncated={stderr_truncated}",
-        calls.len(),
-        completed.len(),
-        !stderr.is_empty(),
+        "diagnostic: {category}; image_gen calls={}; completed={}; json_lines={json_lines}; invalid_lines={invalid_lines}; updates={}; updates_without_id={updates_without_id}; matched={matched}; early={early}; unmatched={unmatched}; status_completed={status_completed}; status_failed={status_failed}; status_other={status_other}; status_missing={status_missing}; completed_image_gen={completed_image_gen}; completed_other_type={completed_other_type}; completed_missing_type={completed_missing_type}; completed_image_path={completed_image_path}; stderr_present={}; stdout_truncated={stdout_truncated}; stderr_truncated={stderr_truncated}",
+        calls.len(), completed.len(), updates.len() + updates_without_id, !stderr.is_empty(),
     )
 }
 
@@ -1451,24 +1501,95 @@ Save the final PNG EXACTLY this path:\n\
 {"type":"tool_call_update","toolCallId":"other-id","status":"completed","rawOutput":{"type":"ImageGen","path":"/private/image.png"}}
 {"type":"result","text":"secret-looking-token /private/image.png"}"#;
         let diagnostic = grok_image_exit_diagnostic(stdout, b"secret-looking-token", false, false);
-        assert_eq!(diagnostic, "diagnostic: image_gen_not_completed; image_gen calls=1, completed=0; stderr_present=true; stdout_truncated=false; stderr_truncated=false");
+        assert!(diagnostic
+            .contains("diagnostic: image_gen_not_completed; image_gen calls=1; completed=0"));
+        assert!(
+            diagnostic.contains("updates=1; updates_without_id=0; matched=0; early=0; unmatched=1")
+        );
+        assert!(diagnostic
+            .contains("stderr_present=true; stdout_truncated=false; stderr_truncated=false"));
         assert!(!diagnostic.contains("secret-looking-token"));
         assert!(!diagnostic.contains("private-id"));
         assert!(!diagnostic.contains("/private/image.png"));
 
         let completed = br#"{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id"}
 {"type":"tool_call_update","toolCallId":"private-id","status":"completed","rawOutput":{"type":"ImageGen","path":"/private/image.png"}}"#;
-        assert_eq!(grok_image_exit_diagnostic(completed, b"", false, false), "diagnostic: image_gen_completed_before_exit; image_gen calls=1, completed=1; stderr_present=false; stdout_truncated=false; stderr_truncated=false");
+        let diagnostic = grok_image_exit_diagnostic(completed, b"", false, false);
+        assert!(diagnostic.contains(
+            "diagnostic: image_gen_completed_before_exit; image_gen calls=1; completed=1"
+        ));
+        assert!(diagnostic.contains("status_completed=1; status_failed=0"));
+        assert!(diagnostic.contains("completed_image_gen=1; completed_other_type=0; completed_missing_type=0; completed_image_path=1"));
     }
 
     #[test]
     fn grok_image_exit_diagnostic_keeps_unknown_output_private() {
         let diagnostic =
             grok_image_exit_diagnostic(b"secret-looking-token", b"private stderr", false, true);
-        assert_eq!(diagnostic, "diagnostic: no_image_gen_call_observed; image_gen calls=0, completed=0; stderr_present=true; stdout_truncated=false; stderr_truncated=true");
+        assert!(diagnostic
+            .contains("diagnostic: no_image_gen_call_observed; image_gen calls=0; completed=0"));
+        assert!(diagnostic.contains("json_lines=0; invalid_lines=1"));
+        assert!(diagnostic
+            .contains("stderr_present=true; stdout_truncated=false; stderr_truncated=true"));
         let truncated = grok_image_exit_diagnostic(b"secret-looking-token", b"", true, false);
         assert!(truncated.contains("diagnostic: partial_trace"));
         assert!(!truncated.contains("secret-looking-token"));
+    }
+
+    #[test]
+    fn grok_image_diagnostic_distinguishes_failed_changed_and_early_updates_without_leakage() {
+        let cases = [
+            (
+                r#"{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id"}
+{"type":"tool_call_update","toolCallId":"private-id","status":"failed","error":"secret-looking-token"}"#,
+                "status_completed=0; status_failed=1; status_other=0; status_missing=0",
+            ),
+            (
+                r#"{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id"}
+{"type":"tool_call_update","toolCallId":"private-id","status":"completed","rawOutput":{"type":"ChangedType","path":"/private/image.png"}}"#,
+                "completed_image_gen=0; completed_other_type=1; completed_missing_type=0; completed_image_path=0",
+            ),
+            (
+                r#"{"type":"tool_call_update","toolCallId":"private-id","status":"completed","rawOutput":{"type":"ImageGen","path":"/private/image.png"}}
+{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id"}"#,
+                "updates=1; updates_without_id=0; matched=0; early=1; unmatched=0",
+            ),
+            (
+                r#"{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id"}
+{"type":"tool_call_update","status":"completed","rawOutput":{"type":"ImageGen","path":"/private/image.png"}}"#,
+                "updates=1; updates_without_id=1; matched=0; early=0; unmatched=0",
+            ),
+        ];
+        for (stdout, expected) in cases {
+            assert!(grok_image_tool_path(stdout).is_err());
+            let diagnostic = grok_image_exit_diagnostic(
+                stdout.as_bytes(),
+                b"secret-looking-token",
+                false,
+                false,
+            );
+            assert!(diagnostic.contains(expected), "{diagnostic}");
+            for private in [
+                "private-id",
+                "secret-looking-token",
+                "/private/image.png",
+                "ChangedType",
+            ] {
+                assert!(!diagnostic.contains(private), "{diagnostic}");
+            }
+        }
+    }
+
+    #[test]
+    fn grok_image_diagnostic_marks_truncated_completion_trace() {
+        let stdout = br#"{"type":"tool_call","toolName":"image_gen","toolCallId":"private-id"}
+{"type":"tool_call_update","toolCallId":"private-id","status":"compl"#;
+        let diagnostic = grok_image_exit_diagnostic(stdout, b"private stderr", true, true);
+        assert!(diagnostic.contains("diagnostic: partial_trace; image_gen calls=1; completed=0"));
+        assert!(diagnostic.contains("json_lines=1; invalid_lines=1; updates=0"));
+        assert!(diagnostic.contains("stdout_truncated=true; stderr_truncated=true"));
+        assert!(!diagnostic.contains("private-id"));
+        assert!(!diagnostic.contains("private stderr"));
     }
 
     #[test]

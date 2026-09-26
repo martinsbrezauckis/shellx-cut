@@ -228,7 +228,10 @@ fn executable_name(value: &str) -> bool {
 #[cfg(unix)]
 fn executable_mode_matches(metadata: &fs::Metadata, expected: u32) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o777 == expected
+    // Runner's manifest declares executable semantics as 0755, then seals a
+    // shared prepared executable to owner-only 0500. Both retain owner execute;
+    // no other observed mode is an admitted sealed state.
+    expected == 0o755 && matches!(metadata.permissions().mode() & 0o777, 0o755 | 0o500)
 }
 
 #[cfg(not(unix))]

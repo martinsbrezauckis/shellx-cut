@@ -184,3 +184,18 @@ fn attach_judge_to_receipt_rejects_receipt_outside_receipts_dir() {
         .expect_err("judge attachment must not write receipts outside receipts dir");
     assert_eq!(err.code, error_codes::INVALID_ARGS);
 }
+
+#[cfg(unix)]
+#[test]
+fn attach_judge_to_receipt_rejects_linked_receipt_leaf() {
+    let dir = tempfile::tempdir().unwrap();
+    let receipts = dir.path().join("receipts");
+    std::fs::create_dir(&receipts).unwrap();
+    let outside = dir.path().join("outside.json");
+    std::fs::write(&outside, b"outside").unwrap();
+    let linked = receipts.join("render_001.json");
+    std::os::unix::fs::symlink(&outside, &linked).unwrap();
+    let state = AppState::new();
+    assert!(attach_judge_to_receipt(&state, &receipts, &linked, json!({"status":"test"})).is_err());
+    assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+}

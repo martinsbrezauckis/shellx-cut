@@ -24,7 +24,12 @@ pub(super) fn filter(
         return Ok(String::new());
     }
     let trf = trf_path(project_dir, asset_hash, src_in_ms, src_out_ms);
-    if !trf.exists() {
+    let parent = trf.parent().expect("stabilization path has a parent");
+    if !parent.exists() {
+        return Ok(String::new());
+    }
+    super::require_plain_internal_dir(parent)?;
+    if !super::plain_internal_file_exists(&trf)? {
         return Ok(String::new());
     }
     let smoothing = st.smoothing.clamp(1.0, 100.0).round() as u64;
@@ -82,14 +87,17 @@ pub(super) fn prepare(project: &Project, edl: &Edl, project_dir: &Path) -> Resul
             continue;
         };
         let trf = trf_path(project_dir, &asset.hash, src_in, src_out);
-        if trf.exists() || !done.insert(trf.clone()) {
+        let parent = trf.parent().expect("stabilization path has a parent");
+        super::ensure_plain_internal_child(project_dir, parent)?;
+        if super::plain_internal_file_exists(&trf)? || !done.insert(trf.clone()) {
             continue;
         }
-        if let Some(parent) = trf.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let staging = tempfile::Builder::new()
+            .prefix(".cut-stab-")
+            .tempdir_in(parent)?;
+        let staged_trf = staging.path().join("detect.trf");
         let (detect_fileformat, _) = crate::ffmpeg::vidstab_fileformat_support()?;
-        let vf = detect_filter(src_in, src_out, &trf, detect_fileformat);
+        let vf = detect_filter(src_in, src_out, &staged_trf, detect_fileformat);
         let mut input_path = PathBuf::from(&asset.path);
         if input_path.is_relative() {
             input_path = project_dir.join(input_path);
@@ -104,6 +112,9 @@ pub(super) fn prepare(project: &Project, edl: &Edl, project_dir: &Path) -> Resul
             "null".to_string(),
             "-".to_string(),
         ])?;
+        super::plain_internal_file_exists(&staged_trf)?;
+        super::plain_internal_file_exists(&trf)?;
+        std::fs::rename(&staged_trf, &trf)?;
     }
     Ok(())
 }

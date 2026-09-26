@@ -199,8 +199,12 @@ impl OpLog {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if !path.exists() {
-            std::fs::write(path, b"")?;
+        // create_new never follows an existing leaf, including a dangling
+        // symlink. The checked open below rejects every non-plain journal.
+        match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
         }
         let scan = crate::journal::open_and_recover(path)?;
         Ok(Self {
@@ -244,7 +248,7 @@ impl OpLog {
         }
         let revision = revision_for_next_sequence(index.next_seq);
         index.requests.validate_append(op, revision.as_deref())?;
-        let mut f = OpenOptions::new().append(true).open(&self.path)?;
+        let mut f = crate::journal::open_plain_journal(&self.path, true, true, None)?;
         f.write_all(&line)?;
         f.sync_data()?;
         // Post-sync index updates are infallible; identity degradation is status, never Err.
