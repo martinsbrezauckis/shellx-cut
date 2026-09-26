@@ -154,7 +154,29 @@ pub fn build_router(state: AppState, ui_dist: Option<std::path::PathBuf>) -> Rou
         // an off-origin endpoint. Applied to every response — inert on JSON/media
         // (CSP is a document-level policy) and meaningful on the SPA document.
         .layer(axum::middleware::from_fn(add_csp_header))
+        .layer(axum::middleware::from_fn(add_document_cache_header))
         .layer(axum::middleware::from_fn(guard_local_origin))
+}
+
+/// Index documents must be reloaded from the installed cutd after an update.
+/// Hashed JS/CSS assets keep ServeDir's normal caching behavior.
+async fn add_document_cache_header(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut res = next.run(req).await;
+    if res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"))
+    {
+        res.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+    }
+    res
 }
 
 /// Content-Security-Policy for the served UI (S3). The UI is a Vite SPA: one
@@ -347,6 +369,58 @@ mod tests {
             base_url: format!("http://127.0.0.1:{port}"),
             handle,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn versioned_index_is_fresh_and_hashed_assets_keep_their_cache_policy() {
+        let dist = tempfile::tempdir().unwrap();
+        std::fs::write(dist.path().join("index.html"), "<html>current</html>").unwrap();
+        std::fs::write(
+            dist.path().join("app-123.js"),
+            "export const current = true;",
+        )
+        .unwrap();
+        let server =
+            spawn_test_server(build_router(AppState::new(), Some(dist.path().into()))).await;
+
+        let check = move |path: &'static str| {
+            let url = format!("{}{path}", server.base_url);
+            let mut response = ureq::get(&url).call().unwrap();
+            let cache = response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let body = response.body_mut().read_to_string().unwrap();
+            (response.status().as_u16(), cache, body)
+        };
+        let (old_index, new_index, external_index, direct_index, spa_fallback, asset) =
+            tokio::task::spawn_blocking(move || {
+                (
+                    check("/?cut-ui=old"),
+                    check("/?cut-ui=new"),
+                    check("/?cut-session=one"),
+                    check("/index.html"),
+                    check("/editor"),
+                    check("/app-123.js"),
+                )
+            })
+            .await
+            .unwrap();
+        for (code, policy, html) in [
+            old_index,
+            new_index,
+            external_index,
+            direct_index,
+            spa_fallback,
+        ] {
+            assert_eq!(code, 200);
+            assert_eq!(policy.as_deref(), Some("no-store"));
+            assert_eq!(html, "<html>current</html>");
+        }
+        assert_eq!(asset.0, 200);
+        assert_eq!(asset.1, None);
+        assert_eq!(asset.2, "export const current = true;");
     }
 
     /// S3: the UI CSP is well-formed and pins the directives the SPA relies on —

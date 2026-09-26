@@ -77,9 +77,14 @@ static constexpr int kSxcCameraAccepting = 1;
 static constexpr int kSxcCameraClosed = 2;
 
 @interface SxcCameraDelegate : NSObject <AVCaptureFileOutputRecordingDelegate,
+                                         AVCaptureFileOutputDelegate,
                                          AVCaptureVideoDataOutputSampleBufferDelegate> {
 @public
     std::atomic_int _sampleState;
+    std::atomic_uint_fast64_t _movieStartPtsNs;
+    std::atomic_uint_fast64_t _movieFirstPtsNs;
+    std::atomic_uint_fast64_t _movieLastEndPtsNs;
+    std::atomic_uint_fast64_t _movieVideoSamples;
     SxcCameraFrameCallback _callback;
     void *_context;
     dispatch_semaphore_t _firstFrame;
@@ -95,6 +100,10 @@ static constexpr int kSxcCameraClosed = 2;
     self = [super init];
     if (self) {
         _sampleState.store(kSxcCameraPending);
+        _movieStartPtsNs.store(0);
+        _movieFirstPtsNs.store(0);
+        _movieLastEndPtsNs.store(0);
+        _movieVideoSamples.store(0);
         _callback = callback;
         _context = context;
         _firstFrame = dispatch_semaphore_create(0);
@@ -102,6 +111,13 @@ static constexpr int kSxcCameraClosed = 2;
         _deviceLost.store(false);
     }
     return self;
+}
+
+// Observe the file output's own video samples without changing when it starts
+// compression. DataOutput samples are a different branch of the session graph.
+- (BOOL)captureOutputShouldProvideSampleAccurateRecordingStart:(AVCaptureOutput *)output {
+    (void)output;
+    return NO;
 }
 
 - (void)captureOutput:(AVCaptureFileOutput *)captureOutput
@@ -115,11 +131,32 @@ static constexpr int kSxcCameraClosed = 2;
     _sampleState.compare_exchange_strong(expected, kSxcCameraAccepting);
 }
 
+- (void)captureOutput:(AVCaptureFileOutput *)captureOutput
+ didStartRecordingToOutputFileAtURL:(NSURL *)outputFileURL
+             startPTS:(CMTime)startPTS
+      fromConnections:(NSArray<AVCaptureConnection *> *)connections {
+    _movieStartPtsNs.store(sxc_time_ns(startPTS));
+    [self captureOutput:captureOutput
+        didStartRecordingToOutputFileAtURL:outputFileURL
+        fromConnections:connections];
+}
+
 - (void)captureOutput:(AVCaptureOutput *)output
  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
        fromConnection:(AVCaptureConnection *)connection {
-    (void)output;
     (void)connection;
+    if ([output isKindOfClass:[AVCaptureMovieFileOutput class]]) {
+        CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
+        if (!format || CMFormatDescriptionGetMediaType(format) != kCMMediaType_Video) return;
+        const uint64_t pts = sxc_time_ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
+        const uint64_t duration = sxc_time_ns(CMSampleBufferGetDuration(sampleBuffer));
+        if (pts == 0 || duration > UINT64_MAX - pts) return;
+        uint64_t expected = 0;
+        _movieFirstPtsNs.compare_exchange_strong(expected, pts);
+        _movieLastEndPtsNs.store(pts + duration);
+        _movieVideoSamples.fetch_add(1);
+        return;
+    }
     if (_sampleState.load() != kSxcCameraAccepting || !_callback) return;
     uint64_t pts = sxc_time_ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
     uint64_t duration = sxc_time_ns(CMSampleBufferGetDuration(sampleBuffer));
@@ -136,6 +173,12 @@ static constexpr int kSxcCameraClosed = 2;
     (void)outputFileURL;
     (void)connections;
     sxc_camera_diag("didFinishRecording entered");
+    os_log_error(OS_LOG_DEFAULT,
+                 "SXCCameraDiag file-output video start_pts_ns=%llu first_pts_ns=%llu last_end_pts_ns=%llu samples=%llu",
+                 (unsigned long long)_movieStartPtsNs.load(),
+                 (unsigned long long)_movieFirstPtsNs.load(),
+                 (unsigned long long)_movieLastEndPtsNs.load(),
+                 (unsigned long long)_movieVideoSamples.load());
     if (error && ![error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] boolValue]) {
         _terminalError = error;
     }
@@ -296,6 +339,7 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
         handle.samples = [AVCaptureVideoDataOutput new];
         handle.samples.alwaysDiscardsLateVideoFrames = NO;
         handle.delegate = [[SxcCameraDelegate alloc] initWithCallback:callback context:context];
+        handle.movie.delegate = handle.delegate;
         handle.queue = dispatch_queue_create("com.theshellx.cut.camera.frames", DISPATCH_QUEUE_SERIAL);
         [handle.samples setSampleBufferDelegate:handle.delegate queue:handle.queue];
         [handle.session beginConfiguration];
@@ -337,6 +381,7 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
             sxc_camera_diag("failed Start stopRunning enter");
             [handle.session stopRunning];
             sxc_camera_diag("failed Start stopRunning exit");
+            handle.movie.delegate = nil;
             [[NSNotificationCenter defaultCenter] removeObserver:handle.delegate];
             sxc_error(error, error_capacity, handle.delegate->_deviceLost.load()
                 ? @"The selected camera was disconnected before its first frame"
@@ -374,12 +419,14 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
             sxc_camera_diag("didFinish timeout; stopRunning enter");
             [handle.session stopRunning];
             sxc_camera_diag("didFinish timeout; stopRunning exit");
+            handle.movie.delegate = nil;
             sxc_error(error, error_capacity, @"AVFoundation did not finish the camera recording");
             return -1;
         }
         sxc_camera_diag("didFinish observed; stopRunning enter");
         [handle.session stopRunning];
         sxc_camera_diag("stopRunning exit");
+        handle.movie.delegate = nil;
         const bool lost = handle.delegate->_deviceLost.load();
         if (device_lost) *device_lost = lost ? 1 : 0;
         [[NSNotificationCenter defaultCenter] removeObserver:handle.delegate];

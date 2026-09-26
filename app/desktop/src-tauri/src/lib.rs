@@ -80,6 +80,7 @@ mod macos_region_bridge;
 mod record_hotkey;
 mod source_reveal;
 mod tools;
+mod ui_navigation;
 mod update_handoff;
 mod update_identity;
 mod update_settings;
@@ -1107,8 +1108,12 @@ pub fn run() {
                             // wired state.
                             if ui {
                                 if let Some(win) = app.get_webview_window("main") {
-                                    if let Ok(parsed) = url.parse() {
-                                        let _ = win.navigate(parsed);
+                                    let index = resource_dir.join("ui-dist/index.html");
+                                    match ui_navigation::navigation_url(&url, &index, mode == "external") {
+                                        Ok(parsed) => {
+                                            let _ = win.navigate(parsed);
+                                        }
+                                        Err(reason) => eprintln!("[shellx-cut] UI navigation refused: {reason}"),
                                     }
                                 }
                             }
