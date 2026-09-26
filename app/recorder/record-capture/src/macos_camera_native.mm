@@ -70,10 +70,16 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
     }
 }
 
+// Pending -> accepting -> closed. A late didStart must never re-enable the
+// callback after Stop has detached and drained its serial delivery queue.
+static constexpr int kSxcCameraPending = 0;
+static constexpr int kSxcCameraAccepting = 1;
+static constexpr int kSxcCameraClosed = 2;
+
 @interface SxcCameraDelegate : NSObject <AVCaptureFileOutputRecordingDelegate,
                                          AVCaptureVideoDataOutputSampleBufferDelegate> {
 @public
-    std::atomic_bool _accepting;
+    std::atomic_int _sampleState;
     SxcCameraFrameCallback _callback;
     void *_context;
     dispatch_semaphore_t _firstFrame;
@@ -88,7 +94,7 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
 - (instancetype)initWithCallback:(SxcCameraFrameCallback)callback context:(void *)context {
     self = [super init];
     if (self) {
-        _accepting.store(false);
+        _sampleState.store(kSxcCameraPending);
         _callback = callback;
         _context = context;
         _firstFrame = dispatch_semaphore_create(0);
@@ -105,6 +111,8 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
     (void)outputFileURL;
     (void)connections;
     sxc_camera_diag("didStartRecording entered");
+    int expected = kSxcCameraPending;
+    _sampleState.compare_exchange_strong(expected, kSxcCameraAccepting);
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output
@@ -112,7 +120,7 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
        fromConnection:(AVCaptureConnection *)connection {
     (void)output;
     (void)connection;
-    if (!_accepting.load() || !_callback) return;
+    if (_sampleState.load() != kSxcCameraAccepting || !_callback) return;
     uint64_t pts = sxc_time_ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
     uint64_t duration = sxc_time_ns(CMSampleBufferGetDuration(sampleBuffer));
     if (duration == 0) duration = 33333333;
@@ -131,7 +139,7 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
     if (error && ![error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] boolValue]) {
         _terminalError = error;
     }
-    _accepting.store(false);
+    _sampleState.store(kSxcCameraClosed);
     dispatch_semaphore_signal(_finished);
     sxc_camera_diag("didFinishRecording signaled");
 }
@@ -139,7 +147,7 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
 - (void)captureDeviceDisconnected:(NSNotification *)notification {
     (void)notification;
     _deviceLost.store(true);
-    _accepting.store(false);
+    _sampleState.store(kSxcCameraClosed);
     dispatch_semaphore_signal(_firstFrame);
 }
 
@@ -148,7 +156,7 @@ static bool sxc_wait_camera_event(dispatch_semaphore_t event, int timeout_second
     // Treat a terminal AVFoundation runtime error as device loss so the
     // independently finalized take can never be reported Complete.
     _deviceLost.store(true);
-    _accepting.store(false);
+    _sampleState.store(kSxcCameraClosed);
     dispatch_semaphore_signal(_firstFrame);
 }
 @end
@@ -173,9 +181,29 @@ static void sxc_camera_diag_movie_state(const char *phase, SxcCameraHandle *hand
                  file_status == 0 ? (long long)file_stat.st_size : -1LL);
 }
 
+extern "C" void sxc_macos_camera_diag_samples(uint64_t first_pts_ns,
+                                                 uint64_t last_end_pts_ns,
+                                                 uint64_t count) {
+    os_log_error(OS_LOG_DEFAULT,
+                 "SXCCameraDiag accepted samples first_pts_ns=%llu last_end_pts_ns=%llu count=%llu interval_ns=%llu",
+                 (unsigned long long)first_pts_ns, (unsigned long long)last_end_pts_ns,
+                 (unsigned long long)count,
+                 (unsigned long long)(last_end_pts_ns - first_pts_ns));
+}
+
+extern "C" void sxc_macos_camera_diag_projection(uint64_t first_offset_ms,
+                                                    uint64_t end_offset_ms,
+                                                    uint64_t media_duration_ms) {
+    os_log_error(OS_LOG_DEFAULT,
+                 "SXCCameraDiag duration projection first_offset_ms=%llu end_offset_ms=%llu observed_ms=%llu media_ms=%llu",
+                 (unsigned long long)first_offset_ms, (unsigned long long)end_offset_ms,
+                 (unsigned long long)(end_offset_ms - first_offset_ms),
+                 (unsigned long long)media_duration_ms);
+}
+
 static void sxc_quiesce_samples(SxcCameraHandle *handle) {
     sxc_camera_diag("sample quiescence begin");
-    handle.delegate->_accepting.store(false);
+    handle.delegate->_sampleState.store(kSxcCameraClosed);
     [handle.samples setSampleBufferDelegate:nil queue:nil];
     dispatch_sync(handle.queue, ^{});
     sxc_camera_diag("sample quiescence drained");
@@ -298,10 +326,8 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
         [handle.movie startRecordingToOutputFileURL:url recordingDelegate:handle.delegate];
         sxc_camera_diag("startRecording requested");
         sxc_camera_main_ping("start");
-        // Samples delivered while the session was merely warming up must not
-        // enter the shared screen clock. Admit callbacks only after the movie
-        // writer owns its destination.
-        handle.delegate->_accepting.store(true);
+        // didStartRecording admits samples only after the asynchronous movie
+        // writer has started; callbacks before it are warm-up observations.
         if (!sxc_wait_camera_event(handle.delegate->_firstFrame, 5) ||
             handle.delegate->_deviceLost.load()) {
             sxc_quiesce_samples(handle);

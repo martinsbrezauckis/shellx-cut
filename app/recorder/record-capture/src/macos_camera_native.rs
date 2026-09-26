@@ -145,6 +145,7 @@ struct FrameCollector {
 #[derive(Default)]
 struct FrameCollectorState {
     first_pts_ns: Option<u64>,
+    last_end_pts_ns: Option<u64>,
     origin: Option<Instant>,
     last_end: Option<Instant>,
     observations: Vec<CameraFrameObservation>,
@@ -174,6 +175,7 @@ impl FrameCollector {
             return;
         }
         state.last_end = Some(ended_at);
+        state.last_end_pts_ns = pts_ns.checked_add(duration_ns);
         state
             .observations
             .push(CameraFrameObservation::new(started_at, ended_at));
@@ -189,6 +191,13 @@ impl FrameCollector {
                 "finalize macOS camera",
                 "AVFoundation delivered no camera frames",
             ));
+        }
+        if let (Some(first), Some(last)) = (state.first_pts_ns, state.last_end_pts_ns) {
+            if last >= first {
+                unsafe {
+                    sxc_macos_camera_diag_samples(first, last, state.observations.len() as u64)
+                };
+            }
         }
         Ok(std::mem::take(&mut state.observations))
     }
@@ -217,6 +226,7 @@ fn error(message: &str, cause: &str) -> RecordError {
 }
 
 unsafe extern "C" {
+    fn sxc_macos_camera_diag_samples(first_pts_ns: u64, last_end_pts_ns: u64, count: u64);
     fn sxc_macos_camera_devices_json(buffer: *mut c_char, capacity: usize) -> usize;
     fn sxc_macos_camera_authorization() -> i32;
     fn sxc_macos_camera_start(
