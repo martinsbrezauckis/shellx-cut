@@ -103,7 +103,17 @@ pub(crate) fn complete(capture_dir: &Path, source: &Path) -> Result<(), CutError
             .file_name()
             .and_then(|name| name.to_str())
             .map(str::to_string),
-        note: "recording source and project finalized normally".into(),
+        note: if let Some(held_ms) = manifest
+            .checkpoints
+            .last()
+            .and_then(|checkpoint| checkpoint.held_last_frame_ms)
+        {
+            format!(
+                "recording finalized with the last verified frame held for {held_ms} ms because the final screen segment received no new frames"
+            )
+        } else {
+            "recording source and project finalized normally".into()
+        },
     };
     if manifest.has_torn_tail() {
         return seal_torn_receipt(capture_dir, &receipt)

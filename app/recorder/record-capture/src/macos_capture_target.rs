@@ -1,4 +1,4 @@
-//! Native macOS source selection and controller exclusion for one SCK stream.
+//! Native macOS source selection for one SCK recording stream.
 
 use crate::macos::{cap_err, recording_stream_config};
 use crate::{
@@ -6,7 +6,7 @@ use crate::{
 };
 use record_core::Result;
 use screencapturekit::prelude::*;
-use screencapturekit::shareable_content::{SCRunningApplication, SCShareableContentInfo};
+use screencapturekit::shareable_content::SCShareableContentInfo;
 
 const ENV_CONTROLLER_OWNER: &str = "SHELLX_CUT_MACOS_CONTROLLER_OWNER";
 const ENV_CONTROLLER_OWNER_PID: &str = "SHELLX_CUT_MACOS_CONTROLLER_OWNER_PID";
@@ -19,12 +19,11 @@ pub(super) type PreparedMacCaptureTarget = (
     Option<surface_coordinates::CaptureSurface>,
     SCStreamConfiguration,
     bool,
-    bool,
 );
 
-/// Build the exact selected SCK target. The final booleans state whether this
-/// is a region path and whether the admitted display filter excludes the exact
-/// owning Tauri application, including controller windows created later.
+/// Build the exact selected SCK target. The final boolean states whether this
+/// is a region path. Full-display capture includes every visible window,
+/// including Cut, so its preview can reflect the same pixels as its recording.
 pub(super) fn prepare_capture_target(
     cfg: &CaptureConfig,
     fps: u32,
@@ -48,7 +47,6 @@ pub(super) fn prepare_capture_target(
             Some(region.input_surface),
             region.stream_config,
             true,
-            false,
         ));
     }
 
@@ -58,15 +56,12 @@ pub(super) fn prepare_capture_target(
     // Screen Recording consent. The individual SCK accessors remain current.
     let windows = content.windows();
     let displays = content.displays();
-    let applications = content.applications();
-    let (filter, fallback_width, fallback_height, surface, controller_excluded) = if let Some(
-        want,
-    ) =
+    let (filter, fallback_width, fallback_height, surface) = if let Some(want) =
         cfg.window.as_deref()
     {
         if let Some(placement) = cfg.controller_placement.as_ref() {
             placement.unavailable(
-                    "Controller exclusion applies to display capture; selected-window capture preserves its exact source semantics.",
+                    "Selected-window capture preserves its exact source semantics; no controller exclusion or auto-hide is applied.",
                 );
         }
         let want_id = crate::window_target::parse_macos_window_id(want).ok_or_else(|| {
@@ -91,22 +86,20 @@ pub(super) fn prepare_capture_target(
             frame.size.height as u32,
             // RecordingOutput has no timestamped window geometry stream.
             None,
-            false,
         )
     } else {
         let display = select_display(cfg, &displays)?;
         let frame = display.frame();
-        let (filter, controller_excluded) =
-            display_filter_with_controller_exclusion(display, &applications);
-        if !controller_excluded {
-            if let Some(placement) = cfg.controller_placement.as_ref() {
-                placement.unavailable(
-                    "ScreenCaptureKit could not resolve the admitted owning Cut application for durable controller exclusion.",
-                );
-            }
+        if let Some(placement) = cfg.controller_placement.as_ref() {
+            placement.not_excluded(
+                "Full-display recording can include Cut when unobscured; no controller exclusion or auto-hide is applied.",
+            );
         }
         (
-            filter,
+            SCContentFilter::create()
+                .with_display(display)
+                .with_excluding_windows(&[])
+                .build(),
             display.width(),
             display.height(),
             surface_coordinates::CaptureSurface::new(
@@ -115,7 +108,6 @@ pub(super) fn prepare_capture_target(
                 frame.size.width,
                 frame.size.height,
             ),
-            controller_excluded,
         )
     };
 
@@ -132,7 +124,6 @@ pub(super) fn prepare_capture_target(
         surface,
         recording_stream_config(width, height, fps, cfg.capture_cursor),
         false,
-        controller_excluded,
     ))
 }
 
@@ -159,36 +150,10 @@ fn select_display<'a>(cfg: &CaptureConfig, displays: &'a [SCDisplay]) -> Result<
         .ok_or_else(|| cap_err("select a display", "no displays available"))
 }
 
-fn display_filter_with_controller_exclusion(
-    display: &SCDisplay,
-    applications: &[SCRunningApplication],
-) -> (SCContentFilter, bool) {
-    let owner = admitted_controller_owner_pid().and_then(|owner_pid| {
-        applications
-            .iter()
-            .find(|application| application.process_id() == owner_pid)
-    });
-    let Some(owner) = owner else {
-        return (
-            SCContentFilter::create()
-                .with_display(display)
-                .with_excluding_windows(&[])
-                .build(),
-            false,
-        );
-    };
-    (
-        SCContentFilter::create()
-            .with_display(display)
-            .with_excluding_applications(&[owner], &[])
-            .build(),
-        true,
-    )
-}
-
 /// The selected controller must be the immediate Tauri parent which installed
-/// the private marker for this child.  An adopted engine has no authority to
-/// hide or exclude its parent from either the picker or a display capture.
+/// the private marker for this child. An adopted engine has no authority to
+/// hide its parent from the window picker. Full-display recording does not
+/// exclude either process, so visible Cut pixels remain in the source.
 pub(super) fn admitted_controller_owner_pid() -> Option<i32> {
     extern "C" {
         fn getppid() -> i32;

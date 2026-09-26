@@ -103,6 +103,7 @@ impl WgcCheckpointPublisher for Publisher {
             bytes: 1,
             sha256: "a".repeat(64),
             media: None,
+            held_last_frame_ms: None,
             facts,
         })
     }

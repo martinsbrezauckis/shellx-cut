@@ -118,6 +118,25 @@ impl Checkpoints {
         ffprobe: &str,
         timing: Option<&WgcTimingRecorder>,
     ) -> Result<record_recovery::Checkpoint> {
+        // WGC may reopen a checkpoint immediately before Stop, then receive no
+        // frame at all. Its closed MP4 cannot be probed. Keep the elapsed span
+        // by holding the last verified frame, and mark that fact in the journal.
+        // A segment with any accepted native frame still follows ordinary
+        // verification; failures there must not be hidden by this fallback.
+        let held_tail = timing.is_some_and(|observation| {
+            observation.accepted_frames() == 0 && observation.control_stop_succeeded()
+        }) && sequence > 0;
+        if held_tail {
+            materialize_empty_wgc_tail(
+                &self.root,
+                self.owner.manifest(),
+                sequence,
+                staging,
+                &facts,
+                ffmpeg,
+                ffprobe,
+            )?;
+        }
         // A closed encoder file is still not a checkpoint until both the container
         // facts and a full decode succeed. The manifest never names an open or merely
         // non-empty MP4.
@@ -134,9 +153,13 @@ impl Checkpoints {
         } else {
             media
         };
-        self.owner
-            .publish(sequence, staging, facts, media)
-            .map_err(|e| error(&e.to_string()))
+        let published = if held_tail {
+            self.owner
+                .publish_held_tail(sequence, staging, facts, media)
+        } else {
+            self.owner.publish(sequence, staging, facts, media)
+        };
+        published.map_err(|e| error(&e.to_string()))
     }
 
     /// Return the final path together with facts from the one verification pass
@@ -158,6 +181,89 @@ impl Checkpoints {
         .map_err(|e| error(&e.to_string()))?;
         Ok((stitched.path, stitched.media))
     }
+}
+
+fn materialize_empty_wgc_tail(
+    root: &Path,
+    manifest: &record_recovery::CaptureManifest,
+    sequence: u64,
+    staging: &Path,
+    facts: &CheckpointFacts,
+    ffmpeg: &str,
+    ffprobe: &str,
+) -> Result<()> {
+    let prior = manifest
+        .checkpoints
+        .last()
+        .filter(|checkpoint| checkpoint.sequence.checked_add(1) == Some(sequence))
+        .ok_or_else(|| error("a frame-free WGC tail has no verified prior checkpoint"))?;
+    let prior_media = prior
+        .media
+        .as_ref()
+        .filter(|media| media.decoded_video_frames > 0)
+        .ok_or_else(|| error("the prior checkpoint has no verified video frame"))?;
+    let prior_path = root.join(format!("checkpoints/segment-{:06}.mp4", prior.sequence));
+    if prior.file != format!("checkpoints/segment-{:06}.mp4", prior.sequence)
+        || !record_recovery::is_plain_regular_file(&prior_path)
+            .map_err(|cause| error(&cause.to_string()))?
+    {
+        return Err(error("the prior checkpoint is not a local regular file"));
+    }
+    let span_ms = facts.end_ms.saturating_sub(facts.start_ms);
+    if span_ms == 0 {
+        return Err(error("a frame-free WGC tail has no elapsed capture span"));
+    }
+    let held = PrivateStaging::create(root, "held-wgc-tail", "segment.mp4")
+        .map_err(|cause| error(&format!("reserve held WGC tail: {cause}")))?;
+    let last_frame = prior_media.decoded_video_frames - 1;
+    let filter = format!(
+        "select=eq(n\\,{last_frame}),setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={:.3}",
+        span_ms as f64 / 1000.0
+    );
+    let duration = format!("{:.3}", span_ms as f64 / 1000.0);
+    let control =
+        cut_media::ffmpeg::OwnedProcessControl::bounded(Duration::from_secs(120), || false);
+    let output = cut_media::ffmpeg::run_owned_command(
+        Command::new(ffmpeg)
+            .args(["-v", "error", "-n", "-i"])
+            .arg(&prior_path)
+            .args([
+                "-map", "0:v:0", "-vf", &filter, "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-t", &duration,
+            ])
+            .arg(held.path()),
+        &control,
+        "hold last verified frame for WGC tail without native frames",
+    )
+    .map_err(|cause| error(&cause.to_string()))?;
+    if !output.status.success() {
+        return Err(error("ffmpeg could not hold the last verified WGC frame"));
+    }
+    let media = record_recovery::verify_media(ffmpeg, ffprobe, held.path())
+        .map_err(|cause| error(&cause.to_string()))?;
+    if media.has_audio
+        || media.width != prior_media.width
+        || media.height != prior_media.height
+        || media.duration_ms.abs_diff(span_ms) > 100
+    {
+        return Err(error(
+            "held WGC tail does not preserve resolution and elapsed duration",
+        ));
+    }
+    let install = match std::fs::symlink_metadata(staging) {
+        Ok(_)
+            if record_recovery::is_plain_regular_file(staging)
+                .map_err(|cause| error(&cause.to_string()))? =>
+        {
+            record_recovery::replace_file_synced(held.path(), staging)
+        }
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
+            record_recovery::publish_new_synced(held.path(), staging)
+        }
+        Ok(_) => return Err(error("WGC tail stage is not a local regular file")),
+        Err(cause) => return Err(error(&format!("inspect WGC tail stage: {cause}"))),
+    };
+    install.map_err(|cause| error(&format!("install held WGC tail: {cause}")))
 }
 
 fn trim_extrapolated_wgc_tail(
@@ -286,6 +392,156 @@ mod tests {
 
     use super::{trim_extrapolated_wgc_tail, CheckpointConfig, Checkpoints};
     use crate::windows_wgc_timing::WgcTimingRecorder;
+
+    #[test]
+    fn zero_frame_final_wgc_checkpoint_holds_verified_frame_and_stitches_full_span() {
+        let root = tempdir().unwrap();
+        ManifestOwner::begin(root.path(), CaptureStart::new("zero-final-wgc", 400)).unwrap();
+        let config = CheckpointConfig {
+            manifest_dir: root.path().to_string_lossy().into_owned(),
+            interval_ms: 400,
+        };
+        let mut checkpoints = Checkpoints::open(Some(&config)).unwrap().unwrap();
+        let (sequence, first) = checkpoints.begin_windows_wgc(0).unwrap();
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=32x32:r=30"
+            ])
+            .args(["-t", "0.4", "-an", "-c:v", "libx264"])
+            .arg(&first)
+            .status()
+            .unwrap()
+            .success());
+        let facts = record_recovery::CheckpointFacts {
+            start_ms: 0,
+            end_ms: 400,
+            event_offset_ms: 0,
+            audio_offset_ms: None,
+        };
+        checkpoints
+            .publish_with_tools(sequence, &first, facts, "ffmpeg", "ffprobe", None)
+            .unwrap();
+
+        let (sequence, empty) = checkpoints.begin_windows_wgc(400).unwrap();
+        let origin = Instant::now();
+        let timing = WgcTimingRecorder::new(origin, 30, &empty);
+        timing.control_stopped(origin + Duration::from_millis(800), true);
+        let held = checkpoints
+            .publish_with_tools(
+                sequence,
+                &empty,
+                record_recovery::CheckpointFacts {
+                    start_ms: 400,
+                    end_ms: 800,
+                    event_offset_ms: 400,
+                    audio_offset_ms: None,
+                },
+                "ffmpeg",
+                "ffprobe",
+                Some(&timing),
+            )
+            .unwrap();
+        assert_eq!(held.held_last_frame_ms, Some(400));
+        assert!(held.media.as_ref().unwrap().duration_ms.abs_diff(400) <= 100);
+        assert_ne!(held.file, checkpoints.owner.manifest().checkpoints[0].file);
+        assert!(root.path().join(&held.file).is_file());
+        let (source, media) = checkpoints
+            .stitch("ffmpeg", "ffprobe", "source.mp4")
+            .unwrap();
+        assert!(source.is_file());
+        assert!(media.duration_ms.abs_diff(800) <= 100);
+        let manifest = record_recovery::read_manifest(root.path()).unwrap();
+        assert!(!manifest.has_open_segment());
+        assert_eq!(manifest.checkpoints[1].held_last_frame_ms, Some(400));
+        assert_eq!(
+            record_recovery::recovery_status(root.path()).held_last_frame_ms,
+            Some(400)
+        );
+    }
+
+    #[test]
+    fn accepted_wgc_frame_never_uses_held_tail_fallback() {
+        let root = tempdir().unwrap();
+        ManifestOwner::begin(root.path(), CaptureStart::new("accepted-final-wgc", 400)).unwrap();
+        let config = CheckpointConfig {
+            manifest_dir: root.path().to_string_lossy().into_owned(),
+            interval_ms: 400,
+        };
+        let mut checkpoints = Checkpoints::open(Some(&config)).unwrap().unwrap();
+        let (_, first) = checkpoints.begin_windows_wgc(0).unwrap();
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=32x32:r=30"
+            ])
+            .args(["-t", "0.4", "-an", "-c:v", "libx264"])
+            .arg(&first)
+            .status()
+            .unwrap()
+            .success());
+        checkpoints
+            .publish_with_tools(
+                0,
+                &first,
+                record_recovery::CheckpointFacts {
+                    start_ms: 0,
+                    end_ms: 400,
+                    event_offset_ms: 0,
+                    audio_offset_ms: None,
+                },
+                "ffmpeg",
+                "ffprobe",
+                None,
+            )
+            .unwrap();
+        let (sequence, invalid) = checkpoints.begin_windows_wgc(400).unwrap();
+        let origin = Instant::now();
+        let timing = WgcTimingRecorder::new(origin, 30, &invalid);
+        timing.accepted_frame(1, origin + Duration::from_millis(450));
+        let result = checkpoints.publish_with_tools(
+            sequence,
+            &invalid,
+            record_recovery::CheckpointFacts {
+                start_ms: 400,
+                end_ms: 800,
+                event_offset_ms: 400,
+                audio_offset_ms: None,
+            },
+            "ffmpeg",
+            "ffprobe",
+            Some(&timing),
+        );
+        assert!(result.is_err());
+        assert_eq!(checkpoints.owner.manifest().checkpoints.len(), 1);
+
+        let failed_stop = WgcTimingRecorder::new(origin, 30, &invalid);
+        failed_stop.control_stopped(origin + Duration::from_millis(800), false);
+        let result = checkpoints.publish_with_tools(
+            sequence,
+            &invalid,
+            record_recovery::CheckpointFacts {
+                start_ms: 400,
+                end_ms: 800,
+                event_offset_ms: 400,
+                audio_offset_ms: None,
+            },
+            "ffmpeg",
+            "ffprobe",
+            Some(&failed_stop),
+        );
+        assert!(result.is_err());
+        assert!(!invalid.exists());
+        assert_eq!(checkpoints.owner.manifest().checkpoints.len(), 1);
+    }
 
     #[test]
     fn proven_wgc_tail_clip_preserves_frames_and_stop_span() {

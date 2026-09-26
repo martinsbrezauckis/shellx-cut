@@ -78,6 +78,7 @@ use tauri::Emitter;
 mod macos_controller_owner;
 mod macos_region_bridge;
 mod record_hotkey;
+mod record_indicator;
 mod source_reveal;
 mod tools;
 mod ui_navigation;
@@ -799,6 +800,7 @@ fn grant_engine_origin_capability(
         // fixed Record F9 GNOME binding. It receives no command, path, socket,
         // or shortcut text input.
         .permission("allow-record-hotkey-control");
+    let capability = capability.permission("allow-recording-indicator");
     let capability = if allow_foreground_region {
         // This is granted only to the exact selected engine origin while this
         // shell retains a successfully bound child. An adopted/external cutd
@@ -985,6 +987,7 @@ pub fn run() {
         .manage(ForegroundRegionBridgeState(Mutex::new(None)))
         .manage(ToolResolutionState(Mutex::new(ToolResolution::default())))
         .manage(record_hotkey::RecordHotkeyState::default())
+        .manage(record_indicator::RecordIndicatorState::default())
         // Update-state service: the snapshot the topbar button + Settings>About
         // read over the bridge. Seeded with the installed version; the setup
         // hook spawns the automatic (launch + 6-hourly) check driver.
@@ -1005,6 +1008,8 @@ pub fn run() {
             record_hotkey::get_record_hotkey_capability,
             record_hotkey::enable_gnome_record_hotkey,
             record_hotkey::disable_gnome_record_hotkey,
+            record_indicator::begin_recording_indicator,
+            record_indicator::end_recording_indicator,
         ])
         .setup(move |app| {
             #[cfg(windows)]
@@ -1020,6 +1025,8 @@ pub fn run() {
                     .data_directory(data_directory.clone())
                     .build()?;
             }
+
+            record_indicator::reset(app.handle());
 
             // Bundled resources (ui-dist). In `tauri dev` this resolves into
             // the dev resource layout; in a packaged build it is the platform
@@ -1161,14 +1168,14 @@ pub fn run() {
             }
 
             // Global Record F9. macOS/Windows use the native plugin. GNOME
-            // Wayland uses an explicit visible custom-keybinding opt-in because
-            // the supported portal backend is absent and GNOME Shell's private
-            // accelerator API rejects normal apps. Focused-window F9 remains
-            // independent on every surface.
+            // Wayland attempts its exact owned custom keybinding at startup
+            // unless the user explicitly disabled it. The supported portal
+            // backend is absent and GNOME Shell's private accelerator API
+            // rejects normal apps. Focused-window F9 remains independent.
             #[cfg(desktop)]
             {
                 if record_hotkey::use_gnome_wayland_fallback() {
-                    record_hotkey::restore_opt_in(app.handle());
+                    record_hotkey::configure_on_startup(app.handle());
                 } else {
                     use tauri_plugin_global_shortcut::{
                         Code, GlobalShortcutExt, Shortcut, ShortcutState,
@@ -1198,6 +1205,9 @@ pub fn run() {
         // never killed — we don't own it.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    record_indicator::reset(window.app_handle());
+                }
                 stop_owned_engine(window.app_handle());
             }
         });
@@ -1206,10 +1216,8 @@ pub fn run() {
         .build(context)
         .expect("error while building shellx-cut desktop shell");
     app.run(|app_handle, event| {
-        if matches!(
-            event,
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-        ) {
+        if matches!(event, tauri::RunEvent::Exit) {
+            record_indicator::reset(app_handle);
             record_hotkey::release_runtime(app_handle);
             stop_owned_engine(app_handle);
         }

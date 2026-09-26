@@ -145,6 +145,16 @@ impl ParseState {
                     || self.receipt.is_some()
                     || checkpoint.sequence != self.checkpoints.len() as u64
                     || checkpoint.file != checkpoint_name(checkpoint.sequence)
+                    || checkpoint.held_last_frame_ms.is_some_and(|held_ms| {
+                        checkpoint.sequence == 0
+                            || held_ms == 0
+                            || checkpoint
+                                .facts
+                                .end_ms
+                                .checked_sub(checkpoint.facts.start_ms)
+                                != Some(held_ms)
+                            || checkpoint.media.is_none()
+                    })
                     || !self
                         .openings
                         .iter()
@@ -207,6 +217,7 @@ mod tests {
             bytes: 1,
             sha256: "not-read".into(),
             media: None,
+            held_last_frame_ms: None,
             facts: CheckpointFacts {
                 start_ms: 0,
                 end_ms: 1,

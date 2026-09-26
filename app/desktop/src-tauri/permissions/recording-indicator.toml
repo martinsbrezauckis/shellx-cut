@@ -1,0 +1,6 @@
+# Exact selected Cut UI may request only capture-ID-bound indicator changes.
+# No window mutation plugin permission is exposed to remote webview content.
+[[permission]]
+identifier = "allow-recording-indicator"
+description = "Allows the selected Cut UI to mark the acknowledged native capture on the app icon and clear the same capture after terminal confirmation."
+commands.allow = ["begin_recording_indicator", "end_recording_indicator"]

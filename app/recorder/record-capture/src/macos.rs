@@ -22,6 +22,9 @@ use std::time::{Duration, Instant};
 
 use record_core::{error_codes, EventTrack, Monitor as RMonitor, RecordError, Result, Settings};
 
+use crate::active_capture_preview::{
+    ActiveCapturePreview, ControllerExclusionStatus, RecursionStatus,
+};
 use crate::macos_finalization::stop_audio_at_video_boundary;
 use crate::macos_region_capture::verified_region_output_size;
 use crate::macos_system_tap::{SystemAudioResult, SystemAudioTap};
@@ -38,6 +41,24 @@ use screencapturekit::{
     error::{SCError, SCStreamErrorCode},
     stream::StreamCallbacks,
 };
+
+/// A failed start or early return must not leave an old frame attached to a
+/// live capture reservation. Explicit Stop clears before output finalization.
+struct PreviewClearGuard(Option<ActiveCapturePreview>);
+
+impl PreviewClearGuard {
+    fn clear(&mut self) {
+        if let Some(preview) = self.0.take() {
+            preview.clear_current_generation();
+        }
+    }
+}
+
+impl Drop for PreviewClearGuard {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
 
 /// SCK requires CoreGraphics to be initialised before `SCShareableContent` is touched
 /// off the main thread, else it aborts with CGS_REQUIRE_INIT. The crate ships a tiny
@@ -269,15 +290,25 @@ impl Capture for MacCapture {
         // The active SCRecordingOutput stream stays video-only. The target
         // owner builds the exact display/window filter without opening a
         // second ScreenCaptureKit stream for controller state or metering.
-        let (
-            filter,
-            requested_w,
-            requested_h,
-            surface,
-            stream_config,
-            region_output,
-            controller_excluded,
-        ) = crate::macos_capture_target::prepare_capture_target(cfg, fps)?;
+        let (filter, requested_w, requested_h, surface, stream_config, region_output) =
+            crate::macos_capture_target::prepare_capture_target(cfg, fps)?;
+
+        let preview = cfg.active_preview.clone();
+        if let Some(preview) = preview.as_ref() {
+            preview.set_controller_safety(
+                RecursionStatus::Possible,
+                if cfg.window.is_some() {
+                    ControllerExclusionStatus::NotApplicable
+                } else {
+                    ControllerExclusionStatus::NotConfirmed
+                },
+            );
+            preview.enable();
+        }
+        let preview_generation = preview
+            .as_ref()
+            .and_then(ActiveCapturePreview::begin_segment);
+        let mut preview_clear = PreviewClearGuard(preview.clone());
 
         let selected_window = cfg.window.is_some();
         let source_lifecycle = cfg.source_lifecycle.clone();
@@ -290,6 +321,7 @@ impl Capture for MacCapture {
         }
         let source_stop = stop.clone();
         let callback_readiness = cfg.readiness.clone();
+        let callback_preview = preview.clone();
         let delegate = StreamCallbacks::new().on_error(move |error| {
             let _source_lost = selected_window
                 && source_lifecycle.as_ref().is_some_and(|lifecycle| {
@@ -305,12 +337,19 @@ impl Capture for MacCapture {
             if let Some(readiness) = callback_readiness.as_ref() {
                 readiness.mark_terminal();
             }
+            if let Some(preview) = callback_preview.as_ref() {
+                preview.clear_current_generation();
+            }
             source_stop.store(true, Ordering::Release);
         });
         let mut stream = SCStream::new_with_delegate(&filter, &stream_config, delegate);
         crate::macos_readiness::attach_first_screen_frame_observer(
             &mut stream,
             cfg.readiness.clone(),
+            preview
+                .clone()
+                .zip(preview_generation)
+                .map(|(preview, generation)| (preview, generation, Instant::now())),
         )
         .map_err(|error| cap_err("attach ScreenCaptureKit frame observer", error))?;
         let mut checkpoints = Checkpoints::open(cfg.checkpoint.as_ref())?;
@@ -330,13 +369,6 @@ impl Capture for MacCapture {
         stream
             .start_capture()
             .map_err(|e| cap_err("start ScreenCaptureKit capture", format!("{e:?}")))?;
-        if controller_excluded {
-            if let Some(placement) = cfg.controller_placement.as_ref() {
-                placement.excluded(
-                    "ScreenCaptureKit admitted the display stream with the owning ShellX Cut application excluded.",
-                );
-            }
-        }
         // Open the shared clock only after SCK accepted the output.  Mic/input
         // are deliberately non-blocking, but their timestamps must use this
         // same origin as the later checkpoint facts and external audio worker.
@@ -428,6 +460,7 @@ impl Capture for MacCapture {
                     lifecycle.expect_terminal_close();
                 }
                 stop.store(true, Ordering::Relaxed); // end mic + input at this boundary
+                preview_clear.clear();
                 stopped_system_audio = stop_audio_at_video_boundary(
                     || {
                         let _ = stream.stop_capture();

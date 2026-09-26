@@ -569,6 +569,7 @@ async fn dispatch_validated(
         | DispatchTarget::ScreenRecordResume
         | DispatchTarget::ScreenRecordRecoveryStatus
         | DispatchTarget::ScreenRecordStatus
+        | DispatchTarget::ScreenRecordLiveFrame
         | DispatchTarget::ScreenRecordPreviewCapability
         | DispatchTarget::ScreenRecordPreviewStart
         | DispatchTarget::ScreenRecordPreviewStatus
@@ -581,7 +582,8 @@ async fn dispatch_validated(
         | DispatchTarget::ScreenRecordStudioEvent
         | DispatchTarget::ScreenRecordAutoedit
         | DispatchTarget::ScreenRecordPolish
-        | DispatchTarget::ScreenRecordExport) => {
+        | DispatchTarget::ScreenRecordExport
+        | DispatchTarget::ScreenRecordCopyRaw) => {
             screen_record_routes::dispatch(target, state, args, actor).await
         }
         DispatchTarget::VoiceoverStart => voiceover::start(state, args, actor).await.into(),

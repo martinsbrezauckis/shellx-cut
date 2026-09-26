@@ -1,24 +1,22 @@
 import {
-  cameraPositionLabel,
-  STUDIO_POSITIONS,
-  cursorCorrelationLabel,
   STUDIO_BACKGROUND_PRESETS,
   studioBackgroundPreset,
   type StudioBackground,
   type StudioCameraPosition,
   type StudioCameraShape,
-  type CursorCorrelation,
-  type StudioRawStreams,
   type StudioState,
 } from './studioTypes'
 import type { ReactNode } from 'react'
 import { CameraControl, type CameraCapability } from './CameraControl'
+import { RecordingSettingsTabs, type RecordingSettingsSection } from './RecordingSettingsTabs'
+import './cameraControl.css'
+import './recordingSettingsTabs.css'
 
 interface StudioControlsProps {
-  sceneControl?: ReactNode
+  videoTimerControl: ReactNode
+  captureTimingControl: ReactNode
+  videoQualityControl: ReactNode
   studio: StudioState
-  rawStreams: StudioRawStreams | null
-  cursorCorrelation: CursorCorrelation | null
   onBackground: (background: StudioBackground) => void
   cameraCapability: CameraCapability
   cameraDeviceId: string | null
@@ -30,13 +28,14 @@ interface StudioControlsProps {
   onCameraPosition: (position: StudioCameraPosition) => void
   onCameraShape: (shape: StudioCameraShape) => void
   onCameraSize: (size: number) => void
+  onCameraReset: () => void
 }
 
 export function StudioControls({
-  sceneControl,
+  videoTimerControl,
+  captureTimingControl,
+  videoQualityControl,
   studio,
-  rawStreams,
-  cursorCorrelation,
   onBackground,
   cameraCapability,
   cameraDeviceId,
@@ -48,21 +47,10 @@ export function StudioControls({
   onCameraPosition,
   onCameraShape,
   onCameraSize,
+  onCameraReset,
 }: StudioControlsProps) {
-  const streamCount = rawStreams
-    ? [rawStreams.screen, rawStreams.camera, rawStreams.mic, rawStreams.system, rawStreams.studio_events].filter(Boolean).length
-    : 0
-
-  return (
-    <aside className="rec-studio-controls" aria-label="Scene and composition controls">
-      <div className="rec-studio-controls__head">
-        <div>
-          <span className="rec__eyebrow">On canvas</span>
-          <h2>Scene &amp; style</h2>
-        </div>
-        <span>Preview-safe</span>
-      </div>
-      {sceneControl}
+  const pages: Record<RecordingSettingsSection, ReactNode> = {
+    camera: (
       <CameraControl
         capability={cameraCapability}
         enabled={studio.camera.enabled}
@@ -71,115 +59,48 @@ export function StudioControls({
         rawCapture={rawCapture}
         onEnabled={onCameraEnabled}
         onDevice={onCameraDevice}
+        layout={studio.camera}
+        liveAdjustDisabled={liveAdjustDisabled}
+        onPosition={onCameraPosition}
+        onShape={onCameraShape}
+        onSize={onCameraSize}
+        onReset={onCameraReset}
       />
+    ),
+    background: (
+      <label className="rec-studio-controls__group" data-cut-studio-background={studio.background} data-cut-studio-preset={studio.background}>
+        <span className="rec-studio-controls__label">Behind the recording</span>
+        <select
+          className="rec__select rec-studio-controls__select"
+          data-cut-studio-background-select
+          value={studio.background}
+          disabled={liveAdjustDisabled}
+          onChange={(event) => onBackground(event.target.value as StudioBackground)}
+        >
+          {STUDIO_BACKGROUND_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+        </select>
+        <small data-cut-studio-background-description>{studioBackgroundPreset(studio.background).description}</small>
+      </label>
+    ),
+    timer: (
+      <>
+        <p className="rec-settings-tabs__note">The on-video timer appears in the finished video. It does not stop capture or control capture Pause.</p>
+        {videoTimerControl}
+      </>
+    ),
+    timing: captureTimingControl,
+    quality: videoQualityControl,
+  }
 
-      <details className="rec-studio-controls__disclosure" open data-cut-rec-composition-controls>
-        <summary data-cut-action="record-composition-toggle">Composition</summary>
-        <div className="rec-studio-controls__disclosure-body">
-          {studio.camera.enabled && !rawCapture && (
-            <div className="rec-studio-controls__group" data-cut-rec-camera-layout>
-              <span className="rec-studio-controls__label">Camera layout</span>
-              <div className="rec-studio-controls__positions" role="group" aria-label="Camera position">
-                {STUDIO_POSITIONS.map((position) => (
-                  <button
-                    key={position}
-                    type="button"
-                    className={`rec-studio-controls__pos${studio.camera.position === position ? ' rec-studio-controls__pos--on' : ''}`}
-                    data-cut-rec-camera-position={position}
-                    aria-label={cameraPositionLabel(position)}
-                    aria-pressed={studio.camera.position === position}
-                    disabled={liveAdjustDisabled}
-                    onClick={() => onCameraPosition(position)}
-                  />
-                ))}
-              </div>
-              <select
-                className="rec__select rec-studio-controls__select"
-                data-cut-rec-camera-shape
-                value={studio.camera.shape}
-                disabled={liveAdjustDisabled}
-                onChange={(event) => onCameraShape(event.target.value as StudioCameraShape)}
-              >
-                <option value="circle">Circle</option>
-                <option value="rounded_rect">Rounded rectangle</option>
-              </select>
-              <label>
-                <span className="rec-studio-controls__label">Size</span>
-                <input
-                  className="rec-studio-controls__range"
-                  data-cut-rec-camera-size
-                  type="range"
-                  min="0.12"
-                  max="0.5"
-                  step="0.01"
-                  value={studio.camera.size}
-                  disabled={liveAdjustDisabled}
-                  onChange={(event) => onCameraSize(Number(event.target.value))}
-                />
-              </label>
-            </div>
-          )}
-
-          <label
-            className="rec-studio-controls__group"
-            data-cut-studio-background={studio.background}
-            data-cut-studio-preset={studio.background}
-          >
-            <span className="rec-studio-controls__label">Background</span>
-            <select
-              className="rec__select rec-studio-controls__select"
-              data-cut-studio-background-select
-              value={studio.background}
-              disabled={liveAdjustDisabled}
-              onChange={(event) => onBackground(event.target.value as StudioBackground)}
-            >
-              {STUDIO_BACKGROUND_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>{preset.label}</option>
-              ))}
-            </select>
-            <small data-cut-studio-background-description>{studioBackgroundPreset(studio.background).description}</small>
-          </label>
+  return (
+    <aside className="rec-studio-controls" aria-label="Recording settings">
+      <div className="rec-studio-controls__head">
+        <div>
+          <h2>3 · Recording settings</h2>
         </div>
-      </details>
-
-      <details className="rec-studio-controls__disclosure" data-cut-rec-capture-facts>
-        <summary data-cut-action="record-capture-details-toggle">Capture details</summary>
-        <div className="rec-studio-controls__disclosure-body">
-          <div
-            className="rec-studio-controls__group rec-studio-controls__streams"
-            data-cut-studio-raw-streams={streamCount}
-          >
-            <span className="rec-studio-controls__label">Raw streams</span>
-            <div className="rec-studio-controls__chips">
-              <span data-on={rawStreams?.screen ? 'true' : 'false'}>Screen</span>
-              <span data-on={rawStreams?.camera ? 'true' : 'false'}>Camera</span>
-              <span data-on={rawStreams?.mic ? 'true' : 'false'}>Mic</span>
-              <span data-on={rawStreams?.system ? 'true' : 'false'}>System</span>
-              <span data-on={rawStreams?.studio_events ? 'true' : 'false'}>Events</span>
-            </div>
-          </div>
-
-          <div
-            className="rec-studio-controls__group"
-            data-cut-rec-cursor-correlation={cursorCorrelation?.state ?? 'unavailable'}
-          >
-            <span className="rec-studio-controls__label">Pointer positions</span>
-            <span role="status">{cursorCorrelationLabel(cursorCorrelation)}</span>
-            {cursorCorrelation?.detail && <small>{cursorCorrelation.detail}</small>}
-          </div>
-
-          <div
-            className="rec-studio-controls__group rec-studio-controls__hotkeys"
-            data-cut-studio-hotkey-status={studio.hotkeyStatus}
-          >
-            <span className="rec-studio-controls__label">Hotkeys</span>
-            <div className="rec-studio-controls__chips">
-              <span data-on="true">F9 Rec</span>
-              <span data-on="true">F12 Mark</span>
-            </div>
-          </div>
-        </div>
-      </details>
+      </div>
+      <p className="rec-settings-tabs__note">Choose a setting. Its controls appear below.</p>
+      <RecordingSettingsTabs pages={pages} />
     </aside>
   )
 }

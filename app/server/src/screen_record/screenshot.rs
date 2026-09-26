@@ -62,6 +62,7 @@ pub fn capture_screenshot_png(
         readiness: None,
         controller_placement: None,
         source_lifecycle: None,
+        active_preview: None,
     };
     let captured = cap.capture(&cfg, stop);
     let _ = control.terminalize();

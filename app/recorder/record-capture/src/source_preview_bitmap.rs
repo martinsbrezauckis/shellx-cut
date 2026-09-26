@@ -57,6 +57,50 @@ pub(crate) fn native_bmp(
     offset: usize,
     region: Option<CaptureRegion>,
 ) -> Result<Vec<u8>> {
+    native_bmp_with_pixel_limit(
+        width,
+        height,
+        format,
+        stride,
+        pixels,
+        offset,
+        region,
+        ((MAX_SOURCE_PREVIEW_FRAME_BYTES - BMP_HEADER_BYTES) / 4) as u64,
+    )
+}
+
+/// Active recording previews use a smaller transport ceiling than the
+/// pre-start source picker, which can afford larger one-off frames.
+pub(crate) fn active_native_bmp(
+    width: u32,
+    height: u32,
+    format: SourcePreviewPixelFormat,
+    stride: usize,
+    pixels: &[u8],
+    offset: usize,
+) -> Result<Vec<u8>> {
+    native_bmp_with_pixel_limit(
+        width,
+        height,
+        format,
+        stride,
+        pixels,
+        offset,
+        None,
+        640 * 360,
+    )
+}
+
+fn native_bmp_with_pixel_limit(
+    width: u32,
+    height: u32,
+    format: SourcePreviewPixelFormat,
+    stride: usize,
+    pixels: &[u8],
+    offset: usize,
+    region: Option<CaptureRegion>,
+    max_pixels: u64,
+) -> Result<Vec<u8>> {
     let width_usize = usize::try_from(width).map_err(|_| invalid("preview width overflows"))?;
     let height_usize = usize::try_from(height).map_err(|_| invalid("preview height overflows"))?;
     let row = width_usize
@@ -77,7 +121,7 @@ pub(crate) fn native_bmp(
         ));
     }
     let (left, top, source_width, source_height) = region_parts(region, width, height)?;
-    let (out_w, out_h) = bounded_dimensions(source_width, source_height)?;
+    let (out_w, out_h) = bounded_dimensions(source_width, source_height, max_pixels)?;
     let output_bytes = usize::try_from(out_w)
         .ok()
         .and_then(|w| usize::try_from(out_h).ok().and_then(|h| w.checked_mul(h)))
@@ -173,18 +217,17 @@ fn region_parts(
         .ok_or_else(|| invalid("preview region does not match the current display frame"))
 }
 
-fn bounded_dimensions(width: u32, height: u32) -> Result<(u32, u32)> {
-    let max_pixels = (MAX_SOURCE_PREVIEW_FRAME_BYTES - BMP_HEADER_BYTES) / 4;
+fn bounded_dimensions(width: u32, height: u32, max_pixels: u64) -> Result<(u32, u32)> {
     let pixels = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or_else(|| invalid("preview dimensions overflow"))?;
-    if pixels <= max_pixels as u64 {
+    if pixels <= max_pixels {
         return Ok((width, height));
     }
     let scale = ((max_pixels as f64) / (pixels as f64)).sqrt();
     let out_w = ((width as f64 * scale).floor() as u32).max(1);
     let out_h = ((height as f64 * scale).floor() as u32).max(1);
-    (u64::from(out_w) * u64::from(out_h) <= max_pixels as u64)
+    (u64::from(out_w) * u64::from(out_h) <= max_pixels)
         .then_some((out_w, out_h))
         .ok_or_else(|| invalid("preview dimensions cannot fit the memory ceiling"))
 }

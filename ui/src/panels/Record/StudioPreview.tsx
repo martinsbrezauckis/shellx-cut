@@ -1,6 +1,8 @@
 import { useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import { studioBackgroundPreset, type StudioState } from './studioTypes'
 import type { RecordingSourcePreviewPresentation } from './recordingNativeSourcePreview'
+import type { RecordingLiveFramePresentation } from './recordingLiveFramePresentation'
+import { useRecordingLiveFrame } from './useRecordingLiveFrame'
 import { RecordingCompositionMenu, type RecordingCompositionActions, type RecordingCompositionMenuState } from './RecordingCompositionMenu'
 import './recordingSourcePreview.css'
 import './recordingCompositionMenu.css'
@@ -12,10 +14,12 @@ interface StudioPreviewProps {
   sceneName: string
   sceneState: string
   sourcePreview: RecordingSourcePreviewPresentation
+  activeCaptureId?: string | null
+  livePresentation?: RecordingLiveFramePresentation | null
   actions?: RecordingCompositionActions
 }
 
-export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview, actions }: StudioPreviewProps) {
+export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview, activeCaptureId, livePresentation, actions }: StudioPreviewProps) {
   const [menu, setMenu] = useState<RecordingCompositionMenuState | null>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
@@ -41,25 +45,31 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
   }
   const preset = studioBackgroundPreset(studio.background)
   const offlineFixture = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('mock') === '1'
-  const showsNativeFrame = Boolean(sourcePreview.frameUrl)
-  const sourceLabel = showsNativeFrame
-    ? offlineFixture ? 'Offline fixture · not captured' : 'Native source'
-    : 'Layout preview · source preview off'
+  const liveCaptureId = phase === 'recording' && activeCaptureId ? activeCaptureId : null
+  const polledLive = useRecordingLiveFrame(livePresentation?.captureId === liveCaptureId ? null : liveCaptureId)
+  const live = liveCaptureId && livePresentation?.captureId === liveCaptureId ? livePresentation : polledLive
+  const showLive = phase === 'recording'
+  const showSource = phase === 'idle' || phase === 'countdown'
+  const frameUrl = showLive ? live?.state === 'ready' ? live.frameUrl : null : showSource ? sourcePreview.frameUrl : null
+  const sourceLabel = showLive ? frameUrl ? 'Recording source · live'
+    : live?.state === 'connecting' || live?.state === 'awaiting_source' || live?.state === 'awaiting_frame'
+      ? 'Waiting for recording preview' : 'Recording preview unavailable'
+    : frameUrl ? offlineFixture ? 'Offline fixture · not captured' : 'Selected source · before recording'
+      : sourcePreview.state === 'idle' || sourcePreview.state === 'stopped' ? 'Source preview is off' : 'No source frame'
+  const unavailableDetail = showLive
+    ? liveCaptureId ? live?.detail ?? 'Waiting for frames from this recording.' : 'Waiting for a confirmed recording capture.'
+    : showSource ? sourcePreview.state === 'idle' || sourcePreview.state === 'stopped'
+      ? 'Use Preview source below to see real pixels from the selected display or window.' : sourcePreview.detail
+      : phase === 'starting' ? 'Waiting for recording to start.'
+      : phase === 'finalizing' ? 'Recording has stopped. Finishing the file.'
+        : 'The recording is no longer live. Select a source to preview again.'
   return (
     <div className="rec-studio-preview__frame">
       <div className="rec-studio-preview__chrome">
         <div className="rec-studio-preview__heading">
-          <span>{rawCapture ? 'Raw source preview' : 'Composition preview'}</span>
-          <small>Controls stay outside the recorded frame</small>
+          <span>{showLive ? 'Recording source · live' : '2 · Selected source'}</span>
+          <small>{showLive ? 'Live source pixels from this capture' : 'Preview starts only when you ask'}</small>
         </div>
-        {actions && <button
-          type="button" className="rec-studio-preview__actions"
-          data-cut-action="record-composition-menu"
-          aria-label="Composition actions" aria-haspopup="menu"
-          aria-expanded={menu?.target === 'composition'}
-          title="Composition actions (also available with right-click or Shift+F10)"
-          onClick={(event) => openMenu(event, 'composition')}
-        >Actions</button>}
       </div>
       <div
         ref={previewRef}
@@ -75,31 +85,28 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
         data-cut-studio-background={studio.background}
         data-cut-studio-preset={preset.id}
         data-cut-studio-camera-enabled={studio.camera.enabled && !rawCapture ? 'true' : 'false'}
-        aria-label={rawCapture ? 'Raw source preview' : `Studio preview: ${preset.description}`}
+        aria-label={showLive ? 'Live recording source preview' : rawCapture ? 'Raw source preview' : `Studio preview: ${preset.description}`}
       >
         <div
           className="rec-studio-preview__screen"
-          data-cut-rec-native-preview-state={sourcePreview.state}
-          data-cut-rec-native-preview-kind={showsNativeFrame ? (offlineFixture ? 'fixture' : 'native') : 'fallback'}
+          data-cut-rec-native-preview-state={showLive ? live?.state ?? 'connecting' : showSource ? sourcePreview.state : 'idle'}
+          data-cut-rec-native-preview-kind={frameUrl ? showLive ? 'recording' : offlineFixture ? 'fixture' : 'source' : 'unavailable'}
+          data-cut-rec-live-capture-id={liveCaptureId ?? undefined}
         >
-          {sourcePreview.frameUrl ? (
+          {frameUrl ? (
             <img
               className="rec-studio-preview__native-frame"
               data-cut-rec-native-preview-frame
-              src={sourcePreview.frameUrl}
-              alt={offlineFixture ? 'Offline source preview fixture, not desktop capture' : 'Native selected-source preview'}
+              src={frameUrl}
+              alt={showLive ? 'Current frame from this recording' : offlineFixture ? 'Offline source preview fixture, not desktop capture' : 'Selected source preview before recording'}
             />
           ) : (
-            <>
-              <div className="rec-studio-preview__bar" />
-              <div className="rec-studio-preview__rows">
-                <span />
-                <span />
-                <span />
-              </div>
-            </>
+            <div className="rec-studio-preview__empty" data-cut-rec-preview-unavailable>
+              <strong>{sourceLabel}</strong>
+              <span>{unavailableDetail}</span>
+            </div>
           )}
-          <span className="rec-studio-preview__screen-label">{sourceLabel}</span>
+          {frameUrl && <span className="rec-studio-preview__screen-label">{sourceLabel}</span>}
         </div>
         {studio.camera.enabled && !rawCapture && (
           <div

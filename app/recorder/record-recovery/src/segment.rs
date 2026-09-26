@@ -94,6 +94,35 @@ impl ManifestOwner {
         facts: CheckpointFacts,
         media: MediaFacts,
     ) -> Result<Checkpoint, ManifestError> {
+        self.publish_with_held_tail(sequence, staging, facts, media, None)
+    }
+
+    /// Publish an explicitly marked held frame for a WGC span with zero
+    /// accepted native frames. The media still passes normal verification.
+    pub fn publish_held_tail(
+        &mut self,
+        sequence: u64,
+        staging: &Path,
+        facts: CheckpointFacts,
+        media: MediaFacts,
+    ) -> Result<Checkpoint, ManifestError> {
+        let held_ms = facts.end_ms.saturating_sub(facts.start_ms);
+        if held_ms == 0 || sequence == 0 {
+            return Err(ManifestError::Invalid(
+                "held tail needs an earlier checkpoint".into(),
+            ));
+        }
+        self.publish_with_held_tail(sequence, staging, facts, media, Some(held_ms))
+    }
+
+    fn publish_with_held_tail(
+        &mut self,
+        sequence: u64,
+        staging: &Path,
+        facts: CheckpointFacts,
+        media: MediaFacts,
+        held_last_frame_ms: Option<u64>,
+    ) -> Result<Checkpoint, ManifestError> {
         if facts.end_ms <= facts.start_ms
             || sequence != self.manifest.checkpoints.len() as u64
             || !self
@@ -138,6 +167,7 @@ impl ManifestOwner {
             sha256: crate::manifest::sha256(&final_path)?,
             facts,
             media: Some(media),
+            held_last_frame_ms,
         };
         self.append(&Entry::Checkpoint(checkpoint.clone()))?;
         self.manifest.checkpoints.push(checkpoint.clone());

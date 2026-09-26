@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::active_capture_preview::ActiveCapturePreview;
 use crate::macos_pause_pilot::{
     MacosPauseCommand, MacosPausePilotEvent, MacosPausePilotProfile, MacosPausePilotRequest,
     MacosPauseRunOwner, MacosPauseStartError, RequiredMacosPauseAudioFactory,
@@ -79,6 +80,7 @@ pub fn start_private(
     system_audio: bool,
     microphone_source: MicrophoneSource,
     checkpoint: CheckpointConfig,
+    preview: Option<ActiveCapturePreview>,
 ) -> record_core::Result<MacosPausePilotThread> {
     if checkpoint.interval_ms == 0 {
         return Err(start_error());
@@ -90,13 +92,14 @@ pub fn start_private(
         system_audio,
     ))
     .map_err(|_| start_error())?;
-    spawn_owner(profile, microphone_source, checkpoint).map_err(|_| start_error())
+    spawn_owner(profile, microphone_source, checkpoint, preview).map_err(|_| start_error())
 }
 
 fn spawn_owner(
     profile: MacosPausePilotProfile,
     microphone_source: MicrophoneSource,
     checkpoint: CheckpointConfig,
+    preview: Option<ActiveCapturePreview>,
 ) -> Result<MacosPausePilotThread, MacosPauseStartError> {
     let (commands, receiver, sender, events) = channel();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -105,7 +108,7 @@ fn spawn_owner(
     let join = thread::Builder::new()
         .name("shellx-cut-macos-pause".into())
         .spawn(move || {
-            let screen = match RequiredMacosPauseScreenOwner::new(checkpoint.clone()) {
+            let screen = match RequiredMacosPauseScreenOwner::new(checkpoint.clone(), preview) {
                 Ok(screen) => screen,
                 Err(error) => {
                     let _ = startup_sender.send(Err(error));

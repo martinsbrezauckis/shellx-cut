@@ -1369,6 +1369,103 @@ impl Drop for GenerationScratch {
     }
 }
 
+/// PC4's plain Grok image_gen failed from the deep project-cache cwd and
+/// completed from a short cwd in a controlled direct comparison. Keep the
+/// prompt and output in GenerationScratch; move only the provider cwd to an
+/// empty OS temp directory that this guard removes when the scope ends.
+struct GenerationProviderWorkingDirectory {
+    path: PathBuf,
+    _temporary: Option<tempfile::TempDir>,
+}
+
+impl GenerationProviderWorkingDirectory {
+    fn new(
+        provider: &str,
+        kind: &str,
+        has_references: bool,
+        project_workspace: &Path,
+    ) -> std::io::Result<Self> {
+        if provider == "grok" && kind == "image" && !has_references {
+            let temporary = tempfile::Builder::new().prefix("cut-grok-").tempdir()?;
+            return Ok(Self {
+                path: temporary.path().to_path_buf(),
+                _temporary: Some(temporary),
+            });
+        }
+        Ok(Self {
+            path: project_workspace.to_path_buf(),
+            _temporary: None,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(test)]
+mod generation_provider_working_directory_tests {
+    use super::*;
+
+    #[test]
+    fn plain_grok_image_uses_empty_temporary_cwd_and_cleans_it_on_drop() {
+        let project = tempfile::tempdir().unwrap();
+        let workspace = project.path().join("cache/gen/runs/owned");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let output = workspace.join("generated.png");
+        let prompt_file = workspace.join("prompt.txt");
+        let temporary_path = {
+            let working =
+                GenerationProviderWorkingDirectory::new("grok", "image", false, &workspace)
+                    .unwrap();
+            assert!(working.path().is_absolute());
+            assert_ne!(working.path(), workspace);
+            assert_eq!(std::fs::read_dir(working.path()).unwrap().count(), 0);
+            let command = crate::gen::build_command(
+                "grok",
+                "image",
+                false,
+                working.path().to_str().unwrap(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                command
+                    .args
+                    .windows(2)
+                    .find(|args| args[0] == "--cwd")
+                    .unwrap()[1],
+                working.path().to_str().unwrap()
+            );
+            // The provider cwd changes; both durable generation paths stay project-local.
+            assert!(output.starts_with(project.path()));
+            assert!(prompt_file.starts_with(project.path()));
+            working.path().to_path_buf()
+        };
+        assert!(!temporary_path.exists());
+        assert!(workspace.exists());
+    }
+
+    #[test]
+    fn other_generation_routes_keep_the_project_workspace() {
+        let project = tempfile::tempdir().unwrap();
+        let workspace = project.path().join("runs");
+        std::fs::create_dir_all(&workspace).unwrap();
+        for (provider, kind, has_references) in [
+            ("grok", "video", false),
+            ("grok", "image", true),
+            ("codex", "image", false),
+            ("antigravity", "image", false),
+        ] {
+            let working =
+                GenerationProviderWorkingDirectory::new(provider, kind, has_references, &workspace)
+                    .unwrap();
+            assert_eq!(working.path(), workspace);
+            assert!(working._temporary.is_none());
+        }
+    }
+}
+
 fn generation_metadata(
     id: &str,
     family_id: &str,
@@ -2353,15 +2450,29 @@ async fn assets_generate_run(
         .map_err(|e| CutError::new(error_codes::IO, "create gen workspace", e.to_string()))?;
     let _scratch = GenerationScratch(ws.clone());
     let output = ws.join(crate::gen::output_filename(&kind));
-    let ws_str = ws.to_string_lossy().into_owned();
     let out_str = output.to_string_lossy().into_owned();
     let reference_paths = copy_generation_references(&project, &references, &dir, &ws)?;
+    let provider_working_directory = GenerationProviderWorkingDirectory::new(
+        &a.provider,
+        &kind,
+        !reference_paths.is_empty(),
+        &ws,
+    )
+    .map_err(|error| {
+        CutError::new(
+            error_codes::IO,
+            "create provider working directory",
+            error.to_string(),
+        )
+    })?;
+    let provider_cwd = provider_working_directory.path();
+    let provider_cwd_str = provider_cwd.to_string_lossy().into_owned();
 
     let cmd = crate::gen::build_command(
         &a.provider,
         &kind,
         !reference_paths.is_empty(),
-        &ws_str,
+        &provider_cwd_str,
         a.model.as_deref(),
     )
     .ok_or_else(|| {
@@ -2464,7 +2575,7 @@ async fn assets_generate_run(
                 error,
             )
         })?;
-    command.current_dir(&ws);
+    command.current_dir(provider_cwd);
     let control = ProcessControl::for_operation(timeout);
     let out = run_owned(
         &mut command,

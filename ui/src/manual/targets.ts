@@ -236,19 +236,19 @@ const TARGETS: ManualFeatureTarget[] = [
 
   // Record workspace. Camera capture stays explicit and keeps its own editable take.
   exact('cut.record.studio', '[data-cut-studio-preview]', 'record'),
-  exact('cut.record.scenes', '[data-cut-rec-scenes]', 'record'),
-  exact('cut.record.scene_timer', '[data-cut-rec-scene-timer]', 'record'),
-  exact('cut.record.pause_resume', '[data-cut-rec-pause-enable]', 'record'),
+  exact('cut.record.scenes', '[data-cut-rec-settings-tab="camera"]', 'record'),
+  exact('cut.record.scene_timer', '[data-cut-rec-settings-tab="timer"]', 'record'),
+  exact('cut.record.pause_resume', '[data-cut-rec-settings-tab="timing"]', 'record'),
   exact('cut.record.camera_enable', '[data-cut-rec-camera-toggle]', 'record'),
   exact('cut.record.camera_visible', '[data-cut-rec-camera-layout-preview]', 'record'),
   exact('cut.record.camera_position', '[data-cut-rec-camera-layout]', 'record'),
   exact('cut.record.camera_size', '[data-cut-rec-camera-size]', 'record'),
   exact('cut.record.camera_shape', '[data-cut-rec-camera-shape]', 'record'),
   exact('cut.record.background', '[data-cut-studio-background-select]', 'record'),
-  exact('cut.record.raw_streams', '[data-cut-studio-raw-streams]', 'record'),
-  exact('cut.record.hotkeys', '[data-cut-studio-hotkey-status]', 'record'),
+  exact('cut.record.raw_streams', '[data-cut-rec-recording-details]', 'record'),
+  exact('cut.record.hotkeys', '[data-cut-action="record-start"]', 'record'),
   exact('cut.record.raw_mode', '[data-cut-rec-mode="raw"]', 'record'),
-  exact('cut.record.autoedit', '[data-cut-rec-autopolish-toggle]', 'record'),
+  exact('cut.record.autoedit', '[data-cut-rec-mode="auto"]', 'record'),
   unavailable('cut.record.studio_event_api', 'Studio event API is unavailable as an editor control; it is a Debug API integration.'),
 
   // Multi-step workflows retain only their nearest real entry surface.

@@ -90,6 +90,7 @@ export type {
   WordSpan,
 } from './clientModel'
 export type { ProjectIdentity } from './projectIdentity'
+import type { ProjectIdentity } from './projectIdentity'
 export { isIdentityTransform, mediaClipTimelineDurationMs } from './clientModel'
 export type * from './clientResults'
 
@@ -744,12 +745,13 @@ export interface VerbArgs {
   // finalized project.json then surfaces the events track (+ optional autoedit).
   // `monitor_id`, when supplied from Doctor, is revalidated as the exact native
   // target. `monitor` remains the legacy ordinal compatibility path.
-  'screen_record.start': { duration_ms?: number; fps?: number; quality?: { output_size: 'source' | '1080p' | '720p'; profile: 'standard' | 'high' }; audio?: boolean; system_audio?: boolean; studio?: unknown; scenes?: RecordingSceneStartConfig; pause?: { mode: 'enabled' }; keys?: boolean; monitor?: number; monitor_id?: string; window?: string; rationale?: string }
+  'screen_record.start': { duration_ms?: number; fps?: number; quality?: { output_size: 'source' | '1080p' | '720p'; profile: 'standard' | 'high' }; audio?: boolean; system_audio?: boolean; camera_id?: string; studio?: unknown; scenes?: RecordingSceneStartConfig; pause?: { mode: 'enabled' }; keys?: boolean; monitor?: number; monitor_id?: string; expected_project_identity?: ProjectIdentity; window?: string; rationale?: string }
   // A 3–5 second native video test take. It is process-local disposable media,
   // not a project recording; playback is an opaque server capability only.
   'screen_record.rehearsal_start': { duration_ms?: number; fps?: number; monitor?: number; monitor_id?: string; window?: string }
   'screen_record.rehearsal_discard': { handle?: string }
   'screen_record.status': { capture_id: string }
+  'screen_record.live_frame': { capture_id: string }
   // Proposed v0.6.113 recording-scenes API. Record negotiates Doctor support
   // before it ever sends this optional request to a current engine.
   'screen_record.scene_activate': RecordingSceneActivateArgs
@@ -757,12 +759,13 @@ export interface VerbArgs {
   'screen_record.pause': { capture_id: string }
   'screen_record.resume': { capture_id: string }
   'screen_record.stop': { capture_id: string; autoedit?: boolean; mux_raw?: boolean; raw_path?: string; rationale?: string }
+  'screen_record.copy_raw': { source: string; path?: string }
   'screen_record.studio_event': {
     capture_id: string
     event: {
       t_ms: number
       source: 'camera' | 'recording' | 'background'
-      kind: 'visibility' | 'transform' | 'marker' | 'style'
+      kind: 'visibility' | 'transform' | 'marker' | 'style' | 'reset'
       visible?: boolean
       x?: number
       y?: number

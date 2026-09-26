@@ -344,8 +344,8 @@ mod tests {
             EditableSceneTimeline, SceneCameraSegment, SceneFixtureDescriptor, SceneScreenSegment,
             SceneTimerFixture, SceneTimerSegment, EDITABLE_SCENE_TIMELINE_SCHEMA,
         },
-        Anchor, Ease, EditPlan, SceneComposition, SceneId, TimerPhase, WebcamKeyframe,
-        WebcamOverlay, WebcamShape, ZoomKey,
+        Anchor, Ease, EditPlan, PipCorner, PipShape, PipSizePercent, PresenterPip,
+        SceneComposition, SceneId, TimerPhase, WebcamKeyframe, WebcamOverlay, WebcamShape, ZoomKey,
     };
     use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 
@@ -567,6 +567,78 @@ mod tests {
             !is_red(pixel_rgba(&hidden, 59, 63)),
             "hidden camera event should remove the overlay from polished frames"
         );
+    }
+
+    #[test]
+    fn every_presenter_corner_reaches_polished_frame_pixels() {
+        let source = solid_source(320, 180, Color::from_rgba8(40, 80, 180, 255));
+        let camera = solid_source(64, 64, Color::from_rgba8(240, 20, 20, 255));
+        let corners = [
+            PipCorner::TopLeft,
+            PipCorner::TopRight,
+            PipCorner::BottomRight,
+            PipCorner::BottomLeft,
+        ];
+        for corner in corners {
+            let mut shape_frames = Vec::new();
+            for shape in [PipShape::Circle, PipShape::RoundedRect] {
+                let presenter = PresenterPip::new(corner, PipSizePercent::new(30).unwrap(), shape);
+                let scene = SceneId::parse("presenter").unwrap();
+                let timeline = EditableSceneTimeline {
+                    schema: EDITABLE_SCENE_TIMELINE_SCHEMA.into(),
+                    logical_duration_ms: 1_000,
+                    journal_sha256: "a".repeat(64),
+                    screen: vec![SceneScreenSegment {
+                        start_ms: 0,
+                        end_ms: 1_000,
+                        scene_id: scene.clone(),
+                    }],
+                    camera: vec![SceneCameraSegment {
+                        start_ms: 0,
+                        end_ms: 1_000,
+                        presenter: Some(presenter),
+                    }],
+                    timer: vec![SceneTimerSegment {
+                        start_ms: 0,
+                        end_ms: 1_000,
+                        at_start: SceneTimerFixture::Off,
+                        at_end: SceneTimerFixture::Off,
+                    }],
+                    terminal: SceneFixtureDescriptor {
+                        active_scene_id: scene,
+                        composition: SceneComposition::PresenterPip(presenter),
+                        timer: SceneTimerFixture::Off,
+                    },
+                };
+                let mut plan = EditPlan::empty(320, 180, 1_000, 30.0);
+                timeline
+                    .apply_to_edit_plan(&mut plan, Some("cam.mp4".into()), None)
+                    .unwrap();
+                let placement = plan.webcam.as_ref().unwrap().placement_at(500, 320, 180);
+                assert_eq!(placement.size, 0.30);
+                assert_eq!(
+                    matches!(placement.shape, WebcamShape::Circle),
+                    matches!(shape, PipShape::Circle),
+                );
+                let center_x = ((placement.x * 320.0) + 27.0) as u32;
+                let center_y = ((placement.y * 180.0) + 27.0) as u32;
+                let frame = Compositor::new(&plan).frame_webcam(&source, Some(&camera), 500);
+                assert!(is_red(pixel_rgba(&frame, center_x, center_y)), "{corner:?}");
+                assert_eq!(
+                    placement.x < 0.5,
+                    matches!(corner, PipCorner::TopLeft | PipCorner::BottomLeft)
+                );
+                assert_eq!(
+                    placement.y < 0.5,
+                    matches!(corner, PipCorner::TopLeft | PipCorner::TopRight)
+                );
+                shape_frames.push(frame.data().to_vec());
+            }
+            assert_ne!(
+                shape_frames[0], shape_frames[1],
+                "{corner:?} shape must change rendered pixels"
+            );
+        }
     }
 
     #[test]

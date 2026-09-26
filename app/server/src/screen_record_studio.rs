@@ -12,6 +12,8 @@ use cut_core::{error_codes, CutError, VerbResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::screen_record_studio_camera_timeline::{merge_camera_timeline, CameraTimelineEdit};
+
 pub(crate) const STUDIO_EVENTS_FILENAME: &str =
     crate::screen_record_studio_journal::STUDIO_EVENTS_FILENAME;
 pub(crate) const LEGACY_STUDIO_EVENTS_FILENAME: &str = "studio-events.json";
@@ -206,25 +208,23 @@ pub(crate) fn apply_studio_events_to_plan(
     camera_clock: Option<record_core::CameraClockRange>,
     log: &StudioEventLog,
 ) -> Result<usize, CutError> {
-    let mut studio_timeline: Vec<(u64, u64, record_core::WebcamKeyframe)> = log
+    let studio_edits: Vec<CameraTimelineEdit> = log
         .events
         .iter()
         .enumerate()
         .filter_map(|(index, event)| {
-            studio_event_to_webcam_keyframe(event).map(|result| {
-                result.map(|keyframe| {
-                    (
-                        keyframe.t_ms,
-                        event.logical_ts.unwrap_or(index as u64),
-                        keyframe,
-                    )
-                })
-            })
+            let order = event.logical_ts.unwrap_or(index as u64);
+            if event.source == "camera" && event.kind == "reset" {
+                Some(Ok(CameraTimelineEdit::Reset {
+                    order,
+                    t_ms: event.t_ms,
+                }))
+            } else {
+                studio_event_to_webcam_keyframe(event)
+                    .map(|result| result.map(|key| CameraTimelineEdit::Transform { order, key }))
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // Playback still follows recording time, while equal timestamps retain the
-    // exact order in which the recorder accepted the overlapping requests.
-    studio_timeline.sort_by_key(|(t_ms, logical_ts, _)| (*t_ms, *logical_ts));
 
     if let Some(background) = log
         .events
@@ -251,64 +251,13 @@ pub(crate) fn apply_studio_events_to_plan(
         plan.validate().map_err(crate::screen_record::record_err)?;
         return Ok(0);
     };
-    let base_size = studio_timeline
-        .iter()
-        .find_map(|(_, _, key)| key.size)
-        .or_else(|| {
-            plan.webcam
-                .as_ref()
-                .and_then(|wc| wc.timeline.iter().find_map(|key| key.size))
-        })
-        .or_else(|| plan.webcam.as_ref().map(|wc| wc.size))
-        .unwrap_or(0.22);
-    let base_shape = studio_timeline
-        .iter()
-        .find_map(|(_, _, key)| key.shape)
-        .or_else(|| {
-            plan.webcam
-                .as_ref()
-                .and_then(|wc| wc.timeline.iter().find_map(|key| key.shape))
-        })
-        .or_else(|| plan.webcam.as_ref().map(|wc| wc.shape))
-        .unwrap_or(record_core::WebcamShape::Circle);
-    // A scene replay is the base timeline. Studio controls are explicit user
-    // edits made after recording starts, including the initial configuration
-    // event at t=0. Keep both histories: a later scene activation changes the
-    // camera from that point, while a later Studio edit changes it again.
-    //
-    // Scene events have CaptureClock time plus an internal sequence; Studio
-    // events have UI elapsed time plus their own server journal sequence. The
-    // editable camera timeline retains only millisecond boundaries, so the two
-    // logs have no cross-journal ordering at an equal millisecond. Resolve that
-    // deliberate tie in favor of the explicit Studio edit. It preserves the
-    // start-time configuration shown in the UI and gives the direct camera
-    // control a deterministic override when the clocks quantize together.
-    let existing_timeline = plan
+    let base_size = plan.webcam.as_ref().map(|wc| wc.size).unwrap_or(0.22);
+    let base_shape = plan
         .webcam
         .as_ref()
-        .map(|webcam| webcam.timeline.clone())
-        .unwrap_or_default();
-    let studio_event_count = studio_timeline.len();
-    let mut timeline = existing_timeline
-        .into_iter()
-        .enumerate()
-        .map(|(index, keyframe)| (keyframe.t_ms, index as u64, keyframe))
-        .collect::<Vec<_>>();
-    let scene_key_count = timeline.len() as u64;
-    timeline.extend(
-        studio_timeline
-            .into_iter()
-            .map(|(t_ms, logical_ts, keyframe)| {
-                (t_ms, scene_key_count.saturating_add(logical_ts), keyframe)
-            }),
-    );
-    timeline.sort_by_key(|(t_ms, accepted_order, _)| (*t_ms, *accepted_order));
-    let timeline = timeline
-        .into_iter()
-        .map(|(_, _, keyframe)| keyframe)
-        .collect::<Vec<_>>();
-
-    plan.webcam = Some(record_core::WebcamOverlay {
+        .map(|wc| wc.shape)
+        .unwrap_or(record_core::WebcamShape::Circle);
+    let mut webcam = record_core::WebcamOverlay {
         source,
         shape: base_shape,
         anchor: plan
@@ -319,8 +268,25 @@ pub(crate) fn apply_studio_events_to_plan(
         margin: plan.webcam.as_ref().map(|wc| wc.margin).unwrap_or(0.04),
         size: base_size,
         camera_clock: camera_clock.or_else(|| plan.webcam.as_ref().and_then(|wc| wc.camera_clock)),
-        timeline,
-    });
+        timeline: Vec::new(),
+    };
+    let base = webcam.placement_at(0, plan.source_w, plan.source_h);
+    let static_layout = record_core::WebcamKeyframe {
+        t_ms: 0,
+        visible: None,
+        x: Some(base.x),
+        y: Some(base.y),
+        size: Some(base.size),
+        shape: Some(base.shape),
+    };
+    let scene_keys = plan
+        .webcam
+        .as_ref()
+        .map(|wc| wc.timeline.clone())
+        .unwrap_or_default();
+    let studio_event_count = studio_edits.len();
+    webcam.timeline = merge_camera_timeline(scene_keys, studio_edits, static_layout);
+    plan.webcam = Some(webcam);
     plan.validate().map_err(crate::screen_record::record_err)?;
     Ok(studio_event_count)
 }
@@ -436,6 +402,22 @@ pub(crate) fn validate_studio_event(event: &StudioEvent) -> Result<(), CutError>
             }
             validate_camera_transform(event)?;
         }
+        ("camera", "reset") => {
+            if event.visible.is_some()
+                || event.x.is_some()
+                || event.y.is_some()
+                || event.size.is_some()
+                || event.shape.is_some()
+                || event.radius.is_some()
+                || event.label.is_some()
+                || event.background.is_some()
+            {
+                return Err(invalid(
+                    "reset",
+                    "camera layout reset has no payload fields",
+                ));
+            }
+        }
         ("recording", "marker") => {
             if let Some(label) = &event.label {
                 if label.chars().count() > 120 {
@@ -460,7 +442,7 @@ pub(crate) fn validate_studio_event(event: &StudioEvent) -> Result<(), CutError>
         _ => {
             return Err(invalid(
                 "source",
-                "supported events are camera visibility, camera transform, background style, and recording marker",
+                "supported events are camera visibility, transform, reset, background style, and recording marker",
             ));
         }
     }
@@ -562,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn studio_keys_merge_after_scene_keys_without_erasing_later_scene_changes() {
+    fn studio_layout_survives_scene_switch_until_explicit_camera_reset() {
         let mut plan = record_core::EditPlan::empty(320, 180, 2_000, 30.0);
         // This is the plan just produced by Recording Scenes: its initial
         // composition is followed by a live scene activation at 1s.
@@ -590,6 +572,14 @@ mod tests {
                     size: Some(0.20),
                     shape: Some(record_core::WebcamShape::RoundedRect { radius: 18.0 }),
                 },
+                record_core::WebcamKeyframe {
+                    t_ms: 1_800,
+                    visible: Some(true),
+                    x: Some(0.70),
+                    y: Some(0.70),
+                    size: Some(0.25),
+                    shape: Some(record_core::WebcamShape::Circle),
+                },
             ],
         });
         let log = StudioEventLog {
@@ -603,19 +593,18 @@ mod tests {
                     source: "camera".into(),
                     kind: "transform".into(),
                     visible: None,
-                    x: Some(0.10),
-                    y: Some(0.20),
-                    size: Some(0.30),
+                    x: Some(0.04),
+                    y: Some(0.46),
+                    size: Some(0.50),
                     shape: Some("circle".into()),
                     radius: None,
                     label: None,
                     background: None,
                 },
-                // When UI and CaptureClock quantize a later scene action to
-                // the same millisecond, the explicit Studio control wins.
+                // A later direct Studio choice replaces the carried layout.
                 StudioEvent {
                     logical_ts: Some(2),
-                    t_ms: 1_000,
+                    t_ms: 1_200,
                     source: "camera".into(),
                     kind: "transform".into(),
                     visible: None,
@@ -643,25 +632,152 @@ mod tests {
                     label: None,
                     background: None,
                 },
+                StudioEvent {
+                    logical_ts: Some(4),
+                    t_ms: 1_600,
+                    source: "camera".into(),
+                    kind: "reset".into(),
+                    visible: None,
+                    x: None,
+                    y: None,
+                    size: None,
+                    shape: None,
+                    radius: None,
+                    label: None,
+                    background: None,
+                },
             ],
         };
 
         assert_eq!(
             apply_studio_events_to_plan(&mut plan, None, None, &log).unwrap(),
-            3
+            4
         );
         let timeline = &plan.webcam.as_ref().unwrap().timeline;
-        assert_eq!(timeline.len(), 5);
+        assert_eq!(timeline.len(), 7);
         assert_eq!(timeline[0].t_ms, 0);
         assert_eq!(timeline[0].x, Some(0.70));
         assert_eq!(timeline[1].t_ms, 0);
-        assert_eq!(timeline[1].x, Some(0.10));
+        assert_eq!(timeline[1].x, Some(0.04));
         assert_eq!(timeline[2].t_ms, 1_000);
         assert_eq!(timeline[2].x, Some(0.04));
-        assert_eq!(timeline[3].t_ms, 1_000);
+        assert_eq!(timeline[2].y, Some(0.46));
+        assert_eq!(timeline[2].size, Some(0.50));
+        assert_eq!(timeline[2].shape, Some(record_core::WebcamShape::Circle));
+        assert_eq!(timeline[3].t_ms, 1_200);
         assert_eq!(timeline[3].x, Some(0.80));
         assert_eq!(timeline[4].t_ms, 1_500);
         assert_eq!(timeline[4].x, Some(0.60));
+        assert_eq!(timeline[5].t_ms, 1_600);
+        assert_eq!(timeline[5].x, Some(0.04));
+        assert_eq!(timeline[5].size, Some(0.20));
+        assert_eq!(
+            timeline[5].shape,
+            Some(record_core::WebcamShape::RoundedRect { radius: 18.0 })
+        );
+        assert_eq!(timeline[6].t_ms, 1_800);
+        assert_eq!(timeline[6].x, Some(0.70));
+        assert_eq!(
+            plan.webcam
+                .as_ref()
+                .unwrap()
+                .placement_at(1_250, 320, 180)
+                .x,
+            0.80
+        );
+        let retained = plan.webcam.as_ref().unwrap().placement_at(1_100, 320, 180);
+        assert_eq!((retained.x, retained.y, retained.size), (0.04, 0.46, 0.50));
+        assert_eq!(retained.shape, record_core::WebcamShape::Circle);
+        assert_eq!(
+            plan.webcam
+                .as_ref()
+                .unwrap()
+                .placement_at(1_550, 320, 180)
+                .x,
+            0.60
+        );
+        assert_eq!(
+            plan.webcam
+                .as_ref()
+                .unwrap()
+                .placement_at(1_650, 320, 180)
+                .x,
+            0.04
+        );
         assert!(plan.validate().is_ok());
+    }
+
+    #[test]
+    fn camera_layout_reset_rejects_payload_fields() {
+        let mut event = StudioEvent {
+            logical_ts: None,
+            t_ms: 50,
+            source: "camera".into(),
+            kind: "reset".into(),
+            visible: None,
+            x: None,
+            y: None,
+            size: None,
+            shape: None,
+            radius: None,
+            label: None,
+            background: None,
+        };
+        assert!(validate_studio_event(&event).is_ok());
+        event.x = Some(0.2);
+        assert!(validate_studio_event(&event).is_err());
+        event.x = None;
+        event.visible = Some(false);
+        assert!(validate_studio_event(&event).is_err());
+    }
+
+    #[test]
+    fn camera_layout_reset_without_scenes_restores_static_camera_layout() {
+        let mut plan = record_core::EditPlan::empty(320, 180, 1_000, 30.0);
+        let log = StudioEventLog {
+            version: STUDIO_EVENTS_VERSION,
+            events: vec![
+                StudioEvent {
+                    logical_ts: Some(1),
+                    t_ms: 100,
+                    source: "camera".into(),
+                    kind: "transform".into(),
+                    visible: None,
+                    x: Some(0.04),
+                    y: Some(0.04),
+                    size: Some(0.35),
+                    shape: Some("rounded_rect".into()),
+                    radius: None,
+                    label: None,
+                    background: None,
+                },
+                StudioEvent {
+                    logical_ts: Some(2),
+                    t_ms: 200,
+                    source: "camera".into(),
+                    kind: "reset".into(),
+                    visible: None,
+                    x: None,
+                    y: None,
+                    size: None,
+                    shape: None,
+                    radius: None,
+                    label: None,
+                    background: None,
+                },
+            ],
+        };
+        apply_studio_events_to_plan(&mut plan, Some("camera.mp4".into()), None, &log).unwrap();
+        let webcam = plan.webcam.as_ref().unwrap();
+        let selected = webcam.placement_at(150, 320, 180);
+        assert_eq!((selected.x, selected.y, selected.size), (0.04, 0.04, 0.35));
+        assert!(matches!(
+            selected.shape,
+            record_core::WebcamShape::RoundedRect { .. }
+        ));
+        let reset = webcam.placement_at(250, 320, 180);
+        assert!(reset.x > 0.8 && reset.y > 0.7);
+        assert_eq!(reset.size, 0.22);
+        assert_eq!(reset.shape, record_core::WebcamShape::Circle);
     }
 }

@@ -208,6 +208,7 @@ fn capture_once(
         readiness: None,
         controller_placement: None,
         source_lifecycle: None,
+        active_preview: None,
     };
     let result = capture
         .capture(&config, control.stop_signal())

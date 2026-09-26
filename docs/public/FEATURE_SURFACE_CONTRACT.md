@@ -33,6 +33,13 @@ Each verb's `ui_exposure` value uses one of these supported categories:
   `docs/public/FEATURES.md`, and user manual when those surfaces cover it.
 - Agent-facing behavior is available through the installed skill/reference and
   the bundled agent-doc index exposed by `GET /api/agent`.
+- For Record, the human view and agent inspection must agree on the exact
+  capture ID, current native preview frame or unavailable reason, F9 observed
+  scope, active/terminal/unknown Stop state, selected Raw or Polished outcome,
+  saved original MP4, optional editable polished clip, camera corner/reset,
+  and applied on-video timer. New `data-cut-*` selectors and `ui.state` fields
+  should be checked against the implemented view before publication; a mock
+  frame, configured shortcut, or source test alone is not installed proof.
 
 The live verb registry remains the source of truth for callable behavior:
 `GET /api/verbs` from a running Cut server, or `schema/verbs.json` from the

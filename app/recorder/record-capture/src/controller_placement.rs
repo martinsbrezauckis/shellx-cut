@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureControllerPlacementState {
     Excluded,
+    NotExcluded,
     AutoHidden,
     Refused,
     Unavailable,
@@ -21,6 +22,7 @@ impl CaptureControllerPlacementState {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Excluded => "excluded",
+            Self::NotExcluded => "not_excluded",
             Self::AutoHidden => "auto_hidden",
             Self::Refused => "refused",
             Self::Unavailable => "unavailable",
@@ -57,6 +59,12 @@ impl CaptureControllerPlacement {
 
     pub fn excluded(&self, reason: &'static str) {
         self.update(CaptureControllerPlacementState::Excluded, reason);
+    }
+
+    /// Native source setup confirmed that Cut is eligible to appear when
+    /// unobscured. This does not assert that Cut is currently visible.
+    pub fn not_excluded(&self, reason: &'static str) {
+        self.update(CaptureControllerPlacementState::NotExcluded, reason);
     }
 
     pub fn auto_hidden(&self, reason: &'static str) {
@@ -109,5 +117,7 @@ mod tests {
             status.reason,
             "A native readback confirmed controller exclusion."
         );
+        placement.not_excluded("The native source includes Cut when unobscured.");
+        assert_eq!(placement.status().state.as_str(), "not_excluded");
     }
 }

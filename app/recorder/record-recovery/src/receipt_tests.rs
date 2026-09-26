@@ -97,6 +97,7 @@ fn parser_rejects_receipts_that_name_the_wrong_terminal_artifact() {
             bytes: 1,
             sha256: "test".into(),
             media: None,
+            held_last_frame_ms: None,
             facts: CheckpointFacts {
                 start_ms: 0,
                 end_ms: 1,
@@ -130,6 +131,7 @@ fn parser_rejects_receipt_loss_that_contradicts_committed_checkpoint_facts() {
             bytes: 1,
             sha256: "test".into(),
             media: None,
+            held_last_frame_ms: None,
             facts: CheckpointFacts {
                 start_ms: 0,
                 end_ms: 100,

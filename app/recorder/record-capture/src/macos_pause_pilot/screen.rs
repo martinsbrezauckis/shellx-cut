@@ -10,7 +10,12 @@ use super::{
     MacosPausePilotStarted, MacosPauseScreenOwner, MacosPauseScreenRange, MacosPauseStartError,
     MacosSealedScreenRun,
 };
-use crate::{checkpoint::Checkpoints, macos_checkpoint::SegmentOutput, CheckpointConfig};
+use crate::{
+    active_capture_preview::{ActiveCapturePreview, ControllerExclusionStatus, RecursionStatus},
+    checkpoint::Checkpoints,
+    macos_checkpoint::SegmentOutput,
+    CheckpointConfig,
+};
 use record_core::Settings;
 use record_recovery::CheckpointFacts;
 use screencapturekit::{prelude::*, shareable_content::SCShareableContentInfo};
@@ -24,6 +29,7 @@ pub(crate) struct RequiredMacosPauseScreenOwner {
     origin: Instant,
     next_physical_generation: u64,
     active: Option<ActiveScreen>,
+    preview: Option<ActiveCapturePreview>,
 }
 
 struct ActiveScreen {
@@ -33,10 +39,30 @@ struct ActiveScreen {
     staging: std::path::PathBuf,
     started: MacosPausePilotStarted,
     close: NativeCloseState,
+    preview: PreviewGenerationGuard,
+}
+
+struct PreviewGenerationGuard(Option<ActiveCapturePreview>);
+
+impl PreviewGenerationGuard {
+    fn clear(&mut self) {
+        if let Some(preview) = self.0.take() {
+            preview.clear_current_generation();
+        }
+    }
+}
+
+impl Drop for PreviewGenerationGuard {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 impl ActiveScreen {
     fn close_native(&mut self) -> Result<(), ()> {
+        // Pause/Stop removes the physical screen source immediately, before
+        // native output finalization or checkpoint publication can take time.
+        self.preview.clear();
         let Self {
             stream,
             output,
@@ -90,7 +116,10 @@ fn close_failed_start(stream: &SCStream, output: &SegmentOutput) {
 }
 
 impl RequiredMacosPauseScreenOwner {
-    pub(crate) fn new(checkpoint: CheckpointConfig) -> Result<Self, MacosPauseStartError> {
+    pub(crate) fn new(
+        checkpoint: CheckpointConfig,
+        preview: Option<ActiveCapturePreview>,
+    ) -> Result<Self, MacosPauseStartError> {
         let checkpoints = Checkpoints::open(Some(&checkpoint))
             .map_err(|_| MacosPauseStartError::NativeStartFailed)?
             .ok_or(MacosPauseStartError::NativeStartFailed)?;
@@ -99,6 +128,7 @@ impl RequiredMacosPauseScreenOwner {
             origin: Instant::now(),
             next_physical_generation: 1,
             active: None,
+            preview,
         })
     }
 
@@ -152,10 +182,34 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
             .map_err(|_| MacosPauseStartError::NativeStartFailed)?;
         let output =
             SegmentOutput::new(&staging).map_err(|_| MacosPauseStartError::NativeStartFailed)?;
-        let stream = SCStream::new(
+        let mut stream = SCStream::new(
             &filter,
             &crate::macos::recording_stream_config(width, height, profile.fps(), false),
         );
+        let preview = self.preview.clone();
+        if let Some(preview) = preview.as_ref() {
+            preview.set_controller_safety(
+                RecursionStatus::Possible,
+                ControllerExclusionStatus::NotConfirmed,
+            );
+            preview.enable();
+        }
+        let preview_generation = preview
+            .as_ref()
+            .and_then(ActiveCapturePreview::begin_segment);
+        let preview_guard = PreviewGenerationGuard(preview.clone());
+        if let Some((preview, generation)) = preview.clone().zip(preview_generation) {
+            if crate::macos_readiness::attach_first_screen_frame_observer(
+                &mut stream,
+                None,
+                Some((preview.clone(), generation, Instant::now())),
+            )
+            .is_err()
+            {
+                // Preview is optional; the recording output remains the owner.
+                preview.mark_readback_unavailable(generation);
+            }
+        }
         if stream.add_recording_output(output.output()).is_err() || stream.start_capture().is_err()
         {
             close_failed_start(&stream, &output);
@@ -203,6 +257,7 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
             staging,
             started: started.clone(),
             close: NativeCloseState::default(),
+            preview: preview_guard,
         });
         Ok(started)
     }

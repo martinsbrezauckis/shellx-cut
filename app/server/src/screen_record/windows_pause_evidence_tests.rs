@@ -80,6 +80,7 @@ fn checkpoint(sequence: u64, start_ms: u64, end_ms: u64) -> WindowsSealedWgcChec
                 avg_frame_rate: None,
                 r_frame_rate: None,
             }),
+            held_last_frame_ms: None,
             facts: CheckpointFacts {
                 start_ms,
                 end_ms,

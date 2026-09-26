@@ -202,6 +202,11 @@ const wend = (i: number) => TRANSCRIPT.words[i]?.end_ms ?? 0
 const PROJECT: Project = {
   schema: 'shellx-cut/1',
   name: 'demo-cut',
+  project_identity: {
+    schema: 'shellx-cut/project-identity/1',
+    origin_path_sha256: 'sha256:' + 'a'.repeat(64),
+    project_name: 'demo-cut',
+  },
   settings: { width: 1920, height: 1080, fps: 30, audio_rate: 48000 },
   assets: {
     a1: {
@@ -573,13 +578,6 @@ function handleVerb(name: string, args: Record<string, unknown>): unknown {
               ...PROJECT,
               tracks,
               transcript_ignores: [...mockTranscriptIgnores],
-              ...(MOCK_SPEECH_SERVICES ? {
-                project_identity: {
-                  schema: 'shellx-cut/project-identity/1' as const,
-                  origin_path_sha256: 'sha256:' + 'a'.repeat(64),
-                  project_name: PROJECT.name,
-                },
-              } : {}),
             },
       }
       }

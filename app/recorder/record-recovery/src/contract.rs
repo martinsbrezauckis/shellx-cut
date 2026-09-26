@@ -90,6 +90,11 @@ pub struct Checkpoint {
     /// Facts measured from a completed container, before this record is published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaFacts>,
+    /// A final WGC segment with no accepted native frames may hold the last
+    /// verified frame to preserve the elapsed capture span. This is generated
+    /// video, not newly captured pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_last_frame_ms: Option<u64>,
     #[serde(flatten)]
     pub facts: CheckpointFacts,
 }

@@ -111,12 +111,24 @@ fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("could not resolve global F9 preference storage: {error}"))
 }
 
-fn read_preference(path: &Path) -> bool {
+/// Only a valid, explicitly saved `false` opts out of startup registration.
+/// Missing or damaged preference data retains the default-on attempt.
+fn read_preference(path: &Path) -> Option<bool> {
     std::fs::read(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<StoredPreference>(&bytes).ok())
+        .and_then(|bytes| parse_preference(&bytes))
+}
+
+fn parse_preference(bytes: &[u8]) -> Option<bool> {
+    serde_json::from_slice::<StoredPreference>(bytes)
+        .ok()
         .filter(|preference| preference.schema == PREFERENCE_SCHEMA)
-        .is_some_and(|preference| preference.enabled)
+        .map(|preference| preference.enabled)
+}
+
+#[cfg(target_os = "linux")]
+fn should_configure_on_startup(preference: Option<bool>) -> bool {
+    preference != Some(false)
 }
 
 fn write_preference(app: &AppHandle, enabled: bool) -> Result<(), String> {
@@ -155,14 +167,18 @@ pub(crate) fn get_record_hotkey_capability(
 fn enable_gnome(
     app: &AppHandle,
     state: &RecordHotkeyState,
-    restoring: bool,
+    startup: bool,
 ) -> Result<Capability, String> {
     if state.runtime.lock().unwrap().service.is_some() {
         return Ok(capability(state));
     }
-    let preference_enabled = read_preference(&preference_path(app)?);
+    let preference_enabled = if startup {
+        None
+    } else {
+        read_preference(&preference_path(app)?)
+    };
     let service = gnome::Service::configure(app)?;
-    if !restoring && !preference_enabled {
+    if !startup && preference_enabled != Some(true) {
         if let Err(error) = write_preference(app, true) {
             let _ = gnome::remove_exact_owned_binding();
             drop(service);
@@ -215,6 +231,17 @@ fn disabled_gnome_capability(cleanup_error: Option<String>) -> Capability {
 }
 
 #[cfg(target_os = "linux")]
+fn startup_failure_capability(error: String) -> Capability {
+    Capability::gnome(
+        "disabled",
+        false,
+        Some(format!(
+            "Global F9 could not be configured at startup: {error}. F9 still works while ShellX Cut is focused."
+        )),
+    )
+}
+
+#[cfg(target_os = "linux")]
 #[tauri::command]
 pub(crate) fn disable_gnome_record_hotkey(
     app: AppHandle,
@@ -239,16 +266,16 @@ pub(crate) fn disable_gnome_record_hotkey(
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn restore_opt_in(app: &AppHandle) {
-    let enabled = preference_path(app).is_ok_and(|path| read_preference(&path));
-    if !enabled {
+pub(crate) fn configure_on_startup(app: &AppHandle) {
+    let path = preference_path(app).ok();
+    if !should_configure_on_startup(path.as_deref().and_then(read_preference)) {
         publish(
             app,
             Capability::gnome(
                 "disabled",
                 false,
                 Some(
-                    "Global F9 is disabled. F9 still works while ShellX Cut is focused."
+                    "Global F9 was disabled in Cut. F9 still works while ShellX Cut is focused."
                         .to_string(),
                 ),
             ),
@@ -257,21 +284,12 @@ pub(crate) fn restore_opt_in(app: &AppHandle) {
     }
     let state = app.state::<RecordHotkeyState>();
     if let Err(error) = enable_gnome(app, &state, true) {
-        publish(
-            app,
-            Capability::gnome(
-                "disabled",
-                true,
-                Some(format!(
-                    "Global F9 remains enabled but could not be restored: {error}"
-                )),
-            ),
-        );
+        publish(app, startup_failure_capability(error));
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn restore_opt_in(_app: &AppHandle) {}
+pub(crate) fn configure_on_startup(_app: &AppHandle) {}
 
 pub(crate) fn native_registered(app: &AppHandle) {
     publish(app, Capability::native_registered());
@@ -302,8 +320,8 @@ pub(super) fn mark_gnome_observed(app: &AppHandle) {
     );
 }
 
-/// Shut down only the listener this process owns. The persisted preference stays
-/// true, so a normal next launch configures the exact same GNOME entry again.
+/// Shut down only the listener this process owns. A normal next launch attempts
+/// configuration again unless the user explicitly saved the disabled preference.
 pub(crate) fn release_runtime(app: &AppHandle) {
     #[cfg(target_os = "linux")]
     {
@@ -358,10 +376,34 @@ where
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn damaged_or_foreign_preferences_do_not_opt_in() {
-        assert!(!serde_json::from_slice::<StoredPreference>(b"not-json")
-            .is_ok_and(|stored| { stored.schema == PREFERENCE_SCHEMA && stored.enabled }));
+    fn startup_defaults_on_unless_the_user_explicitly_disabled_global_f9() {
+        assert!(should_configure_on_startup(None));
+        assert!(should_configure_on_startup(Some(true)));
+        assert!(!should_configure_on_startup(Some(false)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn valid_saved_false_is_the_only_preference_that_suppresses_startup() {
+        let encode = |schema: &str, enabled| {
+            serde_json::to_vec(&StoredPreference {
+                schema: schema.to_string(),
+                enabled,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            parse_preference(&encode(PREFERENCE_SCHEMA, true)),
+            Some(true)
+        );
+        assert_eq!(
+            parse_preference(&encode(PREFERENCE_SCHEMA, false)),
+            Some(false)
+        );
+        assert_eq!(parse_preference(&encode("foreign", false)), None);
+        assert_eq!(parse_preference(b"not-json"), None);
     }
 
     #[test]
@@ -373,7 +415,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn disabled_gnome_capability_keeps_the_visible_opt_in_available() {
+    fn disabled_gnome_capability_keeps_manual_enable_available() {
         let capability = Capability::gnome("disabled", false, Some("focused only".to_string()));
         assert_eq!(capability.scope, "focused_only");
         assert!(!capability.enabled);
@@ -390,5 +432,19 @@ mod tests {
             .reason
             .as_deref()
             .is_some_and(|reason| reason.contains("could not be removed")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_refusal_keeps_focused_f9_and_reports_the_actual_blocker() {
+        let capability = startup_failure_capability("F9 belongs to another shortcut".to_string());
+        assert_eq!(capability.state, "disabled");
+        assert_eq!(capability.scope, "focused_only");
+        assert!(!capability.enabled);
+        assert!(capability.can_enable);
+        assert!(capability
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("F9 belongs to another shortcut")));
     }
 }

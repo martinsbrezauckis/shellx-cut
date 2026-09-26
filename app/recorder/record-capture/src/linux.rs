@@ -32,6 +32,7 @@ use enumflags2::BitFlags;
 
 use record_core::{EventTrack, Monitor as RMonitor, Result, Settings};
 
+use crate::active_capture_preview::{ControllerExclusionStatus, RecursionStatus};
 use crate::linux_capture_state::{CapPhase, CapturedInput, RecordedInput};
 use crate::linux_portal;
 use crate::linux_runtime::{cap_err, ffmpeg_bin, ffprobe_bin, shared_runtime};
@@ -98,6 +99,7 @@ impl Capture for LinuxCapture {
         let input_mode = cursor_correlation::session_input_mode();
         let wayland_pw = input_mode.use_pipewire_metadata;
         let ff_for_async = ffmpeg_bin();
+        let active_preview = cfg.active_preview.clone();
 
         let phase: Result<CapPhase> = rt.block_on(async move {
             let portal_deadline = linux_portal::pre_first_frame_deadline();
@@ -199,6 +201,15 @@ impl Capture for LinuxCapture {
                 .first()
                 .ok_or_else(|| cap_err("portal granted no streams", "empty stream list"))?;
             let node = stream.pipe_wire_node_id();
+            if let Some(preview) = active_preview.as_ref() {
+                // The portal grants the selected pixels, including Cut whenever
+                // Cut is visible there. It does not prove controller exclusion.
+                preview.set_controller_safety(
+                    RecursionStatus::Possible,
+                    ControllerExclusionStatus::NotConfirmed,
+                );
+                preview.enable();
+            }
             let (sw, sh) = stream
                 .size()
                 .map(|(w, h)| (w.max(0) as u32, h.max(0) as u32))
@@ -299,6 +310,11 @@ impl Capture for LinuxCapture {
                     .map(|owner| segment_start_ms.saturating_add(owner.interval_ms()))
                     .unwrap_or(dur)
                     .min(dur);
+                let segment_preview = active_preview.as_ref().and_then(|preview| {
+                    preview
+                        .begin_segment()
+                        .map(|generation| (preview.clone(), generation))
+                });
                 let (capture_start_ms, ended_ms) = if wayland_pw {
                     let fd = pw_fd
                         .take()
@@ -317,6 +333,7 @@ impl Capture for LinuxCapture {
                             raw_path: segment_path,
                             ff_bin: ff,
                             readiness,
+                            active_preview: segment_preview,
                         })
                     })
                     .await
@@ -356,9 +373,13 @@ impl Capture for LinuxCapture {
                         start,
                         stop.clone(),
                         cfg.readiness.clone(),
+                        segment_preview,
                     )
                     .await?
                 };
+                if let Some(preview) = active_preview.as_ref() {
+                    preview.clear_current_generation();
+                }
                 if let (Some(owner), Some((sequence, staging))) = (checkpoints.as_mut(), segment) {
                     owner.publish(
                         sequence,
@@ -469,6 +490,9 @@ impl Capture for LinuxCapture {
                 keys,
             })
         });
+        if let Some(preview) = cfg.active_preview.as_ref() {
+            preview.clear_current_generation();
+        }
         let phase = phase?;
 
         // CFR normalize: sparse raw → constant fps + EXACT wall-clock duration.

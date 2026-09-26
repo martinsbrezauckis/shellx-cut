@@ -5,7 +5,6 @@ import { RecordingPauseControl } from './RecordingPauseControl'
 interface RecordingLiveControlsProps {
   elapsed: string
   sceneName: string
-  sceneControl: ReactNode
   audioMeters: ReactNode
   captureSafety: ReactNode
   /** Explicit recovery controls appear directly below transport while a Stop retains ownership. */
@@ -23,14 +22,12 @@ interface RecordingLiveControlsProps {
 }
 
 /**
- * The active-recorder surface has one home for live mutations. Scene controls
- * are supplied by the existing durable scene component; marker, pause, and
- * stop remain direct calls into their established recorder paths.
+ * The active transport owns marker, pause, and Stop. Camera and video-timer
+ * controls remain in the right recording-settings rail.
  */
 export function RecordingLiveControls({
   elapsed,
   sceneName,
-  sceneControl,
   audioMeters,
   captureSafety,
   recoveryControls,
@@ -101,9 +98,6 @@ export function RecordingLiveControls({
         </div>
       </div>
       {recoveryControls && <div className="rec-live-controls__recovery">{recoveryControls}</div>}
-      <div className="rec-live-controls__scenes" data-cut-rec-live-scenes>
-        {sceneControl}
-      </div>
       {captureSafety && <div className="rec-live-controls__safety">{captureSafety}</div>}
       {audioMeters && <div className="rec-live-controls__meters" data-cut-rec-live-audio-meters>{audioMeters}</div>}
     </section>

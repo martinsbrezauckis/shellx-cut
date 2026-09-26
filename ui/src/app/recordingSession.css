@@ -1,0 +1,22 @@
+.app__recording-session {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+  padding: 4px 16px;
+  color: var(--text-primary, #f3f1ee);
+  background: #612322;
+  font-size: 13px;
+}
+.app__recording-session[data-cut-recording-session="done"] { background: #234435; }
+.app__recording-session[data-cut-recording-session="error"],
+.app__recording-session[data-cut-recording-session="recovery"] { background: #684323; }
+.app__recording-session span:first-child { flex: 1; }
+.app__recording-session button {
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  padding: 3px 8px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}

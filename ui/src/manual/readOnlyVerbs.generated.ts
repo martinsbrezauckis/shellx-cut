@@ -45,6 +45,7 @@ export const MANUAL_READ_ONLY_VERBS = new Set<string>([
   "recipe.list",
   "score.clip",
   "screen_record.doctor",
+  "screen_record.live_frame",
   "screen_record.preview_capability",
   "screen_record.preview_frame",
   "screen_record.preview_status",

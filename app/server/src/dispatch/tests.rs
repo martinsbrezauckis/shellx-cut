@@ -79,6 +79,7 @@ mod screen_record_export_regression;
 mod screen_record_link_consumers;
 mod screen_record_quality;
 mod screen_record_sparse_export_regression;
+mod screen_record_start_project_identity;
 mod screen_record_terminal;
 mod sequence_index;
 mod smart_bins;

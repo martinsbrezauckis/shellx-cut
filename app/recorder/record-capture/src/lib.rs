@@ -125,6 +125,7 @@ mod session_clock_tests;
 // REC-SOURCE-PREVIEW-01 keeps preview ownership separate from recording output.
 // Native adapters receive exact opaque selections and explicit lifecycle commands;
 // this core never accepts paths, ordinals, titles, or artifact directories.
+pub mod active_capture_preview;
 pub mod source_preview;
 mod source_preview_bitmap;
 #[cfg(test)]
@@ -813,6 +814,10 @@ pub struct CaptureConfig {
     /// it only for a concrete source-close callback; it is never serialized.
     #[serde(skip, default)]
     pub source_lifecycle: Option<CaptureSourceLifecycle>,
+    /// Optional pixels tapped from the same live Windows WGC stream. This is
+    /// process-local and never influences capture or serialized media.
+    #[serde(skip, default)]
+    pub active_preview: Option<active_capture_preview::ActiveCapturePreview>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -844,6 +849,7 @@ impl Default for CaptureConfig {
             readiness: None,
             controller_placement: None,
             source_lifecycle: None,
+            active_preview: None,
         }
     }
 }

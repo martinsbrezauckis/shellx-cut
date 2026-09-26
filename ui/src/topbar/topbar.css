@@ -973,21 +973,17 @@
    in the light theme --ink is dark, which would put dark text on the blue fill.
    This more-specific rule restores white-on-blue for the hovered active tab. */
 .tb-mode--on:hover { color: #fff; }
-/* Record is the flagship — a red recording dot, tinted when active. */
+/* Record uses the same selected blue as Edit; red is reserved for capture. */
 .tb-mode--record .tb-mode-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: #ef4444;
 }
-.tb-mode--record.tb-mode--on {
-  background: #ef4444;
-}
-.tb-mode--record.tb-mode--on .tb-mode-dot { background: #fff; }
 
 /* Recording Studio keeps the shared Edit | Record switch and global utilities;
    timeline edit and export actions stay in Edit where they have an effect. */
-.tb--recording { border-bottom-color: rgba(239, 68, 68, .22); }
+.tb--recording { border-bottom-color: var(--hairline, #1f1f1d); }
 .tb--recording .tb-proj {
   padding: 1px 5px;
   border: 1px solid transparent;

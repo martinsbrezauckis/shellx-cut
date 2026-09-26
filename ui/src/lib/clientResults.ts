@@ -1378,9 +1378,23 @@ export interface ScreenRecordStatusResult {
   }
   /** Native controller placement conclusion without a window handle or source identity. */
   controller_placement: {
-    state: 'excluded' | 'auto_hidden' | 'refused' | 'unavailable'
+    state: 'excluded' | 'not_excluded' | 'auto_hidden' | 'refused' | 'unavailable'
     reason: string
   }
+}
+
+/** Optional pixels from the exact active Windows WGC recording, never a second capture. */
+export interface ScreenRecordLiveFrameResult {
+  capture_id: string
+  state: 'awaiting_source' | 'awaiting_frame' | 'ready' | 'stale' | 'unavailable' | 'terminal'
+  reason: string | null
+  generation: number
+  frame_age_ms: number | null
+  last_sample_cost_ms: number | null
+  max_sample_cost_ms: number
+  recursion: 'none' | 'possible' | 'unavoidable'
+  controller_exclusion: 'confirmed_excluded' | 'not_confirmed' | 'not_applicable'
+  frame: ScreenRecordSourcePreviewFrame | null
 }
 
 /** In-process adapter admission only; it never proves a selected source or frame. */
@@ -1701,6 +1715,7 @@ export interface VerbResults {
   'screen_record.preview_start': ScreenRecordSourcePreviewActionResult
   'screen_record.preview_status': ScreenRecordSourcePreviewStatus
   'screen_record.preview_frame': ScreenRecordSourcePreviewFrameResult
+  'screen_record.live_frame': ScreenRecordLiveFrameResult
   'screen_record.preview_pause': ScreenRecordSourcePreviewActionResult
   'screen_record.preview_resume': ScreenRecordSourcePreviewActionResult
   'screen_record.preview_hide': ScreenRecordSourcePreviewActionResult

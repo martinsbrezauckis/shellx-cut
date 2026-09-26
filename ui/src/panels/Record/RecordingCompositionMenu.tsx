@@ -1,7 +1,7 @@
 import { createPortal } from 'react-dom'
 import type { ButtonHTMLAttributes } from 'react'
 import ContextMenuFrame from '../../components/ContextMenuFrame'
-import type { CameraCapability } from './CameraControl'
+import { cameraLayoutUnavailableReason, type CameraCapability } from './CameraControl'
 import {
   studioBackgroundPreset, cameraPositionLabel,
   type StudioState, type StudioBackground, type StudioCameraPosition, type StudioCameraShape,
@@ -9,12 +9,14 @@ import {
 
 export interface RecordingCompositionActions {
   cameraCapability: CameraCapability
+  cameraDeviceId: string | null
   rawCapture: boolean
   configurationDisabled: boolean
   liveAdjustDisabled: boolean
   onCameraEnabled(enabled: boolean): void
   onCameraPosition(position: StudioCameraPosition): void
   onCameraShape(shape: StudioCameraShape): void
+  onCameraReset(): void
   onBackground(background: StudioBackground): void
 }
 
@@ -37,7 +39,11 @@ export function RecordingCompositionMenu({ menu, studio, actions, onClose }: {
     : actions.rawCapture ? 'Switch to Auto-edit to add an editable camera take.'
     : !studio.camera.enabled && (!actions.cameraCapability.supported || actions.cameraCapability.devices.length === 0)
       ? actions.cameraCapability.detail : null
-  const layoutReason = actions.rawCapture
+  const layoutReason = cameraLayoutUnavailableReason(
+    actions.cameraCapability, studio.camera.enabled, actions.cameraDeviceId,
+    actions.rawCapture, actions.liveAdjustDisabled,
+  )
+  const backgroundReason = actions.rawCapture
     ? 'Composition is available in Auto-edit mode.'
     : actions.liveAdjustDisabled ? 'Wait for the current capture operation to finish.' : null
   const cameraVisible = studio.camera.enabled && !actions.rawCapture
@@ -58,7 +64,7 @@ export function RecordingCompositionMenu({ menu, studio, actions, onClose }: {
     'Change the camera frame shape', () => actions.onCameraShape(shape),
   )
   const backgroundItem = (background: StudioBackground) => item(
-    studioBackgroundPreset(background).label, studio.background === background, layoutReason,
+    studioBackgroundPreset(background).label, studio.background === background, backgroundReason,
     studioBackgroundPreset(background).description, () => actions.onBackground(background),
   )
 
@@ -88,6 +94,11 @@ export function RecordingCompositionMenu({ menu, studio, actions, onClose }: {
         <span className="tl-ctx__sep" aria-hidden="true" />
         <button data-cut-action="record-context-camera-shape-circle" {...shapeItem('circle')} />
         <button data-cut-action="record-context-camera-shape-rounded_rect" {...shapeItem('rounded_rect')} />
+        <span className="tl-ctx__sep" aria-hidden="true" />
+        <button data-cut-action="record-context-camera-layout-reset" {...item(
+          'Reset camera layout', false, layoutReason,
+          'Restore this scene’s camera layout', actions.onCameraReset,
+        )} />
       </>}
       {menu.target === 'composition' && <>
         <span className="tl-ctx__sep" aria-hidden="true" />

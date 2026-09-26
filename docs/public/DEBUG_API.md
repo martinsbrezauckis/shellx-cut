@@ -502,6 +502,11 @@ Add Audio Track controls.
 
 ### Crash-resilient recordings
 
+`screen_record.start` accepts optional `expected_project_identity` copied unchanged
+from `project.state.project_identity`. Under the project-transition lock it refuses
+a closed or changed project before rehearsal cleanup, native admission, marker,
+or capture reservation.
+
 `screen_record.start` creates a private, project-local checkpoint journal before a
 backend starts. Its output is not an open live MP4: each Linux, Windows, or macOS
 segment must finalize, hash, and fully decode before recovery may use it. On daemon or
@@ -526,6 +531,31 @@ acceptance on Windows and observable PipeWire/GStreamer delivery on Linux).
 Continue only while `terminal:false`; once the capture terminalizes, readiness
 cannot become true again. Process startup, elapsed time, or output-file growth
 is not equivalent evidence, and inactive captures return `not_found`.
+`controller_placement.state:"not_excluded"` means the native display source
+allows Cut to appear when unobscured. It does not claim Cut was actually visible
+in any frame; inspect captured pixels for that fact. A selected-window source
+retains its existing picker admission and reports display placement inapplicable.
+
+`screen_record.live_frame{capture_id}` reads optional real pixels from the
+same active native source stream as the recording. Its frame is a generation-bound,
+in-memory BMP sampled to at most 640×360 pixels (with a 4 MiB hard ceiling);
+`frame:null` means no current frame and never pretends that capture succeeded.
+A checkpoint rollover clears the previous
+generation, and Stop or failure clears all retained pixels. `recursion` and
+`controller_exclusion` are independent facts: a `ready` frame can have possible
+controller recursion when the native source does not prove Cut-window exclusion.
+Whole-display capture includes Cut when it is visible and omits it naturally
+when another window covers it. Any admitted source that contains Cut can show
+recursive pixels; the result reports that possibility instead of substituting
+a fake frame. A preview readback failure does not stop or change the recording.
+The latest frame becomes
+`stale` after five seconds without a new native frame; sample cost fields help
+qualify 4K callback load. The same contract supports native macOS and Linux taps;
+each backend must report its actual exclusion state.
+The Record workspace must display these exact capture-owned pixels during a
+take, or an explicit unavailable/stale state. A schematic image is not a live
+preview. An empty or stale frame does not prove that capture stopped; query
+`screen_record.status` for the exact capture and keep Stop accessible.
 
 Source preview is a separate opt-in native lifecycle, not evidence that an
 ordinary recording is active. Read `screen_record.preview_capability {}` first:
@@ -583,6 +613,13 @@ the camera or timer has started. During capture, `screen_record.scene_activate`
 and `screen_record.scene_timer` return only after the reducer-validated event is
 saved at a logical time issued by the capture's shared `CaptureClock`.
 Presenter PiP activation fails closed until the selected camera is admitted.
+Presenter PiP accepts top-left, top-right, bottom-right, and bottom-left
+corners. A `screen_record.studio_event` camera `transform` chooses the camera
+position, size, or shape for the polished output. That choice carries across
+later internal scene switches. A camera `reset` event with only `t_ms`,
+`source:"camera"`, and `kind:"reset"` restores the active frozen scene layout
+without changing camera visibility or the recording timer. This metadata
+changes the polished composition; the separate raw camera take stays intact.
 
 On Windows, `screen_record.start` calculates the exact compact WGC checkpoint output
 path before it creates a capture marker or starts a worker. A project whose checkpoint
@@ -618,13 +655,33 @@ capture-period samples (plus measured leading padding), not a trimmed stitching 
 
 An unsuccessful `screen_record.stop` is not a completed-recording receipt: retain
 the same `capture_id`, do not issue `screen_record.start` for a replacement, and
-use the Stop error plus `screen_record.recovery_status` to resolve its state. The
-visible Record workspace keeps that capture while Stop is unresolved. In Raw mode,
-`raw_path` is optional; if an explicit path cannot be authorized, choose another
-output or omit it for Cut's default export folder, then retry Stop for the same
-capture. An acknowledged Stop releases capture ownership before downstream
-auto-edit/polish, so a later processing failure does not imply that a live capture
-persists.
+query `screen_record.status{capture_id}` before classifying the result. Offer
+Retry Stop only when that exact capture is still live (`terminal:false`). A
+terminal or `not_found` result must not restart a recording timer; uncertain
+ownership is reported as unknown. `screen_record.recovery_status` remains the
+read-only durable inventory for interrupted captures. The visible Record
+workspace keeps unresolved ownership explicit. The Record UI uses the default
+export folder for both outcome modes; optional file selection belongs to an
+after-Stop Export or Save a copy action. The API retains optional `raw_path`
+for explicit callers. An acknowledged Stop releases capture ownership before
+downstream auto-edit/polish, so a later processing failure does not imply that
+a live capture persists.
+
+`mux_raw:true` and `autoedit:true` are independent Stop options. Together they save
+an unedited MP4 in the default export folder and return an EditPlan for the
+subsequent editable `screen_record.polish` step. Repeated default saves receive
+numbered names instead of replacing an earlier take. After a successful Stop,
+`screen_record.copy_raw{source:raw_path,path?}` can save another byte-for-byte MP4
+copy without an EditPlan. Its source must remain a plain file in the active
+project's authorized export folder; the copy job reserves a fenced destination,
+publishes only a complete file, and removes its private stage on cancellation.
+The Record UI calls Stop with `mux_raw:true` for Raw and Polished modes, and
+adds `autoedit:true` only for Polished. It then polishes the editable clip with
+`raw:false` while retaining the unchanged MP4. Show keystrokes is an optional
+Polished setting that starts off; there is no independent auto-polish choice.
+The on-video Countdown uses an applied duration of 00:00:01–23:59:59; its zero
+does not stop capture. Camera transform controls expose all four corners and
+retain the chosen placement across internal scene switches until explicit reset.
 
 `screen_record.recovery_status{after?,limit?}` is the read-only, paginated recovery
 projection. It reports capture ids and receipt/loss facts, never cache paths or arbitrary

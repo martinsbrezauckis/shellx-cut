@@ -58,6 +58,7 @@ mod export_progress;
 pub(crate) mod finalization_budget;
 pub(crate) mod microphone;
 mod monitor_start_admission;
+mod raw_copy_job;
 // The macOS-only Region start path receives a ticket only from the private
 // foreground desktop bridge. It still enters the ordinary capture reservation
 // below and has no schema/verb/UI representation.
@@ -152,6 +153,7 @@ mod run_seal_coordinator_tests;
 // Historical private Screen-only receipt seam. Public Recording Scenes uses
 // recording_scenes + scene_projection_start instead; retain this module for
 // its focused legacy tests without letting it surface a second receipt.
+mod active_capture_preview_handler;
 #[cfg(any(windows, target_os = "macos"))]
 mod private_pause_capture_projection;
 #[allow(dead_code)]
@@ -164,6 +166,7 @@ mod screenshot;
 mod source_preview;
 mod source_preview_handlers;
 mod start_handler;
+mod start_project_identity;
 mod start_readiness;
 pub(crate) mod system_audio;
 pub(crate) mod system_audio_capture;
@@ -222,6 +225,7 @@ pub(crate) use doctor_projection::RecordStartAdmission;
 use doctor_projection::{apply_capture_access_failure, ready_rollup, record_card};
 pub use doctor_projection::{MonitorInfo, RecordCard, RecordDoctor};
 // Preserves the module-level public WindowInfo path from doctor_projection.
+pub(crate) use active_capture_preview_handler::live_frame_handler;
 #[allow(unused_imports)]
 pub use doctor_projection::WindowInfo;
 pub(crate) use export_audio::{for_source as export_audio_for_source, CaptureExportAudio};
@@ -232,6 +236,7 @@ pub(crate) use polish::{
     gif_with_control, mux_raw_with_control, plan_cache_tag, render_with_control,
     render_with_control_progress, screen_record_autoedit,
 };
+pub(crate) use raw_copy_job::screen_record_copy_raw;
 pub(crate) use raw_mux::mux_raw_sources;
 pub(crate) use recovery::recovery_status_handler;
 pub(crate) use scene_projection_start::completed_receipt_for_stop;
@@ -581,6 +586,7 @@ where
         readiness: Some(control.readiness()),
         controller_placement: Some(control.controller_placement()),
         source_lifecycle: Some(control.source_lifecycle()),
+        active_preview: Some(control.active_preview()),
     };
     let system_audio_lease = system_audio_capture::reserve(system_audio)?;
     let reservation = capture_registry::reserve_capture_after_preview_release(

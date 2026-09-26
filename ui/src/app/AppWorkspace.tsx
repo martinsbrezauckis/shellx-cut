@@ -150,6 +150,7 @@ export default function AppWorkspace({
                 project={project}
                 onClipAdded={onRecordClipAdded}
                 onOpenOutputSettings={onOpenOutputSettings}
+                onOpenEdit={() => setLayout((current) => ({ ...current, workspaceMode: 'edit' }))}
                 onWorkspaceAdmissionChange={onRecordWorkspaceAdmission}
               />
             </Suspense>

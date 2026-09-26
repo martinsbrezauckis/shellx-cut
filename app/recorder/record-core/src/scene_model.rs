@@ -12,6 +12,7 @@ pub enum PipCorner {
     TopLeft,
     TopRight,
     BottomRight,
+    BottomLeft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

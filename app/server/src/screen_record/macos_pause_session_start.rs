@@ -19,6 +19,7 @@ pub(super) fn start_in_prepared_capture(
     streams: record_capture::SelectedCaptureStreams,
     microphone_source: record_capture::MicrophoneSource,
     project_binding: RecordingProjectBinding,
+    active_preview: Option<record_capture::active_capture_preview::ActiveCapturePreview>,
 ) -> Result<
     WindowsPauseSession<
         RecordingSessionJournalFile,
@@ -71,6 +72,7 @@ pub(super) fn start_in_prepared_capture(
             manifest_dir: capture_dir.display().to_string(),
             interval_ms: super::recovery::CHECKPOINT_INTERVAL_MS,
         },
+        active_preview,
     )
     .map_err(|_| WindowsPauseSessionError::Lifecycle)?;
     let factory = CalibratedWindowsPauseEvidenceFactory::for_exact_monitor(

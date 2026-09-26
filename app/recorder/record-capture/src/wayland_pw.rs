@@ -36,6 +36,19 @@ use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Id, SpaTypes};
 use pw::{properties::properties, spa};
 
 use crate::cursor_correlation::{CursorMetadataSample, PipewireCursorCapture};
+use crate::source_preview_bitmap::SourcePreviewPixelFormat;
+
+fn preview_format(format: VideoFormat) -> SourcePreviewPixelFormat {
+    match format {
+        VideoFormat::BGRx => SourcePreviewPixelFormat::Bgrx,
+        VideoFormat::BGRA => SourcePreviewPixelFormat::Bgra,
+        VideoFormat::RGBx => SourcePreviewPixelFormat::Rgbx,
+        VideoFormat::RGBA => SourcePreviewPixelFormat::Rgba,
+        VideoFormat::RGB => SourcePreviewPixelFormat::Rgb,
+        VideoFormat::BGR => SourcePreviewPixelFormat::Bgr,
+        _ => SourcePreviewPixelFormat::Bgrx,
+    }
+}
 
 /// Serialize an `SPA_PARAM_Meta` object requesting `SPA_META_Cursor` with the size as a
 /// CHOICE_RANGE whose max (512×512) spans mutter's fixed `CURSOR_META_SIZE(384,384)`.
@@ -195,6 +208,8 @@ struct State {
     height: u32,
     /// Bytes per pixel of the negotiated format (de-pad scanlines by stride).
     bpp: usize,
+    preview_format: SourcePreviewPixelFormat,
+    active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
     ff_stdin: Option<ChildStdin>,
     ff_child: Option<Child>,
     cursor_metadata: Vec<CursorMetadataSample>,
@@ -266,6 +281,7 @@ pub struct PipewireCaptureRequest {
     pub raw_path: String,
     pub ff_bin: String,
     pub readiness: Option<crate::CaptureReadiness>,
+    pub active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
 }
 
 /// Capture `dur_ms` of the granted PipeWire `node` over the portal remote `pw_fd`:
@@ -283,6 +299,7 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
         raw_path,
         ff_bin,
         readiness,
+        active_preview,
     } = request;
     // NOTE: PipeWire callbacks are extern "C", so a panic inside one aborts the process
     // (non-unwinding) rather than propagating — the default panic hook still prints the
@@ -311,6 +328,8 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
         width: 0,
         height: 0,
         bpp: 4,
+        preview_format: SourcePreviewPixelFormat::Bgrx,
+        active_preview,
         ff_stdin: None,
         ff_child: None,
         cursor_metadata: Vec::new(),
@@ -356,6 +375,7 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
                 st.width = info.size().width;
                 st.height = info.size().height;
                 st.bpp = bytes_per_pixel(info.format());
+                st.preview_format = preview_format(info.format());
                 let pf = ff_pix_fmt(info.format());
                 spawn_ffmpeg(&mut st, pf);
             }
@@ -398,23 +418,42 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
                         if let (Some(size), Some(offset), Some(stride), Some(mapped)) =
                             (size, offset, stride, data.data())
                         {
-                            let wrote = valid_chunk_data(mapped, offset, size)
-                                .and_then(|valid| {
-                                    st.ff_stdin.as_mut().map(|stdin| {
-                                        write_depadded(stdin, valid, w, h, bpp, stride, offset)
-                                    })
-                                })
-                                .unwrap_or(false);
-                            if wrote {
-                                st.pixel_frames = st.pixel_frames.saturating_add(1);
-                                if let Some(readiness) = st.readiness.as_ref() {
-                                    readiness.mark_first_screen_frame_delivered();
-                                }
-                                if st.capture_start_ms.is_none() {
-                                    st.capture_start_ms = Some(
-                                        u64::try_from(st.start.elapsed().as_millis())
-                                            .unwrap_or(u64::MAX),
-                                    );
+                            if let Some(valid) = valid_chunk_data(mapped, offset, size) {
+                                let wrote = st.ff_stdin.as_mut().is_some_and(|stdin| {
+                                    write_depadded(stdin, valid, w, h, bpp, stride, offset)
+                                });
+                                if wrote {
+                                    st.pixel_frames = st.pixel_frames.saturating_add(1);
+                                    if let Some(readiness) = st.readiness.as_ref() {
+                                        readiness.mark_first_screen_frame_delivered();
+                                    }
+                                    if st.capture_start_ms.is_none() {
+                                        st.capture_start_ms = Some(
+                                            u64::try_from(st.start.elapsed().as_millis())
+                                                .unwrap_or(u64::MAX),
+                                        );
+                                    }
+                                    if let Some((preview, generation)) = st.active_preview.as_ref()
+                                    {
+                                        let sampled_at = Instant::now();
+                                        if preview.claim_sample(*generation, sampled_at) {
+                                            preview.publish_native(
+                                                *generation,
+                                                u64::try_from(st.start.elapsed().as_millis())
+                                                    .unwrap_or(u64::MAX),
+                                                st.width,
+                                                st.height,
+                                                stride,
+                                                offset,
+                                                st.preview_format,
+                                                valid,
+                                            );
+                                            preview.record_sample_cost(
+                                                *generation,
+                                                sampled_at.elapsed(),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -568,7 +607,37 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_chunk_data, write_depadded};
+    use super::{preview_format, valid_chunk_data, write_depadded};
+    use crate::source_preview_bitmap::SourcePreviewPixelFormat;
+    use pipewire::spa::param::video::VideoFormat;
+
+    #[test]
+    fn negotiated_native_layout_is_preserved_for_the_encoder_frame_tap() {
+        assert_eq!(
+            preview_format(VideoFormat::BGRx),
+            SourcePreviewPixelFormat::Bgrx
+        );
+        assert_eq!(
+            preview_format(VideoFormat::BGRA),
+            SourcePreviewPixelFormat::Bgra
+        );
+        assert_eq!(
+            preview_format(VideoFormat::RGBx),
+            SourcePreviewPixelFormat::Rgbx
+        );
+        assert_eq!(
+            preview_format(VideoFormat::RGBA),
+            SourcePreviewPixelFormat::Rgba
+        );
+        assert_eq!(
+            preview_format(VideoFormat::RGB),
+            SourcePreviewPixelFormat::Rgb
+        );
+        assert_eq!(
+            preview_format(VideoFormat::BGR),
+            SourcePreviewPixelFormat::Bgr
+        );
+    }
 
     // 2x2 BGRx packed frame: pass-through unchanged.
     #[test]

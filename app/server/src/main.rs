@@ -54,6 +54,7 @@ mod review_http;
 mod schema_validation;
 mod screen_record;
 mod screen_record_studio;
+mod screen_record_studio_camera_timeline;
 mod screen_record_studio_journal;
 mod server_shutdown;
 mod startup_tasks;

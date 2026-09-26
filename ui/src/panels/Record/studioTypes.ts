@@ -32,7 +32,6 @@ export interface StudioCameraState {
 export interface StudioState {
   camera: StudioCameraState
   background: StudioBackground
-  hotkeyStatus: 'desktop-f9' | 'focused-only'
 }
 
 export interface StudioRawStreams {
@@ -70,7 +69,7 @@ export function cursorCorrelationLabel(correlation: CursorCorrelation | null): s
 
 export interface StudioEventPayload {
   source: 'camera' | 'recording' | 'background'
-  kind: 'visibility' | 'transform' | 'marker' | 'style'
+  kind: 'visibility' | 'transform' | 'marker' | 'style' | 'reset'
   visible?: boolean
   x?: number
   y?: number
@@ -147,6 +146,5 @@ export function defaultStudioState(): StudioState {
       shape: 'circle',
     },
     background: STUDIO_BACKGROUND_PRESETS[0].id,
-    hotkeyStatus: 'desktop-f9',
   }
 }

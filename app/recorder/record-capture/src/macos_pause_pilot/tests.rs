@@ -175,6 +175,7 @@ fn sealed_run(started: &MacosPausePilotStarted) -> MacosSealedScreenRun {
             bytes: 1,
             sha256: "a".repeat(64),
             media: None,
+            held_last_frame_ms: None,
             facts: CheckpointFacts {
                 start_ms: started.observed_start_ms,
                 end_ms: started.observed_start_ms + 40,

@@ -31,6 +31,7 @@ pub(crate) struct CaptureSessionStatus {
 #[derive(Debug)]
 struct CaptureSessionState {
     stop: Arc<AtomicBool>,
+    active_preview: record_capture::active_capture_preview::ActiveCapturePreview,
     readiness: CaptureReadiness,
     controller_placement: CaptureControllerPlacement,
     source_lifecycle: CaptureSourceLifecycle,
@@ -125,9 +126,14 @@ impl CaptureSessionControl {
         let coordinator =
             PauseStreamCoordinator::new(streams, duration_ms.map(Duration::from_millis));
         let readiness = CaptureReadiness::default();
+        let active_preview =
+            record_capture::active_capture_preview::ActiveCapturePreview::default();
+        #[cfg(not(any(windows, target_os = "macos")))]
+        active_preview.refuse_backend_unavailable();
         Self {
             state: Arc::new(CaptureSessionState {
                 stop: Arc::new(AtomicBool::new(false)),
+                active_preview,
                 source_lifecycle: CaptureSourceLifecycle::with_readiness(readiness.clone()),
                 readiness,
                 controller_placement: CaptureControllerPlacement::new(),
@@ -274,6 +280,7 @@ impl CaptureSessionControl {
         // Readiness is an admission fact, not a historical artifact claim. Close
         // it before exposing the physical Stop signal so a callback racing Stop
         // cannot make a terminal capture ready again.
+        self.state.active_preview.terminate();
         self.state.readiness.mark_terminal();
         self.state.audio_meters.mark_terminal();
         // Linearize the native handoff first. A worker that has
@@ -424,6 +431,12 @@ impl CaptureSessionControl {
 
     pub(crate) fn stop_signal(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.state.stop)
+    }
+
+    pub(crate) fn active_preview(
+        &self,
+    ) -> record_capture::active_capture_preview::ActiveCapturePreview {
+        self.state.active_preview.clone()
     }
 
     /// Clone the private proof passed to the active native backend. It has no

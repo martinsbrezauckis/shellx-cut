@@ -306,18 +306,19 @@ export function createMockRecordingLifecycle({
         captures.delete(captureId)
         const base = `/mock/recordings/${captureId}`
         const rawStreams = {
-          screen: true,
-          camera: false,
-          mic: capture.args.audio !== false,
-          system: capture.args.system_audio === true,
-          studio_events: false,
+          screen: `${base}/screen.mp4`,
+          camera: null,
+          mic: capture.args.audio !== false ? `${base}/mic.wav` : null,
+          system: capture.args.system_audio === true ? `${base}/system.wav` : null,
+          studio_events: capture.args.studio ? `${base}/studio-events.jsonl` : null,
         }
-        if (args.mux_raw === true) {
+        if (args.mux_raw === true && args.autoedit !== true) {
           return {
             handled: true,
             value: {
               ok: true,
               result: {
+                capture_id: captureId,
                 raw_path: `${base}/raw.mp4`,
                 raw_has_mic: capture.args.audio !== false,
                 raw_has_system: capture.args.system_audio === true,
@@ -326,7 +327,13 @@ export function createMockRecordingLifecycle({
             },
           }
         }
-        return { handled: true, value: { ok: true, result: { source: `${base}/source.mp4`, plan: `${base}/plan.json`, raw_streams: rawStreams } } }
+        return { handled: true, value: { ok: true, result: {
+          capture_id: captureId,
+          raw_path: `${base}/raw.mp4`,
+          raw_has_mic: capture.args.audio !== false,
+          raw_has_system: capture.args.system_audio === true,
+          source: `${base}/source.mp4`, plan: `${base}/plan.json`, raw_streams: rawStreams,
+        } } }
       }
       case 'screen_record.polish':
         return { handled: true, value: { ok: true, result: { clip_id: `mock-recording-clip-${sequence}` } } }

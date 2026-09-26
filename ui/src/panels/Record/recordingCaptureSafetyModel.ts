@@ -24,6 +24,8 @@ export function recordingCaptureSafetyPresentation(
           ? 'Source-loss monitoring unavailable'
           : 'Native capture ended'
   switch (controllerPlacement.state) {
+    case 'not_excluded':
+      return { sourceLabel, controllerLabel: 'Cut appears when visible on the selected display', controllerTone: 'muted' }
     case 'excluded':
       return { sourceLabel, controllerLabel: 'Controls excluded from capture', controllerTone: 'safe' }
     case 'auto_hidden':

@@ -32,9 +32,8 @@ export function RecordFrameRateControl({
     onValueChange(frameRate)
   }
 
-  const updateCustomValue = (nextValue: string) => {
-    onCustomValueChange(nextValue)
-    const parsed = parseRecordingFrameRate(nextValue)
+  const applyCustomValue = () => {
+    const parsed = parseRecordingFrameRate(customValue)
     if (parsed !== null) onValueChange(parsed)
   }
 
@@ -57,26 +56,35 @@ export function RecordFrameRateControl({
           </button>
         ))}
       </div>
-      <label className="rec__fps-custom" data-cut-rec-fps-custom>
-        <span>Custom</span>
-        <input
-          className="rec__fps-input"
-          data-cut-rec-fps-custom-input
-          type="number"
-          min={RECORDING_FRAME_RATE_MIN}
-          max={RECORDING_FRAME_RATE_MAX}
-          step="any"
-          inputMode="decimal"
-          placeholder="FPS"
-          value={customValue}
-          disabled={disabled}
-          aria-label="Custom recording frame rate in FPS"
-          aria-describedby="cut-rec-fps-status"
-          aria-invalid={customError ? 'true' : undefined}
-          onChange={(event) => updateCustomValue(event.target.value)}
-        />
-        <span>FPS</span>
-      </label>
+      <details className="rec__fps-advanced" data-cut-rec-fps-advanced>
+        <summary>Advanced frame rate</summary>
+        <div className="rec__fps-advanced-body">
+          <label className="rec__fps-custom" data-cut-rec-fps-custom>
+            <span>Custom</span>
+            <input
+              className="rec__fps-input"
+              data-cut-rec-fps-custom-input
+              type="number"
+              min={RECORDING_FRAME_RATE_MIN}
+              max={RECORDING_FRAME_RATE_MAX}
+              step="1"
+              inputMode="numeric"
+              placeholder="FPS"
+              value={customValue}
+              disabled={disabled}
+              aria-label="Custom recording frame rate in FPS"
+              aria-describedby="cut-rec-fps-status"
+              aria-invalid={customError ? 'true' : undefined}
+              onChange={(event) => onCustomValueChange(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyCustomValue() } }}
+            />
+            <span>FPS</span>
+          </label>
+          <button type="button" className="rec__export-btn rec__export-btn--small"
+            data-cut-rec-fps-apply disabled={disabled || !customValue.trim() || Boolean(customError)}
+            onClick={applyCustomValue}>Apply frame rate</button>
+        </div>
+      </details>
       <p
         id="cut-rec-fps-status"
         className={`rec__fps-status${customError ? ' rec__fps-status--error' : ''}`}
@@ -85,8 +93,8 @@ export function RecordFrameRateControl({
         role={customError ? 'alert' : 'status'}
       >
         {customError
-          ? `${customError} Requested ${frameRateLabel(value)} FPS remains selected until you correct it.`
-          : `Requested ${frameRateLabel(value)} FPS. Custom accepts ${RECORDING_FRAME_RATE_MIN}–${RECORDING_FRAME_RATE_MAX} FPS.`}
+          ? `${customError} Requested ${frameRateLabel(value)} FPS remains selected.`
+          : `Requested ${frameRateLabel(value)} FPS. Custom accepts whole numbers ${RECORDING_FRAME_RATE_MIN}–${RECORDING_FRAME_RATE_MAX} after Apply.`}
       </p>
     </div>
   )

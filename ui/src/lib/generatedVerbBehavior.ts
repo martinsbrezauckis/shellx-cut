@@ -4491,6 +4491,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "risk": "external",
     "facets": []
   },
+  "screen_record.copy_raw": {
+    "mutation_class": "external_side_effect",
+    "side_effects": {
+      "filesystem": true,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_copy_raw",
+    "project_state": "required",
+    "idempotency": "none",
+    "replayability": "not_applicable",
+    "async_job": "capture",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "external",
+    "facets": []
+  },
   "screen_record.status": {
     "mutation_class": "read",
     "side_effects": {
@@ -5364,6 +5382,24 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
       "ui": false
     },
     "dispatch": "screen_record_preview_status",
+    "project_state": "none",
+    "idempotency": "not_applicable",
+    "replayability": "not_applicable",
+    "async_job": "none",
+    "ui_exposure": "human",
+    "agent_chat": "deny",
+    "risk": "none",
+    "facets": []
+  },
+  "screen_record.live_frame": {
+    "mutation_class": "read",
+    "side_effects": {
+      "filesystem": false,
+      "process": false,
+      "network": false,
+      "ui": false
+    },
+    "dispatch": "screen_record_live_frame",
     "project_state": "none",
     "idempotency": "not_applicable",
     "replayability": "not_applicable",

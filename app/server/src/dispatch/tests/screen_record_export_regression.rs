@@ -160,6 +160,68 @@ fn recording_project(source: &Path, mic: Option<&Path>, duration_ms: u64) -> Val
 }
 
 #[tokio::test]
+async fn polished_stop_saves_collision_safe_raw_mp4_and_editable_plan() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_dir = temp.path().join("polished_raw.cutproj");
+    let state = AppState::new();
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"polished_raw","dir":project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+
+    let mut first: Option<Value> = None;
+    for (capture_id, name) in [
+        ("cap-polished-1", "raw_recording.mp4"),
+        ("cap-polished-2", "raw_recording-2.mp4"),
+    ] {
+        let capture = crate::screen_record::screen_record_cache_dir(&project_dir)
+            .unwrap()
+            .join(capture_id);
+        std::fs::create_dir_all(&capture).unwrap();
+        let source = capture.join("source.mp4");
+        synth_video(&source, 1);
+        std::fs::write(
+            capture.join("project.json"),
+            serde_json::to_vec(&recording_project(&source, None, 1_000)).unwrap(),
+        )
+        .unwrap();
+        let stopped = dispatch(
+            &state,
+            "screen_record.stop",
+            json!({"capture_id":capture_id,"mux_raw":true,"autoedit":true}),
+            test_actor(),
+        )
+        .await;
+        assert!(stopped.ok, "combined Stop failed: {:?}", stopped.error);
+        let result = stopped.result.unwrap();
+        let raw = PathBuf::from(result["raw_path"].as_str().unwrap());
+        assert_eq!(raw.file_name().unwrap(), name);
+        assert_eq!(raw.parent().unwrap(), project_dir.join("exports"));
+        assert!(raw.metadata().unwrap().len() > 0);
+        assert!(Path::new(result["plan"].as_str().unwrap()).is_file());
+        if first.is_none() {
+            first = Some(result);
+        }
+    }
+
+    let first = first.unwrap();
+    let polished = dispatch(
+        &state,
+        "screen_record.polish",
+        json!({"source":first["source"],"plan":first["plan"]}),
+        test_actor(),
+    )
+    .await;
+    assert!(polished.ok, "editable polish failed: {:?}", polished.error);
+    assert!(polished.result.unwrap()["clip_id"].is_string());
+    assert!(project_dir.join("exports/raw_recording.mp4").is_file());
+}
+
+#[tokio::test]
 async fn stop_autoedit_export_preserves_capture_timebase_and_aligned_capture_audio() {
     let temp = tempfile::tempdir().unwrap();
     let project_dir = temp.path().join("export_timebase.cutproj");

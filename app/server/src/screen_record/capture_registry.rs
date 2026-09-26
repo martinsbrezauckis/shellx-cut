@@ -309,10 +309,13 @@ where
 }
 
 fn release_capture(capture_id: &str) {
-    capture_sessions()
+    if let Some(entry) = capture_sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(capture_id);
+        .remove(capture_id)
+    {
+        entry.control.active_preview().terminate();
+    }
 }
 
 /// Signal one active capture to terminate while its reservation remains owned

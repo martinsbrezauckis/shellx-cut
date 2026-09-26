@@ -164,8 +164,8 @@ impl Capture for MacosPausePilotCapture {
         stop: Arc<AtomicBool>,
     ) -> record_core::Result<CaptureOutput> {
         if let Some(placement) = cfg.controller_placement.as_ref() {
-            placement.unavailable(
-                "The pause-aware macOS capture owner has no admitted controller-exclusion projection.",
+            placement.not_excluded(
+                "Full-display pause recording can include Cut when unobscured; no controller exclusion or auto-hide is applied.",
             );
         }
         let root = CaptureRoot::for_project(&self.project_dir)
@@ -181,6 +181,7 @@ impl Capture for MacosPausePilotCapture {
             self.streams.clone(),
             self.microphone_source.clone(),
             project_binding,
+            cfg.active_preview.clone(),
         )
         .map_err(session_error)?;
         let started = cfg

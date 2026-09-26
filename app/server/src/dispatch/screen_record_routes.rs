@@ -30,6 +30,7 @@ pub(super) async fn dispatch(
         DispatchTarget::ScreenRecordResume => resume(args).await,
         DispatchTarget::ScreenRecordRecoveryStatus => recovery_status(state, args).await,
         DispatchTarget::ScreenRecordStatus => status(args).await,
+        DispatchTarget::ScreenRecordLiveFrame => live_frame(args),
         DispatchTarget::ScreenRecordPreviewCapability => preview_capability(args),
         DispatchTarget::ScreenRecordPreviewStart => preview_start(args),
         DispatchTarget::ScreenRecordPreviewStatus => preview_status(args),
@@ -43,6 +44,7 @@ pub(super) async fn dispatch(
         DispatchTarget::ScreenRecordAutoedit => autoedit(state, args).await,
         DispatchTarget::ScreenRecordPolish => polish(state, args, actor).await,
         DispatchTarget::ScreenRecordExport => export(state, args).await,
+        DispatchTarget::ScreenRecordCopyRaw => copy_raw(state, args).await,
         _ => unreachable!("top-level dispatcher admitted a non-recording target"),
     }
 }
@@ -115,6 +117,10 @@ pub(super) async fn status(args: Value) -> VerbResult {
         .into()
 }
 
+pub(super) fn live_frame(args: Value) -> VerbResult {
+    crate::screen_record::live_frame_handler(args).into()
+}
+
 pub(super) fn preview_capability(args: Value) -> VerbResult {
     crate::screen_record::source_preview_capability_handler(args).into()
 }
@@ -169,6 +175,12 @@ pub(super) async fn polish(state: &AppState, args: Value, actor: Actor) -> VerbR
 
 pub(super) async fn export(state: &AppState, args: Value) -> VerbResult {
     crate::screen_record::screen_record_export(state, args)
+        .await
+        .into()
+}
+
+pub(super) async fn copy_raw(state: &AppState, args: Value) -> VerbResult {
+    crate::screen_record::screen_record_copy_raw(state, args)
         .await
         .into()
 }

@@ -83,6 +83,7 @@ fn camera_keyframe(
             1.0 - horizontal_margin - horizontal_size,
             1.0 - vertical_margin - size,
         ),
+        PipCorner::BottomLeft => (horizontal_margin, 1.0 - vertical_margin - size),
     };
     Ok(WebcamKeyframe {
         t_ms,
@@ -103,6 +104,7 @@ fn default_camera_style(presenter: PresenterPip) -> (WebcamShape, Anchor, f64) {
         PipCorner::TopLeft => Anchor::TopLeft,
         PipCorner::TopRight => Anchor::TopRight,
         PipCorner::BottomRight => Anchor::BottomRight,
+        PipCorner::BottomLeft => Anchor::BottomLeft,
     };
     (
         shape,

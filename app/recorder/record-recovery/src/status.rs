@@ -34,6 +34,9 @@ pub struct CaptureRecoveryStatus {
     pub state: CaptureRecoveryState,
     pub checkpoints: u64,
     pub has_open_segment: bool,
+    /// Elapsed video time filled by holding a verified earlier frame, not new
+    /// screen pixels. Absent when the journal cannot be read.
+    pub held_last_frame_ms: Option<u64>,
     pub receipt: Option<ReceiptStatus>,
 }
 
@@ -47,6 +50,7 @@ pub fn recovery_status(root: &Path) -> CaptureRecoveryStatus {
                 state: CaptureRecoveryState::Corrupt,
                 checkpoints: 0,
                 has_open_segment: false,
+                held_last_frame_ms: None,
                 receipt: None,
             }
         }
@@ -71,6 +75,13 @@ pub fn recovery_status(root: &Path) -> CaptureRecoveryStatus {
         state,
         checkpoints: manifest.checkpoints.len() as u64,
         has_open_segment: manifest.has_open_segment(),
+        held_last_frame_ms: Some(
+            manifest
+                .checkpoints
+                .iter()
+                .filter_map(|checkpoint| checkpoint.held_last_frame_ms)
+                .fold(0u64, u64::saturating_add),
+        ),
         receipt,
     }
 }

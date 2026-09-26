@@ -268,19 +268,25 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   individual checks matter. Use `[data-cut-action="record-source-refresh"]`
 >   after changing a source or capture setup, then wait for the fresh result:
 >   Refresh makes Start unavailable while its result is unknown, and a prior
->   positive outcome is not reusable. In Auto-edit mode, the Actions button
->   (`[data-cut-action="record-composition-menu"]`) and real right-click or
->   <kbd>Shift</kbd>+<kbd>F10</kbd> on `[data-cut-studio-preview]` expose the
->   same guarded composition setup; the camera preview
->   (`[data-cut-action="record-camera-menu"]`) exposes its own placement and
->   shape choices. These are UI access paths, not a second capture or
->   `studio_event` route. Do not infer a native source, permission, or first
->   frame from a composition fallback, a fixture, or a menu being visible.
->   F9 always follows the same Start/Stop admission path while Cut is focused.
->   Read `[data-cut-rec-global-hotkey-state]` and
->   `[data-cut-rec-global-hotkey-scope]` before claiming global behavior. On
->   GNOME Wayland, `[data-cut-action="record-global-f9-enable"]` only configures
->   Cut's owned custom shortcut; `configured` remains focused-only until Cut
+>   positive outcome is not reusable. `[data-cut-studio-preview]` is the one
+>   source-image plane. Use `[data-cut-rec-settings-tab="camera"]` for camera
+>   position, shape, size and Reset; use
+>   `[data-cut-rec-settings-tab="background"]` for the background. The
+>   composition context menu remains an alternate route on the preview.
+>   Do not infer a native
+>   source, permission, or first frame from a fixture or a visible control.
+>   F9 is one Cut-wide Start/Stop action, including from Edit or while another
+>   app has focus when the OS admits a global callback. Reuse only the last
+>   validated setup intent, then recheck the current project, exact source,
+>   devices, and permissions on every Start. If stale, open Record with a
+>   reason and do not claim capture. A passive recording indicator follows the
+>   exact capture state outside Record; native icon/badge presentation needs
+>   installed-host proof.
+>   Read the desktop hotkey capability and its observed callback state before
+>   claiming global behavior. On GNOME Wayland, Cut attempts its owned custom
+>   shortcut on first launch. The Record view has no global F9 enable checkbox;
+>   its transport reports observed scope or failure passively.
+>   `configured` remains focused-only until Cut
 >   observes its forwarded callback as `observed`/`global`. Disabled or
 >   unavailable capability keeps focused F9 and exposes its reason. Never infer
 >   global operation from the control being present.
@@ -298,20 +304,32 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   admitted even when it delivered frames earlier. Its `source_lifecycle` is
 >   narrow evidence: `source_lost` means an armed exact native selected-source
 >   close won before Cut's own close, not that Stop, duration expiry, permission,
->   encoder, or disk failure was relabelled. `controller_placement` reports only
->   an observed exclusion/hide, refusal, or unavailable conclusion without a
->   native identity. Its `audio_meters` read only the already-admitted mic/system
+>   encoder, or disk failure was relabelled. `controller_placement` reports the
+>   observed presence or coverage of Cut on the selected display; inspect real
+>   frames and output before claiming what appeared in the recording. Its
+>   `audio_meters` read only the already-admitted mic/system
 >   streams; live, stale, device-lost, stopped, and unavailable are distinct, and
 >   status never opens a device or starts monitoring playback.
 >   After `screen_record.start` returns a `capture_id`, retain it. A
 >   non-successful `screen_record.stop` leaves that capture unresolved: do not
->   call `screen_record.start` for a replacement or infer that it is safe to
->   leave Record. Use the returned error and `screen_record.recovery_status`;
->   when Retry Stop is available, retry the exact same `capture_id`. For Raw
->   output, correct a rejected explicit `raw_path` with an authorized path or
->   omit it for the default export folder before retrying that same capture.
->   Only an acknowledged Stop releases capture ownership; a later
+>   start a replacement. Check `screen_record.status{capture_id}`. Offer Retry
+>   Stop only when the same capture is still live (`terminal:false`); classify
+>   terminal or `not_found` as ended and uncertain ownership as unknown.
+>   `screen_record.recovery_status` is the separate durable inventory. The
+>   Record UI saves the original MP4 to the default export folder for both Raw
+>   and Polished; optional copy or Export destination selection follows Stop.
+>   Explicit API callers may still use authorized `raw_path`. A later
 >   `screen_record.polish` error is processing failure, not a live capture.
+>   The Record outcome choice has only Raw MP4 and Polished clip in Edit. Both
+>   call Stop with `mux_raw:true`; Polished also requests `autoedit:true` and
+>   inserts an editable polished clip with zoom-to-cursor, cursor smoothing,
+>   and framing. Show keystrokes sits beneath Polished and starts off. The
+>   selected-source setup preview is real native pixels; during capture read
+>   `screen_record.live_frame{capture_id}` only for the active owner. Show
+>   unavailable or stale state when frames stop, while keeping Stop available.
+>   Camera exposes four corners, shape, size, and explicit Reset camera layout;
+>   preserve manual placement across internal scenes. On-video Countdown accepts
+>   an applied 00:00:01–23:59:59 duration and never ends capture at zero.
 >   Native preview is separately opt-in and process-local. First read
 >   `preview_capability`: `source_selection:"exact"` admits only an unchanged
 >   current Doctor monitor/window id, while `"portal"` admits only

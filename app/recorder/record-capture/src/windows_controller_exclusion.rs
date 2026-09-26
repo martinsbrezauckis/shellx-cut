@@ -29,9 +29,9 @@ pub(super) fn admit_controller_placement(
         std::env::var(ENV_CONTROLLER_PLACEMENT_OWNER).ok().as_deref(),
         std::env::var(ENV_CONTROLLER_PLACEMENT).ok().as_deref(),
     ) {
-        (Some(PLACEMENT_OWNER), Some("excluded")) => {
-            placement.excluded("The Windows shell confirmed controller exclusion by native readback.");
-        }
+        (Some(PLACEMENT_OWNER), Some("not_excluded")) => placement.not_excluded(
+            "The Windows shell confirmed Cut is eligible to appear in display capture when unobscured.",
+        ),
         (Some(PLACEMENT_OWNER), Some("refused")) => {
             placement.refused("Windows refused or did not confirm controller exclusion in shell readback.");
         }

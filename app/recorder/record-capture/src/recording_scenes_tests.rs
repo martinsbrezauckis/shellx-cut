@@ -1,6 +1,8 @@
 use std::fs;
 
-use record_core::{PresetRevision, SceneEventKind, SceneId, TimerConfig};
+use record_core::{
+    PipCorner, PresetRevision, SceneComposition, SceneEventKind, SceneId, TimerConfig,
+};
 use record_recovery::CaptureRoot;
 
 use crate::recording_scenes::{
@@ -149,6 +151,36 @@ fn public_wire_config_round_trips_one_capture_wide_countdown_timer() {
         .presets()
         .iter()
         .all(|preset| preset.timer() == TimerConfig::countdown(90_000).unwrap()));
+}
+
+#[test]
+fn public_presenter_layout_admits_each_corner_without_changing_its_shape_or_size() {
+    for (wire, expected) in [
+        ("top_left", PipCorner::TopLeft),
+        ("top_right", PipCorner::TopRight),
+        ("bottom_right", PipCorner::BottomRight),
+        ("bottom_left", PipCorner::BottomLeft),
+    ] {
+        let config: RecordingSceneConfig = serde_json::from_value(serde_json::json!({
+            "catalog_revision":1,"initial_scene_id":"presenter",
+            "presets":[{"id":"presenter","name":"Presenter","preset_revision":1,
+                "layout":{"kind":"presenter_pip","corner":wire,"size_percent":30,"shape":"rounded_rect"}}],
+            "timer":{"kind":"off"}
+        }))
+        .unwrap();
+        let preset = config
+            .accepted_snapshot()
+            .unwrap()
+            .initial_scene()
+            .unwrap()
+            .composition();
+        let SceneComposition::PresenterPip(pip) = preset else {
+            panic!("presenter layout lost")
+        };
+        assert_eq!(pip.corner(), expected);
+        assert_eq!(pip.size_percent().get(), 30);
+        assert_eq!(pip.shape(), record_core::PipShape::RoundedRect);
+    }
 }
 
 #[test]

@@ -50,6 +50,7 @@ pub(crate) struct EncFlags {
     pub(crate) source_lifecycle: Option<CaptureSourceLifecycle>,
     pub(crate) stop: Arc<AtomicBool>,
     pub(crate) timing: Option<WgcTimingRecorder>,
+    pub(crate) active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
 }
 
 /// `windows-capture` handler: frames enter the encoder and a closed exact
@@ -62,6 +63,8 @@ pub(crate) struct Handler {
     source_lifecycle: Option<CaptureSourceLifecycle>,
     stop: Arc<AtomicBool>,
     timing: Option<WgcTimingRecorder>,
+    active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
+    preview_started: Instant,
 }
 
 impl GraphicsCaptureApiHandler for Handler {
@@ -84,6 +87,8 @@ impl GraphicsCaptureApiHandler for Handler {
             source_lifecycle: flags.source_lifecycle,
             stop: flags.stop,
             timing: flags.timing,
+            active_preview: flags.active_preview,
+            preview_started: Instant::now(),
         })
     }
 
@@ -115,6 +120,9 @@ impl GraphicsCaptureApiHandler for Handler {
             // callback/start success alone is not enough for readiness.
             if let Some(readiness) = self.readiness.as_ref() {
                 readiness.mark_first_screen_frame_delivered();
+            }
+            if let Some((preview, generation)) = self.active_preview.as_ref() {
+                preview.observe_wgc_frame(*generation, frame, self.preview_started);
             }
         }
         Ok(())

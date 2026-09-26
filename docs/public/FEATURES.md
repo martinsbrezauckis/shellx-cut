@@ -67,8 +67,8 @@ v0.6.113 remains the latest published release.
   source media explains when an exact occurrence must be chosen or cannot be
   opened.
 - Recording Studio adds separate **Display** and **Window** choices, a
-  cancellable 3- or 5-second countdown, **Screen** and **Presenter** scenes with
-  an elapsed or countdown timer, and camera recording as a separate editable
+  cancellable 3- or 5-second start countdown, an independently configurable
+  on-video timer, and camera recording as a separate editable
   track when Doctor lists a current device on Windows or macOS. With no connected
   camera or unavailable discovery, Camera stays disabled while screen recording
   remains available. Supported macOS builds also offer durable **Pause & resume**
@@ -683,41 +683,48 @@ route to the same surface registry.
 
 ## Recording
 
-- Recording Studio keeps the editor header's **Edit | Record** switch in its
-  usual position, while the active capture uses a focused workspace: compact
-  readiness and Screen & sound setup, a composition preview, Scene & style,
-  and a reserved Start/Stop transport footer. The editor timeline,
-  creative/export toolbar, selected-clip Tools rail, and review comments stay
-  out of Record; timing, output, quality, and polish choices remain available
-  under Advanced. During capture, setup/readiness chrome collapses so the
-  preview and live scene/timer controls remain primary. Background choice,
-  raw-stream status, and focused hotkeys (`F9` record, `F12` marker) remain
-  available. Focused F9 uses the same Start/Stop admission checks. On GNOME
-  Wayland, **Enable global F9** configures Cut's one owned shortcut, but it
-  becomes global only after Cut observes its forwarded callback; disabled or unavailable states
-  retain focused F9 and show the reason.
+- Recording Studio keeps the shared **Edit | Record** switch and a persistent
+  Start/Stop transport. Screen and sound, real selected-source preview, and the
+  Camera, Background, Video timer, Capture timing, and Video quality settings
+  are visible in the Record workspace. The source preview shows actual native
+  pixels before Start; during capture its live view uses frames owned by the
+  exact active capture. If frames stop arriving, Record says so while keeping
+  Stop usable. A selected whole display includes Cut when Cut is visible.
+  `F9` is one Cut-wide Start/Stop action, including from Edit or while another
+  app has focus when the OS has admitted the global shortcut. Start rechecks
+  the last valid setup against the current project, source, devices, and
+  permissions; invalid setup opens Record with a reason and starts no capture.
+  Windows/macOS attempt registration automatically, and GNOME Wayland attempts
+  an owned custom binding on first launch. A passive indicator reports global
+  scope only after it is observed; conflict, failure, or an explicit opt-out
+  leaves focused F9 with its reason. `F12` drops a marker during capture.
 - **Readiness and source refresh** put the current capture outcome before the
   source controls; open Details to inspect individual checks. Use **Refresh
   sources** after a display, window, or device change. While it rechecks the
   current setup, Start stays unavailable; an unknown result is not ready to
   record.
-- **Composition actions** keep controls outside the recorded frame. In
-  Auto-edit, use **Actions**, right-click the composition preview, or press
-  <kbd>Shift</kbd>+<kbd>F10</kbd> for the same guarded setup; the camera preview
-  has its own menu for placement and shape. Raw capture and an active capture
-  keep unavailable changes unavailable rather than creating another capture
-  path.
+- **Camera and background** controls sit in Recording settings. Camera offers
+  explicit corner, shape, size, and Reset camera layout choices when an admitted
+  device and Polished mode make them available. A disabled control shows why.
+- **After Stop** offers exactly Raw MP4 and Polished clip in Edit. Both save the
+  unchanged original MP4 in the default export folder. Polished also adds an
+  editable clip to the current project with zoom-to-cursor, cursor smoothing,
+  and framing. Its optional **Show keystrokes** setting starts off and sits
+  beneath the mode choice; there is no second polish toggle or pre-record
+  destination picker. Export or Save a copy chooses an optional destination
+  after Stop. The Recording details disclosure gives stream and pointer facts.
 - **Back to Edit and Stop recovery** keep the active capture in Recording Studio.
   Back to Edit stays unavailable during a countdown, pending Start, a live take,
-  finalization, or an unacknowledged Stop; the visible reason tells you whether
-  to cancel, wait, Stop, or Retry Stop. A failed Stop keeps that exact take and
-  exposes **Retry Stop (F9)** instead of starting another recording. In Raw
-  capture, choose another output file or clear a custom file to use the default
-  export folder before retrying Stop. Once Stop succeeds, later auto-edit or
-  polish failure is not a live capture, so returning to Edit or starting again
-  is safe.
-- Capture frame rate keeps the 30 FPS default, offers one-click 24/25/30/50/60
-  choices, and accepts a validated custom 1–240 FPS value before recording.
+  finalization, or an unresolved Stop; the visible reason tells you whether
+  to cancel, wait, or check status. After a Stop error, Cut checks
+  `screen_record.status{capture_id}` for that exact take. Retry Stop is offered
+  only when it is still live; a terminal capture is reported as stopped, and
+  uncertain ownership is labelled unknown. Later polish failure does not
+  imply a live capture.
+- Capture frame rate keeps the 30 FPS default and offers one-click 24/25/30/50/60
+  choices. Video quality → Advanced frame rate accepts a whole-number custom
+  1–240 FPS value only after **Apply frame rate** or Enter; an invalid draft
+  leaves the previously selected rate active.
   Each new capture also retains its exact reduced requested decimal and the v1
   nearest-integer backend request separately from the legacy editing timebase.
   After finalization, an optional FFprobe record may show independently measured
@@ -758,13 +765,12 @@ route to the same surface registry.
   finalized camera remains a separate editable take bound to the screen capture
   clock, with position, size, visibility, and shape retained as replayable Studio
   events.
-- Recording Scenes provides a compact named scene strip for **Screen** and
-  **Presenter PiP** layouts. The initial scene catalog is frozen and saved
-  before Start acknowledges it; live scene switches and the one capture-wide
-  elapsed/countdown timer are journaled on the shared recording clock before
-  the UI reports them as saved. Presenter PiP remains unavailable until the
-  selected camera has been admitted, while a Screen-first catalog can start
-  without opening a camera.
+- Camera settings show four explicit corners, Circle or Rounded rectangle,
+  size, and a separate **Reset camera layout** action. A chosen transform
+  survives internal scene changes until Reset. The on-video timer offers Off,
+  Count up, or Count down with an applied custom duration from 00:00:01 to
+  23:59:59; its zero does not stop the capture. Capture length and the separate
+  start countdown live under Capture timing.
 - Screen recorder doctor, system-audio probe, start, status, stop, studio-event, autoedit, polish, and
   export verbs. `screen_record.autoedit` is the plan step reached through the
   Stop/auto-edit workflow and agent API; it is not a separate visible button.
@@ -857,6 +863,9 @@ route to the same surface registry.
 - Exports and recordings can use a default export folder or per-action Save As;
   default filename collisions are resolved with a numbered sibling file, while
   confirmed Save As targets can replace existing export media/sidecar files.
+- A completed raw recording can be copied byte-for-byte to another fenced MP4
+  destination through a cancellable job; the saved source stays in its export
+  folder and the copy does not change the timeline.
 - Range exports render through a hidden sibling temp file and publish only after
   the MP4 finishes successfully, so a failed/aborted run does not leave a broken
   final export path.

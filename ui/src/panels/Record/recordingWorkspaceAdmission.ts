@@ -1,6 +1,7 @@
 /**
  * App-shell admission for leaving Recording Studio. This represents only the
- * lifetime of the mounted recorder controls; capture ownership stays in Record.
+ * whether the mounted Record controls may safely unmount. Capture ownership
+ * stays in the app-level recording session.
  */
 export type RecordingWorkspaceAdmissionPhase =
   | 'idle'
@@ -8,6 +9,7 @@ export type RecordingWorkspaceAdmissionPhase =
   | 'starting'
   | 'recording'
   | 'finalizing'
+  | 'recovery'
 
 export interface RecordingWorkspaceAdmission {
   phase: RecordingWorkspaceAdmissionPhase
@@ -26,6 +28,7 @@ const EXIT_REASONS: Record<Exclude<RecordingWorkspaceAdmissionPhase, 'idle'>, st
   starting: 'Waiting for the recorder to confirm start. Stay in Recording Studio.',
   recording: 'Stop the recording before returning to Edit.',
   finalizing: 'Finishing the recording. Stay in Recording Studio until it completes.',
+  recovery: 'Check this recording before returning to Edit.',
 }
 
 export function recordingWorkspaceAdmission(

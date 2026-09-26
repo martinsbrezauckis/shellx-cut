@@ -542,13 +542,34 @@ pub trait PlatformExecutor<R: Runtime>: Send + Sync {
     /// does not add scroll offsets: pointer events dispatch against viewport
     /// coordinates (`clientX`/`clientY`), so the center must be viewport-relative.
     async fn get_element_center(&self, js_var: &str) -> Result<(i32, i32), WebDriverErrorResponse> {
+        self.get_element_center_checked(js_var, true).await
+    }
+
+    /// Recheck a previously admitted click point without changing scroll state.
+    async fn get_element_center_without_scroll(
+        &self,
+        js_var: &str,
+    ) -> Result<(i32, i32), WebDriverErrorResponse> {
+        self.get_element_center_checked(js_var, false).await
+    }
+
+    async fn get_element_center_checked(
+        &self,
+        js_var: &str,
+        scroll: bool,
+    ) -> Result<(i32, i32), WebDriverErrorResponse> {
+        let scroll_script = if scroll {
+            "el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });"
+        } else {
+            ""
+        };
         let script = format!(
             r"(function() {{
                 var el = window.{js_var};
                 if (!el || !el.isConnected) {{
                     return {{ error: 'stale element reference' }};
                 }}
-                el.scrollIntoView({{ behavior: 'instant', block: 'center', inline: 'center' }});
+                {scroll_script}
                 var r = el.getBoundingClientRect();
                 var left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
                 var top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);

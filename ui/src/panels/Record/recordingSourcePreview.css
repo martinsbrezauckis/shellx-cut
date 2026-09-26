@@ -58,3 +58,29 @@
   object-fit: cover;
   background: #111319;
 }
+
+.rec-studio-preview .rec-studio-preview__screen {
+  background: #111319;
+}
+
+.rec-studio-preview__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 24px;
+  text-align: center;
+  color: var(--ink-2, #d6dae0);
+  background: #090a0c;
+  font: var(--fs-ui-sm)/1.35 var(--sans);
+}
+
+.rec-studio-preview__empty strong { font-weight: 700; }
+.rec-studio-preview__empty span {
+  max-width: 40ch;
+  color: var(--ink-4, #a0a9b6);
+  font: var(--fs-ui-xs)/1.4 var(--sans);
+}

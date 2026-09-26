@@ -235,7 +235,7 @@ async fn click_sequence<R: Runtime + 'static>(
     // A native Move can wait for a window transition. Recheck the same DOM
     // target and hit point before retaining Down, including ordinary buttons.
     trace.phase = "center-recheck";
-    if executor.get_element_center(&center_ref).await? != (x, y) {
+    if executor.get_element_center_without_scroll(&center_ref).await? != (x, y) {
         return Err(WebDriverErrorResponse::element_not_interactable(
             "element center changed before native click; no Down posted",
         ));

@@ -131,15 +131,19 @@ pub enum RecordingSceneLayout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordingScenePipCorner {
+    TopLeft,
     TopRight,
     BottomRight,
+    BottomLeft,
 }
 
 impl From<RecordingScenePipCorner> for PipCorner {
     fn from(value: RecordingScenePipCorner) -> Self {
         match value {
+            RecordingScenePipCorner::TopLeft => Self::TopLeft,
             RecordingScenePipCorner::TopRight => Self::TopRight,
             RecordingScenePipCorner::BottomRight => Self::BottomRight,
+            RecordingScenePipCorner::BottomLeft => Self::BottomLeft,
         }
     }
 }

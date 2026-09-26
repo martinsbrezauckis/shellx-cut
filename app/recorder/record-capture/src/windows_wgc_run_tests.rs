@@ -105,6 +105,7 @@ impl WgcCheckpointPublisher for FakePublisher {
             bytes: 7,
             sha256: format!("sealed-{sequence}"),
             media: None,
+            held_last_frame_ms: None,
             facts,
         })
     }

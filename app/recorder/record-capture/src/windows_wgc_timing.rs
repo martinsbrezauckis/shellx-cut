@@ -189,6 +189,16 @@ impl WgcTimingRecorder {
             .accepted_frames
     }
 
+    /// A zero-frame tail can be replaced only after the native control has
+    /// joined and reported a successful Stop. A failed close remains terminal.
+    pub(crate) fn control_stop_succeeded(&self) -> bool {
+        self.summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .control_stop_ok
+            == Some(true)
+    }
+
     /// One create-new sidecar per physical segment. The caller treats a write
     /// failure as diagnostic loss, never as a reason to change Stop's result.
     pub(crate) fn persist(&self) -> std::io::Result<()> {

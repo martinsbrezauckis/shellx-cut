@@ -31,6 +31,7 @@ pub(crate) async fn screen_record_start(
         camera_id: Option<String>,
         scenes: Option<record_capture::RecordingSceneConfig>,
         pause: Option<recording_controls::PauseStart>,
+        expected_project_identity: Option<Value>,
         rationale: Option<String>,
     }
     let a: Args = parse_args(args)?;
@@ -39,6 +40,7 @@ pub(crate) async fn screen_record_start(
     // through reservation/worker admission, so a switch cannot retarget a
     // capture between snapshot and its native owner becoming visible.
     let _project_transition = state.project_transition.lock().await;
+    start_project_identity::admit(state, a.expected_project_identity.as_ref()).await?;
     let duration_ms = a.duration_ms;
     let fps = a.fps.unwrap_or(30.0);
     validate_capture_settings(duration_ms, fps)?;

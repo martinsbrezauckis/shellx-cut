@@ -277,6 +277,7 @@ pub(super) fn native_run(start_ms: u64, end_ms: u64) -> WindowsSealedScreenRun {
                 bytes: 1,
                 sha256: "a".repeat(64),
                 media: None,
+                held_last_frame_ms: None,
                 facts: CheckpointFacts {
                     start_ms,
                     end_ms,

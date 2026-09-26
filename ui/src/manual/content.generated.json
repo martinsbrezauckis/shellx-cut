@@ -69,8 +69,8 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Top bar",
-      "description": "Use the shared Edit | Record switch to enter Recording Studio. Check the compact capture-readiness result, choose or refresh a source, optionally rehearse, then use the focused preview and live controls for a recording.",
-      "requirement": "Requires a supported desktop capture backend; FFmpeg is required for recording and output. Preview and meter availability is reported by the current native build.",
+      "description": "Open Record to choose a real display or window, confirm readiness, preview actual source pixels, select Raw MP4 or Polished clip in Edit, and start capture. F9 can also start from Edit using the last valid setup after fresh source, device, permission, and project checks.",
+      "requirement": "Requires a supported desktop capture backend and FFmpeg. Global F9 scope is reported only after OS callback proof.",
       "api": "ui.open {panel:\"record\"}, screen_record.doctor, screen_record.preview_capability"
     },
     {
@@ -1667,30 +1667,30 @@
       "id": "cut.record.studio",
       "label": "Studio preview",
       "group": "record",
-      "title": "Studio preview",
+      "title": "Record workspace",
       "where": "Focused Record workspace",
-      "description": "Record keeps the shared Edit | Record switch while reserving the workspace for capture. Check the compact readiness result first; open its technical details when needed, and refresh sources after a display, window, or device changes. Start stays unavailable while that current check is unknown. Choose screen and sound, rehearse if useful, then inspect the composition preview and use the reserved transport. In Auto-edit mode, Actions, right-click, and Shift+F10 on the composition preview reach the same guarded camera/background setup; the camera preview has its own placement and shape menu. Capture setup provides 24/25/30/50/60 FPS presets with custom 1–240 FPS validation and remembers one selected microphone as an app-local preference. Start native preview explicitly to see real bounded pixels from the exact selected display/window, or a fresh Linux Portal choice; pause, hide, stop, permission, source-loss, recursion, and unavailable states are shown truthfully. Preview controls bind to the current preview generation and opaque server-owner lease, so a late control cannot release a newer source; that lease changes when the Cut server restarts. If an unavailable state says a native release could not be confirmed, restart ShellX Cut; reopening Record cannot clear that owner. Microphone and system-audio meters come from the admitted capture streams without monitoring playback or a second stream. A video-only 3–5 second rehearsal can be played immediately and discarded without creating project media. During a normal take, compact live controls expose the real Stop, Pause/Resume, marker, scene, timer, and meter state. Back to Edit stays unavailable while a countdown, pending Start, live capture, finalization, or unacknowledged Stop owns the capture; follow the visible reason to cancel, wait, Stop, or Retry Stop. A successful Stop releases capture ownership before subsequent auto-edit or polish, so a later processing failure is safe to leave or start again from Record.",
-      "requirement": "Requires the Record workspace and a supported native capture adapter. Linux preview always uses the system picker. Rehearsal is disposable and video-only; use the explicit audio checks and meters for sound. Raw capture and active operations keep composition changes unavailable. Unsupported preview or meter inputs stay labeled unavailable, and real capture still depends on OS permissions.",
-      "api": "screen_record.preview_capability, screen_record.preview_start, screen_record.preview_status, screen_record.preview_frame, screen_record.preview_pause, screen_record.preview_resume, screen_record.preview_hide, screen_record.preview_stop, screen_record.rehearsal_start, screen_record.rehearsal_discard, screen_record.start, screen_record.stop"
+      "description": "Screen and sound, the real selected-source preview, recording settings, and a persistent Start/Stop transport share the Record workspace. Native preview shows source pixels before Start; during capture the exact active capture supplies live frames, or Record shows an unavailable or stale state while keeping Stop usable. A selected whole display includes Cut when Cut is visible. Refresh sources after a source or device change, and use optional video-only rehearsal to check framing. Recording settings contain Camera, Background, Video timer, Capture timing, and Video quality. Advanced frame rate accepts whole-number custom 1–240 FPS only after Apply or Enter; an invalid draft leaves the prior rate active. Cut remembers one selected microphone as an app-local preference. Pre-Start controls bind to the current preview generation and opaque server-owner lease; the lease changes when Cut server restarts. A failed Stop is classified by status for its capture ID before Retry Stop is offered.",
+      "requirement": "Requires current native capture admission and a writable default export folder. Preview, camera, meters, and Pause depend on actual OS and backend capability.",
+      "api": "screen_record.preview_capability, screen_record.preview_start, screen_record.preview_frame, screen_record.live_frame, screen_record.rehearsal_start, screen_record.start, screen_record.status, screen_record.stop"
     },
     {
       "id": "cut.record.scenes",
       "label": "Recording scenes",
       "group": "record",
-      "title": "Recording scenes",
+      "title": "Camera layout",
       "where": "Record workspace",
-      "description": "Choose a named Screen or Presenter PiP scene before recording, then switch the live composition from the compact scene strip. Cut saves the exact scene revision and shared-clock time before showing the switch as saved.",
-      "requirement": "Presenter PiP requires an admitted camera. A Screen-first scene catalog can start without opening a camera.",
-      "api": "screen_record.start {scenes}, screen_record.scene_activate"
+      "description": "Choose Camera on or off, then choose one of four corners, Circle or Rounded rectangle, size, and background. Manual placement survives internal scene changes until Reset camera layout.",
+      "requirement": "Camera requires an admitted device and Polished mode; unavailable controls show the reason.",
+      "api": "screen_record.start {scenes}, screen_record.studio_event {source:\"camera\", kind:\"transform\"|\"reset\"}"
     },
     {
       "id": "cut.record.scene_timer",
       "label": "Recording timer",
       "group": "record",
-      "title": "Recording timer",
+      "title": "On-video timer",
       "where": "Record workspace",
-      "description": "Choose one timer for the whole recording: Off, Elapsed, or Countdown. During capture you can pause, resume, reset, restart, or end it; each acknowledged change is durable recording metadata rather than baked pixels.",
-      "requirement": "Requires a recording started with a saved Scenes catalog.",
+      "description": "Choose Off, Count up, or Count down. Apply a custom countdown duration from 00:00:01 to 23:59:59; 1, 5, and 10 minutes are shortcuts. During capture, timer Pause, Resume, Reset, Restart, and End affect the overlay only. Reaching zero does not stop recording.",
+      "requirement": "Requires a saved timer configuration and native scene support. Capture Pause and capture length are separate controls.",
       "api": "screen_record.start {scenes.timer}, screen_record.scene_timer"
     },
     {
@@ -1709,8 +1709,8 @@
       "group": "record",
       "title": "Camera take",
       "where": "Record workspace",
-      "description": "Turn Camera on in Auto-edit mode and choose one current device. Cut records it as a separate editable take instead of baking it into the screen source.",
-      "requirement": "In Auto-edit, Camera is available on Windows/macOS when Doctor lists a current device. No connected camera or unavailable discovery leaves Camera disabled while screen recording stays available. Start still requires the OS to admit the selected camera and deliver a real first frame. Linux currently shows Camera unavailable. Raw mode keeps Camera off.",
+      "description": "Turn Camera on in Polished mode and choose one current device. Cut records it as a separate editable take instead of baking it into the screen source.",
+      "requirement": "In Polished mode, Camera is available on Windows/macOS when Doctor lists a current device. No connected camera or unavailable discovery leaves Camera disabled while screen recording stays available. Start still requires the OS to admit the selected camera and deliver a real first frame. Linux currently shows Camera unavailable. Raw mode keeps Camera off.",
       "api": "screen_record.doctor camera, screen_record.start {camera_id}"
     },
     {
@@ -1720,7 +1720,7 @@
       "title": "Show or hide camera",
       "where": "Record workspace",
       "description": "The Studio preview shows whether the separate camera take will appear in the polished composition. Visibility changes remain editable, timed Studio metadata.",
-      "requirement": "Requires Camera to be enabled for this Auto-edit recording.",
+      "requirement": "Requires Camera to be enabled for this Polished recording.",
       "api": "screen_record.studio_event {source:\"camera\", kind:\"visibility\"}"
     },
     {
@@ -1729,9 +1729,9 @@
       "group": "record",
       "title": "Camera position",
       "where": "Record workspace",
-      "description": "Choose the corner for the camera overlay before recording; live scene and Studio changes remain replayable rather than baked into the screen pixels.",
-      "requirement": "Requires Camera to be enabled.",
-      "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", x, y}"
+      "description": "Choose top left, top right, bottom right, or bottom left. The selected corner stays visible and survives internal scene changes until Reset camera layout.",
+      "requirement": "Requires an admitted Camera in Polished mode.",
+      "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", x, y}; camera reset"
     },
     {
       "id": "cut.record.camera_size",
@@ -1760,7 +1760,7 @@
       "title": "Background",
       "where": "Record workspace",
       "description": "Choose the recording background style for polished screen-demo output while raw streams remain untouched.",
-      "requirement": "Works with auto-edit/polish recording output.",
+      "requirement": "Works with Polished recording output.",
       "api": "screen_record.studio_event {source:\"background\", kind:\"style\"}"
     },
     {
@@ -1778,30 +1778,30 @@
       "label": "Recording hotkeys",
       "group": "record",
       "title": "Recording hotkeys",
-      "where": "Record workspace",
-      "description": "While Cut is focused, F9 follows the same Start/Stop admission checks, and F12 drops a marker. On GNOME Wayland, Enable global F9 creates Cut's one owned shortcut; it is global only after Cut observes its forwarded callback.",
-      "requirement": "Focused F9 remains available when a global route is disabled or unavailable. The Record shortcut status names the actual reason.",
-      "api": "screen_record.start, screen_record.stop, screen_record.studio_event"
+      "where": "Record transport",
+      "description": "F9 is one Start/Stop action across Cut, including Edit and another focused app when the OS global route has been observed. Start revalidates the last valid project, source, devices, and permissions; invalid setup opens Record with a reason and starts no capture. F12 adds a marker. Record shows a passive global, provisional, or focused-only indicator and the reason for degraded scope.",
+      "requirement": "Windows and macOS attempt registration automatically. GNOME Wayland attempts an owned binding on first launch. Global status requires observed callback proof; general Settings holds an advanced opt-out.",
+      "api": "screen_record.start, screen_record.status, screen_record.stop, screen_record.studio_event"
     },
     {
       "id": "cut.record.raw_mode",
       "label": "Raw capture mode",
       "group": "record",
-      "title": "Raw capture mode",
+      "title": "Raw MP4",
       "where": "Record workspace",
-      "description": "Raw capture saves the recording as captured without auto-edit or polish, then lets you add the saved file to the timeline manually. If an output authorization or Stop failure occurs before Stop is acknowledged, the same capture stays live and Stop becomes Retry Stop (F9). Choose another file or Clear a custom destination to use the default export folder, then retry Stop; do not begin a second take.",
-      "requirement": "Requires FFmpeg and a writable output location.",
-      "api": "screen_record.stop {mux_raw:true}, media.import"
+      "description": "Raw saves the unchanged original MP4 to the default export folder after Stop. Add to timeline or Save a copy are result actions; there is no destination picker before recording.",
+      "requirement": "Requires FFmpeg and a writable default export folder. A Stop error requires exact capture-status classification before retry.",
+      "api": "screen_record.stop {mux_raw:true}, screen_record.copy_raw, media.import"
     },
     {
       "id": "cut.record.autoedit",
       "label": "Auto-edit recording",
       "group": "record",
-      "title": "Auto-edit recording",
+      "title": "Polished clip in Edit",
       "where": "Record workspace",
-      "description": "Auto-edit stops the capture, builds a recorder plan, replays Studio camera/background metadata, polishes the clip, and places it on the timeline. A finalized native camera remains a separate editable take in that plan.",
-      "requirement": "Requires FFmpeg and a finalized capture. Camera composition requires an integrity-checked camera artifact or an explicit project-local camera file.",
-      "api": "screen_record.stop {autoedit:true}, screen_record.autoedit, screen_record.polish"
+      "description": "Polished saves the same unchanged original MP4 and adds an editable clip to the current project with zoom-to-cursor, cursor smoothing, and framing. Show keystrokes is optional, off by default, and shown directly beneath this mode. Export MP4 or GIF chooses a file after Stop.",
+      "requirement": "Requires FFmpeg, a current open project, and a finalized capture. Camera composition requires an admitted camera artifact.",
+      "api": "screen_record.stop {mux_raw:true, autoedit:true}, screen_record.polish, screen_record.export"
     },
     {
       "id": "cut.record.studio_event_api",
@@ -1917,11 +1917,11 @@
       "id": "cut.workflow.recording",
       "label": "Record, polish, export, and retry",
       "group": "workflow",
-      "title": "Record, polish, export, and retry",
+      "title": "Record, save, and export",
       "where": "Record workspace and status bar",
-      "description": "Open Record, verify the exact source with native preview, watch admitted input meters, optionally make and discard a short rehearsal, then start capture. Lost source, microphone, camera, or system audio is reported honestly; only finalized normal takes are retained. A failed capture Stop is separate from an output-job Retry: it retains its exact capture, blocks leaving Record and a new take, and uses Retry Stop until its state is resolved. Once Stop is acknowledged, later polish or output errors no longer represent a live capture. A qualifying failed default-output export shows one Retry after Cut rechecks durable lineage, project revision, source, EditPlan, capture-audio bytes, and output lease; the queued renderer receives private staged input copies instead of reopening mutable paths.",
-      "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Rehearsal is video-only and never becomes project media. Retry is available only for one engine-declared eligible failed Recording Studio export; cancellation, stale inputs, non-durable records, or consumed attempts are refused.",
-      "api": "screen_record.preview_start, screen_record.rehearsal_start, screen_record.rehearsal_discard, screen_record.start, screen_record.studio_event, screen_record.stop, screen_record.autoedit, screen_record.polish, screen_record.export, jobs.retry, jobs.status"
+      "description": "Choose a real source, check readiness and native preview, select Raw MP4 or Polished clip in Edit, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip. During capture, the preview uses frames from the exact capture owner. If Stop fails, Cut checks that capture status: Retry Stop is offered only while live, terminal is shown as ended, and uncertain ownership stays unknown. Export or Save a copy chooses optional destinations after Stop.",
+      "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Global F9, live preview, output, and native badge behavior need installed-host verification.",
+      "api": "screen_record.preview_start, screen_record.live_frame, screen_record.start, screen_record.status, screen_record.stop, screen_record.polish, screen_record.export, screen_record.copy_raw"
     },
     {
       "id": "cut.workflow.review",

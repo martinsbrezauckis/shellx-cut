@@ -6,7 +6,7 @@ import {
   recordingWorkspaceTransitionAllowed,
 } from '../src/panels/Record/recordingWorkspaceAdmission'
 
-for (const phase of ['countdown', 'starting', 'recording', 'finalizing'] as const) {
+for (const phase of ['countdown', 'starting', 'recording', 'finalizing', 'recovery'] as const) {
   const admission = recordingWorkspaceAdmission(phase)
   assert.equal(admission.blocked, true, `${phase} retains the mounted Record owner`)
   assert.match(admission.reason ?? '', /Recording|recording|countdown/, `${phase} exposes an exit reason`)
@@ -31,6 +31,10 @@ const sequenceSwitcher = read('topbar/SequenceSwitcher.tsx')
 const surfaceEvents = read('app/useAppSurfaceEvents.ts')
 const sourceNavigation = read('app/useSourceNavigationController.ts')
 const keyboard = read('app/useAppKeyboardController.ts')
+const record = read('panels/Record/index.tsx')
+
+assert.match(record, /onWorkspaceAdmissionChange\?\.\(recordingWorkspaceAdmission\(admissionPhase\)\)/,
+  'the mounted recorder reports its live app-session phase rather than always reporting idle')
 
 assert.match(app, /useRecordingWorkspaceNavigation\(layout, setRawLayout\)/,
   'App uses one guarded layout entry point instead of an independent Back-only flag')

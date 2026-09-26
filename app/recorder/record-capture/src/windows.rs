@@ -269,6 +269,31 @@ impl Capture for WindowsCapture {
             cfg.controller_placement.as_ref(),
             matches!(src, Src::Window(_)),
         );
+        if let Some(preview) = cfg.active_preview.as_ref() {
+            if matches!(src, Src::Window(_)) {
+                preview.set_controller_safety(
+                    crate::active_capture_preview::RecursionStatus::Possible,
+                    crate::active_capture_preview::ControllerExclusionStatus::NotApplicable,
+                );
+            } else {
+                let excluded = cfg.controller_placement.as_ref().is_some_and(|placement| {
+                    placement.status().state == crate::CaptureControllerPlacementState::Excluded
+                });
+                preview.set_controller_safety(
+                    if excluded {
+                        crate::active_capture_preview::RecursionStatus::None
+                    } else {
+                        crate::active_capture_preview::RecursionStatus::Possible
+                    },
+                    if excluded {
+                        crate::active_capture_preview::ControllerExclusionStatus::ConfirmedExcluded
+                    } else {
+                        crate::active_capture_preview::ControllerExclusionStatus::NotConfirmed
+                    },
+                );
+            }
+            preview.enable();
+        }
 
         let (w, h, surface, crop) = match cfg.region {
             Some(region) => {
@@ -403,7 +428,13 @@ impl Capture for WindowsCapture {
                 source_lifecycle: source_lifecycle.clone(),
                 stop: stop.clone(),
                 timing: Some(timing.clone()),
+                active_preview: cfg.active_preview.as_ref().and_then(|preview| {
+                    preview
+                        .begin_segment()
+                        .map(|generation| (preview.clone(), generation))
+                }),
             };
+            let preview_on_close = cfg.active_preview.clone();
             let control = match *target {
                 Src::Monitor(m) => Handler::start_free_threaded(WcSettings::new(
                     m,
@@ -430,6 +461,9 @@ impl Capture for WindowsCapture {
             Ok(WgcStartedControl::new(
                 LiveWgcControl {
                     close: Some(Box::new(move || {
+                        if let Some(preview) = preview_on_close.as_ref() {
+                            preview.clear_current_generation();
+                        }
                         let result = control
                             .stop()
                             .map_err(|error| cap_err("finalize WGC checkpoint", error));

@@ -49,6 +49,9 @@ import AppWorkspace from './app/AppWorkspace'
 import { useAppImportEvents } from './app/useAppImportEvents'
 import { useAppLayoutController } from './app/useAppLayoutController'
 import { useRecordingWorkspaceNavigation, type RequestLayout } from './app/useRecordingWorkspaceNavigation'
+import { useRecordingSession } from './app/useRecordingSession'
+import { RecordingSessionProvider } from './app/RecordingSessionContext'
+import './app/recordingSession.css'
 import { useSourceNavigationController } from './app/useSourceNavigationController'
 import { useAppClipboardController } from './app/useAppClipboardController'
 import { useAppKeyboardController } from './app/useAppKeyboardController'
@@ -512,6 +515,12 @@ export default function App() {
     }
   }, [loadFullHistory, refreshDoctor, requestLayout, syncProject])
 
+  const recordingSession = useRecordingSession({
+    project,
+    onOpenRecord: () => { requestLayout((current) => ({ ...current, workspaceMode: 'record' })) },
+    onResult: () => { void resync() },
+  })
+
   useUiCommandController({
     stateRef: uiStateRef,
     project,
@@ -701,6 +710,7 @@ export default function App() {
   return (
     <OfflineMediaProvider project={project} onProjectChanged={resync}>
     <VolumeAutomationProvider key={projectSession}>
+    <RecordingSessionProvider session={recordingSession}>
     <div
       ref={embeddedManualFrontend ? undefined : appRootMountReporter.current}
       className="app"
@@ -763,6 +773,19 @@ export default function App() {
         }}
         manualOpen={!embeddedManualFrontend && localManual.open}
       />
+      )}
+
+      {recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record' && (
+        <div className="app__recording-session" data-cut-recording-session={recordingSession.state.phase} role="status">
+          <span>{recordingSession.state.message}</span>
+          {recordingSession.state.indicatorWarning && <span> · {recordingSession.state.indicatorWarning}</span>}
+          {(recordingSession.state.phase === 'recording' || recordingSession.state.phase === 'recovery') && (
+            <button type="button" data-cut-action="record-session-stop" onClick={() => void (recordingSession.state.recoveryAction === 'check_status' ? recordingSession.refreshStopStatus() : recordingSession.stop())}>
+              {recordingSession.state.phase === 'recording' ? 'Stop' : recordingSession.state.recoveryAction === 'retry_stop' ? 'Retry Stop' : 'Check status'}
+            </button>
+          )}
+          <button type="button" data-cut-action="record-session-open" onClick={() => requestLayout((current) => ({ ...current, workspaceMode: 'record' }))}>Open Record</button>
+        </div>
       )}
 
       <div
@@ -920,6 +943,7 @@ export default function App() {
       />
       <UserActionFeedback />
     </div>
+    </RecordingSessionProvider>
     </VolumeAutomationProvider>
     </OfflineMediaProvider>
   )

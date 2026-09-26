@@ -3,7 +3,7 @@ import type {
   StudioCameraShape,
   StudioState,
 } from './studioTypes'
-import { placementForPosition } from './studioTypes'
+import { defaultStudioState, placementForPosition } from './studioTypes'
 
 export type RecordingSceneCorner = 'top_right' | 'bottom_right'
 export type RecordingSceneShape = 'circle' | 'rounded_rect'
@@ -23,6 +23,47 @@ export type RecordingSceneTimer =
   | { kind: 'off' }
   | { kind: 'elapsed' }
   | { kind: 'countdown'; duration_ms: number }
+
+export type RecordingSceneTimerKind = RecordingSceneTimer['kind']
+export const RECORDING_TIMER_PRESET_MINUTES = [1, 5, 10] as const
+export const RECORDING_TIMER_MIN_SECONDS = 1
+export const RECORDING_TIMER_MAX_SECONDS = 23 * 3600 + 59 * 60 + 59
+
+/** Parse the clock the editor sees; do not silently clamp or change the saved timer. */
+export function parseRecordingTimerDuration(input: string): { duration_ms: number; error: null } | { duration_ms: null; error: string } {
+  const parts = input.trim().split(':')
+  const validShape = (parts.length === 2 || parts.length === 3)
+    && parts.every((part) => /^\d{2}$/.test(part))
+  if (!validShape) return { duration_ms: null, error: 'Use MM:SS or HH:MM:SS, such as 05:00.' }
+  const values = parts.map(Number)
+  const [hours, minutes, seconds] = parts.length === 3 ? values : [0, values[0], values[1]]
+  if (minutes > 59 || seconds > 59) {
+    return { duration_ms: null, error: 'Minutes and seconds must each be 00–59.' }
+  }
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds
+  if (totalSeconds < RECORDING_TIMER_MIN_SECONDS || totalSeconds > RECORDING_TIMER_MAX_SECONDS) {
+    return { duration_ms: null, error: 'Choose a duration from 00:00:01 through 23:59:59.' }
+  }
+  return { duration_ms: totalSeconds * 1_000, error: null }
+}
+
+export function recordingTimerClock(durationMs: number): string {
+  const seconds = Math.ceil(durationMs / 1_000)
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const tail = (seconds % 60).toString().padStart(2, '0')
+  return hours > 0
+    ? `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${tail}`
+    : `${minutes.toString().padStart(2, '0')}:${tail}`
+}
+
+export function recordingTimerDraft(kind: RecordingSceneTimerKind, clock: string):
+  { timer: RecordingSceneTimer; error: null } | { timer: null; error: string } {
+  if (kind !== 'countdown') return { timer: { kind }, error: null }
+  const parsed = parseRecordingTimerDuration(clock)
+  if (parsed.error !== null) return { timer: null, error: parsed.error }
+  return { timer: { kind, duration_ms: parsed.duration_ms }, error: null }
+}
 
 /** Public preset data. There is deliberately no local background persistence claim. */
 export interface RecordingScenePreset {
@@ -249,16 +290,11 @@ export function recordingSceneStartConfig(
   }
 }
 
-function formatTimer(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60)
-  return `${minutes}:${(totalSeconds % 60).toString().padStart(2, '0')}`
-}
-
 /** Copy for configuration is local until `screen_record.start` returns success. */
 export function recordingSceneTimerLabel(timer: RecordingSceneTimer): string {
   if (timer.kind === 'off') return 'No recording timer will be requested.'
   if (timer.kind === 'elapsed') return 'Count up will begin when the recording starts.'
-  return `Countdown will start at ${formatTimer(Math.ceil(timer.duration_ms / 1_000))}; it will not stop recording.`
+  return `Countdown will start at ${recordingTimerClock(timer.duration_ms)}; reaching zero will not stop recording.`
 }
 
 function cameraPosition(corner: RecordingSceneCorner): StudioCameraPosition {
@@ -269,10 +305,17 @@ function cameraShape(shape: RecordingSceneShape): StudioCameraShape {
   return shape === 'rounded_rect' ? 'rounded_rect' : 'circle'
 }
 
-/** Apply just the named camera composition, preserving independent Studio choices. */
-export function studioStateForRecordingScene(scene: RecordingScenePreset, current: StudioState): StudioState {
+/** A scene controls camera visibility. An explicit user layout survives scene switches. */
+export function studioStateForRecordingScene(
+  scene: RecordingScenePreset,
+  current: StudioState,
+  manualCameraLayout = false,
+): StudioState {
   if (scene.layout.kind === 'screen') {
     return { ...current, camera: { ...current.camera, enabled: false, visible: false } }
+  }
+  if (manualCameraLayout) {
+    return { ...current, camera: { ...current.camera, enabled: true, visible: true } }
   }
   const size = scene.layout.size_percent / 100
   const position = cameraPosition(scene.layout.corner)
@@ -287,6 +330,27 @@ export function studioStateForRecordingScene(scene: RecordingScenePreset, curren
       shape: cameraShape(scene.layout.shape),
       enabled: true,
       visible: true,
+    },
+  }
+}
+
+/** Reset only layout fields; the camera's current visibility stays scene-owned. */
+export function resetCameraLayoutForRecordingScene(
+  scene: RecordingScenePreset | null,
+  current: StudioState,
+): StudioState {
+  const preset = scene
+    ? studioStateForRecordingScene(scene, current).camera
+    : defaultStudioState().camera
+  return {
+    ...current,
+    camera: {
+      ...current.camera,
+      x: preset.x,
+      y: preset.y,
+      position: preset.position,
+      size: preset.size,
+      shape: preset.shape,
     },
   }
 }

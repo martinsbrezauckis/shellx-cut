@@ -421,6 +421,7 @@ pub(super) async fn screen_record_stop(
 
     Ok(VerbResult::ok(json!({
         "capture_id": a.capture_id,
+        "held_last_frame_ms": record_recovery::recovery_status(&out_dir).held_last_frame_ms,
         "project": project_path,
         "source": source_video,
         "webcam": webcam,

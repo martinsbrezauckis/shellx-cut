@@ -12,18 +12,14 @@
 .rec__head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 38px;
-  padding: 7px 20px;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 82px;
+  padding: 12px 24px;
   border-bottom: 1px solid var(--hairline, rgba(255, 255, 255, 0.07));
 }
-.rec__dot {
-  width: 9px; height: 9px; border-radius: 50%;
-  background: #ef4444;
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
-}
-.rec__dot[data-cut-rec-phase="recording"] { animation: rec-pulse 1.2s ease-in-out infinite; }
-@keyframes rec-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+.rec__head-copy { display: grid; gap: 4px; min-width: 0; }
+.rec__head-copy h1 { margin: 0; color: var(--ink, #f5f5f4); font: 700 22px/1.2 var(--sans); }
 .rec__sr-only {
   position: absolute;
   width: 1px;
@@ -44,34 +40,35 @@
   min-height: 0;
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(250px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(290px, 330px) minmax(0, 1fr) minmax(290px, 330px);
   grid-template-areas:
-    "readiness readiness"
-    "settings studio";
+    "settings preview controls";
   gap: 16px;
   align-items: start;
-  padding: 14px 20px 18px;
-  max-width: 1720px;
-  margin: 0 auto;
-  overflow: auto;
+  align-content: start;
+  padding: 16px 24px 24px;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 .rec > .rec__source-note { margin: 0; padding: 5px 24px 0; }
 
 .rec__readiness {
-  grid-area: readiness;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 14px;
+  position: relative;
+  flex: none;
+  display: flex;
   align-items: center;
-  padding: 8px 10px;
+  gap: 12px;
+  padding: 8px 12px;
   border: 1px solid var(--hairline-2, rgba(255, 255, 255, 0.12));
   border-radius: 9px;
   background: color-mix(in srgb, var(--surface-2) 62%, transparent);
 }
 .rec__readiness-summary { min-width: 0; }
-.rec__readiness-summary .rec__eyebrow { margin-bottom: 2px; }
+.rec__readiness-summary .rec__eyebrow,
+.rec__readiness-summary p { display: none; }
 .rec__readiness-summary strong { color: var(--ink, #f2f3f5); font: 650 var(--fs-ui-sm)/1.2 var(--sans); }
 .rec__readiness-summary p { margin: 2px 0 0; color: var(--ink-3, #aab1bd); font: var(--fs-ui-xs, 11px)/1.35 var(--sans); }
 .rec__readiness[data-cut-rec-readiness-state="attention"] { border-color: rgba(239, 68, 68, .42); }
@@ -80,7 +77,18 @@
 .rec__readiness[data-cut-rec-readiness-state="ready"] { border-color: rgba(52, 211, 153, .4); }
 .rec__readiness-details { color: var(--ink-3, #aab1bd); font: 650 var(--fs-ui-xs, 11px)/1.2 var(--sans); }
 .rec__readiness-details > summary { cursor: pointer; white-space: nowrap; }
-.rec__readiness-details[open] { grid-column: 1 / -1; }
+.rec__readiness-details[open] { z-index: 15; }
+.rec__readiness-details[open] .rec__cards {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  width: min(410px, 80vw);
+  padding: 10px;
+  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
+  border-radius: 9px;
+  background: var(--surface-1, #17191d);
+  box-shadow: 0 14px 34px rgba(0,0,0,.4);
+}
 .rec__cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -315,6 +323,9 @@
   display: inline-flex; align-items: center; gap: 6px;
   color: var(--ink-3, #aab1bd); font: 600 var(--fs-ui-xs, 11px)/1 var(--sans);
 }
+.rec__fps-advanced { color: var(--ink-3, #aab1bd); font: 600 var(--fs-ui-xs, 11px)/1.4 var(--sans); }
+.rec__fps-advanced summary { cursor: pointer; }
+.rec__fps-advanced-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
 .rec__fps-input {
   width: 62px; padding: 7px 8px; border: 1px solid var(--border, #2a2e36); border-radius: 7px;
   background: var(--surface-2, #1b1e24); color: var(--ink, #f2f3f5); font: 600 var(--fs-ui-sm)/1 var(--sans);
@@ -333,21 +344,19 @@
 .rec__transport {
   flex: 0 0 auto;
   box-sizing: border-box;
-  width: min(calc(100% - 40px), 1720px);
-  margin: 0 auto 14px;
+  width: 100%;
+  margin: 0;
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   min-width: 0;
-  min-height: 68px;
-  padding: 10px 12px;
-  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  min-height: 78px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--hairline, rgba(255,255,255,.12));
+  background: var(--surface, #0e0e0d);
   box-shadow: 0 -12px 34px rgba(0,0,0,.18);
-  backdrop-filter: blur(12px);
 }
 .rec__start {
   display: inline-flex; align-items: center; gap: 8px;
@@ -665,48 +674,98 @@
 }
 
 .rec__studio {
-  grid-area: studio;
+  /* Keep the existing React grouping while its children join the three-column
+     workspace grid. This also prevents an empty grid track above the preview. */
+  display: contents;
+}
+.rec__preview-column { grid-area: preview; display: grid; align-content: start; gap: 12px; min-width: 0; }
+.rec__preview-tools {
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) 276px;
-  gap: 16px;
-  align-items: start;
-  min-width: 0;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
+  border-radius: 12px;
+  background: var(--surface-1, rgba(255,255,255,.035));
+}
+.rec__preview-tools h2 { margin: 0; color: var(--ink, #f5f5f4); font: 650 var(--fs-ui, 13px)/1.2 var(--sans); }
+.rec__preview-tools .rec-source-preview { padding: 8px 0; }
+.rec__preview-tools .rec-source-preview__head { gap: 12px; }
+.rec__preview-tools .rec-rehearsal {
+  padding: 9px 0 0;
+  border: 0;
+  border-top: 1px solid var(--hairline, rgba(255,255,255,.12));
+  border-radius: 0;
+  background: transparent;
 }
 
+.rec-studio-preview__frame {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+}
+.rec-studio-preview__chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.rec-studio-preview__chrome .rec-studio-preview__heading {
+  position: static;
+  padding: 0;
+  border: 0;
+  background: none;
+  backdrop-filter: none;
+  color: var(--ink, #f5f5f4);
+  font: 700 var(--fs-ui)/1.2 var(--sans);
+}
+.rec-studio-preview__chrome .rec-studio-preview__heading small {
+  color: var(--ink-3, #92928e);
+  font: 500 var(--fs-ui-xs, 11px)/1.3 var(--sans);
+}
+.rec-studio-preview__actions {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--hairline-2, #2a2a28);
+  border-radius: 8px;
+  background: var(--surface-2, #131312);
+  color: var(--ink-2, #a8a8a4);
+  font: 650 var(--fs-ui-sm)/1 var(--sans);
+  cursor: pointer;
+}
+.rec-studio-preview__actions:hover { color: var(--ink, #f5f5f4); border-color: var(--border, #353532); }
 .rec-studio-preview {
   position: relative;
   overflow: hidden;
   width: 100%;
   min-width: 0;
-  min-height: 360px;
-  aspect-ratio: 16 / 9;
+  height: min(38vh, 410px);
+  min-height: 300px;
   border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
   border-radius: 12px;
-  background: #15171c;
-  box-shadow: 0 22px 58px rgba(0,0,0,.26);
+  background: var(--bg-deep, #050505);
 }
-.rec-studio-preview--gradient {
-  background:
-    linear-gradient(135deg, rgba(44, 56, 72, 0.96), rgba(18, 20, 28, 1));
-}
-.rec-studio-preview--solid { background: #12141a; }
+.rec-studio-preview--gradient,
+.rec-studio-preview--solid,
+.rec-studio-preview--blur_screen { background: var(--bg-deep, #050505); }
 .rec-studio-preview--none {
-  background: transparent;
-  outline: 1px dashed rgba(148, 163, 184, .45);
-  outline-offset: -5px;
-}
-.rec-studio-preview--blur_screen {
-  background:
-    radial-gradient(circle at 35% 28%, rgba(95, 129, 180, .30), transparent 30%),
-    linear-gradient(135deg, #20242d, #12141a);
+  background: var(--bg-deep, #050505);
 }
 .rec-studio-preview__screen {
   position: absolute;
-  inset: 7% 8%;
+  inset: 12px;
   border-radius: 8px;
-  background: rgba(245, 247, 250, .90);
-  box-shadow: 0 24px 46px rgba(0,0,0,.32);
+  border: 1px dashed rgba(255,255,255,.14);
+  background: #090a0c;
   overflow: hidden;
+}
+.rec-studio-preview__native-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg-deep, #050505);
 }
 .rec-studio-preview__heading {
   position: absolute;
@@ -727,28 +786,8 @@
   color: rgba(255,255,255,.62);
   font: 500 10px/1.2 var(--sans);
 }
-.rec-studio-preview--none .rec-studio-preview__screen {
-  inset: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-.rec-studio-preview__bar {
-  height: 15%;
-  background: #29313d;
-}
-.rec-studio-preview__rows {
-  display: grid;
-  gap: 8%;
-  padding: 8%;
-}
-.rec-studio-preview__rows span {
-  display: block;
-  height: 14px;
-  border-radius: 5px;
-  background: rgba(42, 49, 61, .20);
-}
-.rec-studio-preview__rows span:nth-child(2) { width: 72%; }
-.rec-studio-preview__rows span:nth-child(3) { width: 48%; }
+.rec-studio-preview--none .rec-studio-preview__screen { inset: 12px; border-radius: 8px; box-shadow: none; }
+.rec[data-cut-record-phase="recording"] .rec-studio-preview__camera { display: none; }
 .rec-studio-preview__screen-label {
   position: absolute;
   right: 10px;
@@ -793,6 +832,7 @@
 }
 
 .rec-studio-controls {
+  grid-area: controls;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -800,9 +840,9 @@
   border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
   border-radius: 12px;
   background: var(--surface-1, rgba(255,255,255,.035));
-  max-height: min(70vh, 760px);
-  overflow: auto;
-  overscroll-behavior: contain;
+  min-width: 0;
+  max-height: none;
+  overflow: visible;
 }
 .rec-studio-controls__disclosure {
   border-top: 1px solid var(--hairline, rgba(255,255,255,.12));
@@ -817,175 +857,6 @@
   padding-top: 12px;
 }
 
-/* Recording scenes are a compact setup rail, not a second dashboard. The
-   thumbnails only describe the same screen/camera composition the main Studio
-   preview renders; they are not generated footage or saved-output evidence. */
-.rec-scenes {
-  display: grid;
-  gap: 9px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--hairline, rgba(255,255,255,.12));
-}
-.rec-scenes__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-}
-.rec-scenes__head > div { display: grid; gap: 4px; }
-.rec-scenes__head strong { color: var(--ink, #f2f3f5); font: 650 var(--fs-ui-sm)/1 var(--sans); }
-.rec-scenes__mode {
-  flex: 0 0 auto;
-  padding: 4px 6px;
-  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
-  border-radius: 5px;
-  color: var(--ink-4, #6b7280);
-  font: 700 10px/1 var(--sans);
-}
-.rec-scenes__mode[data-cut-rec-scene-live="true"] {
-  border-color: rgba(239,68,68,.36);
-  color: #ffb4a0;
-}
-.rec-scenes__choices { display: grid; gap: 6px; }
-.rec-scenes__choice {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 1fr);
-  gap: 8px;
-  width: 100%;
-  padding: 7px;
-  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
-  border-radius: 7px;
-  background: var(--surface-2, #1b1e24);
-  color: var(--ink-2, #d6dae0);
-  text-align: left;
-  cursor: pointer;
-}
-.rec-scenes__choice:hover:not(:disabled) { border-color: rgba(147, 197, 253, .62); }
-.rec-scenes__choice--selected {
-  border-color: #60a5fa;
-  background: rgba(37, 99, 235, .2);
-  box-shadow: inset 3px 0 0 #60a5fa;
-}
-.rec-scenes__choice:disabled { opacity: .52; cursor: default; }
-.rec-scenes__choice > span:last-child { display: grid; min-width: 0; gap: 3px; }
-.rec-scenes__choice strong { color: var(--ink, #f2f3f5); font: 650 var(--fs-ui-xs, 11px)/1.15 var(--sans); }
-.rec-scenes__selected {
-  align-items: center;
-  color: #93c5fd;
-  display: inline-flex;
-  font: 700 10px/1 var(--sans);
-  gap: 3px;
-  text-transform: uppercase;
-}
-.rec-scenes__choice small,
-.rec-scenes__choice em {
-  color: var(--ink-4, #6b7280);
-  font: var(--fs-ui-xs, 11px)/1.3 var(--sans);
-  font-style: normal;
-}
-.rec-scenes__choice em { color: #f5c451; }
-.rec-scenes__thumbnail {
-  position: relative;
-  display: block;
-  min-height: 38px;
-  overflow: hidden;
-  border-radius: 4px;
-  background: linear-gradient(135deg, #34445b, #171c25);
-}
-.rec-scenes__thumbnail::before {
-  content: '';
-  position: absolute;
-  inset: 7px 6px;
-  border-radius: 3px;
-  background: rgba(246,248,251,.88);
-}
-.rec-scenes__thumbnail i {
-  position: absolute;
-  z-index: 1;
-  top: 10px;
-  left: 9px;
-  width: 24px;
-  height: 3px;
-  border-radius: 3px;
-  background: rgba(47,57,71,.34);
-}
-.rec-scenes__thumbnail b {
-  position: absolute;
-  right: 7px;
-  bottom: 6px;
-  z-index: 2;
-  width: 12px;
-  height: 12px;
-  border: 1px solid rgba(255,255,255,.86);
-  border-radius: 50%;
-  background: #273142;
-}
-.rec-scenes__thumbnail--presenter_pip b { border-radius: 4px; }
-.rec-scenes__status,
-.rec-scenes__timer p,
-.rec-scenes__recovery p {
-  margin: 0;
-  color: var(--ink-4, #6b7280);
-  font: var(--fs-ui-xs, 11px)/1.4 var(--sans);
-}
-.rec-scenes__status[data-cut-rec-scene-status="saved"] { color: #7ee0b0; }
-.rec-scenes__status[data-cut-rec-scene-status="error"],
-.rec-scenes__status[data-cut-rec-scene-status="unavailable"] { color: #ffb4a0; }
-.rec-scenes__timer { display: grid; gap: 6px; }
-.rec-scenes__timer-choices { display: flex; gap: 5px; }
-.rec-scenes__timer-choices--live { flex-wrap: wrap; }
-.rec-scenes__timer-choices button {
-  flex: 1 1 0;
-  min-height: 28px;
-  padding: 5px 4px;
-  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
-  border-radius: 6px;
-  background: var(--surface-2, #1b1e24);
-  color: var(--ink-3, #aab1bd);
-  font: 650 10px/1 var(--sans);
-  cursor: pointer;
-}
-.rec-scenes__timer-choices button[aria-pressed="true"] {
-  border-color: var(--cut, #2563eb);
-  background: rgba(37,99,235,.18);
-  color: #fff;
-}
-.rec-scenes__timer-choices button:disabled { opacity: .48; cursor: default; }
-.rec-scenes__recovery {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 6px 8px;
-  padding-top: 2px;
-}
-.rec-scenes__recovery > span {
-  color: var(--ink-3, #aab1bd);
-  font: 700 10px/1.4 var(--sans);
-  text-transform: uppercase;
-}
-.rec-scenes__recovery > button { grid-column: 2; justify-self: start; }
-.rec-scenes__recovery[data-cut-rec-scene-recovery="attention"] p { color: #f5c451; }
-.rec-scenes__recovery[data-cut-rec-scene-recovery="error"] p { color: #ffb4a0; }
-.rec-scenes--compact { gap: 7px; padding: 0; border: 0; }
-.rec-scenes--compact .rec-scenes__choices { display: flex; flex-wrap: wrap; }
-.rec-scenes--compact .rec-scenes__choice {
-  display: block;
-  flex: 1 1 138px;
-  width: auto;
-  min-height: 34px;
-  padding: 7px 8px;
-}
-.rec-scenes--compact .rec-scenes__thumbnail,
-.rec-scenes--compact .rec-scenes__choice small,
-.rec-scenes--compact .rec-scenes__choice em { display: none; }
-.rec-scenes--compact .rec-scenes__timer {
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 5px 9px;
-}
-.rec-scenes--compact .rec-scenes__timer > p { grid-column: 1 / -1; }
-.rec-scenes--compact .rec-scenes__timer-choices { flex-wrap: wrap; }
-.rec-scenes--compact .rec-scenes__timer-choices button { flex: 1 1 54px; }
 .rec-studio-controls__group {
   display: flex;
   flex-direction: column;
@@ -1117,22 +988,57 @@
 }
 .rec[data-cut-record-phase="recording"] .rec__body,
 .rec[data-cut-record-phase="finalizing"] .rec__body {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "studio";
+  grid-template-columns: minmax(0, 1fr) minmax(290px, 330px);
+  grid-template-areas: "preview controls";
 }
 .rec[data-cut-record-phase="recording"] .rec-studio-preview,
-.rec[data-cut-record-phase="finalizing"] .rec-studio-preview { min-height: 520px; }
-/* Device admission stays fixed while a capture is active, but its already
-   admitted camera can still move, resize, or change shape. Keep that compact
-   composition disclosure visible so the durable live controls are reachable. */
-.rec[data-cut-record-phase="recording"] .rec-studio-controls > [data-cut-studio-camera-status] {
-  display: none;
+.rec[data-cut-record-phase="finalizing"] .rec-studio-preview { min-height: 300px; }
+.rec[data-cut-record-phase="recording"] .rec__preview-tools,
+.rec[data-cut-record-phase="finalizing"] .rec__preview-tools { display: none; }
+.rec[data-cut-rec-result-view="true"] .rec__readiness,
+.rec[data-cut-rec-result-view="true"] .rec__settings,
+.rec[data-cut-rec-result-view="true"] .rec-studio-controls,
+.rec[data-cut-rec-result-view="true"] .rec__transport { display: none; }
+.rec[data-cut-rec-result-view="true"] .rec__body {
+  display: block;
+  overflow-y: auto;
+}
+.rec[data-cut-rec-result-view="true"] .rec__preview-column { width: min(100%, 1120px); margin: 0 auto; }
+/* Camera capability and live layout controls remain visible during capture.
+   Their component state decides which adjustments the native owner permits. */
+
+/* A 4K viewport otherwise leaves both control rails at 330 physical pixels.
+   Scale the complete Record surface together, including its transport. */
+@media (min-width: 3000px) {
+  .rec { zoom: 1.75; }
+  .rec-studio-preview { height: min(55vh, 640px); }
+}
+
+/* Keep the default setup and scene actions in the first 1080p viewport. Scene
+   explanations remain on each button's title; unavailable reasons stay inline. */
+@media (min-width: 1361px) and (max-height: 1200px) {
+  .rec__body { gap: 12px; padding-top: 12px; padding-bottom: 8px; }
+  .rec__readiness { padding-block: 6px; }
+  .rec__settings,
+  .rec-studio-controls { gap: 8px; padding: 12px; }
+  .rec__settings-primary,
+  .rec__advanced-body { gap: 6px; }
+  .rec__field { gap: 6px; }
+  .rec-rehearsal { gap: 5px; padding: 8px; }
 }
 
 @media (max-width: 1360px) {
-  .rec__body { grid-template-columns: 250px minmax(0, 1fr); padding-inline: 14px; }
-  .rec__transport { width: calc(100% - 28px); margin-bottom: 12px; }
-  .rec__studio { grid-template-columns: minmax(400px, 1fr) 252px; gap: 12px; }
+  .rec__body {
+    grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+    grid-template-areas: "settings preview" "controls controls";
+    padding-inline: 16px;
+  }
+  .rec[data-cut-record-phase="recording"] .rec__body,
+  .rec[data-cut-record-phase="finalizing"] .rec__body {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
+    grid-template-areas: "preview controls";
+  }
+  .rec__transport { padding-inline: 16px; }
   .rec-studio-preview { min-height: 320px; }
   .rec-studio-controls { padding: 12px; }
 }
@@ -1140,12 +1046,14 @@
 @media (max-width: 920px) {
   .rec__body {
     grid-template-columns: 1fr;
-    grid-template-areas: "readiness" "studio" "settings";
+    grid-template-areas: "preview" "settings" "controls";
     padding: 18px;
   }
-  .rec__transport { width: calc(100% - 36px); margin-bottom: 12px; }
-  .rec__studio { grid-template-columns: 1fr; }
-  .rec-studio-controls { max-height: none; }
+  .rec[data-cut-record-phase="recording"] .rec__body,
+  .rec[data-cut-record-phase="finalizing"] .rec__body {
+    grid-template-columns: 1fr;
+    grid-template-areas: "preview" "controls";
+  }
   .rec-studio-preview { min-height: 220px; }
 }
 
@@ -1198,29 +1106,13 @@
    can grow inside the footer, but its immediate Stop/pause row remains visible
    without covering source, rehearsal, or scene controls in the body. */
 .rec[data-cut-record-phase="recording"] .rec__transport {
-  display: block;
   max-height: min(42vh, 360px);
-  overflow: auto;
+  overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
 }
 .rec[data-cut-record-phase="recording"] .rec-live-controls__transport {
   position: sticky;
   top: 0;
   z-index: 9;
-  padding: 10px 12px;
-  border: 1px solid var(--hairline-2, rgba(255,255,255,.14));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  box-shadow: 0 -12px 34px rgba(0,0,0,.18);
-  backdrop-filter: blur(12px);
+  background: var(--surface, #0e0e0d);
 }
-
-
-.rec__global-hotkey-controls { display: flex; flex-wrap: wrap; gap: 6px; }
-.rec__field--global-hotkey .rec__source-note { flex-basis: 100%; margin-top: 0; }
