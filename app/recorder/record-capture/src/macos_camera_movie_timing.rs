@@ -225,6 +225,7 @@ fn verify_probe<R: BufRead>(
     }
     let mut first_pts = u128::MAX;
     let mut last_pts = 0_u128;
+    let mut penultimate_pts = None;
     let mut last_duration = 0_u128;
     let mut max_end = 0_u128;
     let mut packet_count = 0_u64;
@@ -269,9 +270,14 @@ fn verify_probe<R: BufRead>(
             return Err(bad("video packet exceeds the container duration"));
         }
         first_pts = first_pts.min(pts);
-        if pts >= last_pts {
+        if pts > last_pts {
+            penultimate_pts = Some(last_pts);
             last_pts = pts;
             last_duration = duration;
+        } else if pts == last_pts {
+            last_duration = duration;
+        } else if penultimate_pts.is_none_or(|previous| pts > previous) {
+            penultimate_pts = Some(pts);
         }
         max_end = max_end.max(end);
     }
@@ -288,13 +294,21 @@ fn verify_probe<R: BufRead>(
     // integer time base. At Stop, the encoded movie can contain one final
     // packet beyond the last delivered MovieFileOutput sample callback.
     // Admit that gap only in the encoded-ahead direction and only for one
-    // measured frame interval. A native sample beyond the last encoded packet
-    // remains an unencoded tail and must fail.
+    // measured frame interval. For variable frame cadence, the callback may
+    // instead coincide with the actual penultimate packet PTS; that proves
+    // exactly one later encoded packet without inventing a timing tolerance.
+    // Conversely, a final callback at the encoded
+    // packet's end is the first sample outside that half-open movie interval.
+    // A callback beyond the packet end remains an unencoded tail and fails.
     let tick_ns = to_ns(1, numerator, denominator)?.max(1);
     let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns);
     let encoded_ahead_limit = last_duration.saturating_add(tick_ns);
-    if (last_pts >= native_elapsed && last_pts - native_elapsed > encoded_ahead_limit)
-        || (native_elapsed > last_pts && native_elapsed - last_pts > tick_ns)
+    let matches_penultimate =
+        penultimate_pts.is_some_and(|pts| native_elapsed.abs_diff(pts) <= tick_ns);
+    if (last_pts >= native_elapsed
+        && last_pts - native_elapsed > encoded_ahead_limit
+        && !matches_penultimate)
+        || (native_elapsed > max_end && native_elapsed - max_end > tick_ns)
     {
         return Err(bad(&format!(
             "last encoded packet is not the last MovieFileOutput sample: native_start_ns={}, native_last_ns={}, native_elapsed_ns={native_elapsed}, encoded_last_pts_ns={last_pts}, track_tick_ns={tick_ns}",
@@ -453,13 +467,59 @@ mod tests {
         let verified = verify_probe(&facts, &rows[..], native(), 7_998, 3).unwrap();
         assert_eq!(verified.duration_ms, 7_992);
         let mut unencoded_tail = native();
-        unencoded_tail.last_pts_ns = unencoded_tail.start_pts_ns + 7_992_440_000;
+        unencoded_tail.last_pts_ns = unencoded_tail.start_pts_ns + 7_992_450_000;
         let error = verify_probe(&facts, &rows[..], unencoded_tail, 7_998, 3).unwrap_err();
         assert_eq!(error.message, "verify macOS camera movie clock");
         assert_eq!(
             error.cause,
-            "last encoded packet is not the last MovieFileOutput sample: native_start_ns=34421447440000, native_last_ns=34429439880000, native_elapsed_ns=7992440000, encoded_last_pts_ns=7984100000, track_tick_ns=10000"
+            "last encoded packet is not the last MovieFileOutput sample: native_start_ns=34421447440000, native_last_ns=34429439890000, native_elapsed_ns=7992450000, encoded_last_pts_ns=7984100000, track_tick_ns=10000"
         );
+    }
+
+    #[test]
+    fn native_stop_callback_at_encoded_packet_end_is_a_valid_boundary() {
+        // Installed Mac receipt r1790480971388-89159d76211d: the last
+        // callback was 16.65ms after the final packet PTS, within that
+        // packet's 16.67ms encoded presentation interval.
+        let metadata = metadata("6.933320", "1/100000");
+        let rows = b"0,1667\n691665,1667\n";
+        let mut native = native();
+        native.start_pts_ns = 112_076_742_590_000;
+        native.last_pts_ns = 112_083_675_890_000;
+        native.last_cadence_ns = 16_670_000;
+        native.last_duration_ns = 16_670_000;
+        let verified = verify_probe(&metadata, &rows[..], native, 6_933, 2).unwrap();
+        assert_eq!(verified.duration_ms, 6_933);
+
+        // The one-track-tick rounding allowance is exact, not a free frame.
+        native.last_pts_ns = native.start_pts_ns + 6_933_330_000;
+        assert!(verify_probe(&metadata, &rows[..], native, 6_933, 2).is_ok());
+        native.last_pts_ns += 10_000;
+        assert!(verify_probe(&metadata, &rows[..], native, 6_933, 2).is_err());
+    }
+
+    #[test]
+    fn one_variable_cadence_packet_after_native_callback_is_bounded_by_packet_identity() {
+        // Installed Mac core r1790481152640-96535e238846 reported this
+        // 17.079999ms lead. Its failed stage is not retained, so the rows
+        // model the narrow case where the callback names the penultimate
+        // encoded PTS; a different actual packet PTS must still fail.
+        let metadata = metadata("6.866110", "1/100000");
+        let rows = b"0,1667\n684944,1667\n683236,1667\n";
+        let mut native = native();
+        native.start_pts_ns = 112_277_249_459_999;
+        native.last_pts_ns = 112_284_081_820_000;
+        native.last_cadence_ns = 17_080_000;
+        native.last_duration_ns = 16_670_000;
+        let verified = verify_probe(&metadata, &rows[..], native, 6_866, 3).unwrap();
+        assert_eq!(verified.duration_ms, 6_866);
+
+        // The callback has to identify the actual preceding packet, including
+        // when packet rows arrive out of presentation order.
+        native.last_pts_ns -= 30_000;
+        assert!(verify_probe(&metadata, &rows[..], native, 6_866, 3).is_err());
+        native.last_pts_ns = native.start_pts_ns + 6_815_280_001;
+        assert!(verify_probe(&metadata, &rows[..], native, 6_866, 3).is_err());
     }
 
     #[test]

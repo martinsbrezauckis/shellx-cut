@@ -25,7 +25,7 @@ interface RecordingSourceSetupProps {
   readonly onWindowChange: (id: string | null) => void
 }
 
-/** The one Screen & sound source selector. Preview actions live beneath the image. */
+/** The one Screen and sound source selector. Preview starts in the Studio image. */
 export function RecordingSourceSetup({
   selection, disabled, pauseEnabled, regionCapability, onRefresh, onSourceKindChange,
   onMonitorChange, onWindowChange,

@@ -12,7 +12,6 @@ interface RecordingSourcePreviewProps {
   target: RecordingSourcePreviewTarget | null
   statusError: string | null
   busy?: boolean
-  onStart(): void
   onPause(): void
   onResume(): void
   onHide(): void
@@ -20,17 +19,15 @@ interface RecordingSourcePreviewProps {
 }
 
 /**
- * A compact lifecycle control. Source selection remains exclusively in Screen
- * & sound; the native BMP itself is rendered only in the Studio plane.
+ * Native preview status and lease controls. The start action lives in the
+ * Studio plane; source selection remains exclusively in Screen & sound.
  */
 export function RecordingSourcePreview({
-  preview, status, target, statusError, busy = false, onStart, onPause, onResume, onHide, onStop,
+  preview, status, target, statusError, busy = false, onPause, onResume, onHide, onStop,
 }: RecordingSourcePreviewProps) {
-  const canStart = preview.available && target !== null && !busy
   const active = status.state === 'starting' || status.state === 'ready'
   const paused = status.state === 'paused'
   const ownsPreview = active || paused
-  const startLabel = target?.source.kind === 'portal' ? 'Choose preview source…' : 'Preview selected source'
 
   return (
     <section className="rec-source-preview" data-cut-record-source-preview data-cut-record-source-preview-state={preview.state} aria-label="Source preview">
@@ -41,7 +38,6 @@ export function RecordingSourcePreview({
       {target && <p className="rec-source-preview__target" data-cut-record-source-preview-target>{target.label}</p>}
       {statusError && <p className="rec-source-preview__error" data-cut-record-source-preview-error role="status">{statusError}</p>}
       <div className="rec-source-preview__actions" aria-label="Source preview controls">
-        <button type="button" data-cut-action="record-source-preview" onClick={onStart} disabled={!canStart}>{startLabel}</button>
         {active && <button type="button" data-cut-action="record-source-preview-pause" onClick={onPause} disabled={busy}>Pause</button>}
         {paused && <button type="button" data-cut-action="record-source-preview-resume" onClick={onResume} disabled={busy}>Resume</button>}
         {ownsPreview && <>

@@ -84,3 +84,18 @@
   color: var(--ink-4, #a0a9b6);
   font: var(--fs-ui-xs)/1.4 var(--sans);
 }
+
+.rec-studio-preview__source-action {
+  min-height: 40px;
+  margin-top: 8px;
+  padding: 0 16px;
+  border: 1px solid color-mix(in srgb, var(--cut, #2563eb) 48%, #596778);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cut, #2563eb) 28%, #111820);
+  color: var(--ink, #f5f5f4);
+  font: 650 var(--fs-ui-sm)/1 var(--sans);
+  cursor: pointer;
+}
+.rec-studio-preview__source-action:hover:not(:disabled) { border-color: var(--cut, #2563eb); }
+.rec-studio-preview__source-action:focus-visible { outline: 2px solid var(--cut, #2563eb); outline-offset: 2px; }
+.rec-studio-preview__source-action:disabled { opacity: .5; cursor: default; }

@@ -14,12 +14,14 @@ interface StudioPreviewProps {
   sceneName: string
   sceneState: string
   sourcePreview: RecordingSourcePreviewPresentation
+  sourcePreviewCanStart?: boolean
+  onSourcePreviewStart?: () => void
   activeCaptureId?: string | null
   livePresentation?: RecordingLiveFramePresentation | null
   actions?: RecordingCompositionActions
 }
 
-export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview, activeCaptureId, livePresentation, actions }: StudioPreviewProps) {
+export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, sourcePreview, sourcePreviewCanStart = false, onSourcePreviewStart, activeCaptureId, livePresentation, actions }: StudioPreviewProps) {
   const [menu, setMenu] = useState<RecordingCompositionMenuState | null>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
@@ -51,6 +53,8 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
   const showLive = phase === 'recording'
   const showSource = phase === 'idle' || phase === 'countdown'
   const frameUrl = showLive ? live?.state === 'ready' ? live.frameUrl : null : showSource ? sourcePreview.frameUrl : null
+  const showSourcePreviewAction = showSource && !frameUrl
+    && !['starting', 'ready', 'paused'].includes(sourcePreview.state)
   const sourceLabel = showLive ? frameUrl ? 'Recording source · live'
     : live?.state === 'connecting' || live?.state === 'awaiting_source' || live?.state === 'awaiting_frame'
       ? 'Waiting for recording preview' : 'Recording preview unavailable'
@@ -59,7 +63,7 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
   const unavailableDetail = showLive
     ? liveCaptureId ? live?.detail ?? 'Waiting for frames from this recording.' : 'Waiting for a confirmed recording capture.'
     : showSource ? sourcePreview.state === 'idle' || sourcePreview.state === 'stopped'
-      ? 'Use Preview source below to see real pixels from the selected display or window.' : sourcePreview.detail
+      ? 'Click Preview source to see real pixels from the selected display or window.' : sourcePreview.detail
       : phase === 'starting' ? 'Waiting for recording to start.'
       : phase === 'finalizing' ? 'Recording has stopped. Finishing the file.'
         : 'The recording is no longer live. Select a source to preview again.'
@@ -104,6 +108,11 @@ export function StudioPreview({ studio, phase, elapsed, sceneName, sceneState, s
             <div className="rec-studio-preview__empty" data-cut-rec-preview-unavailable>
               <strong>{sourceLabel}</strong>
               <span>{unavailableDetail}</span>
+              {showSourcePreviewAction && onSourcePreviewStart && (
+                <button type="button" className="rec-studio-preview__source-action"
+                  data-cut-action="record-source-preview" onClick={onSourcePreviewStart}
+                  disabled={!sourcePreviewCanStart}>Preview source</button>
+              )}
             </div>
           )}
           {frameUrl && <span className="rec-studio-preview__screen-label">{sourceLabel}</span>}

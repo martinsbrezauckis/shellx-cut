@@ -914,6 +914,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
               sceneName={selectedScene.name}
               sceneState={sceneStatus.state}
               sourcePreview={sourcePreview.presentation}
+              sourcePreviewCanStart={sourcePreview.presentation.available && sourcePreview.target !== null && !busy && !sourcePreview.busy}
+              onSourcePreviewStart={() => { void sourcePreview.start() }}
               actions={{
                 cameraCapability: pauseCameraCapability,
                 rawCapture,
@@ -935,7 +937,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                 target={sourcePreview.target}
                 statusError={sourcePreview.statusError}
                 busy={busy || sourcePreview.busy}
-                onStart={() => { void sourcePreview.start() }}
                 onPause={() => { void sourcePreview.pause() }}
                 onResume={() => { void sourcePreview.resume() }}
                 onHide={() => { void sourcePreview.hide() }}
@@ -981,7 +982,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
             <div className="rec__settings-head">
               <div>
                 <span className="rec__eyebrow">Capture setup</span>
-                <h2 className="rec__settings-title">Screen &amp; sound</h2>
+                <h2 className="rec__settings-title">1 · Screen and sound</h2>
               </div>
               <span className="rec__settings-state" data-cut-rec-setup-state={setupState}>
                 {setupState === 'attention' ? 'Check setup'
@@ -1027,7 +1028,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                   onClick={() => setRawCapture(false)}
                   title="Record → an auto-edited, polished clip on the timeline (zoom-to-cursor, framing)."
                 >
-                  Polished
+                  Polished clip in Edit
                 </button>
                 <button
                   type="button"
@@ -1038,7 +1039,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                   onClick={() => setRawCapture(true)}
                   title="Raw capture — save the recording exactly as captured (your sound sources included), with no auto-edit or polish."
                 >
-                  Raw
+                  Raw MP4 file
                 </button>
               </div>
               <p className="rec__source-note" data-cut-rec-mode-note>
