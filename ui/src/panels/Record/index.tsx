@@ -843,6 +843,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     </>
   )
   const hasCaptureResult = Boolean(session.state.rawPath) || session.state.phase === 'recovery'
+  const recordingLayoutLabel = `${sourceKind === 'window' ? 'Window' : 'Screen'}${studio.camera.enabled && !rawCapture ? ' + camera' : ''}`
   const resultDuration = session.state.startedAt && session.state.endedAt
     ? fmtElapsed(Math.max(0, Math.floor((session.state.endedAt - session.state.startedAt) / 1000)))
     : fmtElapsed(elapsed)
@@ -912,7 +913,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
               phase={displayPhase}
               activeCaptureId={phase === 'recording' ? session.state.captureId : null}
               elapsed={studioElapsed}
-              sceneName={selectedScene.name}
+              sceneName={recordingLayoutLabel}
               sceneState={sceneStatus.state}
               sourcePreview={sourcePreview.presentation}
               sourcePreviewCanStart={sourcePreview.presentation.available && sourcePreview.target !== null && !busy && !sourcePreview.busy}
@@ -1075,7 +1076,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
               <>
                 <RecordingLiveControls
                   elapsed={capMs !== null ? `${remaining}s left` : fmtElapsed(elapsed)}
-                  sceneName={selectedScene.name}
+                  sceneName={recordingLayoutLabel}
                   audioMeters={<RecordingAudioMeters {...recordingAudioMeters} />}
                   captureSafety={(
                     <RecordingCaptureSafetyStatus

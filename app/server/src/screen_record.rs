@@ -59,6 +59,7 @@ pub(crate) mod finalization_budget;
 pub(crate) mod microphone;
 mod monitor_start_admission;
 mod raw_copy_job;
+mod record_tool_alignment;
 // The macOS-only Region start path receives a ticket only from the private
 // foreground desktop bridge. It still enters the ordinary capture reservation
 // below and has no schema/verb/UI representation.
@@ -309,20 +310,10 @@ pub fn record_err(e: record_core::RecordError) -> CutError {
     }
 }
 
-/// Point the record crate's ffmpeg/ffprobe resolution (it reads
-/// `SHELLX_RECORD_FFMPEG` / `SHELLX_RECORD_FFPROBE`, else PATH) at the SAME
-/// binaries cutd resolved via the cut-media toolpath ladder (env → manual pick →
-/// beside-exe → app-data → PATH). Without this, `screen_record.doctor` and the
-/// in-process render probe ffmpeg differently from `system.doctor` and disagree
-/// under a non-login shell where Homebrew isn't on PATH (macOS QA host finding,
-///. Idempotent; respects an explicit pre-set override.
+/// Use Cut's current toolpath for Recorder while preserving operator overrides.
+/// The auto-assigned path is refreshed after an in-app FFmpeg install or choice.
 fn align_ffmpeg_env() {
-    if std::env::var_os("SHELLX_RECORD_FFMPEG").is_none() {
-        std::env::set_var("SHELLX_RECORD_FFMPEG", cut_media::toolpath::ffmpeg());
-    }
-    if std::env::var_os("SHELLX_RECORD_FFPROBE").is_none() {
-        std::env::set_var("SHELLX_RECORD_FFPROBE", cut_media::toolpath::ffprobe());
-    }
+    record_tool_alignment::align();
 }
 
 /// In-process capability cards (`record_capture::doctor()`). Honestly reports

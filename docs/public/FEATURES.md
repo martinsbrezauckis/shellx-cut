@@ -780,8 +780,10 @@ route to the same surface registry.
   substitute for pixel delivery. Its selected-source lifecycle says
   `source_lost` only after an armed exact native close signal wins before a
   Cut-owned close; generic failure or Stop never receives that label. The same
-  read projects no-identity controller-placement evidence (`excluded`,
-  `auto_hidden`, `refused`, or `unavailable`) and admitted-stream audio meters;
+  read projects no-identity controller-placement evidence: `not_excluded`
+  when Windows or macOS confirms whole-display capture can include Cut while
+  visible, `unavailable` when placement cannot be proved, or `refused` after a
+  failed Windows shell readback. It also reports admitted-stream audio meters;
   it never opens a device, changes capture state, or turns a last packet into a
   live level.
 - On Windows and macOS, Doctor monitor rows include an opaque native display ID
