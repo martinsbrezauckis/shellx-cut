@@ -51,6 +51,8 @@ use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 /// Env override for the registry base URL — TEST/operator seam only (see header
 /// TESTABILITY). Never a verb arg.
@@ -177,6 +179,43 @@ pub struct InstallOutcome {
 /// install. Kept as a plain Fn so this module has no dependency on jobs.rs.
 pub type ProgressFn<'a> = dyn Fn(f32, &str) + Send + Sync + 'a;
 
+const LATEST_FETCH_DELAYS: [Duration; 5] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+];
+
+struct FetchAttemptError {
+    error: CutError,
+    transient: bool,
+}
+
+impl FetchAttemptError {
+    fn permanent(error: CutError) -> Self {
+        Self {
+            error,
+            transient: false,
+        }
+    }
+    fn network(op: &str, url: &str, error: ureq::Error) -> Self {
+        let transient = matches!(
+            error,
+            ureq::Error::StatusCode(404 | 429 | 500..=599)
+                | ureq::Error::Io(_)
+                | ureq::Error::Timeout(_)
+                | ureq::Error::HostNotFound
+                | ureq::Error::ConnectionFailed
+                | ureq::Error::Protocol(_)
+        );
+        Self {
+            error: net_err(op, url, error),
+            transient,
+        }
+    }
+}
+
 /// Download, verify, and install a built-in tool. BLOCKING — call from a
 /// spawn_blocking task (it does sync HTTPS I/O + process spawns). Every error
 /// is actionable. On success the tool is in the app-data tools dir the resolver
@@ -220,29 +259,20 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     // ---- 1. load the expected sha256 -----------------------------------------
     // Every production and explicit fixture request reads its publisher's
     // matching checksum metadata before archive bytes are accepted.
-    progress(0.02, "loading checksum");
-    let expected = expected_sha256(&spec, &base, &asset_url)?;
-
-    // ---- 2. stream-download the archive while hashing -----------------------
-    progress(0.05, "downloading");
     let archive_path = staging.join(spec.asset);
-    let (bytes, got) = download_hashing(&asset_url, &archive_path, &|frac, msg| {
-        // Map download to the 0.05..0.80 band of overall progress.
-        progress(0.05 + frac * 0.75, msg);
-    })?;
-
-    // ---- 3. VERIFY before doing anything with the bytes ---------------------
-    progress(0.82, "verifying sha256");
-    if !got.eq_ignore_ascii_case(&expected) {
-        return Err(CutError::new(
-            error_codes::JOB_FAILED,
-            "sha256 mismatch — download differs from the publisher checksum",
-            format!("expected {expected}, got {got}"),
-        )
-        .with_suggested_action(
-            "nothing was installed; the file was discarded. The publisher's latest release may have changed during download, so retry to load a matching published checksum. If it persists, do not install and report it",
-        ));
-    }
+    let (bytes, got) = fetch_verified_archive(
+        &spec,
+        &base,
+        &asset_url,
+        &archive_path,
+        progress,
+        if spec.id == "ffmpeg" {
+            &LATEST_FETCH_DELAYS
+        } else {
+            &[]
+        },
+        std::thread::sleep,
+    )?;
 
     // ---- 4. extract (verified bytes) into the staging dir -------------------
     progress(0.85, "extracting");
@@ -284,6 +314,54 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
     })
 }
 
+/// Retry only a temporary failure to fetch the current release. Each attempt
+/// starts with a new publisher manifest; no archive is ever trusted across attempts.
+fn fetch_verified_archive(
+    spec: &ToolSpec,
+    base: &str,
+    asset_url: &str,
+    archive_path: &Path,
+    progress: &ProgressFn,
+    delays: &[Duration],
+    pause: impl Fn(Duration),
+) -> Result<(u64, String), CutError> {
+    let highest_progress = AtomicU32::new(0);
+    let report = |fraction: f32, message: &str| {
+        let highest = highest_progress.fetch_max(fraction.to_bits(), Ordering::Relaxed);
+        progress(f32::from_bits(highest.max(fraction.to_bits())), message);
+    };
+    for attempt in 0..=delays.len() {
+        report(0.02, "loading checksum");
+        let result = (|| {
+            let expected = expected_sha256(spec, base, asset_url)?;
+            report(0.05, "downloading");
+            let (bytes, got) = download_hashing(asset_url, archive_path, &|frac, msg| {
+                report(0.05 + frac * 0.75, msg);
+            })?;
+            report(0.82, "verifying sha256");
+            if !got.eq_ignore_ascii_case(&expected) {
+                return Err(FetchAttemptError::permanent(CutError::new(
+                    error_codes::JOB_FAILED,
+                    "sha256 mismatch — download differs from the publisher checksum",
+                    format!("expected {expected}, got {got}"),
+                ).with_suggested_action(
+                    "nothing was installed; the file was discarded. Retry to load the current publisher checksum. If it persists, report it",
+                )));
+            }
+            Ok((bytes, got))
+        })();
+        match result {
+            Ok(verified) => return Ok(verified),
+            Err(failure) if failure.transient && attempt < delays.len() => {
+                report(0.02, "current release temporarily unavailable; retrying");
+                pause(delays[attempt]);
+            }
+            Err(failure) => return Err(failure.error),
+        }
+    }
+    unreachable!("bounded release attempts always return")
+}
+
 // ---------------------------------------------------------------------------
 // HTTP (ureq, blocking)
 // ---------------------------------------------------------------------------
@@ -292,7 +370,11 @@ pub fn install_tool(tool: &str, progress: &ProgressFn) -> Result<InstallOutcome,
 ///
 /// The trusted publisher's current release metadata is authoritative for every
 /// request, including the local-fixture/operator override seam.
-fn expected_sha256(spec: &ToolSpec, base: &str, asset_url: &str) -> Result<String, CutError> {
+fn expected_sha256(
+    spec: &ToolSpec,
+    base: &str,
+    asset_url: &str,
+) -> Result<String, FetchAttemptError> {
     let expected = match spec.checksum {
         ChecksumSource::Manifest(name) => {
             let manifest = http_get_string(&format!("{base}/{name}"))?;
@@ -309,25 +391,30 @@ fn expected_sha256(spec: &ToolSpec, base: &str, asset_url: &str) -> Result<Strin
         }
     };
     expected.ok_or_else(|| {
-        CutError::new(
-            error_codes::JOB_FAILED,
-            format!("no sha256 found for asset '{}'", spec.asset),
-            "the selected registry does not list the requested asset",
+        FetchAttemptError::permanent(
+            CutError::new(
+                error_codes::JOB_FAILED,
+                format!("no sha256 found for asset '{}'", spec.asset),
+                "the selected registry does not list the requested asset",
+            )
+            .with_suggested_action("report this; do not bypass checksum verification"),
         )
-        .with_suggested_action("report this; do not bypass checksum verification")
     })
 }
 
 /// GET a small text resource (the checksum manifest). Errors are actionable.
-fn http_get_string(url: &str) -> Result<String, CutError> {
-    require_https(url)?;
+fn http_get_string(url: &str) -> Result<String, FetchAttemptError> {
+    require_https(url).map_err(FetchAttemptError::permanent)?;
     let resp = ureq::get(url)
         .call()
-        .map_err(|e| net_err("fetch checksum manifest", url, e))?;
+        .map_err(|e| FetchAttemptError::network("fetch checksum manifest", url, e))?;
     let body = resp
         .into_body()
         .read_to_string()
-        .map_err(|e| net_err("read checksum manifest", url, e))?;
+        .map_err(|e| FetchAttemptError {
+            error: net_err("read checksum manifest", url, e),
+            transient: true,
+        })?;
     Ok(body)
 }
 
@@ -338,11 +425,11 @@ fn download_hashing(
     url: &str,
     dest: &Path,
     progress: &dyn Fn(f32, &str),
-) -> Result<(u64, String), CutError> {
-    require_https(url)?;
+) -> Result<(u64, String), FetchAttemptError> {
+    require_https(url).map_err(FetchAttemptError::permanent)?;
     let resp = ureq::get(url)
         .call()
-        .map_err(|e| net_err("download", url, e))?;
+        .map_err(|e| FetchAttemptError::network("download", url, e))?;
     let total: Option<u64> = resp
         .headers()
         .get("content-length")
@@ -350,20 +437,23 @@ fn download_hashing(
         .and_then(|s| s.parse().ok());
 
     let mut reader = resp.into_body().into_reader();
-    let mut file = std::fs::File::create(dest).map_err(io_err("create archive file"))?;
+    let mut file = std::fs::File::create(dest)
+        .map_err(|e| FetchAttemptError::permanent(io_err("create archive file")(e)))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut written: u64 = 0;
     let mut last_report = 0.0f32;
     loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(io_err("read download stream"))?;
+        let n = reader.read(&mut buf).map_err(|e| FetchAttemptError {
+            error: net_err("read download stream", url, e),
+            transient: true,
+        })?;
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
-        std::io::Write::write_all(&mut file, &buf[..n]).map_err(io_err("write archive file"))?;
+        std::io::Write::write_all(&mut file, &buf[..n])
+            .map_err(|e| FetchAttemptError::permanent(io_err("write archive file")(e)))?;
         written += n as u64;
         if let Some(t) = total {
             if t > 0 {
@@ -379,7 +469,8 @@ fn download_hashing(
             }
         }
     }
-    std::io::Write::flush(&mut file).map_err(io_err("flush archive file"))?;
+    std::io::Write::flush(&mut file)
+        .map_err(|e| FetchAttemptError::permanent(io_err("flush archive file")(e)))?;
     let hex = hex::encode(hasher.finalize());
     Ok((written, hex))
 }
@@ -695,6 +786,10 @@ impl Drop for StagingGuard {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+#[cfg(test)]
+#[path = "fetch_latest_tests.rs"]
+mod fetch_latest_tests;
 
 #[cfg(test)]
 mod tests {

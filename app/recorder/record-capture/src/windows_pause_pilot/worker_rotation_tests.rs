@@ -9,13 +9,18 @@ fn timeout_rotations_make_one_contiguous_logical_range_before_pause() {
     let (mut worker, log) = start_worker(vec![Some("monitor:first")], false);
     let (commands, receiver, sender, events) = channel();
     let mut starts = [20, 30].into_iter();
+    let mut reservations = [20, 30].into_iter();
     let mut boundaries = 0;
     worker
         .run_until_terminal(
             &receiver,
             &sender,
             Duration::ZERO,
-            || 20,
+            || {
+                reservations
+                    .next()
+                    .expect("two post-close reservations only")
+            },
             || observation(starts.next().expect("two ordinary rotations only")),
             || {
                 boundaries += 1;
@@ -90,13 +95,18 @@ fn timeout_rotations_make_one_contiguous_logical_range_before_stop() {
     let (mut worker, log) = start_worker(vec![Some("monitor:first")], false);
     let (commands, receiver, sender, events) = channel();
     let mut starts = [20, 30].into_iter();
+    let mut reservations = [20, 30].into_iter();
     let mut boundaries = 0;
     worker
         .run_until_terminal(
             &receiver,
             &sender,
             Duration::ZERO,
-            || 20,
+            || {
+                reservations
+                    .next()
+                    .expect("two post-close reservations only")
+            },
             || observation(starts.next().expect("two ordinary rotations only")),
             || {
                 boundaries += 1;
@@ -151,8 +161,8 @@ fn accepted_settings_or_range_drift_is_terminal_after_reaping_wgc() {
             &receiver,
             &sender,
             Duration::ZERO,
-            || 20,
-            || observation(20),
+            || 30,
+            || observation(30),
             || (30, Instant::now()),
         ),
         Err(WindowsPausePilotChannelError::NativeTerminal)

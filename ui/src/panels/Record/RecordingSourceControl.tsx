@@ -32,6 +32,7 @@ interface RecordingSourceControlProps {
   readonly selectedWindowMissing: boolean
   readonly disabled: boolean
   readonly allowWindow?: boolean
+  readonly windowCaptureSupported?: boolean
   readonly regionCapability: RegionPickerCapability
   readonly onRefresh: () => void | Promise<unknown>
   readonly onSourceKindChange: (source: RecordingSourceKind) => void
@@ -56,6 +57,7 @@ export function RecordingSourceControl({
   selectedWindowMissing,
   disabled,
   allowWindow = true,
+  windowCaptureSupported = true,
   regionCapability,
   onRefresh,
   onSourceKindChange,
@@ -86,7 +88,8 @@ export function RecordingSourceControl({
   // A persisted/stale `region` source must not make an unavailable control
   // visible. Record keeps its own fail-closed start guard; this surface repairs
   // to the normal Display presentation while React settles that stale state.
-  const visibleSourceKind = sourceKind === 'region' && regionUnavailable ? 'display' : sourceKind
+  const visibleSourceKind = (sourceKind === 'region' && regionUnavailable)
+    || (sourceKind === 'window' && !windowCaptureSupported) ? 'display' : sourceKind
   const selectionValue = visibleSourceKind === 'window' && !selectedWindowMissing && windowTargetId
     ? `win:${windowTargetId}`
     : visibleSourceKind === 'window' ? '' : displayValue(monitors, monitorIdx)
@@ -123,7 +126,7 @@ export function RecordingSourceControl({
         data-cut-action="record-source-refresh"
         disabled={disabled || refreshing}
         aria-busy={refreshing}
-        title="Refresh the available displays and application windows"
+        title={allowWindow ? 'Refresh the available displays and application windows' : 'Refresh the available displays'}
         onClick={() => { void refresh() }}
       >
         {refreshing ? 'Refreshing…' : 'Refresh sources'}
@@ -186,14 +189,19 @@ export function RecordingSourceControl({
               Choose the app window to record. If it just opened, refresh sources.
             </p>
           )}
-          {selectedWindowMissing && (
+          {visibleSourceKind === 'window' && selectedWindowMissing && (
             <p className="rec__source-note" data-cut-rec-window-missing>
               The selected window closed or changed identity. Choose another source before recording.
             </p>
           )}
-          {visibleSourceKind === 'display' && monitors.length < 2 && windows.length < 1 && (
+          {visibleSourceKind === 'display' && monitors.length < 2 && allowWindow && windows.length < 1 && (
             <p className="rec__source-note" data-cut-rec-source-note>
               Choose a display or window here when one is listed. Otherwise, choose what to share in the system picker when you start.
+            </p>
+          )}
+          {visibleSourceKind === 'display' && monitors.length < 1 && !allowWindow && (
+            <p className="rec__source-note" data-cut-rec-source-note>
+              Choose what to share in the system picker when you start.
             </p>
           )}
         </>

@@ -545,8 +545,16 @@ pub fn list_monitors() -> Vec<MonitorInfo> {
 ///   opaque HWND + process identity is revalidated exactly at capture start.
 /// - **macOS** (`capture-macos`): real ScreenCaptureKit enumeration with an opaque
 ///   native window id that is revalidated exactly at capture start.
-/// - **Linux / headless**: returns an EMPTY vec (Linux's XDG portal offers window
-///   selection in its own picker). An empty list means there is no in-app picker.
+/// - **Linux / headless**: returns an EMPTY vec. Cut's Linux portal capture
+///   currently admits monitors only; see [`window_capture_supported`].
+/// An empty list alone does not establish whether Window capture is supported.
+pub fn window_capture_supported() -> bool {
+    cfg!(any(
+        all(target_os = "windows", feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos"),
+    ))
+}
+
 pub fn list_windows() -> Vec<WindowInfo> {
     #[cfg(all(windows, feature = "capture-windows"))]
     {

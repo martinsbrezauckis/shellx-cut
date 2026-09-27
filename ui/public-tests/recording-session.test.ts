@@ -10,6 +10,11 @@ const preset: RecordingPreset = {
 const doctor = { start_allowed: true, windows: [{ id: 'window-7' }], monitors: [{ id: 'monitor-1' }] }
 
 assert.equal(validateRecordingPreset(preset, doctor), null)
+assert.match(validateRecordingPreset(preset, { ...doctor, window_capture_supported: false }) ?? '', /choose Display/,
+  'a saved Window intent is refused when the backend reports no Window capture, even if a stale row remains')
+assert.equal(validateRecordingPreset(preset, { ...doctor, windows: [], window_capture_supported: true }),
+  'The saved window is no longer available. Choose a current window.',
+  'an empty supported Windows/macOS list means the target is absent, not that Window capture is unsupported')
 assert.match(validateRecordingPreset(preset, { ...doctor, windows: [{ id: 'window-8' }] }) ?? '', /saved window/)
 assert.match(validateRecordingPreset({ ...preset, source: { kind: 'display', monitorId: 'monitor-1' } }, { ...doctor, monitors: [] }) ?? '', /saved display/)
 assert.match(validateRecordingPreset(preset, { ...doctor, start_allowed: false }) ?? '', /unavailable/)

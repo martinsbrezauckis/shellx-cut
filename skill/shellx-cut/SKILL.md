@@ -549,8 +549,9 @@ process or OS account that can connect can operate the editor. Origin/Host
 checks mitigate browser cross-origin and DNS-rebinding requests only; native
 callers can omit or forge those headers. MCP is a stdio proxy and inherits the
 same boundary. Native LAN/public listening is unsupported and refused by
-default; `SHELLX_CUT_ALLOW_NON_LOCAL=1` changes only the bind check and does not
-make Cut authenticate a remote caller. Remote use is supported only through an
+default; a debug build with `SHELLX_CUT_ALLOW_NON_LOCAL=1` permits non-loopback
+binding and skips the browser Origin/Host/Fetch-Metadata guard. Packaged builds
+ignore the flag, and Cut does not authenticate a remote caller. Remote use is supported only through an
 independently authenticated and authorized SSH/VPN/ShellX broker or equivalent
 transport; without it, refuse remote access. Do not use shared/multi-user
 machines, untrusted local services, host-network containers, or exposed ports

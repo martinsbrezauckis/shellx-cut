@@ -24,7 +24,7 @@ and `app/server/src/chat.rs` (separate contained-Claude capability broker).
 | Local authorization | None: any local process or OS account able to connect to the loopback port can use the open editor. |
 | Browser mitigation | Reject a non-loopback `Origin` or `Host`, plus a no-Origin `Sec-Fetch-Site: cross-site` browser request; this mitigates browser cross-origin and DNS-rebinding requests only. |
 | Native callers | Can omit `Origin` and forge `Origin`/`Host`; headers are not authentication. |
-| Remote listening | Native LAN/public binding is unsupported and refused by default. `SHELLX_CUT_ALLOW_NON_LOCAL=1` changes only the bind check and provides no Cut authentication. |
+| Remote listening | Native LAN/public binding is unsupported and refused by default. A debug build with `SHELLX_CUT_ALLOW_NON_LOCAL=1` permits that bind and skips the browser Origin/Host/Fetch-Metadata guard; packaged builds ignore the flag. Cut provides no remote authentication. |
 | Future hardening | A native remote mode must introduce and verify per-caller/per-user capability authentication. It is not implemented in the current source. |
 
 Remote use is supported only through an SSH/VPN/external ShellX broker or
@@ -59,7 +59,7 @@ browser from another origin ─────> Origin/Host/Fetch-Metadata guard (r
 | `cutd mcp` stdio proxy | A configured local MCP client invokes generated tools. | Proxy reaches the same running engine; it adds no caller authentication. | It inherits the machine-wide API trust boundary. |
 | Claude `agent.chat` | Hostile prompt/attachment attempts native or unrelated Cut actions. | Contained capability contract, native-tool denial, and Cut capability filtering limit that provider route. | Not an OS sandbox and does not protect the unauthenticated REST/MCP surface. |
 | Codex `agent.chat` | A selected local Codex turn uses its configured native tools and integrations. | Cut adds only its filtered MCP surface and records every resulting Cut verb for review/revert. | Codex retains the user's native sandbox, permissions, rules, and configured tools; select it only when that local CLI is trusted. |
-| `SHELLX_CUT_ALLOW_NON_LOCAL=1` | LAN/public client connects or forges headers. | Default refuses this bind; the opt-in is unsupported as a Cut remote mode. | Cut adds no remote auth; direct exposure grants the full surface. |
+| Debug build with `SHELLX_CUT_ALLOW_NON_LOCAL=1` | LAN/public client connects or forges headers. | Default and packaged builds refuse this bind; debug opt-in also skips the browser guard and is unsupported as a Cut remote mode. | Cut adds no remote auth; direct exposure grants the full surface. |
 | Recording camera selection | A caller tries to enumerate native identities, trigger permission unexpectedly, or substitute another device. | Idle Doctor returns opaque expiring choices and opens no stream. Only explicit Start uses a selected choice, revalidates it, and requires a real first frame before retaining a separate local take. | Camera media is sensitive local project content; a trusted local caller that can invoke Start can request it and OS permission remains the final platform boundary. |
 
 ## Abuse paths and mitigations
@@ -72,7 +72,7 @@ browser from another origin ─────> Origin/Host/Fetch-Metadata guard (r
    connects to the default port and edits/reads the open project. This is outside
    the supported one-workstation trusted-environment assumption; no same-user
    barrier exists.
-3. An operator enables `SHELLX_CUT_ALLOW_NON_LOCAL=1` and exposes the port.
+3. An operator enables `SHELLX_CUT_ALLOW_NON_LOCAL=1` in a debug build and exposes the port.
    Cut has no remote token or capability check, so an external client receives
    the full surface. An independently authenticated SSH/VPN/broker/proxy may be
    a separate deployment, but Cut makes no assurance about it.

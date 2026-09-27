@@ -728,6 +728,63 @@ mod tests {
         assert_eq!(content_range, "bytes 4-9/16");
         assert_eq!(body, b"ftypmp");
 
+        // A plain fetch is the native rehearsal proof's byte-backed read. It
+        // must receive the entire file even when a take exceeds one range cap.
+        let media = crate::screen_record::rehearsal::playback_media(&handle).unwrap();
+        let mut large_take = vec![0x5a; SOURCE_CHUNK as usize + 17];
+        large_take[..8].copy_from_slice(b"\x00\x00\x00\x18ftyp");
+        std::fs::write(media, &large_take).unwrap();
+        let (full_status, full_range, accepts_ranges, full_length, full_body) =
+            tokio::task::spawn_blocking({
+                let url = url.clone();
+                move || {
+                    let mut response = ureq::get(&url).call().unwrap();
+                    let content_range = response.headers().get("content-range").is_some();
+                    let accepts_ranges =
+                        response.headers().get("accept-ranges").unwrap() == "bytes";
+                    let content_length = response
+                        .headers()
+                        .get("content-length")
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .parse::<usize>()
+                        .unwrap();
+                    let status = response.status().as_u16();
+                    let body = response.body_mut().read_to_vec().unwrap();
+                    (status, content_range, accepts_ranges, content_length, body)
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(full_status, 200);
+        assert!(!full_range);
+        assert!(accepts_ranges);
+        assert_eq!(full_length, large_take.len());
+        assert_eq!(full_body, large_take);
+
+        let (capped_status, capped_range, capped_body) = tokio::task::spawn_blocking({
+            let url = url.clone();
+            move || get_range(&url, "bytes=0-4194319")
+        })
+        .await
+        .unwrap();
+        assert_eq!(capped_status, 206);
+        assert_eq!(
+            capped_range,
+            format!("bytes 0-{}/{}", SOURCE_CHUNK - 1, large_take.len())
+        );
+        assert_eq!(capped_body.len(), SOURCE_CHUNK as usize);
+
+        let (unsatisfiable_status, _, _) = tokio::task::spawn_blocking({
+            let url = url.clone();
+            let range = format!("bytes={}-{}", large_take.len(), large_take.len() + 1);
+            move || get_range(&url, &range)
+        })
+        .await
+        .unwrap();
+        assert_eq!(unsatisfiable_status, 416);
+
         let (bad_status, _, _) = tokio::task::spawn_blocking({
             let base = server.base_url.clone();
             move || {
@@ -1847,24 +1904,26 @@ async fn serve_rehearsal_media(
         Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata.len(),
         _ => return (StatusCode::NOT_FOUND, "rehearsal playback unavailable").into_response(),
     };
-    let (start, end) = match headers
+    let Some(spec) = headers
         .get(axum::http::header::RANGE)
         .and_then(|value| value.to_str().ok())
-    {
-        Some(spec) => match parse_single_range(spec, len) {
-            Some(range) => range,
-            None => {
-                return (
-                    StatusCode::RANGE_NOT_SATISFIABLE,
-                    [
-                        (axum::http::header::ACCEPT_RANGES, "bytes".to_string()),
-                        (axum::http::header::CONTENT_RANGE, format!("bytes */{len}")),
-                    ],
-                )
-                    .into_response();
-            }
-        },
-        None => (0, len - 1),
+    else {
+        // A plain fetch needs the complete take and a 200 response. The shared
+        // stream helper keeps large takes out of the server heap.
+        return stream_file_response(&path, "video/mp4", true).await;
+    };
+    let (start, end) = match parse_single_range(spec, len) {
+        Some(range) => range,
+        None => {
+            return (
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                [
+                    (axum::http::header::ACCEPT_RANGES, "bytes".to_string()),
+                    (axum::http::header::CONTENT_RANGE, format!("bytes */{len}")),
+                ],
+            )
+                .into_response();
+        }
     };
     let end = end.min(start + SOURCE_CHUNK - 1);
     let slice_len = (end - start + 1) as usize;

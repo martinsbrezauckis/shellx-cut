@@ -364,7 +364,7 @@
           <div class="manual-grid">
             <article class="manual-card">
               <h3>Check readiness, then choose a source</h3>
-              <p>Open <strong>Record</strong> from the shared <strong>Edit | Record</strong> switch. Read the compact Capture readiness result, open its technical checks if needed, then choose a display or window. Use <strong>Refresh sources</strong> after a display, app, or device changes; Start stays unavailable while Cut checks the current setup.</p>
+              <p>Open <strong>Record</strong> from the shared <strong>Edit | Record</strong> switch. Read the compact Capture readiness result, open its technical checks if needed, then choose a display or, on Windows and macOS, an application window. Linux uses the system picker to choose a display when Start opens it. Use <strong>Refresh sources</strong> after a display, app, or device changes; Start stays unavailable while Cut checks the current setup.</p>
             </article>
             <article class="manual-card">
               <h3>Keep composition controls out of the picture</h3>
@@ -570,11 +570,12 @@
               The supported default is one personal workstation / one trusted
               interactive environment. The API has no token: loopback is a
               whole-machine boundary, so any local process or account able to
-              connect can operate the editor. Non-loopback binds are refused;
-              Host and Origin checks mitigate browser cross-origin and DNS
-              rebinding but do not authenticate native callers. The non-local
-              escape does not add Cut authentication and is not a supported
-              remote mode. Remote use requires an independently authenticated
+              connect can operate the editor. Packaged builds refuse non-loopback
+              binds; Host and Origin checks mitigate browser cross-origin and DNS
+              rebinding but do not authenticate native callers. A debug build's
+              non-local escape permits that bind and skips those browser checks.
+              It adds no Cut authentication and is not a supported remote mode.
+              Remote use requires an independently authenticated
               and authorized SSH/VPN/ShellX broker or equivalent transport;
               without it, remote access is refused.
             </p>

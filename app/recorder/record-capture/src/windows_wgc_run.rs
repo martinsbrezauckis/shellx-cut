@@ -130,10 +130,20 @@ where
     pub(crate) fn rollover_checkpoint(
         &mut self,
         observe_closed_at: impl FnOnce() -> u64,
-        reserved_start_ms: u64,
+        reserve_start_ms: impl FnOnce() -> u64,
         observe_started: impl FnOnce() -> Result<WgcStartObservation>,
     ) -> Result<(SealedScreenRun, ScreenRunIdentity)> {
         let sealed = self.seal_active(observe_closed_at)?;
+        // The next native control can encode during start. Reserve its capture
+        // boundary only after the previous control has closed and published;
+        // a timestamp sampled before close makes the checkpoint facts overlap.
+        let reserved_start_ms = reserve_start_ms();
+        if reserved_start_ms < sealed.boundary.end_ms {
+            self.stopped = true;
+            return Err(state_error(
+                "next WGC checkpoint starts before the previous one ended",
+            ));
+        }
         match self.begin(reserved_start_ms, observe_started) {
             Ok(next) => Ok((sealed, next)),
             Err(error) => {

@@ -507,11 +507,9 @@ impl Capture for WindowsCapture {
                             .expect("active WGC run must seal before capture returns");
                         break sealed.boundary.end_ms;
                     }
-                    let reserved_start_ms =
-                        u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     let (_sealed, resumed) = owner.rollover_checkpoint(
                         || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        reserved_start_ms,
+                        || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
                         || observe_wgc_start(start),
                     )?;
                     segment = resumed;

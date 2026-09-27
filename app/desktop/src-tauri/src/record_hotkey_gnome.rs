@@ -8,8 +8,11 @@
 use gio::prelude::*;
 use tauri::{AppHandle, Emitter};
 
+#[path = "record_hotkey_gnome_readback.rs"]
+mod readback;
 #[path = "record_hotkey_gnome_socket.rs"]
 mod socket;
+use readback::readback_diagnostic;
 pub(crate) use socket::Service;
 
 const ROOT_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
@@ -138,7 +141,12 @@ fn apply_entry(entry: &gio::Settings, values: &EntryValues) -> Result<(), String
     }
     entry.apply();
     gio::Settings::sync();
-    if entry_values(entry) != *values {
+    let observed = entry_values(entry);
+    if observed != *values {
+        eprintln!(
+            "[shellx-cut] GNOME F9 binding readback mismatch: {}",
+            readback_diagnostic(values, &observed)
+        );
         return Err("GNOME did not preserve ShellX Cut's exact F9 binding.".to_string());
     }
     Ok(())

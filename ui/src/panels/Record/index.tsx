@@ -144,6 +144,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   // native target id. A Window source with null has an explicit no-selection
   // state; it must never silently fall back to Display capture.
   const [windows, setWindows] = useState<WindowInfo[]>([])
+  const [windowCaptureSupported, setWindowCaptureSupported] = useState<boolean | null>(null)
   const [windowTargetId, setWindowTargetId] = useState<string | null>(null)
   const [cameraCapability, setCameraCapability] = useState<CameraCapability>(NO_CAMERA_CAPABILITY)
   const [cameraDeviceId, setCameraDeviceId] = useState<string | null>(null)
@@ -159,6 +160,11 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     setSourceKind('display')
     setRegionPickerOpen(false)
   }, [sourceKind, regionPickerCapability.availability])
+  useEffect(() => {
+    if (windowCaptureSupported !== false || sourceKind !== 'window') return
+    setSourceKind('display')
+    setWindowTargetId(null)
+  }, [windowCaptureSupported, sourceKind])
   // `capMs === null` = open-ended (the default). Otherwise it is the cap in ms.
   const [capMs, setCapMs] = useState<number | null>(null)
   const [fps, setFps] = useState(30)
@@ -515,7 +521,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       }
     }
     if (r.ok && r.result) {
-      const res = r.result as { cards: RecordCard[]; ready: boolean; start_allowed?: boolean; monitors?: MonitorInfo[]; windows?: WindowInfo[]; camera?: CameraCapability; quality?: unknown; scenes?: unknown; pause?: unknown }
+      const res = r.result as { cards: RecordCard[]; ready: boolean; start_allowed?: boolean; monitors?: MonitorInfo[]; windows?: WindowInfo[]; window_capture_supported?: boolean; camera?: CameraCapability; quality?: unknown; scenes?: unknown; pause?: unknown }
       setCards(res.cards)
       setReady(res.ready)
       // A pre-start server predates this field, so its strict `ready` result is
@@ -527,6 +533,9 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       // the UI can refuse visibly instead of silently falling back to a monitor.
       const wins = res.windows ?? []
       setWindows(wins)
+      // Older Doctors omit the field. Preserve their Windows/macOS picker while
+      // current Linux Doctor explicitly closes the unsupported source route.
+      setWindowCaptureSupported(res.window_capture_supported !== false)
       const camera = res.camera ?? NO_CAMERA_CAPABILITY
       setCameraCapability(camera)
       setCameraDeviceId((previous) => previous ?? (camera.devices[0]?.id ?? null))
@@ -595,7 +604,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   // Start a capture. Open-ended by default (no duration_ms); a chosen cap is passed
   // as an upper bound AND drives a local countdown that auto-finalizes at the bound.
   const buildPreset = useCallback((): RecordingPreset | null => {
-    if (sourceKind === 'region') return null
+    if (sourceKind === 'region' || (sourceKind === 'window' && !windowCaptureSupported)) return null
     const portalDisplay = doctorAllowsPortalDisplay({ start_allowed: startAllowed, monitors, cards })
     const source = sourceKind === 'window'
       ? (windowTargetId ? { kind: 'window' as const, windowId: windowTargetId } : null)
@@ -619,7 +628,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
           : {}),
       },
     }
-  }, [sourceKind, monitorIdx, monitors, cards, startAllowed, monitorTargetId, selectedMonitorCurrent, windowTargetId, fps, capMs, audio, systemAudio, keys, rawCapture, recordingPause.enabled, qualityRequest, studio, cameraDeviceId, sceneStartConfig, session.countdownSeconds])
+  }, [sourceKind, windowCaptureSupported, monitorIdx, monitors, cards, startAllowed, monitorTargetId, selectedMonitorCurrent, windowTargetId, fps, capMs, audio, systemAudio, keys, rawCapture, recordingPause.enabled, qualityRequest, studio, cameraDeviceId, sceneStartConfig, session.countdownSeconds])
 
   useEffect(() => {
     session.setDraftProvider(buildPreset)
@@ -633,6 +642,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     if (!project?.project_identity) return 'Open a current project before recording.'
     if (startAllowed === null) return 'Wait for source checks to finish.'
     if (startAllowed === false) return 'Screen capture is not ready on this machine.'
+    if (sourceKind === 'window' && !windowCaptureSupported) return 'Window capture is unavailable on this machine. Choose Display.'
     if (selectedWindowMissing) return 'The selected window is no longer available. Choose another source before recording.'
     if (sourceKind === 'window' && !windowTargetId) return 'Choose an application window before recording.'
     if (sourceKind === 'display' && !selectedMonitorCurrent && !doctorAllowsPortalDisplay({ start_allowed: startAllowed, monitors, cards })) return 'The selected display changed or disappeared. Choose a current exact display before recording.'
@@ -654,7 +664,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     )
     if (cameraError) return cameraError
     return null
-  }, [cameraCapability, cameraDeviceId, cards, customFps, fps, monitorIdx, monitors, project?.project_identity, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowTargetId])
+  }, [cameraCapability, cameraDeviceId, cards, customFps, fps, monitorIdx, monitors, project?.project_identity, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowCaptureSupported, windowTargetId])
   useEffect(() => {
     session.setStartGuard(preflightStartError)
     return () => session.setStartGuard(null)
@@ -998,6 +1008,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                 selection={{ sourceKind, monitors, monitorIdx, windows, windowTargetId, selectedWindowMissing }}
                 disabled={busy}
                 pauseEnabled={recordingPause.enabled}
+                windowCaptureSupported={windowCaptureSupported === true}
                 regionCapability={regionPickerCapability}
                 onRefresh={refreshCaptureSetup}
                 onSourceKindChange={(next) => { setSourceKind(next); setRegionPickerOpen(next === 'region' && regionPickerCapability.availability === 'available') }}

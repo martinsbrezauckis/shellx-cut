@@ -232,6 +232,7 @@ fn disabled_gnome_capability(cleanup_error: Option<String>) -> Capability {
 
 #[cfg(target_os = "linux")]
 fn startup_failure_capability(error: String) -> Capability {
+    let error = error.trim_end_matches('.');
     Capability::gnome(
         "disabled",
         false,
@@ -446,5 +447,15 @@ mod tests {
             .reason
             .as_deref()
             .is_some_and(|reason| reason.contains("F9 belongs to another shortcut")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_refusal_does_not_duplicate_error_punctuation() {
+        let capability = startup_failure_capability("GNOME did not preserve F9.".to_string());
+        assert_eq!(
+            capability.reason.as_deref(),
+            Some("Global F9 could not be configured at startup: GNOME did not preserve F9. F9 still works while ShellX Cut is focused.")
+        );
     }
 }

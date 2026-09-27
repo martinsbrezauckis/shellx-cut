@@ -47,9 +47,11 @@ authentication boundary:
   Origin + Host guard on every request (a non-loopback `Origin` or `Host` gets
   403). Those headers mitigate browser attacks; they do **not** authenticate
   native local callers.
-- Native LAN/public listening is unsupported and refused by default.
-  `SHELLX_CUT_ALLOW_NON_LOCAL=1` changes only the bind check: Cut does not add
-  or verify a remote token, capability, or identity. Remote use is supported
+- Native LAN/public listening is unsupported and refused by default. In a
+  debug build only, `SHELLX_CUT_ALLOW_NON_LOCAL=1` permits a non-loopback bind
+  and skips the browser Origin/Host/Fetch-Metadata guard. Packaged builds ignore
+  the flag. Cut does not add or verify a remote token, capability, or identity.
+  Remote use is supported
   only through an independently authenticated and authorized SSH/VPN/external
   ShellX broker or equivalent transport. That protection belongs to the
   transport and must be separately evidenced; without it, remote access must be

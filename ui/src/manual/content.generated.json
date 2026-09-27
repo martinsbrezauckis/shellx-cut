@@ -69,7 +69,7 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Top bar",
-      "description": "Open Record to choose a real display or window, confirm readiness, preview actual source pixels, select Raw MP4 or Polished clip in Edit, and start capture. F9 can also start from Edit using the last valid setup after fresh source, device, permission, and project checks.",
+      "description": "Open Record to choose a display or, on Windows and macOS, an application window; confirm readiness, preview actual source pixels, select Raw MP4 or Polished clip in Edit, and start capture. On Linux, Start opens the system picker for a display. F9 can also start from Edit using the last valid setup after fresh source, device, permission, and project checks.",
       "requirement": "Requires a supported desktop capture backend and FFmpeg. Global F9 scope is reported only after OS callback proof.",
       "api": "ui.open {panel:\"record\"}, screen_record.doctor, screen_record.preview_capability"
     },

@@ -21,9 +21,8 @@ where
     F: WgcControlFactory<T>,
     P: WgcCheckpointPublisher,
 {
-    let reserved_start_ms = reserve_start_ms();
     let (sealed, next) = owner
-        .rollover_checkpoint(|| observe_boundary().0, reserved_start_ms, observe_started)
+        .rollover_checkpoint(|| observe_boundary().0, reserve_start_ms, observe_started)
         .map_err(|_| ())?;
     let sealed_end_ms = sealed.boundary.end_ms;
     let started = pilot_started(profile, next.clone())?;

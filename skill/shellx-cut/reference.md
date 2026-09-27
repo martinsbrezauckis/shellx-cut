@@ -54,8 +54,10 @@ able to connect can operate the open editor. Origin/Host checks are browser
 cross-origin/DNS-rebinding mitigations, not native caller authentication. The
 MCP proxy inherits the same boundary; brokered `agent.chat` turns alone receive
 the restricted Cut tool/verb surface. Native LAN/public listening is
-unsupported and refused by default, and `SHELLX_CUT_ALLOW_NON_LOCAL=1` does not
-add Cut authentication. Remote use requires an independently authenticated and
+unsupported and refused by default. A debug build with
+`SHELLX_CUT_ALLOW_NON_LOCAL=1` permits a non-loopback bind and skips the browser
+Origin/Host/Fetch-Metadata guard; packaged builds ignore the flag. Cut adds no
+remote authentication. Remote use requires an independently authenticated and
 authorized SSH/VPN/ShellX broker or equivalent transport; without it, refuse
 remote access. See `docs/public/shellx-cut-threat-model.md`.
 

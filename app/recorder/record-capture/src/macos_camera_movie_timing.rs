@@ -310,9 +310,14 @@ fn verify_probe<R: BufRead>(
         && !matches_penultimate)
         || (native_elapsed > max_end && native_elapsed - max_end > tick_ns)
     {
+        let penultimate = penultimate_pts.map_or_else(|| "null".to_owned(), |pts| pts.to_string());
+        let penultimate_delta = penultimate_pts.map_or_else(
+            || "null".to_owned(),
+            |pts| native_elapsed.abs_diff(pts).to_string(),
+        );
         return Err(bad(&format!(
-            "last encoded packet is not the last MovieFileOutput sample: native_start_ns={}, native_last_ns={}, native_elapsed_ns={native_elapsed}, encoded_last_pts_ns={last_pts}, track_tick_ns={tick_ns}",
-            native.start_pts_ns, native.last_pts_ns,
+            "last encoded packet is not the last MovieFileOutput sample: native_start_ns={}, native_last_ns={}, native_elapsed_ns={native_elapsed}, encoded_last_pts_ns={last_pts}, encoded_penultimate_pts_ns={penultimate}, native_penultimate_delta_ns={penultimate_delta}, encoded_last_duration_ns={last_duration}, encoded_end_ns={max_end}, container_end_ns={container_ns}, native_last_duration_ns={}, native_last_cadence_ns={}, packet_count={packet_count}, decoded_frames={decoded_frames}, track_tick_ns={tick_ns}",
+            native.start_pts_ns, native.last_pts_ns, native.last_duration_ns, native.last_cadence_ns,
         )));
     }
     let cadence = u128::from(native.last_cadence_ns);
@@ -472,8 +477,106 @@ mod tests {
         assert_eq!(error.message, "verify macOS camera movie clock");
         assert_eq!(
             error.cause,
-            "last encoded packet is not the last MovieFileOutput sample: native_start_ns=34421447440000, native_last_ns=34429439890000, native_elapsed_ns=7992450000, encoded_last_pts_ns=7984100000, track_tick_ns=10000"
+            "last encoded packet is not the last MovieFileOutput sample: native_start_ns=34421447440000, native_last_ns=34429439890000, native_elapsed_ns=7992450000, encoded_last_pts_ns=7984100000, encoded_penultimate_pts_ns=7975770000, native_penultimate_delta_ns=16680000, encoded_last_duration_ns=8330000, encoded_end_ns=7992430000, container_end_ns=7998060000, native_last_duration_ns=0, native_last_cadence_ns=8330000, packet_count=3, decoded_frames=3, track_tick_ns=10000"
         );
+    }
+
+    #[test]
+    fn installed_mac_clock_boundary_retains_packet_duration_without_admitting_a_lost_tail() {
+        // r1790529837456-791804960a73 retained only a 16.68ms PTS gap.
+        // A 16.67ms final packet is within one track tick of that callback;
+        // a 16.66ms final packet ends two ticks early and remains rejected.
+        let mut native = native();
+        native.start_pts_ns = 160_888_177_990_000;
+        native.last_pts_ns = 160_892_794_290_000;
+        native.last_cadence_ns = 16_670_000;
+        native.last_duration_ns = 16_670_000;
+        let metadata = metadata("4.616300", "1/100000");
+        assert!(verify_probe(
+            &metadata,
+            b"0,1667\n459962,1667\n".as_slice(),
+            native,
+            4_616,
+            2
+        )
+        .is_ok());
+        let error = verify_probe(
+            &metadata,
+            b"0,1667\n459962,1666\n".as_slice(),
+            native,
+            4_616,
+            2,
+        )
+        .unwrap_err();
+        assert!(error.cause.contains("encoded_last_duration_ns=16660000"));
+        assert!(error.cause.contains("encoded_penultimate_pts_ns=0"));
+        assert!(error
+            .cause
+            .contains("native_penultimate_delta_ns=4616300000"));
+        assert!(error.cause.contains("encoded_end_ns=4616280000"));
+        assert!(error.cause.contains("container_end_ns=4616300000"));
+        assert!(error.cause.contains("native_last_cadence_ns=16670000"));
+        assert!(error.cause.contains("packet_count=2, decoded_frames=2"));
+    }
+
+    #[test]
+    fn installed_mac_encoded_ahead_failure_retains_penultimate_identity() {
+        // r12: the encoded endpoint leads the native callback by 16.92ms.
+        // A preceding PTS 250us from the callback cannot prove one extra packet.
+        let mut native = native();
+        native.start_pts_ns = 165_370_560_600_000;
+        native.last_pts_ns = 165_375_560_960_000;
+        native.last_duration_ns = 16_670_000;
+        native.last_cadence_ns = 16_670_000;
+        let facts = metadata("5.033950", "1/100000");
+        let rows = b"0,1667\n500061,1667\n501728,1667\n";
+        let error = verify_probe(&facts, rows.as_slice(), native, 5_034, 3).unwrap_err();
+        assert!(error.cause.contains("native_elapsed_ns=5000360000"));
+        assert!(error.cause.contains("encoded_last_pts_ns=5017280000"));
+        assert!(error
+            .cause
+            .contains("encoded_penultimate_pts_ns=5000610000"));
+        assert!(error.cause.contains("native_penultimate_delta_ns=250000"));
+        assert!(error.cause.contains("encoded_last_duration_ns=16670000"));
+        assert!(error.cause.contains("encoded_end_ns=5033950000"));
+
+        // The existing narrow admission still requires an actual packet PTS
+        // at the native callback, within one track tick.
+        let matching_rows = b"0,1667\n500036,1667\n501728,1667\n";
+        assert!(verify_probe(&facts, matching_rows.as_slice(), native, 5_034, 3).is_ok());
+
+        // Independent count and container guards must reject before clock
+        // diagnostics could suggest that malformed media is admissible.
+        let count = verify_probe(&facts, rows.as_slice(), native, 5_034, 4).unwrap_err();
+        assert_eq!(
+            count.cause,
+            "video packet count disagrees with decoded frame count"
+        );
+        let short_container = metadata("5.033940", "1/100000");
+        let container =
+            verify_probe(&short_container, rows.as_slice(), native, 5_034, 3).unwrap_err();
+        assert_eq!(
+            container.cause,
+            "video packet exceeds the container duration"
+        );
+    }
+
+    #[test]
+    fn single_packet_clock_failure_reports_null_penultimate() {
+        let mut native = native();
+        native.last_pts_ns = native.start_pts_ns + 16_680_000;
+        native.last_duration_ns = 16_660_000;
+        native.last_cadence_ns = 16_660_000;
+        let error = verify_probe(
+            &metadata("0.016660", "1/100000"),
+            b"0,1666\n".as_slice(),
+            native,
+            17,
+            1,
+        )
+        .unwrap_err();
+        assert!(error.cause.contains("encoded_penultimate_pts_ns=null"));
+        assert!(error.cause.contains("native_penultimate_delta_ns=null"));
     }
 
     #[test]

@@ -18,6 +18,7 @@ interface RecordingSourceSetupProps {
   readonly selection: RecordingSourceSetupSelection
   readonly disabled: boolean
   readonly pauseEnabled: boolean
+  readonly windowCaptureSupported: boolean
   readonly regionCapability: RegionPickerCapability
   readonly onRefresh: () => void | Promise<unknown>
   readonly onSourceKindChange: (source: RecordingSourceKind) => void
@@ -27,7 +28,7 @@ interface RecordingSourceSetupProps {
 
 /** The one Screen and sound source selector. Preview starts in the Studio image. */
 export function RecordingSourceSetup({
-  selection, disabled, pauseEnabled, regionCapability, onRefresh, onSourceKindChange,
+  selection, disabled, pauseEnabled, windowCaptureSupported, regionCapability, onRefresh, onSourceKindChange,
   onMonitorChange, onWindowChange,
 }: RecordingSourceSetupProps) {
   return (
@@ -36,7 +37,8 @@ export function RecordingSourceSetup({
       <RecordingSourceControl
         {...selection}
         disabled={disabled}
-        allowWindow={!pauseEnabled}
+        allowWindow={windowCaptureSupported && !pauseEnabled}
+        windowCaptureSupported={windowCaptureSupported}
         regionCapability={regionCapability}
         onRefresh={onRefresh}
         onSourceKindChange={onSourceKindChange}

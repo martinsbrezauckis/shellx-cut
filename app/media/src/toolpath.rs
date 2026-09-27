@@ -102,15 +102,17 @@ pub fn appdata_tools_dir() -> Option<PathBuf> {
 
 // ── Manual ffmpeg override (the UI "Change ffmpeg" control) ────────────────────
 //
-// The user can pick a specific ffmpeg; it is persisted to a tiny file beside the
-// app-data tools dir (survives app-bundle reinstalls) and read ONCE at engine
+// The user can pick a specific ffmpeg; it is persisted to a tiny file under
+// SHELLX_CUT_HOME/preferences when set, otherwise beside the app-data tools
+// dir (survives app-bundle reinstalls), and read ONCE at engine
 // startup. Reading it once (not live) keeps the HW-capability caches
 // (hwencode::hw_caps / gpu_filters_available) CONSISTENT with the binary in use —
 // so changing it takes effect on the next engine start (system.set_ffmpeg reports
 // restart_required). An explicit `SHELLX_CUT_FFMPEG` env still wins over this.
 
 /// The persisted-override file (one line: the chosen ffmpeg's absolute path).
-/// `<app-data>/ShellX Cut/ffmpeg-override`. None when there is no app-data dir.
+/// `<SHELLX_CUT_HOME>/preferences/ffmpeg-override` when configured, otherwise
+/// `<app-data>/ShellX Cut/ffmpeg-override`. None when neither root exists.
 fn override_file() -> Option<PathBuf> {
     override_file_with(
         std::env::var_os("SHELLX_CUT_HOME")

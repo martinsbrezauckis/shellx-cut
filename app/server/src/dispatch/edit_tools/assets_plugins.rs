@@ -669,7 +669,13 @@ async fn agent_chat_turn_review(
     } else {
         (None, None)
     };
-    let revert_safe = !actions.is_empty() && concurrent_actions.is_empty() && diff_error.is_none();
+    // Preset saves are journaled off the undo cursor. project.revert restores
+    // timeline state, so it cannot undo a caption style preset replacement.
+    let has_unrevertable_preset_save = tail.iter().any(|op| op.verb == "captions.save_style");
+    let revert_safe = !actions.is_empty()
+        && concurrent_actions.is_empty()
+        && diff_error.is_none()
+        && !has_unrevertable_preset_save;
     Ok((
         actions,
         json!({
@@ -695,6 +701,46 @@ mod agent_chat_project_binding_tests {
         fn drop(&mut self) {
             *generated_placement_gate().lock().unwrap() = None;
         }
+    }
+
+    #[tokio::test]
+    async fn review_never_offers_step_back_for_an_off_cursor_caption_preset_save() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ProjectStore::create(root.path(), "captions", None).unwrap();
+        let project_dir = store.dir.clone();
+        let baseline = store.log.current_revision().unwrap().unwrap();
+        let state = AppState::new();
+        *state.project.write().await = Some(store);
+
+        let saved = dispatch(
+            &state,
+            "captions.save_style",
+            json!({"name": "my look", "style": {"font": "Arial", "size": 30, "color": "#fff"}}),
+            Actor {
+                kind: cut_core::ActorKind::Agent,
+                name: "turn-preset".into(),
+                via: "agent.chat".into(),
+                request: None,
+            },
+        )
+        .await;
+        assert!(saved.ok, "preset fixture failed: {:?}", saved.error);
+
+        let (actions, review) = agent_chat_turn_review(
+            &state,
+            &project_dir,
+            1,
+            &baseline,
+            "turn-preset",
+            "chat-preset",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["verb"], "captions.save_style");
+        assert!(review["diff_error"].is_null());
+        assert_eq!(review["revert_safe"], false);
     }
 
     #[tokio::test]

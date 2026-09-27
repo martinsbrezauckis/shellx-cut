@@ -3281,7 +3281,7 @@ export const VERB_BEHAVIOR: Record<string, VerbBehavior> = {
     "replayability": "replayable",
     "async_job": "none",
     "ui_exposure": "human",
-    "agent_chat": "edit",
+    "agent_chat": "deny",
     "risk": "reversible",
     "facets": []
   },

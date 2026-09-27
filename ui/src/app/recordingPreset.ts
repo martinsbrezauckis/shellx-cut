@@ -107,6 +107,7 @@ export function validateRecordingPreset(preset: RecordingPreset, doctor: unknown
     const id = preset.source.monitorId
     if (!Array.isArray(d.monitors) || !d.monitors.some((m: { id?: string }) => m.id === id)) return 'The saved display is no longer available. Choose a current display.'
   } else {
+    if (d.window_capture_supported === false) return 'Window capture is unavailable on this machine. Open Record and choose Display.'
     const id = preset.source.windowId
     if (!Array.isArray(d.windows) || !d.windows.some((w: { id?: string }) => w.id === id)) return 'The saved window is no longer available. Choose a current window.'
   }

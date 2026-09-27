@@ -60,6 +60,7 @@ pub struct RecordDoctor {
     pub start_allowed: bool,
     pub monitors: Vec<MonitorInfo>,
     pub windows: Vec<WindowInfo>,
+    pub window_capture_supported: bool,
     pub quality: record_capture::CaptureQualityCapability,
 }
 
@@ -130,6 +131,7 @@ pub(super) fn doctor() -> RecordDoctor {
         start_allowed,
         monitors,
         windows,
+        window_capture_supported: record_capture::window_capture_supported(),
         quality,
     }
 }
@@ -188,6 +190,7 @@ pub(super) async fn screen_record_doctor(args: Value) -> Result<VerbResult, CutE
         "start_allowed": doctor.start_allowed,
         "monitors": doctor.monitors,
         "windows": doctor.windows,
+        "window_capture_supported": doctor.window_capture_supported,
         "quality": doctor.quality,
         "mic_warm": mic_warm,
         "microphones": microphone.microphones,

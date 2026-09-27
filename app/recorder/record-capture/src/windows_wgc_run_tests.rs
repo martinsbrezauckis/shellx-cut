@@ -203,7 +203,11 @@ fn checkpoint_rollover_keeps_contiguous_physical_segments_inside_one_active_run(
     assert_eq!(first.started.unix_ms, 1_700_000_000_100);
 
     let (sealed, second) = owner
-        .rollover_checkpoint(observed_after_close(log.clone(), 160), 160, || started(160))
+        .rollover_checkpoint(
+            observed_after_close(log.clone(), 160),
+            || 160,
+            || started(160),
+        )
         .unwrap();
     assert_sealed(&sealed, 1, 100, 160);
     assert_eq!(second.physical_generation, 2);
@@ -232,6 +236,82 @@ fn checkpoint_rollover_keeps_contiguous_physical_segments_inside_one_active_run(
             "observe-closed:220",
             "verify-and-publish-new:1:checkpoint-1.open.mp4:160:220",
         ]
+    );
+}
+
+#[test]
+fn checkpoint_rollover_reserves_after_native_close_and_publication() {
+    // PC4 r10 had already passed the 15,003 ms cadence deadline when close
+    // finished at 15,112 ms. Using that old deadline for the next native
+    // startup made the two published checkpoint facts overlap by 109 ms.
+    let (mut owner, log, _) = owner_with_startup(false, true);
+    owner.begin(0, || started(100)).unwrap();
+    let (first, second) = owner
+        .rollover_checkpoint(
+            observed_after_close(log.clone(), 15_112),
+            || {
+                log.borrow_mut().push("reserve-clock:15113".into());
+                15_113
+            },
+            || started(15_300),
+        )
+        .unwrap();
+    assert_sealed(&first, 1, 0, 15_112);
+    assert_eq!(second.start_ms, 15_113);
+    let (second_sealed, third) = owner
+        .rollover_checkpoint(
+            observed_after_close(log.clone(), 30_116),
+            || {
+                log.borrow_mut().push("reserve-clock:30117".into());
+                30_117
+            },
+            || started(30_300),
+        )
+        .unwrap();
+    assert_sealed(&second_sealed, 2, 15_113, 30_116);
+    assert_eq!(third.start_ms, 30_117);
+    let last = owner
+        .stop(observed_after_close(log.clone(), 32_747))
+        .unwrap()
+        .unwrap();
+    assert_sealed(&last, 3, 30_117, 32_747);
+
+    let events = log.borrow();
+    for (checkpoint, clock) in [(0, "reserve-clock:15113"), (1, "reserve-clock:30117")] {
+        let published = events
+            .iter()
+            .position(|event| event.starts_with(&format!("verify-and-publish-new:{checkpoint}:")))
+            .unwrap();
+        let reserved = events.iter().position(|event| event == clock).unwrap();
+        assert!(
+            published < reserved,
+            "next clock must follow prior publication"
+        );
+    }
+}
+
+#[test]
+fn checkpoint_rollover_rejects_a_clock_that_precedes_the_closed_boundary() {
+    let (mut owner, log, _) = owner_with_startup(false, true);
+    owner.begin(0, || started(100)).unwrap();
+    let error = owner
+        .rollover_checkpoint(
+            observed_after_close(log.clone(), 15_112),
+            || 15_003,
+            || started(15_300),
+        )
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("next WGC checkpoint starts before"));
+    assert!(owner.is_stopped());
+    assert_eq!(
+        log.borrow()
+            .iter()
+            .filter(|event| event.starts_with("start:"))
+            .count(),
+        1,
+        "a stale reservation must not start another native encoder"
     );
 }
 
