@@ -47,6 +47,19 @@ pub struct CameraClockRange {
     pub end_frame_offset_ms: u64,
 }
 
+impl CameraClockRange {
+    /// Project a finalized camera interval onto the screen video's duration.
+    /// The artifact keeps its measured clock; an edit plan can only address
+    /// frames in the screen video. A camera starting after screen Stop becomes
+    /// an empty interval at the end of the plan.
+    pub fn clipped_to_plan(self, duration_ms: u64) -> Self {
+        Self {
+            first_frame_offset_ms: self.first_frame_offset_ms.min(duration_ms),
+            end_frame_offset_ms: self.end_frame_offset_ms.min(duration_ms),
+        }
+    }
+}
+
 /// Facts measured from the finalized camera media, not caller-provided intent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraMediaFacts {
@@ -232,6 +245,27 @@ mod tests {
         assert_eq!(back.schema, CAMERA_ARTIFACT_SCHEMA);
         assert_eq!(back.clock.first_frame_offset_ms, 500);
         assert_eq!(back.clock.end_frame_offset_ms, 1_500);
+    }
+
+    #[test]
+    fn plan_projection_clips_camera_tail_without_rewriting_capture_evidence() {
+        let artifact = fixture_artifact();
+        assert_eq!(artifact.clock.end_frame_offset_ms, 1_500);
+        assert_eq!(
+            artifact.clock.clipped_to_plan(1_200),
+            CameraClockRange {
+                first_frame_offset_ms: 500,
+                end_frame_offset_ms: 1_200,
+            }
+        );
+        assert_eq!(
+            artifact.clock.clipped_to_plan(400),
+            CameraClockRange {
+                first_frame_offset_ms: 400,
+                end_frame_offset_ms: 400,
+            }
+        );
+        assert_eq!(artifact.clock.end_frame_offset_ms, 1_500);
     }
 
     #[test]

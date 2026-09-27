@@ -1018,6 +1018,9 @@
    explanations remain on each button's title; unavailable reasons stay inline. */
 @media (min-width: 1361px) and (max-height: 1200px) {
   .rec__body { gap: 12px; padding-top: 12px; padding-bottom: 8px; }
+  /* Leave room for the preview tools and transport in a normal 1080p app
+     window. A tiny body overflow otherwise creates an unnecessary scrollbar. */
+  .rec-studio-preview { height: min(35vh, 380px); min-height: 280px; }
   .rec__readiness { padding-block: 6px; }
   .rec__settings,
   .rec-studio-controls { gap: 8px; padding: 12px; }

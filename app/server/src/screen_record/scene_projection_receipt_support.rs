@@ -141,7 +141,7 @@ pub(super) fn apply_to_edit_plan(
         ));
     }
     let source = camera.map(|camera| camera.video_path.display().to_string());
-    let clock = camera.map(|camera| camera.artifact.clock);
+    let clock = camera.map(|camera| camera.artifact.clock.clipped_to_plan(plan.duration_ms));
     receipt
         .timeline
         .apply_to_edit_plan(plan, source, clock)

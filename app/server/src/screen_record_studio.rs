@@ -267,7 +267,9 @@ pub(crate) fn apply_studio_events_to_plan(
             .unwrap_or(record_core::Anchor::BottomRight),
         margin: plan.webcam.as_ref().map(|wc| wc.margin).unwrap_or(0.04),
         size: base_size,
-        camera_clock: camera_clock.or_else(|| plan.webcam.as_ref().and_then(|wc| wc.camera_clock)),
+        camera_clock: camera_clock
+            .or_else(|| plan.webcam.as_ref().and_then(|wc| wc.camera_clock))
+            .map(|clock| clock.clipped_to_plan(plan.duration_ms)),
         timeline: Vec::new(),
     };
     let base = webcam.placement_at(0, plan.source_w, plan.source_h);
@@ -507,6 +509,27 @@ fn validate_camera_transform(event: &StudioEvent) -> Result<(), CutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn studio_autoedit_accepts_camera_tail_past_screen_stop() {
+        let mut plan = record_core::EditPlan::empty(320, 180, 1_000, 30.0);
+        let measured_clock = record_core::CameraClockRange {
+            first_frame_offset_ms: 200,
+            end_frame_offset_ms: 1_033,
+        };
+        apply_studio_events_to_plan(
+            &mut plan,
+            Some("camera/camera.mp4".into()),
+            Some(measured_clock),
+            &StudioEventLog::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.webcam.as_ref().unwrap().camera_clock,
+            Some(measured_clock.clipped_to_plan(plan.duration_ms)),
+        );
+        plan.validate().unwrap();
+    }
 
     #[test]
     fn studio_none_removes_the_backdrop_and_decorative_frame() {
