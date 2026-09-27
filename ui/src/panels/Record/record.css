@@ -1020,7 +1020,7 @@
   .rec__body { gap: 12px; padding-top: 8px; padding-bottom: 4px; }
   /* Leave room for the preview tools and transport in a normal 1080p app
      window. A tiny body overflow otherwise creates an unnecessary scrollbar. */
-  .rec-studio-preview { height: min(35vh, 380px); min-height: 280px; }
+  .rec-studio-preview { height: min(33vh, 360px); min-height: 280px; }
   .rec__readiness { padding-block: 6px; }
   .rec__settings,
   .rec-studio-controls { gap: 6px; padding: 10px; }
