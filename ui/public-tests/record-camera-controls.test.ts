@@ -37,8 +37,9 @@ const unsupportedDetail = 'Camera capture is unavailable on this host.'
 const unsupported = render({ capability: { supported: false, devices: [], detail: unsupportedDetail } })
 assert.match(unsupported, /data-cut-rec-camera-layout-disabled="true"/)
 assert.match(unsupported, /Camera capture is unavailable on this host\./)
-assert.match(unsupported, /data-cut-rec-camera-position="top_left"[^>]*disabled=""/)
-assert.match(unsupported, /data-cut-rec-camera-size="true"[^>]*disabled=""/)
+assert.doesNotMatch(unsupported, /data-cut-rec-camera-shape=/)
+assert.doesNotMatch(unsupported, /data-cut-rec-camera-position=/)
+assert.doesNotMatch(unsupported, /data-cut-rec-camera-size=/)
 
 const busy = { ...ready, devices: [{ ...ready.devices[0], state: 'busy' as const, detail: 'Camera is in use by another app.' }] }
 assert.equal(cameraLayoutUnavailableReason(busy, true, 'front', false, false), 'Camera is in use by another app.')

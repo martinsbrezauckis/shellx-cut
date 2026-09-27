@@ -124,6 +124,12 @@ export function CameraControl({
         />
       </label>
 
+      {!canEnable ? (
+        <div className="rec-camera-layout" data-cut-rec-camera-layout data-cut-rec-camera-layout-disabled="true">
+          <p className="rec-camera-layout__reason" id="rec-camera-layout-reason" role="status"
+            data-cut-rec-camera-layout-reason data-cut-studio-camera-unavailable="">{layoutReason}</p>
+        </div>
+      ) : <>
       <label className="rec-studio-controls__group">
           <span className="rec-studio-controls__label">Camera source</span>
           <select
@@ -179,6 +185,7 @@ export function CameraControl({
             onChange={(event) => onSize(Number(event.target.value) / 100)} />
         </label>
       </div>
+      </>}
 
     </div>
   )
