@@ -256,6 +256,11 @@ mod tests {
         let plan = planned.result.unwrap();
         assert_eq!(plan["plan"]["unique_media_count"], 1);
         assert_eq!(plan["plan"]["source_file_count"], 2);
+        assert_eq!(plan["plan"]["assets"][0]["source_path"], source.to_string_lossy().as_ref());
+        assert_eq!(plan["plan"]["assets"][1]["source_path"], duplicate.to_string_lossy().as_ref());
+        let mut other_source = plan["plan"].clone();
+        other_source["assets"][0]["source_path"] = json!(duplicate.to_string_lossy());
+        assert_ne!(hash_json(&other_source).unwrap(), plan["plan_hash"]);
         let created = dispatch(
             &state,
             "project.package_create",
@@ -338,6 +343,61 @@ mod tests {
         assert!(occupied.ok, "{:?}", occupied.error);
         assert_eq!(occupied.result.as_ref().unwrap()["plan"]["target_status"], "occupied");
         assert_ne!(available.result.unwrap()["plan_hash"], occupied.result.unwrap()["plan_hash"]);
+        assert!(state.jobs.list().is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn plan_refuses_source_path_that_cannot_be_shown_exactly() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("packages");
+        fs::create_dir(&destination).unwrap();
+        let target = root.path().join(std::ffi::OsStr::from_bytes(b"hidden-\x80.mov"));
+        let alias = root.path().join("alias.mov");
+        fs::write(&target, b"media fixture").unwrap();
+        symlink(&target, &alias).unwrap();
+        let state = AppState::new();
+        assert!(dispatch(
+            &state,
+            "project.create",
+            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+            actor(),
+        ).await.ok);
+        {
+            let mut guard = state.project.write().await;
+            let store = guard.as_mut().unwrap();
+            store.record_import(
+                Some("a1".into()),
+                Asset {
+                    path: alias.to_string_lossy().into_owned(),
+                    hash: format!("sha256:{:x}", Sha256::digest(b"media fixture")),
+                    probe: None,
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                actor(),
+                None,
+            ).unwrap();
+            store.apply(
+                "edit.insert",
+                json!({"asset":"a1", "track":"v1", "at_ms":0, "src_range_ms":[0,100], "ripple":false}),
+                actor(),
+                None,
+            ).unwrap();
+        }
+        let planned = dispatch(
+            &state,
+            "project.package_plan",
+            json!({"destination":destination, "name":"packed"}),
+            actor(),
+        ).await;
+        assert!(!planned.ok);
+        assert_eq!(planned.error.unwrap().code, error_codes::INVALID_ARGS);
         assert!(state.jobs.list().is_empty());
     }
 

@@ -1,4 +1,5 @@
 import { cursorCorrelationLabel, type CursorCorrelation, type StudioRawStreams } from './studioTypes'
+import type { RecordingQualityResolution } from './recordingQuality'
 import './recordingResultPanel.css'
 
 interface RecordingResultPanelProps {
@@ -13,6 +14,7 @@ interface RecordingResultPanelProps {
   streams: StudioRawStreams | null
   cursorCorrelation: CursorCorrelation | null
   cadence: string
+  quality: RecordingQualityResolution | null
   hotkeyScope: string
   exportFormat: 'mp4' | 'gif'
   exportRunning: boolean
@@ -35,7 +37,7 @@ interface RecordingResultPanelProps {
 /** Post-Stop facts and actions. Paths stay in the native owner, not ordinary DOM. */
 export function RecordingResultPanel({
   outcome, raw, message, duration, rawSaved, polishedClipSaved, hasMic, hasSystem,
-  streams, cursorCorrelation, cadence, hotkeyScope, exportFormat, exportRunning,
+  streams, cursorCorrelation, cadence, quality, hotkeyScope, exportFormat, exportRunning,
   rawCopyRunning, exportNote, rawCopyNote, recoveryAction, onFormat, onExport,
   onCancelExport, onSaveRawCopy, onCancelRawCopy, onAddRawToTimeline,
   onOpenEdit, onNewRecording, onOpenOutputSettings, onRecovery,
@@ -60,6 +62,7 @@ export function RecordingResultPanel({
         <span><strong>Duration</strong> · about {duration}</span>
         <span><strong>Raw MP4</strong> · {rawSaved ? 'saved in the default export folder' : 'not confirmed saved'}</span>
         <span><strong>Current project</strong> · {polishedClipSaved ? 'polished editable clip added' : raw ? 'unchanged until Add to timeline' : 'clip not confirmed'}</span>
+        {quality && <span data-cut-rec-result-dimensions><strong>Video</strong> · {quality.width} × {quality.height}</span>}
       </div>
 
       {outcome === 'recovery' && recoveryAction === 'retry_stop' && (
@@ -116,6 +119,12 @@ export function RecordingResultPanel({
           <p><strong>Pointer:</strong> {cursorCorrelationLabel(cursorCorrelation)}.</p>
           <p><strong>Frame timing:</strong> {cadence}.</p>
           <p><strong>Shortcut:</strong> {hotkeyScope}.</p>
+          {quality && (
+            <details data-cut-rec-result-quality>
+              <summary data-cut-action="rec-quality-advanced">Advanced video facts</summary>
+              <p data-cut-rec-result-encoder>Final encoder: {quality.encoder}.</p>
+            </details>
+          )}
         </div>
       </details>
       {outcome !== 'recovery' && (

@@ -112,6 +112,7 @@ struct PackagePlan {
 #[derive(Debug, Clone, Serialize)]
 struct PackagePlanAsset {
     asset: String,
+    source_path: String,
     bytes: u64,
     sha256: String,
     package_path: String,
@@ -250,7 +251,7 @@ pub(super) async fn project_package_create(
         return Err(CutError::new(
             error_codes::CONFLICT,
             "portable package plan is stale",
-            "referenced media, source revision, destination, or B5 evidence changed",
+            "referenced media or its source path, source revision, destination, or B5 evidence changed",
         )
         .with_suggested_action("run project.package_plan again; no package was created"));
     }

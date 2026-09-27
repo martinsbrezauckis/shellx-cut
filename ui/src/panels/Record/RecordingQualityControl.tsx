@@ -72,12 +72,6 @@ export function RecordingQualityControl({
         <p className="rec__source-note" data-cut-rec-quality-summary>
           {unavailableReason ?? (resolution ? finalQualityLabel(resolution, cadence) : 'Final dimensions are verified after recording.')}
         </p>
-        {resolution && (
-          <details className="rec__quality-advanced" data-cut-rec-quality-advanced>
-            <summary data-cut-action="rec-quality-advanced">Advanced facts</summary>
-            <p>Final encoder: {resolution.encoder}.</p>
-          </details>
-        )}
       </div>
     </div>
   )

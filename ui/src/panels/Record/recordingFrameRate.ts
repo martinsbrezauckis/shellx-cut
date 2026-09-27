@@ -20,3 +20,13 @@ export function recordingFrameRateReason(value: string | number): string | null 
     ? `Enter a whole-number frame rate from ${RECORDING_FRAME_RATE_MIN} to ${RECORDING_FRAME_RATE_MAX} FPS.`
     : null
 }
+
+/** A typed draft never silently becomes the rate sent to the native recorder. */
+export function recordingFrameRateDraftError(customValue: string, appliedFrameRate: number): string | null {
+  if (!customValue.trim()) return null
+  const reason = recordingFrameRateReason(customValue)
+  if (reason) return reason
+  return parseRecordingFrameRate(customValue) === appliedFrameRate
+    ? null
+    : 'Apply the custom frame rate before recording.'
+}

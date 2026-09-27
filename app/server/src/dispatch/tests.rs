@@ -5237,6 +5237,72 @@ async fn captions_import_rejects_non_subtitle_extensions_before_reading() {
     );
 }
 
+#[tokio::test]
+async fn captions_import_refuses_oversized_file_without_changing_timeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = narrowing_fixture(dir.path()).await;
+    let oversized = dir.path().join("oversized.srt");
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let before = state
+        .project
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .project
+        .tracks
+        .clone();
+    let response = dispatch(
+        &state,
+        "captions.import",
+        json!({"path": oversized}),
+        test_actor(),
+    )
+    .await;
+    assert!(!response.ok);
+    assert_eq!(response.error.unwrap().code, error_codes::INVALID_ARGS);
+    assert_eq!(
+        state.project.read().await.as_ref().unwrap().project.tracks,
+        before
+    );
+}
+
+#[tokio::test]
+async fn captions_import_refuses_too_many_cues_without_changing_timeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = narrowing_fixture(dir.path()).await;
+    let dense = dir.path().join("dense.vtt");
+    let cue = "00:00:00.000 --> 00:00:00.001\nshort\n\n";
+    std::fs::write(&dense, format!("WEBVTT\n\n{}", cue.repeat(20_001))).unwrap();
+    let before = state
+        .project
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .project
+        .tracks
+        .clone();
+    let response = dispatch(
+        &state,
+        "captions.import",
+        json!({"path": dense}),
+        test_actor(),
+    )
+    .await;
+    assert!(!response.ok);
+    let error = response.error.unwrap();
+    assert_eq!(error.code, error_codes::INVALID_ARGS);
+    assert!(error.message.contains("too many cues"));
+    assert_eq!(
+        state.project.read().await.as_ref().unwrap().project.tracks,
+        before
+    );
+}
+
 /// caption-deduplication guard (caption doubling): an asset placed on BOTH v1 and a1t —
 /// the DEFAULT first-import auto-place shape — must contribute each
 /// transcribed word ONCE to generated captions, with non-overlapping

@@ -106,13 +106,20 @@ fn build_prepared(
     let total_package_bytes = first_by_path.values().map(|file| file.bytes).sum();
     let assets = files
         .iter()
-        .map(|file| PackagePlanAsset {
-            asset: file.asset_id.clone(),
-            bytes: file.bytes,
-            sha256: format!("sha256:{}", file.sha256),
-            package_path: file.package_path.clone(),
+        .map(|file| {
+            Ok(PackagePlanAsset {
+                asset: file.asset_id.clone(),
+                source_path: file.source.to_str().ok_or_else(|| CutError::new(
+                    error_codes::INVALID_ARGS,
+                    "portable package source path cannot be shown exactly",
+                    format!("asset '{}' has a source filename outside Unicode; rename the file before making a portable copy", file.asset_id),
+                ))?.to_owned(),
+                bytes: file.bytes,
+                sha256: format!("sha256:{}", file.sha256),
+                package_path: file.package_path.clone(),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, CutError>>()?;
     let plan = PackagePlan {
         schema: PACKAGE_PLAN_SCHEMA,
         project_identity: source.project_identity.clone(),

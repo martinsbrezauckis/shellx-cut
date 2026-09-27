@@ -29,6 +29,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
   const [phase, setPhase] = useState<PortableCopyPhase>('form')
   const [plan, setPlan] = useState<PortablePackagePlan | null>(null)
   const [planHash, setPlanHash] = useState('')
+  const [reviewedSources, setReviewedSources] = useState(false)
   const [jobId, setJobId] = useState<string | null>(null)
   const [job, setJob] = useState<JobRecord | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -40,6 +41,10 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
   }, [scopeKey])
   const nameError = portablePackageNameError(name)
   const targetOccupied = plan?.target_status === 'occupied'
+  const sourceInventoryComplete = !!plan && Array.isArray(plan.assets)
+    && plan.assets.length === plan.source_file_count
+    && plan.assets.every((asset) => typeof asset.asset === 'string' && asset.asset.length > 0
+      && typeof asset.source_path === 'string' && asset.source_path.length > 0)
   const canPreview = !!destination && !nameError && phase === 'form'
   const b5ReceiptIdentity = b5Receipt
     ? `${b5Receipt.grouped_op_id}:${b5Receipt.post_revision}:${b5Receipt.plan_hash}`
@@ -48,6 +53,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
   const resetPreview = useCallback(() => {
     setPlan(null)
     setPlanHash('')
+    setReviewedSources(false)
     setJob(null)
     setJobId(null)
     setPhase('form')
@@ -58,6 +64,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
     setError(null)
     setPlan(null)
     setPlanHash('')
+    setReviewedSources(false)
     setPhase('previewing')
     try {
       const response = await callVerb('project.package_plan', {
@@ -71,7 +78,14 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
         setPhase('form')
         return
       }
-      setPlan(response.result.plan)
+      const nextPlan = response.result.plan
+      if (!Array.isArray(nextPlan.assets) || nextPlan.assets.length !== nextPlan.source_file_count
+        || nextPlan.assets.some((asset) => typeof asset.source_path !== 'string' || !asset.source_path)) {
+        setError('Cut could not show every source file. No copy was created; preview again after updating Cut.')
+        setPhase('form')
+        return
+      }
+      setPlan(nextPlan)
       setPlanHash(response.result.plan_hash)
       setPhase('ready')
     } catch {
@@ -82,7 +96,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
   }, [b5Receipt, destination, name, nameError, scopeKey])
 
   const create = useCallback(async () => {
-    if (!destination || !plan || !planHash || targetOccupied) return
+    if (!destination || !plan || !planHash || targetOccupied || !sourceInventoryComplete || !reviewedSources) return
     setError(null)
     setPhase('creating')
     try {
@@ -105,7 +119,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
       setError('Cut could not reach the local engine. No copy was confirmed.')
       resetPreview()
     }
-  }, [b5Receipt, destination, name, plan, planHash, resetPreview, scopeKey, targetOccupied])
+  }, [b5Receipt, destination, name, plan, planHash, resetPreview, reviewedSources, scopeKey, sourceInventoryComplete, targetOccupied])
 
   // A B5 receipt is current-revision-bound. Drop any plan created under an
   // earlier value instead of allowing a stale review dialog to imply it can
@@ -227,6 +241,14 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
                 <div><dt>Media copy size</dt><dd data-cut-portable-size>{formatPortableBytes(plan.total_package_bytes)}</dd></div>
                 <div><dt>Duplicates avoided</dt><dd>{duplicateReferences > 0 ? `${duplicateReferences} · ${formatPortableBytes(savedBytes)} saved` : 'None'}</dd></div>
               </dl>
+              <div className="pj-portable-sources" data-cut-portable-source-list>
+                <strong>Source files included</strong>
+                {plan.assets.length === 0 ? <p>No media files are referenced by this project.</p> : (
+                  <ul>{plan.assets.map((asset) => (
+                    <li key={asset.asset}><span>{asset.asset}</span><code>{asset.source_path}</code></li>
+                  ))}</ul>
+                )}
+              </div>
               <ul className="pj-portable-policy" aria-label="Copy safeguards">
                 <li>Only timeline-referenced media is included.</li>
                 <li>All referenced media is online now; an offline source refuses the copy before it begins.</li>
@@ -240,6 +262,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
             <section className="pj-portable-confirm" data-cut-portable-confirm>
               <strong>Ready to create this copy?</strong>
               <p>Cut will copy {plan.unique_media_count} used media file{plan.unique_media_count === 1 ? '' : 's'}, verify the manifest, then publish {plan.name}.cutproj. Your open project will not change.</p>
+              <label className="pj-portable-source-review"><input type="checkbox" data-cut-action="portable-copy" data-cut-portable-source-reviewed checked={reviewedSources} onChange={(event) => setReviewedSources(event.target.checked)} /> I reviewed the source files listed above.</label>
             </section>
           )}
 
@@ -269,7 +292,7 @@ function CopyDialog({ projectName, b5Receipt, scopeKey, onClose }: PortableCopyD
           </>}
           {phase === 'confirming' && <>
             <button type="button" className="pj-portable-secondary" data-cut-action="portable-copy" data-cut-portable-confirm-cancel onClick={() => setPhase('ready')}>Back</button>
-            <button type="button" className="pj-portable-primary" data-cut-action="portable-copy" data-cut-portable-create onClick={() => void create()}>Create portable copy</button>
+            <button type="button" className="pj-portable-primary" data-cut-action="portable-copy" data-cut-portable-create disabled={!reviewedSources || !sourceInventoryComplete} onClick={() => void create()}>Create portable copy</button>
           </>}
           {phase === 'creating' && <button type="button" className="pj-portable-secondary" data-cut-action="portable-copy" data-cut-portable-background onClick={onClose}>Continue in background</button>}
           {phase === 'complete' && <button type="button" className="pj-portable-primary" data-cut-action="portable-copy" data-cut-portable-done onClick={onClose}>Done</button>}

@@ -42,6 +42,13 @@
 .pj-portable-preview dt { color: var(--ink-3, #aab1bd); font: var(--fs-ui-xs, 11px)/1.25 var(--sans); }
 .pj-portable-preview dd { margin: 3px 0 0; color: var(--ink, #f2f3f5); font: 650 var(--fs-ui-sm) var(--sans); }
 .pj-portable-policy { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--ink-3, #aab1bd); font: var(--fs-ui-xs, 11px)/1.4 var(--sans); }
+.pj-portable-sources { color: var(--ink-2, #ccd2dc); font: var(--fs-ui-sm)/1.4 var(--sans); }
+.pj-portable-sources p { margin: 5px 0 0; }
+.pj-portable-sources ul { margin: 7px 0 0; padding-left: 18px; }
+.pj-portable-sources li { margin-top: 5px; overflow-wrap: anywhere; }
+.pj-portable-sources li span { margin-right: 8px; color: var(--ink-3, #aab1bd); }
+.pj-portable-sources code { color: var(--ink, #f2f3f5); font: inherit; }
+.pj-portable-source-review { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; color: var(--ink, #f2f3f5); font: var(--fs-ui-sm)/1.4 var(--sans); }
 .pj-portable-confirm strong, .pj-portable-progress strong, .pj-portable-success strong { font: 650 var(--fs-ui-sm) var(--sans); }
 .pj-portable-confirm p, .pj-portable-progress p, .pj-portable-success p { margin: 5px 0 0; color: var(--ink-3, #aab1bd); font: var(--fs-ui-sm)/1.4 var(--sans); }
 .pj-portable-progress { display: grid; gap: 6px; }

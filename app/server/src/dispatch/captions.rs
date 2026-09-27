@@ -319,6 +319,8 @@ pub(super) async fn captions_import(
     args: Value,
     actor: Actor,
 ) -> Result<VerbResult, CutError> {
+    const MAX_SUBTITLE_BYTES: u64 = 16 * 1024 * 1024;
+    const MAX_IMPORTED_CUES: usize = 20_000;
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]
     struct Args {
@@ -347,29 +349,80 @@ pub(super) async fn captions_import(
         let guard = state.project.read().await;
         guard.as_ref().ok_or_else(no_project)?;
     }
-    let path = std::fs::canonicalize(&raw_path).map_err(|e| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            "subtitle file does not exist",
-            e.to_string(),
-        )
-    })?;
-    if !path.is_file() {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            "subtitle path is not a file",
-            format!("resolved path was {}", path.display()),
-        ));
-    }
-    let content = std::fs::read_to_string(&path).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            "could not read subtitle file",
-            e.to_string(),
-        )
-    })?;
-    let format = cut_export::captions_in::detect_format(&content);
-    let cues = cut_export::captions_in::parse(&content).map_err(export_error)?;
+    let (format, cues) = run_blocking("captions.import.read", move || {
+        use std::io::Read;
+        let path = std::fs::canonicalize(&raw_path).map_err(|e| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "subtitle file does not exist",
+                e.to_string(),
+            )
+        })?;
+        if !std::fs::metadata(&path)?.is_file() {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "subtitle path is not a file",
+                format!("resolved path was {}", path.display()),
+            ));
+        }
+        let file = std::fs::File::open(&path).map_err(|e| {
+            CutError::new(
+                error_codes::IO,
+                "could not read subtitle file",
+                e.to_string(),
+            )
+        })?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "subtitle path is not a file",
+                format!("resolved path was {}", path.display()),
+            ));
+        }
+        if metadata.len() > MAX_SUBTITLE_BYTES {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "subtitle file is too large",
+                "16 MiB maximum",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_SUBTITLE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| {
+                CutError::new(
+                    error_codes::IO,
+                    "could not read subtitle file",
+                    e.to_string(),
+                )
+            })?;
+        if bytes.len() as u64 > MAX_SUBTITLE_BYTES {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "subtitle file is too large",
+                "16 MiB maximum",
+            ));
+        }
+        let content = String::from_utf8(bytes).map_err(|e| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "subtitle file is not UTF-8",
+                e.to_string(),
+            )
+        })?;
+        let format = cut_export::captions_in::detect_format(&content);
+        let cues = cut_export::captions_in::parse(&content).map_err(export_error)?;
+        if cues.len() > MAX_IMPORTED_CUES {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "subtitle file has too many cues",
+                "20,000 cues maximum",
+            ));
+        }
+        Ok((format, cues))
+    })
+    .await?;
     let style_ref = a.style_ref.clone();
     let imported: Vec<cut_core::CaptionClip> = cues
         .iter()
@@ -417,6 +470,13 @@ pub(super) async fn captions_import(
             }
         };
         let replaced = track.clips.len();
+        if !replace && replaced.saturating_add(count) > MAX_IMPORTED_CUES {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "caption track would have too many cues",
+                "20,000 cues maximum",
+            ));
+        }
         if replace {
             track.clips = imported.into_iter().map(cut_core::Clip::Caption).collect();
         } else {

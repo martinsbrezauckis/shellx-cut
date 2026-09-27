@@ -285,11 +285,17 @@ fn verify_probe<R: BufRead>(
         ));
     }
     // One track tick accounts for CMTime->nanosecond truncation and ffprobe's
-    // integer time base. The independent file-output callback must identify
-    // the last encoded presentation timestamp, not merely a DataOutput frame.
+    // integer time base. At Stop, the encoded movie can contain one final
+    // packet beyond the last delivered MovieFileOutput sample callback.
+    // Admit that gap only in the encoded-ahead direction and only for one
+    // measured frame interval. A native sample beyond the last encoded packet
+    // remains an unencoded tail and must fail.
     let tick_ns = to_ns(1, numerator, denominator)?.max(1);
     let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns);
-    if native_elapsed.abs_diff(last_pts) > tick_ns {
+    let encoded_ahead_limit = last_duration.saturating_add(tick_ns);
+    if (last_pts >= native_elapsed && last_pts - native_elapsed > encoded_ahead_limit)
+        || (native_elapsed > last_pts && native_elapsed - last_pts > tick_ns)
+    {
         return Err(bad(&format!(
             "last encoded packet is not the last MovieFileOutput sample: native_start_ns={}, native_last_ns={}, native_elapsed_ns={native_elapsed}, encoded_last_pts_ns={last_pts}, track_tick_ns={tick_ns}",
             native.start_pts_ns, native.last_pts_ns,
@@ -439,22 +445,44 @@ mod tests {
     }
 
     #[test]
-    fn out_of_order_movie_samples_still_require_the_greatest_native_pts() {
+    fn out_of_order_movie_samples_still_use_the_encoded_endpoint() {
         // The packet probe uses presentation time, not row/arrival order.
-        // A native collector retaining the last callback (797577) would fail;
-        // retaining its greatest PTS (798410) matches the encoded endpoint.
+        // Retaining its greatest callback PTS matches the encoded endpoint.
         let rows = b"0,833\n798410,833\n797577,833\n";
         let facts = metadata("7.998060", "1/100000");
         let verified = verify_probe(&facts, &rows[..], native(), 7_998, 3).unwrap();
         assert_eq!(verified.duration_ms, 7_992);
-        let mut arrival_last = native();
-        arrival_last.last_pts_ns = arrival_last.start_pts_ns + 7_975_770_000;
-        let error = verify_probe(&facts, &rows[..], arrival_last, 7_998, 3).unwrap_err();
+        let mut unencoded_tail = native();
+        unencoded_tail.last_pts_ns = unencoded_tail.start_pts_ns + 7_992_440_000;
+        let error = verify_probe(&facts, &rows[..], unencoded_tail, 7_998, 3).unwrap_err();
         assert_eq!(error.message, "verify macOS camera movie clock");
         assert_eq!(
             error.cause,
-            "last encoded packet is not the last MovieFileOutput sample: native_start_ns=34421447440000, native_last_ns=34429423210000, native_elapsed_ns=7975770000, encoded_last_pts_ns=7984100000, track_tick_ns=10000"
+            "last encoded packet is not the last MovieFileOutput sample: native_start_ns=34421447440000, native_last_ns=34429439880000, native_elapsed_ns=7992440000, encoded_last_pts_ns=7984100000, track_tick_ns=10000"
         );
+    }
+
+    #[test]
+    fn final_encoded_packet_can_follow_last_native_callback_by_one_frame() {
+        // Installed Mac Stop receipt r1790475959802-43c845d19073: the file's
+        // final PTS led the callback by 16.66ms, one encoded packet. Its encoded
+        // packets and container had already passed the independent decode.
+        let metadata = metadata("6.868037", "1/300000");
+        let rows = b"0,5000\n2055411,5000\n";
+        let mut native = native();
+        native.start_pts_ns = 107_051_778_280_000;
+        native.last_pts_ns = 107_058_612_990_000;
+        native.last_cadence_ns = 16_670_000;
+        native.last_duration_ns = 16_670_000;
+        let verified = verify_probe(&metadata, &rows[..], native, 6_868, 2).unwrap();
+        assert_eq!(verified.duration_ms, 6_868);
+
+        // A second missing frame is not a valid one-packet Stop boundary.
+        native.last_pts_ns -= 16_670_000;
+        assert!(verify_probe(&metadata, &rows[..], native, 6_868, 2).is_err());
+        // A native callback after the encoded end is still a lost movie tail.
+        native.last_pts_ns = native.start_pts_ns + 6_868_040_000;
+        assert!(verify_probe(&metadata, &rows[..], native, 6_868, 2).is_err());
     }
 
     #[test]

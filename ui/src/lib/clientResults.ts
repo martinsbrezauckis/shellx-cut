@@ -170,7 +170,7 @@ export interface PortablePackagePlan {
   /** Destination state at preview time; creation checks again without replacement. */
   target_status: 'available' | 'occupied'
   b5_receipt_sha256?: string | null
-  assets: Array<{ asset: string; bytes: number; sha256: string; package_path: string }>
+  assets: Array<{ asset: string; source_path: string; bytes: number; sha256: string; package_path: string }>
   total_source_bytes: number
   total_package_bytes: number
   source_file_count: number

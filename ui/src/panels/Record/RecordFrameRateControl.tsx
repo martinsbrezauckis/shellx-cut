@@ -1,5 +1,6 @@
 import {
   parseRecordingFrameRate,
+  recordingFrameRateDraftError,
   recordingFrameRateReason,
   RECORDING_FRAME_RATE_MAX,
   RECORDING_FRAME_RATE_MIN,
@@ -26,6 +27,7 @@ export function RecordFrameRateControl({
   onCustomValueChange,
 }: RecordFrameRateControlProps) {
   const customError = customValue.trim() ? recordingFrameRateReason(customValue) : null
+  const draftError = recordingFrameRateDraftError(customValue, value)
 
   const choosePreset = (frameRate: number) => {
     onCustomValueChange('')
@@ -94,6 +96,8 @@ export function RecordFrameRateControl({
       >
         {customError
           ? `${customError} Requested ${frameRateLabel(value)} FPS remains selected.`
+          : draftError
+            ? `${customValue.trim()} FPS entered. ${draftError} Requested ${frameRateLabel(value)} FPS remains selected.`
           : `Requested ${frameRateLabel(value)} FPS. Custom accepts whole numbers ${RECORDING_FRAME_RATE_MIN}–${RECORDING_FRAME_RATE_MAX} after Apply.`}
       </p>
     </div>

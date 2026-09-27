@@ -51,12 +51,14 @@ fn strip_ass_text(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
+    let mut no_closing_override = false;
     while i < chars.len() {
-        if chars[i] == '{' {
+        if chars[i] == '{' && !no_closing_override {
             if let Some(rel) = chars[i + 1..].iter().position(|&c| c == '}') {
                 i = i + 1 + rel + 1; // skip the whole {…} override block
                 continue;
             }
+            no_closing_override = true;
             // unmatched '{' → keep literal
         }
         if chars[i] == '\\' && i + 1 < chars.len() {
@@ -161,12 +163,14 @@ fn strip_tags(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
+    let mut no_closing_tag = false;
     while i < chars.len() {
-        if chars[i] == '<' {
+        if chars[i] == '<' && !no_closing_tag {
             if let Some(rel) = chars[i + 1..].iter().position(|&c| c == '>') {
                 i = i + 1 + rel + 1; // skip the whole `<…>` tag (past the `>`)
                 continue;
             }
+            no_closing_tag = true;
             // no closing `>` → a literal less-than; fall through and keep it.
         }
         out.push(chars[i]);
@@ -363,6 +367,16 @@ mod tests {
         // a real SRT cue whose dialogue contains `<` keeps its full text.
         let srt = "1\n00:00:01,000 --> 00:00:02,000\n5 < 3 is false\n";
         assert_eq!(parse(srt).unwrap()[0].text, "5 < 3 is false");
+    }
+
+    #[test]
+    fn unmatched_delimiters_remain_literal_in_large_subtitle_lines() {
+        let bare_tags = "<".repeat(10_000);
+        assert_eq!(strip_tags(&bare_tags), bare_tags);
+        let bare_overrides = "{".repeat(10_000);
+        assert_eq!(strip_ass_text(&bare_overrides), bare_overrides);
+        assert_eq!(strip_tags("<v Bob>Hi < broken"), "Hi < broken");
+        assert_eq!(strip_ass_text("{\\k20}Hi { broken"), "Hi { broken");
     }
 
     #[test]

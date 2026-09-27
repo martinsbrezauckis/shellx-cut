@@ -25,6 +25,7 @@ import {
 import { MicInputControl } from './MicInputControl'
 import { SystemAudioProbeControl } from './SystemAudioProbeControl'
 import { RecordFrameRateControl } from './RecordFrameRateControl'
+import { recordingFrameRateDraftError } from './recordingFrameRate'
 import { RecordingCountdownControl } from './RecordingCountdownControl'
 import { RecordingCountdownOverlay } from './RecordingCountdownOverlay'
 import { RecordingRehearsal } from './RecordingRehearsal'
@@ -627,6 +628,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
 
   const preflightStartError = useCallback(() => {
     if (startAdmissionUnknown) return UNKNOWN_START_ADMISSION
+    const frameRateError = recordingFrameRateDraftError(customFps, fps)
+    if (frameRateError) return frameRateError
     if (!project?.project_identity) return 'Open a current project before recording.'
     if (startAllowed === null) return 'Wait for source checks to finish.'
     if (startAllowed === false) return 'Screen capture is not ready on this machine.'
@@ -651,7 +654,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     )
     if (cameraError) return cameraError
     return null
-  }, [cameraCapability, cameraDeviceId, cards, fps, monitorIdx, monitors, project?.project_identity, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowTargetId])
+  }, [cameraCapability, cameraDeviceId, cards, customFps, fps, monitorIdx, monitors, project?.project_identity, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowTargetId])
   useEffect(() => {
     session.setStartGuard(preflightStartError)
     return () => session.setStartGuard(null)
@@ -882,6 +885,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                 streams={session.state.rawStreams}
                 cursorCorrelation={session.state.cursorCorrelation}
                 cadence={probedAverageCadenceLabel(session.state.cadence)}
+                quality={qualityResolution}
                 hotkeyScope={recordHotkeyCapability?.scope === 'global' ? 'Global F9 registered' : 'F9 works while Cut is focused'}
                 exportFormat={exportFmt}
                 exportRunning={Boolean(exportJob)}

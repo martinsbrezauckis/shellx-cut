@@ -829,7 +829,7 @@
           }
         }
       },
-      "result": "{plan:shellx-cut/portable-package-plan/1:{project_identity,project_revision,destination,name,target,target_status:'available'|'occupied',b5_receipt_sha256?,assets:[{asset,bytes,sha256,package_path}],total_source_bytes,total_package_bytes,source_file_count,unique_media_count,policy},plan_hash:'sha256:<full>'} — a dry run only; target_status is current preview truth and creation rechecks without replacement; duplicate full-content media are represented once in total_package_bytes",
+      "result": "{plan:shellx-cut/portable-package-plan/1:{project_identity,project_revision,destination,name,target,target_status:'available'|'occupied',b5_receipt_sha256?,assets:[{asset,source_path,bytes,sha256,package_path}],total_source_bytes,total_package_bytes,source_file_count,unique_media_count,policy},plan_hash:'sha256:<full>'} — a dry run only; source_path is the exact canonical Unicode path of each referenced asset for review and is bound into plan_hash, but is not written into the package manifest; non-Unicode source paths refuse; target_status is current preview truth and creation rechecks without replacement; duplicate full-content media are represented once in total_package_bytes",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
