@@ -652,6 +652,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     if (cameraError) return cameraError
     return null
   }, [cameraCapability, cameraDeviceId, cards, fps, monitorIdx, monitors, project?.project_identity, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowTargetId])
+  useEffect(() => {
+    session.setStartGuard(preflightStartError)
+    return () => session.setStartGuard(null)
+  }, [preflightStartError, session.setStartGuard])
   const countdown = {
     seconds: session.countdownSeconds,
     setSeconds: session.setCountdownSeconds,

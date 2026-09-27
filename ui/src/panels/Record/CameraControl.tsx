@@ -144,7 +144,7 @@ export function CameraControl({
       </label>
 
       <div className="rec-camera-layout" data-cut-rec-camera-layout data-cut-rec-camera-layout-disabled={layoutDisabled ? 'true' : 'false'}>
-        {layoutReason && <p className="rec-camera-layout__reason" id="rec-camera-layout-reason" role="status" data-cut-rec-camera-layout-reason>{layoutReason}</p>}
+        {layoutReason && <p className="rec-camera-layout__reason" id="rec-camera-layout-reason" role="status" data-cut-rec-camera-layout-reason data-cut-studio-camera-unavailable={!canEnable ? '' : undefined}>{layoutReason}</p>}
         <span className="rec-studio-controls__label">Camera position</span>
         <div className="rec-camera-layout__corners" role="group" aria-label="Camera position" aria-describedby={layoutReason ? 'rec-camera-layout-reason' : undefined}>
           {STUDIO_POSITIONS.map((position) => (
@@ -180,12 +180,6 @@ export function CameraControl({
         </label>
       </div>
 
-      {!canEnable && (
-        <div className="rec-studio-controls__unavailable" data-cut-studio-camera-unavailable role="status">
-          <strong>Camera unavailable</strong>
-          <span>{rawCapture ? 'Switch to Auto-edit to record screen and camera as editable sources.' : capability.detail}</span>
-        </div>
-      )}
     </div>
   )
 }

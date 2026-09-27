@@ -78,17 +78,17 @@ const areas = {
 };
 
 const recordAreas = {
-  workspace: { surface: "recording", left: 0.015, top: 0.13, width: 0.97, height: 0.77, label: "Recording workspace" },
-  studioPreview: { surface: "recording", left: 0.19, top: 0.18, width: 0.62, height: 0.38, label: "Selected source preview" },
-  scenes: { surface: "recording", left: 0.82, top: 0.3, width: 0.16, height: 0.43, label: "Camera layout" },
-  sceneTimer: { surface: "recording", left: 0.82, top: 0.19, width: 0.16, height: 0.54, label: "On-video timer" },
-  cameraControls: { surface: "recording", left: 0.82, top: 0.3, width: 0.16, height: 0.43, label: "Camera controls" },
-  background: { surface: "recording", left: 0.82, top: 0.19, width: 0.16, height: 0.54, label: "Background settings" },
-  rawStreams: { surface: "recording", left: 0.2, top: 0.5, width: 0.6, height: 0.1, label: "Recording details after Stop" },
-  hotkeys: { surface: "recording", left: 0.015, top: 0.91, width: 0.15, height: 0.06, label: "Start recording (F9)" },
-  rawMode: { surface: "recording", left: 0.06, top: 0.3, width: 0.06, height: 0.04, label: "Raw mode" },
-  autoedit: { surface: "recording", left: 0.02, top: 0.3, width: 0.06, height: 0.04, label: "Polished mode" },
-  studioEvents: { surface: "recording", left: 0.82, top: 0.3, width: 0.16, height: 0.43, label: "Studio events" },
+  workspace: { surface: "recording", left: 0.012, top: 0.125, width: 0.976, height: 0.84, label: "Recording workspace" },
+  studioPreview: { surface: "recording", left: 0.191, top: 0.184, width: 0.618, height: 0.378, label: "Selected source preview" },
+  scenes: { surface: "recording", left: 0.822, top: 0.322, width: 0.158, height: 0.413, label: "Camera layout" },
+  sceneTimer: { surface: "recording", left: 0.822, top: 0.231, width: 0.078, height: 0.032, label: "Video timer tab" },
+  cameraControls: { surface: "recording", left: 0.822, top: 0.322, width: 0.158, height: 0.413, label: "Camera controls" },
+  background: { surface: "recording", left: 0.902, top: 0.196, width: 0.078, height: 0.032, label: "Background tab" },
+  rawStreams: { surface: "recording", left: 0.27, top: 0.21, width: 0.45, height: 0.55, label: "Recording details after Stop" },
+  hotkeys: { surface: "recording", left: 0.012, top: 0.924, width: 0.115, height: 0.041, label: "Start recording (F9)" },
+  rawMode: { surface: "recording", left: 0.065, top: 0.546, width: 0.041, height: 0.031, label: "Raw mode" },
+  autoedit: { surface: "recording", left: 0.02, top: 0.546, width: 0.044, height: 0.031, label: "Polished mode" },
+  studioEvents: { surface: "recording", left: 0.822, top: 0.322, width: 0.158, height: 0.413, label: "Studio controls" },
 };
 
 function opened(title, items, left, top, width = 0.16) {

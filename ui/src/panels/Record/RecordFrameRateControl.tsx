@@ -57,7 +57,7 @@ export function RecordFrameRateControl({
         ))}
       </div>
       <details className="rec__fps-advanced" data-cut-rec-fps-advanced>
-        <summary>Advanced frame rate</summary>
+        <summary data-cut-action="record-fps-advanced-toggle">Advanced frame rate</summary>
         <div className="rec__fps-advanced-body">
           <label className="rec__fps-custom" data-cut-rec-fps-custom>
             <span>Custom</span>

@@ -62,9 +62,14 @@ export function RecordingResultPanel({
         <span><strong>Current project</strong> · {polishedClipSaved ? 'polished editable clip added' : raw ? 'unchanged until Add to timeline' : 'clip not confirmed'}</span>
       </div>
 
-      {outcome === 'recovery' && (
-        <button type="button" className="rec__export-btn" data-cut-action={recoveryAction === 'retry_stop' ? 'record-retry-stop' : 'record-check-capture-status'} onClick={onRecovery}>
-          {recoveryAction === 'retry_stop' ? 'Retry Stop for this capture' : 'Check capture status'}
+      {outcome === 'recovery' && recoveryAction === 'retry_stop' && (
+        <button type="button" className="rec__export-btn" data-cut-action="record-retry-stop" onClick={onRecovery}>
+          Retry Stop for this capture
+        </button>
+      )}
+      {outcome === 'recovery' && recoveryAction !== 'retry_stop' && (
+        <button type="button" className="rec__export-btn" data-cut-action="record-check-capture-status" onClick={onRecovery}>
+          Check capture status
         </button>
       )}
 
@@ -91,9 +96,11 @@ export function RecordingResultPanel({
                 {exportRunning && <button type="button" className="rec__export-btn" data-cut-action="record-export-cancel" onClick={onCancelExport}>Cancel export</button>}
               </>
             )}
-            <button type="button" className="rec__export-btn" data-cut-action={raw ? 'record-save-copy' : 'record-save-raw-copy'} disabled={rawCopyRunning} onClick={onSaveRawCopy}>
-              {raw ? 'Save a copy…' : 'Save raw MP4 copy…'}
-            </button>
+            {raw ? (
+              <button type="button" className="rec__export-btn" data-cut-action="record-save-copy" disabled={rawCopyRunning} onClick={onSaveRawCopy}>Save a copy…</button>
+            ) : (
+              <button type="button" className="rec__export-btn" data-cut-action="record-save-raw-copy" disabled={rawCopyRunning} onClick={onSaveRawCopy}>Save raw MP4 copy…</button>
+            )}
             {rawCopyRunning && <button type="button" className="rec__export-btn" data-cut-action="record-copy-cancel" onClick={onCancelRawCopy}>Cancel copy</button>}
             {onOpenOutputSettings && <button type="button" className="rec__export-btn" data-cut-action="record-output-settings" onClick={onOpenOutputSettings}>Export folder settings</button>}
           </div>
@@ -103,7 +110,7 @@ export function RecordingResultPanel({
       )}
 
       <details className="rec-result__details" data-cut-rec-recording-details>
-        <summary>Recording details</summary>
+        <summary data-cut-action="record-details-toggle">Recording details</summary>
         <div>
           <p><strong>Streams:</strong> {streamNames}. {hasMic && hasSystem ? 'Microphone and computer sound were captured.' : hasMic ? 'Microphone sound was captured.' : hasSystem ? 'Computer sound was captured.' : 'No audio source was confirmed.'}</p>
           <p><strong>Pointer:</strong> {cursorCorrelationLabel(cursorCorrelation)}.</p>

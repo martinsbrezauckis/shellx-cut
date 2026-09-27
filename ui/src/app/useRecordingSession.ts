@@ -4,6 +4,7 @@ import { isBlockingOverlayActive, shouldIgnoreGlobalShortcut } from '../lib/dom'
 import { matchesFixedAction } from '../lib/keymap'
 import { onRecordHotkey } from '../lib/tauri'
 import { recordingStartResult } from '../panels/Record/recordingStartResult'
+import { markRecordingStartAdmissionUnknown } from '../panels/Record/recordingStartAdmission'
 import type { RecordingStartResult } from '../panels/Record/recordingStartResult'
 import type { RecordingCadence } from '../panels/Record/recordingCadence'
 import type { StudioRawStreams, CursorCorrelation, StudioEventPayload } from '../panels/Record/studioTypes'
@@ -89,6 +90,8 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
   const setPreviewRelease = useCallback((release: (() => Promise<void> | void) | null) => { previewReleaseRef.current = release }, [])
   const draftProviderRef = useRef<(() => RecordingPreset | null) | null>(null)
   const setDraftProvider = useCallback((provider: (() => RecordingPreset | null) | null) => { draftProviderRef.current = provider }, [])
+  const startGuardRef = useRef<(() => string | null) | null>(null)
+  const setStartGuard = useCallback((guard: (() => string | null) | null) => { startGuardRef.current = guard }, [])
   const countdownRef = useRef<number | null>(null)
   const countdownGuardRef = useRef(new RecordingCountdownGuard())
   const [countdownSeconds, setCountdownSeconds] = useState<RecordingCountdownSeconds>(presetRef.current?.startCountdownSeconds ?? 3)
@@ -106,6 +109,8 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
 
   const start = useCallback(async (draft?: RecordingPreset | null) => {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
+    const blocked = startGuardRef.current?.()
+    if (blocked) { showSetup(blocked); return }
     const preset = draft === undefined ? presetRef.current : draft
     if (!preset) { showSetup('Choose a source and save a valid recording setup first.'); return }
     const currentProject = projectRef.current
@@ -143,6 +148,7 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
       const admitted = recordingStartResult(reply.result)
       if (!admitted) {
         unknownStartRef.current = true
+        markRecordingStartAdmissionUnknown()
         showSetup(UNKNOWN_START)
         return
       }
@@ -188,7 +194,11 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
 
   const requestStart = useCallback((draft?: RecordingPreset | null, seconds = draft?.startCountdownSeconds ?? countdownSeconds) => {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
+    const blocked = startGuardRef.current?.()
+    if (blocked) { showSetup(blocked); return }
     if (draft === null || (draft === undefined && !presetRef.current)) { showSetup('Choose a current source and valid recording setup first.'); return }
+    const requestedProjectIdentity = projectRef.current?.project_identity
+    if (!requestedProjectIdentity) { showSetup('Open a project before recording.'); return }
     if (seconds <= 0) { void start(draft); return }
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
@@ -204,7 +214,12 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
         countdownRef.current = null
         busyRef.current = false
         toggleGateRef.current.setInFlight(false)
-        if (!projectRef.current?.project_identity) { showSetup('Open a project before recording.'); return }
+        if (!sameProjectIdentity(requestedProjectIdentity, projectRef.current?.project_identity)) {
+          showSetup('The open project changed during the countdown. Review the recording setup and start again.')
+          return
+        }
+        const blocked = startGuardRef.current?.()
+        if (blocked) { showSetup(blocked); return }
         void start(draft)
       })
     }, 100)
@@ -369,7 +384,7 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
   }, [])
 
   return { state, start, requestStart, cancelCountdown, countdownSeconds, setCountdownSeconds, stop, reset,
-    setPreviewRelease, setDraftProvider, refreshStopStatus,
+    setPreviewRelease, setDraftProvider, setStartGuard, refreshStopStatus,
     toggle: () => toggleRef.current(), preset: presetRef.current }
 }
 
