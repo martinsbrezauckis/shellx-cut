@@ -5,8 +5,8 @@
 //! cannot turn earlier, durable Studio decisions into an unreadable log. The
 //! first append also syncs its newly-created parent directory on Unix.
 
-use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use cut_core::{error_codes, CutError};
@@ -96,15 +96,17 @@ pub(crate) fn read_studio_journal(path: &Path) -> Result<StudioEventLog, CutErro
 }
 
 fn recover_journal(path: &Path) -> Result<RecoveredJournal, CutError> {
-    if !path.exists() {
-        return Ok(RecoveredJournal {
-            log: StudioEventLog::default(),
-            durable_len: 0,
-        });
-    }
-    let meta = path
-        .metadata()
-        .map_err(|error| journal_io_error(path, "stat", error))?;
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) if plain_regular(&meta) => meta,
+        Ok(_) => return Err(journal_invalid("is not a local regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RecoveredJournal {
+                log: StudioEventLog::default(),
+                durable_len: 0,
+            });
+        }
+        Err(error) => return Err(journal_io_error(path, "stat", error)),
+    };
     if meta.len() > MAX_STUDIO_EVENTS_JOURNAL_BYTES {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
@@ -116,7 +118,15 @@ fn recover_journal(path: &Path) -> Result<RecoveredJournal, CutError> {
             "Recording Studio event metadata must be bounded",
         ));
     }
-    let bytes = std::fs::read(path).map_err(|error| journal_io_error(path, "read", error))?;
+    let mut file = open_nofollow(path, false)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_STUDIO_EVENTS_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| journal_io_error(path, "read", error))?;
+    if bytes.len() as u64 > MAX_STUDIO_EVENTS_JOURNAL_BYTES {
+        return Err(journal_invalid("exceeds its byte limit"));
+    }
     let mut events = Vec::new();
     let mut durable_len = 0usize;
     let mut last_logical_ts = 0u64;
@@ -182,14 +192,14 @@ fn append_record(
     {
         return Err(journal_invalid("would exceed the 4 MiB size limit"));
     }
-    let created = !path.exists();
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| journal_io_error(path, "open", error))?;
+    let created = match fs::symlink_metadata(path) {
+        Ok(metadata) if plain_regular(&metadata) => false,
+        Ok(_) => return Err(journal_invalid("is not a local regular file")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => return Err(journal_io_error(path, "stat", error)),
+    };
+    let mut file = open_nofollow(path, true)?;
+    ensure_same_leaf(&file, path)?;
     let actual_len = file
         .metadata()
         .map_err(|error| journal_io_error(path, "stat", error))?
@@ -200,11 +210,13 @@ fn append_record(
         ));
     }
     if actual_len > durable_len {
+        ensure_same_leaf(&file, path)?;
         file.set_len(durable_len)
             .map_err(|error| journal_io_error(path, "recover", error))?;
         file.sync_data()
             .map_err(|error| journal_io_error(path, "sync recovered tail", error))?;
     }
+    ensure_same_leaf(&file, path)?;
     file.seek(SeekFrom::Start(durable_len))
         .map_err(|error| journal_io_error(path, "seek to durable tail", error))?;
     file.write_all(&bytes)
@@ -216,6 +228,94 @@ fn append_record(
         sync_created_journal_parent(path)?;
     }
     Ok(())
+}
+
+fn open_nofollow(path: &Path, write: bool) -> Result<File, CutError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    if write {
+        options.write(true).create(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| journal_io_error(path, "open", error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| journal_io_error(path, "stat", error))?;
+    if !plain_regular(&metadata) {
+        return Err(journal_invalid("is not a local regular file"));
+    }
+    Ok(file)
+}
+
+fn ensure_same_leaf(file: &File, path: &Path) -> Result<(), CutError> {
+    let current = open_nofollow(path, false)?;
+    if same_open_file(file, &current)? {
+        Ok(())
+    } else {
+        Err(journal_invalid("was replaced while open"))
+    }
+}
+
+#[cfg(unix)]
+fn same_open_file(left: &File, right: &File) -> Result<bool, CutError> {
+    use std::os::unix::fs::MetadataExt;
+    let left = left.metadata()?;
+    let right = right.metadata()?;
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+#[cfg(windows)]
+fn same_open_file(left: &File, right: &File) -> Result<bool, CutError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
+    };
+    fn identity(file: &File) -> Result<(u32, u32, u32), CutError> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok((
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ))
+    }
+    Ok(identity(left)? == identity(right)?)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_open_file(_left: &File, _right: &File) -> Result<bool, CutError> {
+    Err(journal_invalid("file identity is unsupported"))
+}
+
+fn plain_regular(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
+}
+
+#[cfg(windows)]
+fn is_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 #[cfg(unix)]

@@ -34,6 +34,7 @@
 use cut_core::{error_codes, CutError};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 mod network_transport;
@@ -51,6 +52,11 @@ pub const PROVIDERS: &[&str] = &[
 /// Max bytes `assets.fetch` will download for a single provider asset (a stock
 /// SFX/clip is small; this fences a pathological response). 200 MB.
 const MAX_FETCH_BYTES: u64 = 200 * 1024 * 1024;
+/// Bound the decoded body, including responses expanded from gzip by ureq.
+const MAX_PROVIDER_JSON_BYTES: u64 = 32 * 1024 * 1024;
+/// Archive items can contain very large file inventories. Keep resolution work
+/// finite after parsing a bounded metadata response.
+const MAX_ARCHIVE_FILE_ENTRIES: usize = 20_000;
 /// Openverse API base. Audio + images only (no video endpoint upstream).
 const OPENVERSE_BASE: &str = "https://api.openverse.org/v1";
 
@@ -403,7 +409,7 @@ fn openverse_get(url: &str) -> Result<Value, CutError> {
         .header("User-Agent", &user_agent())
         .header("Accept", "application/json")
         .call();
-    let mut resp = match resp {
+    let resp = match resp {
         Ok(r) => r,
         Err(ureq::Error::StatusCode(429)) => {
             return Err(CutError::new(
@@ -420,14 +426,29 @@ fn openverse_get(url: &str) -> Result<Value, CutError> {
             ))
         }
     };
-    let body = resp
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| CutError::new(error_codes::IO, "openverse read failed", e.to_string()))?;
-    serde_json::from_str(&body).map_err(|e| {
+    read_provider_json(resp.into_body().into_reader(), "openverse")
+}
+
+fn read_provider_json(reader: impl Read, who: &str) -> Result<Value, CutError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_PROVIDER_JSON_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| CutError::new(error_codes::IO, format!("{who} read failed"), e.to_string()))?;
+    if bytes.len() as u64 > MAX_PROVIDER_JSON_BYTES {
+        return Err(CutError::new(
+            error_codes::IO,
+            format!("{who} response too large"),
+            format!(
+                "decoded JSON exceeds {} MiB",
+                MAX_PROVIDER_JSON_BYTES / 1024 / 1024
+            ),
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| {
         CutError::new(
             error_codes::IO,
-            "openverse returned non-JSON",
+            format!("{who} returned non-JSON"),
             e.to_string(),
         )
     })
@@ -554,7 +575,7 @@ fn http_json(url: &str, who: &str) -> Result<Value, CutError> {
         .header("User-Agent", &user_agent())
         .header("Accept", "application/json")
         .call();
-    let mut resp = match resp {
+    let resp = match resp {
         Ok(r) => r,
         Err(ureq::Error::StatusCode(429)) => {
             return Err(CutError::new(
@@ -571,17 +592,7 @@ fn http_json(url: &str, who: &str) -> Result<Value, CutError> {
             ))
         }
     };
-    let body = resp
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| CutError::new(error_codes::IO, format!("{who} read failed"), e.to_string()))?;
-    serde_json::from_str(&body).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            format!("{who} returned non-JSON"),
-            e.to_string(),
-        )
-    })
+    read_provider_json(resp.into_body().into_reader(), who)
 }
 
 /// Map a license URL (or short name) to a (short code, requires_attribution).
@@ -738,8 +749,15 @@ fn archive_resolve(id: &str, kind: &str) -> Result<ProviderHit, CutError> {
     let files = v
         .get("files")
         .and_then(|f| f.as_array())
-        .cloned()
+        .map(Vec::as_slice)
         .unwrap_or_default();
+    if files.len() > MAX_ARCHIVE_FILE_ENTRIES {
+        return Err(CutError::new(
+            error_codes::IO,
+            format!("archive.org item '{id}' has too many file entries"),
+            format!("metadata exceeds {MAX_ARCHIVE_FILE_ENTRIES} files"),
+        ));
+    }
     let cands: Vec<(String, String)> = files
         .iter()
         .filter_map(|f| {
@@ -1596,6 +1614,57 @@ fn stickers_resolve(id: &str) -> Result<ProviderHit, CutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_json_accepts_limit_and_rejects_one_extra_decoded_byte() {
+        let valid = format!("\"{}\"", "a".repeat(MAX_PROVIDER_JSON_BYTES as usize - 2));
+        assert!(read_provider_json(valid.as_bytes(), "test").is_ok());
+        let too_large = format!("\"{}\"", "a".repeat(MAX_PROVIDER_JSON_BYTES as usize - 1));
+        let err = read_provider_json(too_large.as_bytes(), "test").unwrap_err();
+        assert!(err.to_string().contains("response too large"), "{err}");
+    }
+
+    #[test]
+    fn gzip_expansion_is_capped_for_both_provider_json_paths() {
+        use flate2::{write::GzEncoder, Compression};
+        use std::{io::Write, net::TcpListener};
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"\"").unwrap();
+        encoder
+            .write_all(&vec![b'a'; MAX_PROVIDER_JSON_BYTES as usize])
+            .unwrap();
+        encoder.write_all(b"\"").unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert!(
+            compressed.len() < 64 * 1024,
+            "test must exercise high expansion"
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/json", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                let mut stream = stream.unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    compressed.len()
+                )
+                .unwrap();
+                stream.write_all(&compressed).unwrap();
+            }
+        });
+        for error in [
+            openverse_get(&url).unwrap_err(),
+            http_json(&url, "test").unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("response too large"), "{error}");
+        }
+        server.join().unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

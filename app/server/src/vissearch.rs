@@ -17,7 +17,74 @@
 //! deterministic given the stored vectors.
 
 use serde::{Deserialize, Serialize};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+
+// At 1 fps a 768-dimensional SigLIP JSON index is about 60 MiB per hour.
+// This admits long recordings while keeping a supplied project cache finite.
+pub(crate) const MAX_VISUAL_INDEX_BYTES: u64 = 512 * 1024 * 1024;
+
+pub(crate) fn read_bounded_file(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !plain_regular(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a regular file",
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    if !plain_regular(&opened) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a regular file",
+        ));
+    }
+    if opened.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds byte limit",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds byte limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn plain_regular(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_file() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
+}
+
+#[cfg(windows)]
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
 
 mod runtime;
 #[cfg(test)]
@@ -205,6 +272,43 @@ pub fn index_path(proj_dir: &Path, asset_id: &str) -> PathBuf {
     proj_dir.join("embeddings").join(format!("{asset_id}.json"))
 }
 
+pub(crate) fn prepare_index_output_path(proj_dir: &Path, asset_id: &str) -> io::Result<PathBuf> {
+    let path = index_path(proj_dir, asset_id);
+    let parent = path.parent().expect("index has embeddings parent");
+    match std::fs::symlink_metadata(parent) {
+        Ok(metadata) if !plain_directory(&metadata) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "embeddings is not a plain directory",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir(parent)?;
+        }
+        Err(error) => return Err(error),
+    }
+    if !plain_directory(&std::fs::symlink_metadata(parent)?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "embeddings is not a plain directory",
+        ));
+    }
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if !plain_regular(&metadata) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "index is not a plain file",
+        )),
+        Ok(_) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path),
+        Err(error) => Err(error),
+    }
+}
+
+fn plain_directory(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_dir() && !metadata.file_type().is_symlink() && !is_reparse(metadata)
+}
+
 /// Load an asset's embedding index, or None if not indexed / unreadable.
 pub fn load_index(proj_dir: &Path, asset_id: &str) -> Option<EmbeddingIndex> {
     load_index_checked(proj_dir, asset_id).ok()
@@ -215,9 +319,9 @@ pub fn load_index(proj_dir: &Path, asset_id: &str) -> Option<EmbeddingIndex> {
 /// Option-returning wrapper above: a stale or unreadable cache is a cache miss.
 pub fn load_index_checked(proj_dir: &Path, asset_id: &str) -> Result<EmbeddingIndex, String> {
     let p = index_path(proj_dir, asset_id);
-    let txt =
-        std::fs::read_to_string(&p).map_err(|error| format!("could not read index: {error}"))?;
-    let index: EmbeddingIndex = serde_json::from_str(&txt)
+    let bytes = read_bounded_file(&p, MAX_VISUAL_INDEX_BYTES)
+        .map_err(|error| format!("could not read index: {error}"))?;
+    let index: EmbeddingIndex = serde_json::from_slice(&bytes)
         .map_err(|error| format!("index JSON does not match the embedding contract: {error}"))?;
     if index.asset != asset_id {
         return Err("index asset does not match the requested asset".into());
@@ -261,12 +365,25 @@ pub fn load_index_for_runtime(
 /// Persist an asset's embedding index (creates the embeddings/ dir). The native
 /// caller uses this after it stamps its selected runtime identity.
 pub fn save_index(proj_dir: &Path, index: &EmbeddingIndex) -> std::io::Result<PathBuf> {
-    let p = index_path(proj_dir, &index.asset);
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
+    save_index_with_limit(proj_dir, index, MAX_VISUAL_INDEX_BYTES)
+}
+
+fn save_index_with_limit(
+    proj_dir: &Path,
+    index: &EmbeddingIndex,
+    max_bytes: u64,
+) -> std::io::Result<PathBuf> {
     let payload = serde_json::to_vec(index).map_err(std::io::Error::other)?;
-    std::fs::write(&p, payload)?;
+    if payload.len() as u64 > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "index exceeds byte limit",
+        ));
+    }
+    let p = prepare_index_output_path(proj_dir, &index.asset)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(p.parent().expect("index parent"))?;
+    temporary.write_all(&payload)?;
+    temporary.persist(&p).map_err(|error| error.error)?;
     Ok(p)
 }
 
@@ -438,5 +555,86 @@ mod tests {
         assert!(error.contains("does not match the embedding contract"));
         assert!(load_index(&dir, "a1").is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_sparse_visual_index_is_a_cache_miss_before_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let embeddings = dir.path().join("embeddings");
+        std::fs::create_dir(&embeddings).unwrap();
+        let file = std::fs::File::create(embeddings.join("a1.json")).unwrap();
+        file.set_len(MAX_VISUAL_INDEX_BYTES + 1).unwrap();
+
+        let error = load_index_checked(dir.path(), "a1").unwrap_err();
+        assert!(error.contains("exceeds byte limit"));
+        assert!(load_index(dir.path(), "a1").is_none());
+    }
+
+    #[test]
+    fn visual_index_writer_refuses_oversize_without_replacing_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = idx(vec![(0, vec![1.0, 0.0])]);
+        let bytes = serde_json::to_vec(&index).unwrap();
+        let path = save_index_with_limit(dir.path(), &index, bytes.len() as u64).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = save_index_with_limit(dir.path(), &index, bytes.len() as u64 - 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_visual_index_is_a_cache_miss() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let embeddings = dir.path().join("embeddings");
+        std::fs::create_dir(&embeddings).unwrap();
+        let outside = dir.path().join("outside.json");
+        std::fs::write(
+            &outside,
+            serde_json::to_vec(&idx(vec![(0, vec![1.0])])).unwrap(),
+        )
+        .unwrap();
+        symlink(&outside, embeddings.join("a1.json")).unwrap();
+
+        assert!(load_index(dir.path(), "a1").is_none());
+        assert!(load_index_checked(dir.path(), "a1")
+            .unwrap_err()
+            .contains("not a regular file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn visual_index_writer_refuses_linked_parent_and_leaf_without_touching_outside() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("a1.json");
+        std::fs::write(&sentinel, b"outside-sentinel").unwrap();
+        let embeddings = dir.path().join("embeddings");
+        symlink(&outside, &embeddings).unwrap();
+        assert!(save_index(dir.path(), &idx(vec![(0, vec![1.0])])).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside-sentinel");
+
+        std::fs::remove_file(&embeddings).unwrap();
+        std::fs::create_dir(&embeddings).unwrap();
+        symlink(&sentinel, embeddings.join("a1.json")).unwrap();
+        assert!(save_index(dir.path(), &idx(vec![(0, vec![1.0])])).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside-sentinel");
+        std::fs::remove_file(embeddings.join("a1.json")).unwrap();
+        let path = save_index(dir.path(), &idx(vec![(0, vec![1.0])])).unwrap();
+        assert_eq!(
+            load_index_checked(dir.path(), "a1").unwrap().frames.len(),
+            1
+        );
+        assert!(path.is_file());
+        save_index(dir.path(), &idx(vec![(0, vec![1.0]), (1000, vec![0.0])])).unwrap();
+        assert_eq!(
+            load_index_checked(dir.path(), "a1").unwrap().frames.len(),
+            2
+        );
     }
 }

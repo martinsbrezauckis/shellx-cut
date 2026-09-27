@@ -69,8 +69,29 @@ enum Mode {
     Pending,
     Enabled,
     BackendUnavailable,
+    #[cfg(any(
+        test,
+        all(windows, feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos"),
+        all(target_os = "linux", feature = "capture-linux")
+    ))]
     ReadbackUnavailable,
     Terminal,
+}
+
+#[cfg(any(
+    test,
+    all(windows, feature = "capture-windows"),
+    all(target_os = "macos", feature = "capture-macos"),
+    all(target_os = "linux", feature = "capture-linux")
+))]
+pub(crate) struct NativePreviewPixels<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub stride: usize,
+    pub offset: usize,
+    pub format: crate::source_preview_bitmap::SourcePreviewPixelFormat,
+    pub pixels: &'a [u8],
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +131,11 @@ impl ActiveCapturePreview {
         self.disable(Mode::BackendUnavailable);
     }
 
+    #[cfg(any(
+        test,
+        all(windows, feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos")
+    ))]
     pub(crate) fn mark_readback_unavailable(&self, generation: u64) {
         let mut state = self.lock();
         if state.mode == Mode::Enabled && state.generation == generation {
@@ -164,6 +190,12 @@ impl ActiveCapturePreview {
             Mode::Enabled if state.frame.is_some() => ("ready", None),
             Mode::Enabled => ("awaiting_frame", None),
             Mode::BackendUnavailable => ("unavailable", Some("This native recording backend does not yet provide live source pixels.")),
+            #[cfg(any(
+                test,
+                all(windows, feature = "capture-windows"),
+                all(target_os = "macos", feature = "capture-macos"),
+                all(target_os = "linux", feature = "capture-linux")
+            ))]
             Mode::ReadbackUnavailable => ("unavailable", Some("The native recording frame could not be read for preview; recording continues.")),
             Mode::Terminal => ("terminal", None),
         };
@@ -189,6 +221,12 @@ impl ActiveCapturePreview {
         state.generation = state.generation.saturating_add(1);
     }
 
+    #[cfg(any(
+        test,
+        all(windows, feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos"),
+        all(target_os = "linux", feature = "capture-linux")
+    ))]
     pub(crate) fn claim_sample(&self, generation: u64, now: Instant) -> bool {
         let mut state = self.lock();
         if state.mode != Mode::Enabled || state.generation != generation {
@@ -201,6 +239,11 @@ impl ActiveCapturePreview {
         true
     }
 
+    #[cfg(any(
+        test,
+        all(windows, feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos")
+    ))]
     pub(crate) fn publish_bgra(
         &self,
         generation: u64,
@@ -213,30 +256,38 @@ impl ActiveCapturePreview {
         self.publish_native(
             generation,
             at_ms,
-            width,
-            height,
-            stride,
-            0,
-            crate::source_preview_bitmap::SourcePreviewPixelFormat::Bgra,
-            pixels,
+            NativePreviewPixels {
+                width,
+                height,
+                stride,
+                offset: 0,
+                format: crate::source_preview_bitmap::SourcePreviewPixelFormat::Bgra,
+                pixels,
+            },
         );
     }
 
+    #[cfg(any(
+        test,
+        all(windows, feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos"),
+        all(target_os = "linux", feature = "capture-linux")
+    ))]
     pub(crate) fn publish_native(
         &self,
         generation: u64,
         at_ms: u64,
-        width: u32,
-        height: u32,
-        stride: usize,
-        offset: usize,
-        format: crate::source_preview_bitmap::SourcePreviewPixelFormat,
-        pixels: &[u8],
+        source: NativePreviewPixels<'_>,
     ) {
         // Conversion writes directly into a bounded BMP. The native source
         // buffer is borrowed only for this call and is never retained.
         let frame = crate::source_preview_bitmap::active_native_bmp(
-            width, height, format, stride, pixels, offset,
+            source.width,
+            source.height,
+            source.format,
+            source.stride,
+            source.pixels,
+            source.offset,
         )
         .and_then(|bytes| SourcePreviewFrame::new(at_ms, bytes));
         let mut state = self.lock();
@@ -256,6 +307,12 @@ impl ActiveCapturePreview {
         }
     }
 
+    #[cfg(any(
+        test,
+        all(windows, feature = "capture-windows"),
+        all(target_os = "macos", feature = "capture-macos"),
+        all(target_os = "linux", feature = "capture-linux")
+    ))]
     pub(crate) fn record_sample_cost(&self, generation: u64, cost: Duration) {
         let mut state = self.lock();
         if state.mode != Mode::Enabled || state.generation != generation {

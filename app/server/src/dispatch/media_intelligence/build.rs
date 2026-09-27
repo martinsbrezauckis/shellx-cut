@@ -203,7 +203,9 @@ pub(super) fn build_index(
                 receipt_path(snapshot, asset.transcript.as_deref()),
                 binding.transcript_sha256.as_deref(),
             ) {
-                if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(bytes) =
+                    crate::vissearch::read_bounded_file(&path, MAX_EVIDENCE_RECEIPT_BYTES)
+                {
                     if let Ok(transcript) = serde_json::from_slice(&bytes) {
                         transcript_entries(
                             &mut entries,
@@ -220,7 +222,9 @@ pub(super) fn build_index(
                 receipt_path(snapshot, asset.perception.as_deref()),
                 binding.perception_sha256.as_deref(),
             ) {
-                if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(bytes) =
+                    crate::vissearch::read_bounded_file(&path, MAX_EVIDENCE_RECEIPT_BYTES)
+                {
                     if let Ok(report) = serde_json::from_slice(&bytes) {
                         perception_entries(
                             &mut entries,
@@ -290,6 +294,25 @@ pub(super) fn publish_index(
     snapshot: &ProjectSnapshot,
     index: &MediaEvidenceIndex,
 ) -> Result<(), CutError> {
+    publish_index_with_limit(snapshot, index, MAX_EVIDENCE_INDEX_BYTES)
+}
+
+pub(super) fn publish_index_with_limit(
+    snapshot: &ProjectSnapshot,
+    index: &MediaEvidenceIndex,
+    max_bytes: u64,
+) -> Result<(), CutError> {
+    let payload = serde_json::to_vec_pretty(index)?;
+    if payload.len() as u64 > max_bytes {
+        return Err(CutError::new(
+            error_codes::JOB_FAILED,
+            "media intelligence index exceeds its byte limit",
+            format!(
+                "{} bytes exceeds {max_bytes} bytes; no index was published",
+                payload.len()
+            ),
+        ));
+    }
     let path = index_path(&snapshot.dir);
     std::fs::create_dir_all(path.parent().unwrap_or(&snapshot.dir)).map_err(|error| {
         CutError::new(
@@ -298,5 +321,5 @@ pub(super) fn publish_index(
             error.to_string(),
         )
     })?;
-    write_output_atomic(&path, serde_json::to_vec_pretty(index)?)
+    write_output_atomic(&path, payload)
 }

@@ -109,6 +109,7 @@ windows-sys = { version = "0.61.2", features = [
 record-capture = { workspace = true, features = ["capture-macos"] }
 
 [dev-dependencies]
+flate2 = "1"
 # Integration test drives the REAL WS endpoint (handshake + frames).
 tokio-tungstenite = "0.24"
 futures-util = "0.3"

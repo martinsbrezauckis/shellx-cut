@@ -7,6 +7,15 @@ use crate::CaptureRegion;
 
 const BMP_HEADER_BYTES: usize = 54;
 
+struct NativeBmpSource<'a> {
+    width: u32,
+    height: u32,
+    format: SourcePreviewPixelFormat,
+    stride: usize,
+    pixels: &'a [u8],
+    offset: usize,
+}
+
 /// Raw CPU layouts accepted from native capture callbacks. The output is always
 /// a 32-bit BMP, so no original platform buffer leaves the recorder owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,12 +67,14 @@ pub(crate) fn native_bmp(
     region: Option<CaptureRegion>,
 ) -> Result<Vec<u8>> {
     native_bmp_with_pixel_limit(
-        width,
-        height,
-        format,
-        stride,
-        pixels,
-        offset,
+        NativeBmpSource {
+            width,
+            height,
+            format,
+            stride,
+            pixels,
+            offset,
+        },
         region,
         ((MAX_SOURCE_PREVIEW_FRAME_BYTES - BMP_HEADER_BYTES) / 4) as u64,
     )
@@ -71,6 +82,12 @@ pub(crate) fn native_bmp(
 
 /// Active recording previews use a smaller transport ceiling than the
 /// pre-start source picker, which can afford larger one-off frames.
+#[cfg(any(
+    test,
+    all(windows, feature = "capture-windows"),
+    all(target_os = "macos", feature = "capture-macos"),
+    all(target_os = "linux", feature = "capture-linux")
+))]
 pub(crate) fn active_native_bmp(
     width: u32,
     height: u32,
@@ -80,27 +97,32 @@ pub(crate) fn active_native_bmp(
     offset: usize,
 ) -> Result<Vec<u8>> {
     native_bmp_with_pixel_limit(
-        width,
-        height,
-        format,
-        stride,
-        pixels,
-        offset,
+        NativeBmpSource {
+            width,
+            height,
+            format,
+            stride,
+            pixels,
+            offset,
+        },
         None,
         640 * 360,
     )
 }
 
 fn native_bmp_with_pixel_limit(
-    width: u32,
-    height: u32,
-    format: SourcePreviewPixelFormat,
-    stride: usize,
-    pixels: &[u8],
-    offset: usize,
+    source: NativeBmpSource<'_>,
     region: Option<CaptureRegion>,
     max_pixels: u64,
 ) -> Result<Vec<u8>> {
+    let NativeBmpSource {
+        width,
+        height,
+        format,
+        stride,
+        pixels,
+        offset,
+    } = source;
     let width_usize = usize::try_from(width).map_err(|_| invalid("preview width overflows"))?;
     let height_usize = usize::try_from(height).map_err(|_| invalid("preview height overflows"))?;
     let row = width_usize

@@ -3,7 +3,7 @@
 <!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
 > **v0.6.114 candidate.** v0.6.113 is the latest published release. Synced to `schema/verbs.json`, which is the
 > machine-readable contract for all REST, MCP, CLI, debug, and agent calls.
-> Current contract: **306 verbs across 34 domains**. If this table and the schema
+> Current contract: **308 verbs across 34 domains**. If this table and the schema
 > disagree, trust the schema and update this reference in the same change.
 > Each entry's `behavior` metadata is executable: it names exactly one mutation
 > class, its project-state requirement, direct bounded engine-interaction flags,

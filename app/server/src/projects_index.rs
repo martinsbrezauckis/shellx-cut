@@ -19,12 +19,13 @@
 use crate::userdata;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static PROJECTS_INDEX_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+const MAX_PROJECT_NAME_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 
 fn projects_index_io_lock() -> &'static Mutex<()> {
     PROJECTS_INDEX_IO_LOCK.get_or_init(|| Mutex::new(()))
@@ -252,14 +253,37 @@ fn cutproj_exists(path: &str) -> bool {
 /// stem). Best-effort; never fails the scan.
 fn read_project_name(dir: &Path) -> String {
     let pj = dir.join("project.json");
-    if let Ok(s) = std::fs::read_to_string(&pj) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-            if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
-                if !n.is_empty() {
-                    return n.to_string();
-                }
-            }
+    // Discovery runs before a project is opened. Bound both a known large file
+    // and one that grows after the metadata check, then use the usual fallback.
+    let name = (|| -> io::Result<Option<String>> {
+        // A FIFO could block in File::open before a byte limit can apply.
+        let entry = std::fs::symlink_metadata(&pj)?;
+        if !entry.file_type().is_file() || entry.len() > MAX_PROJECT_NAME_METADATA_BYTES {
+            return Ok(None);
         }
+        let file = std::fs::File::open(&pj)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_PROJECT_NAME_METADATA_BYTES {
+            return Ok(None);
+        }
+        let mut contents = String::new();
+        file.take(MAX_PROJECT_NAME_METADATA_BYTES + 1)
+            .read_to_string(&mut contents)?;
+        if contents.len() as u64 > MAX_PROJECT_NAME_METADATA_BYTES {
+            return Ok(None);
+        }
+        let value: serde_json::Value = match serde_json::from_str(&contents) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        Ok(value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned))
+    })();
+    if let Ok(Some(name)) = name {
+        return name;
     }
     dir.file_stem()
         .and_then(|s| s.to_str())
@@ -483,9 +507,62 @@ pub fn path_for(id_or_path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn entry(name: &str, path: &str, created: u64, opened: u64) -> ProjectEntry {
         make_entry(name, path, created, opened, None, None)
+    }
+
+    #[test]
+    fn discovery_bounds_project_metadata_and_keeps_projects_listed() {
+        let root = tempfile::tempdir().unwrap();
+        let ordinary = root.path().join("ordinary.cutproj");
+        let oversized = root.path().join("oversized.cutproj");
+        let malformed = root.path().join("malformed.cutproj");
+        for dir in [&ordinary, &oversized, &malformed] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(ordinary.join("project.json"), r#"{"name":"Readable name"}"#).unwrap();
+        std::fs::write(malformed.join("project.json"), b"{").unwrap();
+
+        // Trailing JSON whitespace keeps this valid: the old unbounded reader
+        // would return the supplied name after reading the whole large file.
+        let mut file = std::fs::File::create(oversized.join("project.json")).unwrap();
+        file.write_all(br#"{"name":"untrusted name"}"#).unwrap();
+        let spaces = [b' '; 64 * 1024];
+        for _ in 0..(MAX_PROJECT_NAME_METADATA_BYTES / spaces.len() as u64) {
+            file.write_all(&spaces).unwrap();
+        }
+        drop(file);
+
+        let mut index = ProjectsIndex::default();
+        reconcile(&mut index, root.path(), 1);
+        assert_eq!(index.entries.len(), 3);
+        let name_for = |dir: &Path| {
+            index
+                .entries
+                .iter()
+                .find(|entry| entry.path == dir.to_string_lossy())
+                .unwrap()
+                .name
+                .as_str()
+        };
+        assert_eq!(name_for(&ordinary), "Readable name");
+        assert_eq!(name_for(&oversized), "oversized");
+        assert_eq!(name_for(&malformed), "malformed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_does_not_follow_linked_project_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("linked.cutproj");
+        std::fs::create_dir(&project).unwrap();
+        let outside = root.path().join("outside.json");
+        std::fs::write(&outside, r#"{"name":"outside name"}"#).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("project.json")).unwrap();
+
+        assert_eq!(read_project_name(&project), "linked");
     }
 
     #[test]

@@ -441,12 +441,14 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
                                                 *generation,
                                                 u64::try_from(st.start.elapsed().as_millis())
                                                     .unwrap_or(u64::MAX),
-                                                st.width,
-                                                st.height,
-                                                stride,
-                                                offset,
-                                                st.preview_format,
-                                                valid,
+                                                crate::active_capture_preview::NativePreviewPixels {
+                                                    width: st.width,
+                                                    height: st.height,
+                                                    stride,
+                                                    offset,
+                                                    format: st.preview_format,
+                                                    pixels: valid,
+                                                },
                                             );
                                             preview.record_sample_cost(
                                                 *generation,

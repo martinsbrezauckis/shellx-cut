@@ -79,19 +79,15 @@ pub(crate) async fn screen_record_studio_event(
     validate_studio_event(&a.event)?;
 
     let (_project, _edl, dir, _at) = snapshot(state).await?;
-    let capture_dir = crate::screen_record::screen_record_cache_dir(&dir)?.join(&a.capture_id);
-    if !capture_dir.is_dir() {
+    let capture_dir = crate::screen_record::existing_capture_dir(&dir, &a.capture_id)?;
+    let Some(capture_dir) = capture_dir else {
         return Err(CutError::new(
             error_codes::NOT_FOUND,
-            format!(
-                "no such capture '{}' ({})",
-                a.capture_id,
-                capture_dir.display()
-            ),
+            format!("no such capture '{}' ({})", a.capture_id, dir.display()),
             "the capture_id does not name a capture dir under <project>/cache/screen_record/",
         )
         .with_suggested_action("pass a capture_id returned by screen_record.start"));
-    }
+    };
 
     let events_path = studio_events_journal_path(&capture_dir);
     // Marker hotkeys and the Studio background picker are separate async UI

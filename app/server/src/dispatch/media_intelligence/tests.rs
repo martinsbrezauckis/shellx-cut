@@ -113,6 +113,9 @@ fn build_fixture_index(snapshot: &ProjectSnapshot) -> MediaEvidenceIndex {
     .unwrap()
 }
 
+#[path = "tests_bounds.rs"]
+mod bounds_tests;
+
 #[test]
 fn prepared_visual_status_and_query_reject_a_legacy_embedding_index() {
     let (_directory, snapshot) = fixture();

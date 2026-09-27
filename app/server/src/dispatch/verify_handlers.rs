@@ -1067,7 +1067,7 @@ pub(super) fn attach_judge_to_receipt(
         "use a render id from the current project's receipts directory",
     )?;
     let mut receipt: cut_core::RenderReceipt =
-        serde_json::from_str(&std::fs::read_to_string(&receipt_path)?)?;
+        serde_json::from_str(&std::fs::read_to_string(receipt_path)?)?;
     receipt.judge = Some(envelope);
     write_output_atomic(receipt_path, serde_json::to_string_pretty(&receipt)?)?;
     state.events.publish(Event::ReceiptReady {

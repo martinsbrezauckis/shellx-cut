@@ -366,14 +366,16 @@ impl Capture for LinuxCapture {
                         .take()
                         .expect("every capture segment owns one portal PipeWire remote");
                     crate::linux_gst_capture::capture_segment(
-                        fd,
-                        node,
-                        &segment_path,
-                        interval_end,
-                        start,
-                        stop.clone(),
-                        cfg.readiness.clone(),
-                        segment_preview,
+                        crate::linux_gst_capture::GstSegment {
+                            portal_remote: fd,
+                            node,
+                            segment_path: &segment_path,
+                            interval_end,
+                            start,
+                            stop: stop.clone(),
+                            readiness: cfg.readiness.clone(),
+                            active_preview: segment_preview,
+                        },
                     )
                     .await?
                 };
@@ -400,17 +402,15 @@ impl Capture for LinuxCapture {
                 }
                 // A PipeWire remote belongs to one encoder/consumer connection.
                 // Reopen it for every checkpoint regardless of consumer, so a
-                // terminated GStreamer segment cannot leave a stale fd in the
-                // next one. Stop takes precedence over an unnecessary reopen.
+                // Reopen after termination so no stale fd survives to the next segment.
                 pw_fd = Some(
                     proxy
                         .open_pipe_wire_remote(&session, Default::default())
                         .await
                         .map_err(|e| cap_err("reopen pipewire remote", e))?,
                 );
-                // The next encoder does not exist until any portal-remote reopen and
-                // prior segment verification finish. Measure its new wall-clock start
-                // so stitching materializes all of that restart gap.
+                // Start the next encoder after portal reopen and segment verification.
+                // Measure its wall-clock start so stitching preserves that gap.
                 segment_start_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
             };
             // End external mic/system-audio/input on the same capture clock before

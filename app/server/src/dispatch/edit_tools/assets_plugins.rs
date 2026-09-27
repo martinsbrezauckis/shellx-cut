@@ -334,11 +334,8 @@ pub(in crate::dispatch) async fn media_index(
             "media.index needs the local perception runtime and a SigLIP2 model. Set up perception and the model, then re-run. Core editing and search of an already-built index work without it.",
         )
     })?;
-    let out = crate::vissearch::index_path(&proj_dir, &a.asset);
-    if let Some(dir) = out.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| CutError::new(error_codes::IO, "create embeddings dir", e.to_string()))?;
-    }
+    let out = crate::vissearch::prepare_index_output_path(&proj_dir, &a.asset)
+        .map_err(|e| CutError::new(error_codes::IO, "prepare embeddings index", e.to_string()))?;
     // One-shot indexer: python siglip_index.py <in> <out.json> --model M --fps F
     // --asset ID. Runs off the async runtime (frame extract + ONNX inference).
     let (in_s, out_s, asset_id) = (src_path.clone(), out.clone(), a.asset.clone());
@@ -352,7 +349,9 @@ pub(in crate::dispatch) async fn media_index(
             .arg("--fps")
             .arg(format!("{fps}"))
             .arg("--asset")
-            .arg(&asset_id);
+            .arg(&asset_id)
+            .arg("--max-index-bytes")
+            .arg(crate::vissearch::MAX_VISUAL_INDEX_BYTES.to_string());
         crate::dispatch::run_bounded_foreground_command(&mut command, "SigLIP2 indexer")
     })
     .await

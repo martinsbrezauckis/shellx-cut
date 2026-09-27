@@ -278,7 +278,7 @@ pub(crate) fn camera_artifact_for_capture(
 fn sha256_file(path: &Path) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
+    let mut buffer = [0_u8; 64 * 1024];
     loop {
         let n = file.read(&mut buffer)?;
         if n == 0 {

@@ -75,6 +75,35 @@ fn first_append_is_readable_after_a_new_journal_is_created() {
     assert_eq!(read_studio_journal(&path).unwrap().events.len(), 1);
 }
 
+#[cfg(unix)]
+#[test]
+fn linked_journal_leaf_is_rejected_without_touching_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let outside = temp.path().join("outside");
+    std::fs::write(&outside, b"").unwrap();
+    let path = temp.path().join(STUDIO_EVENTS_FILENAME);
+    symlink(&outside, &path).unwrap();
+
+    assert!(StudioJournalOwner::default()
+        .append(&path, marker(20))
+        .is_err());
+    assert!(read_studio_journal(&path).is_err());
+    assert_eq!(std::fs::read(&outside).unwrap(), b"");
+
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(&outside).unwrap();
+    symlink(&outside, &path).unwrap();
+    assert!(StudioJournalOwner::default()
+        .append(&path, marker(20))
+        .is_err());
+    assert!(
+        !outside.exists(),
+        "dangling journal link must not create its target"
+    );
+}
+
 #[test]
 fn append_stops_at_the_size_limit_without_mutating_the_journal() {
     let temp = tempfile::tempdir().unwrap();

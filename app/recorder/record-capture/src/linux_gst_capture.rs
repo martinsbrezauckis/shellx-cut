@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use record_core::Result;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+use crate::active_capture_preview::{ActiveCapturePreview, NativePreviewPixels};
 use crate::linux_runtime::{cap_err, gst_bin};
 use crate::source_preview_bitmap::SourcePreviewPixelFormat;
 use crate::CaptureReadiness;
@@ -155,7 +156,7 @@ async fn observe_frames<R: AsyncRead + Unpin>(
     mut reader: R,
     start: Instant,
     readiness: Option<CaptureReadiness>,
-    active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
+    active_preview: Option<(ActiveCapturePreview, u64)>,
 ) {
     let mut buffer = vec![0u8; PREVIEW_FRAME_BYTES];
     while reader.read_exact(&mut buffer).await.is_ok() {
@@ -168,12 +169,14 @@ async fn observe_frames<R: AsyncRead + Unpin>(
                 preview.publish_native(
                     *generation,
                     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    PREVIEW_WIDTH as u32,
-                    PREVIEW_HEIGHT as u32,
-                    PREVIEW_STRIDE,
-                    0,
-                    SourcePreviewPixelFormat::Bgra,
-                    &buffer,
+                    NativePreviewPixels {
+                        width: PREVIEW_WIDTH as u32,
+                        height: PREVIEW_HEIGHT as u32,
+                        stride: PREVIEW_STRIDE,
+                        offset: 0,
+                        format: SourcePreviewPixelFormat::Bgra,
+                        pixels: &buffer,
+                    },
                 );
                 preview.record_sample_cost(*generation, sampled_at.elapsed());
             }
@@ -184,16 +187,28 @@ async fn observe_frames<R: AsyncRead + Unpin>(
 /// Run exactly one GStreamer segment and retain only the first-frame admission
 /// proof in memory. The caller owns checkpoint publication and all terminal
 /// lifecycle decisions.
-pub(crate) async fn capture_segment(
-    portal_remote: OwnedFd,
-    node: u32,
-    segment_path: &str,
-    interval_end: u64,
-    start: Instant,
-    stop: Arc<AtomicBool>,
-    readiness: Option<CaptureReadiness>,
-    active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
-) -> Result<(u64, u64)> {
+pub(crate) struct GstSegment<'a> {
+    pub portal_remote: OwnedFd,
+    pub node: u32,
+    pub segment_path: &'a str,
+    pub interval_end: u64,
+    pub start: Instant,
+    pub stop: Arc<AtomicBool>,
+    pub readiness: Option<CaptureReadiness>,
+    pub active_preview: Option<(ActiveCapturePreview, u64)>,
+}
+
+pub(crate) async fn capture_segment(segment: GstSegment<'_>) -> Result<(u64, u64)> {
+    let GstSegment {
+        portal_remote,
+        node,
+        segment_path,
+        interval_end,
+        start,
+        stop,
+        readiness,
+        active_preview,
+    } = segment;
     let child_remote = inherit_portal_remote(&portal_remote)
         .map_err(|error| cap_err("prepare portal PipeWire remote for GStreamer", error))?;
     let remote_fd = child_remote.raw_fd();

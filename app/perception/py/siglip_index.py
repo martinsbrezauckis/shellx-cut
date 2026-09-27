@@ -19,8 +19,10 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from native_runtime_models import (
@@ -40,6 +42,49 @@ if _ff_dir:
 
 FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
 FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
+MAX_VISUAL_INDEX_BYTES = 512 * 1024 * 1024  # Keep in sync with vissearch.rs.
+
+
+def write_index_bounded(index: dict, path: str, max_bytes: int) -> None:
+    # Count the exact JSON encoding in chunks before opening the final cache.
+    # A long index is already resident as frame vectors; avoid a second giant
+    # string just to discover it cannot be read back by Cut.
+    size = 0
+    for chunk in json.JSONEncoder().iterencode(index):
+        size += len(chunk.encode("utf-8"))
+        if size > max_bytes:
+            raise ValueError(f"visual index exceeds {max_bytes} byte limit")
+    parent = os.path.dirname(os.path.abspath(path))
+    parent_stat = os.lstat(parent)
+    if not stat.S_ISDIR(parent_stat.st_mode) or is_reparse(parent_stat):
+        raise ValueError("embeddings is not a plain directory")
+    try:
+        leaf_stat = os.lstat(path)
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(leaf_stat.st_mode) or is_reparse(leaf_stat):
+            raise ValueError("index is not a plain file")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=parent,
+                                         prefix=".index-", suffix=".tmp", delete=False) as output:
+            temporary = output.name
+            json.dump(index, output)
+        parent_stat = os.lstat(parent)
+        if not stat.S_ISDIR(parent_stat.st_mode) or is_reparse(parent_stat):
+            raise ValueError("embeddings is not a plain directory")
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+
+
+def is_reparse(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or (
+        os.name == "nt" and bool(getattr(info, "st_file_attributes", 0) & 0x400)
+    )
 
 
 def log(msg: str) -> None:
@@ -144,6 +189,7 @@ def main() -> int:
     ap.add_argument("--model-id", default="", help=argparse.SUPPRESS)
     ap.add_argument("--fps", type=float, default=1.0)
     ap.add_argument("--asset", default="")
+    ap.add_argument("--max-index-bytes", type=int, default=MAX_VISUAL_INDEX_BYTES)
     ap.add_argument("--size", type=int, default=224, help="fixed encoder input size")
     ap.add_argument("--embed-text", default=None,
                     help="TEXT-QUERY mode: embed this string with the SigLIP2 text "
@@ -199,8 +245,7 @@ def main() -> int:
         "asset": args.asset,
         "frames": frames,
     }
-    with open(args.out, "w") as f:
-        json.dump(index, f)
+    write_index_bounded(index, args.out, args.max_index_bytes)
     log(f"wrote {len(frames)} frame embeddings (dim={dim}) → {args.out}")
     return 0
 

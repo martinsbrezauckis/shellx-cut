@@ -2,7 +2,14 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+
+// The index stores short excerpts rather than media; a 128 MiB JSON file can
+// hold hundreds of thousands of citations. Receipts can cover long footage,
+// but their authority hash must never require loading them whole.
+pub(super) const MAX_EVIDENCE_INDEX_BYTES: u64 = 128 * 1024 * 1024;
+pub(super) const MAX_EVIDENCE_RECEIPT_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(super) const INDEX_SCHEMA: &str = "shellx-cut/media-evidence-index/1";
 pub(super) const SEARCH_SCHEMA: &str = "shellx-cut/evidence-search-result/1";
@@ -94,7 +101,9 @@ pub(super) fn index_path(project_dir: &Path) -> PathBuf {
 }
 
 pub(super) fn load_index(project_dir: &Path) -> Option<MediaEvidenceIndex> {
-    let bytes = std::fs::read(index_path(project_dir)).ok()?;
+    let bytes =
+        crate::vissearch::read_bounded_file(&index_path(project_dir), MAX_EVIDENCE_INDEX_BYTES)
+            .ok()?;
     let index: MediaEvidenceIndex = serde_json::from_slice(&bytes).ok()?;
     (index.schema == INDEX_SCHEMA).then_some(index)
 }
@@ -108,7 +117,42 @@ fn relative_receipt_hash(project_dir: &Path, relative: Option<&str>) -> Option<S
         "re-run the matching analysis so Cut can publish a project-local receipt",
     )
     .ok()?;
-    std::fs::read(path).ok().map(|bytes| digest_bytes(&bytes))
+    hash_bounded_file(&path, MAX_EVIDENCE_RECEIPT_BYTES).ok()
+}
+
+fn hash_bounded_file(path: &Path, max_bytes: u64) -> io::Result<String> {
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a regular file",
+        ));
+    }
+    let mut file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds byte limit",
+        ));
+    }
+    let mut digest = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes += read as u64;
+        if bytes > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file exceeds byte limit",
+            ));
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("sha256:{:x}", digest.finalize()))
 }
 
 fn source_available(project_dir: &Path, source: &str) -> bool {
@@ -198,9 +242,11 @@ fn visual_index_sha256(
         }
         crate::vissearch::VisualCacheRuntime::Unavailable => None,
     }?;
-    std::fs::read(crate::vissearch::index_path(project_dir, asset_id))
-        .ok()
-        .map(|bytes| digest_bytes(&bytes))
+    hash_bounded_file(
+        &crate::vissearch::index_path(project_dir, asset_id),
+        crate::vissearch::MAX_VISUAL_INDEX_BYTES,
+    )
+    .ok()
 }
 
 pub(super) fn binding_map(bindings: &[SourceBinding]) -> BTreeMap<&str, &SourceBinding> {

@@ -188,6 +188,42 @@ async fn screen_record_studio_event_appends_camera_transform() {
     assert_eq!(log.events[0].x, Some(0.72));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn screen_record_studio_event_rejects_linked_capture_directory() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let project_dir = temp.path().join("studio_link_guard.cutproj");
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name": "studio_link_guard", "dir": project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+
+    let outside = temp.path().join("outside-capture");
+    std::fs::create_dir(&outside).unwrap();
+    let capture_id = "cap-studio-linked";
+    let cache = crate::screen_record::screen_record_cache_dir(&project_dir).unwrap();
+    symlink(&outside, cache.join(capture_id)).unwrap();
+
+    let result = dispatch(
+        &state,
+        "screen_record.studio_event",
+        json!({"capture_id": capture_id, "event": {
+            "t_ms": 20, "source": "recording", "kind": "marker"
+        }}),
+        test_actor(),
+    )
+    .await;
+    assert!(!result.ok, "linked capture directory must be refused");
+    assert!(!outside.join("studio-events.jsonl").exists());
+}
+
 #[tokio::test]
 async fn screen_record_studio_event_rejects_path_like_capture_id() {
     let dir = tempfile::tempdir().unwrap();

@@ -2874,6 +2874,7 @@ dependencies = [
  "cut-native-runtime-context",
  "cut-perception",
  "embed-resource",
+ "flate2",
  "fs2",
  "futures-util",
  "getrandom 0.3.4",

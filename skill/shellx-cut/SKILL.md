@@ -9,8 +9,8 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 > **Engine v0.6.114 candidate.** v0.6.113 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
-> the file): **306 verbs across 34 domains** under the public verb contract.
-> **`reference.md` is the full 306-verb table —
+> the file): **308 verbs across 34 domains** under the public verb contract.
+> **`reference.md` is the full 308-verb table —
 > consult it for any verb not detailed below.** A
 > capability-grouped public-safe feature inventory lives in
 > `docs/public/FEATURES.md`.
@@ -579,7 +579,7 @@ Register that same proxy with the exact packaged executable reported by
   `--dangerously-skip-permissions` just to test Cut.
 
 For every client, call `system.mcp_test {}` through the configured MCP server as
-the final proof of protocol negotiation, ping, all 306 tools, and same-engine
+the final proof of protocol negotiation, ping, all 308 tools, and same-engine
 resolution. Client-specific configuration commands never change Cut's verb or
 argument contract.
 

@@ -38,7 +38,13 @@ pub(crate) fn require_plain_internal_dir(path: &Path) -> Result<(), CutError> {
 
 pub(crate) fn ensure_plain_internal_child(parent: &Path, child: &Path) -> Result<(), CutError> {
     require_plain_internal_dir(parent)?;
-    match std::fs::create_dir(child) {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(child) {
         Ok(()) => (),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
         Err(e) => return Err(e.into()),

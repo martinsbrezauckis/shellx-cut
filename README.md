@@ -12,7 +12,7 @@ AI output as an opaque final file.
 
 <!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
 > **STATUS — v0.6.114 candidate; v0.6.113 is the latest published release.**
-> The public contract is 306 verbs across 34
+> The public contract is 308 verbs across 34
 > domains. The schema-generated REST and MCP surfaces share one registry,
 > typed UI bindings are checked by `scripts/verbargs-sync.sh`, and the full
 > agent reference is in `skill/shellx-cut/reference.md`. Current major surfaces
@@ -160,7 +160,7 @@ Cut. See
 [`docs/public/shellx-cut-threat-model.md`](docs/public/shellx-cut-threat-model.md)
 for the supported deployment and residual risk.
 
-## Verb API (306 verbs, 34 domains — `schema/verbs.json` is the contract)
+## Verb API (308 verbs, 34 domains — `schema/verbs.json` is the contract)
 
 Envelope: `{ok, result?, op_ids?, project_revision?, warnings?[], error?{code,message,clip_id?,at_ms?,cause,suggested_action?}}`.
 Every mutating verb takes optional `rationale`. Long tasks return `{job_id}`.
@@ -169,7 +169,7 @@ Every verb also advertises shared optional `request_id` and
 reject stale revisions atomically, and return the original durable response for
 an identical lost-response retry; changed payloads conflict.
 Representative verbs per domain below — `skill/shellx-cut/reference.md` is the
-full 306-verb table.
+full 308-verb table.
 
 Color management uses `project.color` and `edit.color_space` for the explicit
 Rec.709, Rec.2020, sRGB, and scene-linear spaces. It is a lightweight

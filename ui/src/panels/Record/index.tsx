@@ -64,6 +64,7 @@ import {
 } from './recordingWorkspaceAdmission'
 import { useRecordingExport } from './useRecordingExport'
 import { useRawRecordingCopy } from './useRawRecordingCopy'
+import { addRawRecordingToTimeline } from './addRawRecordingToTimeline'
 import {
   clampCameraSize,
   defaultStudioState,
@@ -578,15 +579,14 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     setNote(captureEndedDetail)
   }, [finalize, phase, recordingAudioMeters.captureEndDetail, sceneCaptureId, stopRetryRequired])
 
-  // RAW mode: add the saved raw recording to the timeline AS-IS. `media.import`
-  // auto-places the first clip into an empty timeline (the common fresh-recording
-  // case) — no autoedit, no polish. The raw.mp4 already carries the combined audio
-  // (mic + system folded by mux_raw), so a single import brings picture + sound.
+  // RAW mode: import the stopped file and verify actual timeline placement.
+  // A prior polished take can already occupy v1, so first-import auto-place
+  // alone is not enough for the visible Add to timeline promise.
   const addRawToTimeline = useCallback(async () => {
     if (!lastRaw) return
     setExportNote('Adding to the timeline…')
-    const imp = await callVerb('media.import', { path: lastRaw.path })
-    if (!imp.ok) { setExportNote(`add failed: ${imp.error?.message ?? 'error'}`); return }
+    const added = await addRawRecordingToTimeline(lastRaw.path)
+    if (!added.ok) { setExportNote(`add failed: ${added.reason}`); return }
     setExportNote('Added to the timeline')
     onClipAdded?.()
     onOpenEdit?.()
@@ -854,6 +854,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       data-cut-record-phase={displayPhase}
       data-cut-rec-result-view={hasCaptureResult ? 'true' : 'false'}
       data-cut-rec-start-admission={startAdmissionUnknown ? 'unknown' : 'none'}
+      data-cut-rec-scene-recovery-state={sceneRecovery.state}
     >
       <header className="rec__head">
         <div className="rec__head-copy">

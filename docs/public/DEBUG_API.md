@@ -28,7 +28,7 @@ Clients (MCP proxy, CLI) read this file first and fall back to `127.0.0.1:6161`.
 
 | OS | discovery file |
 |---|---|
-| Linux | `$XDG_DATA_HOME/ShellX Cut/engine.addr` (default `~/.local/share/ShellX Cut/engine.addr`) |
+| Linux | `$XDG_DATA_HOME/shellx-cut/engine.addr` (default `~/.local/share/shellx-cut/engine.addr`) |
 | macOS | `~/Library/Application Support/ShellX Cut/engine.addr` |
 | Windows | `%LOCALAPPDATA%\ShellX Cut\engine.addr` |
 
