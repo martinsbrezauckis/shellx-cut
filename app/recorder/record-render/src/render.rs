@@ -85,11 +85,19 @@ pub fn render_video_audio_with_control_progress(
         crate::Compositor::new(plan)
     };
 
-    // Pre-decode the webcam (if any) into bubble-sized frames, indexed by time.
-    let webcam = match &plan.webcam {
+    // Stream the webcam alongside output frames. Keeping its entire raw track
+    // would both truncate at the diagnostic pipe cap and grow with take length.
+    let mut webcam = match &plan.webcam {
         Some(wc) => {
             let bp = (((wc.size * out_h as f64).round() as u32) & !1).max(2);
-            let frames = ffmpeg::decode_square_with_control(&wc.source, bp, fps, control)?;
+            let mut frames = ffmpeg::stream_square_with_control(&wc.source, bp, fps, control)?;
+            if frames.at(0)?.is_none() {
+                return Err(RecordError::new(
+                    error_codes::FFMPEG,
+                    "webcam decode",
+                    "selected camera has no decoded frames",
+                ));
+            }
             Some((bp, frames))
         }
         None => None,
@@ -99,7 +107,7 @@ pub fn render_video_audio_with_control_progress(
     // Normalize loudness only when an explicit audio track (e.g. mic) is muxed.
     let normalize = audio.is_some();
     let mut rendered_frames = 0_u64;
-    ffmpeg::render_pipe_with_control(
+    let result = ffmpeg::render_pipe_with_control(
         source_path,
         out_path,
         out_w,
@@ -110,34 +118,51 @@ pub fn render_video_audio_with_control_progress(
         control,
         |buf, t_ms| {
             let src = Pixmap::from_vec(buf.to_vec(), size).expect("source pixmap from frame bytes");
-            let cam = webcam.as_ref().and_then(|(bp, frames)| {
-                if frames.is_empty() {
-                    return None;
-                }
-                let wc = plan.webcam.as_ref()?;
-                let idx = webcam_frame_index(wc, t_ms, fps, frames.len())?;
-                let s = IntSize::from_wh(*bp, *bp)?;
-                Pixmap::from_vec(frames[idx].clone(), s)
-            });
+            let cam = match (&mut webcam, &plan.webcam) {
+                (Some((bp, frames)), Some(wc)) => match webcam_frame_index(wc, t_ms, fps) {
+                    Some(idx) => {
+                        let size = IntSize::from_wh(*bp, *bp).expect("validated camera size");
+                        frames
+                            .at(idx)?
+                            .map(|frame| {
+                                Pixmap::from_vec(frame.to_vec(), size).ok_or_else(|| {
+                                    RecordError::new(
+                                        error_codes::FFMPEG,
+                                        "webcam decode",
+                                        "invalid RGBA camera frame",
+                                    )
+                                })
+                            })
+                            .transpose()?
+                    }
+                    None => None,
+                },
+                _ => None,
+            };
             let frame = comp.frame_webcam(&src, cam.as_ref(), t_ms).data().to_vec();
             rendered_frames += 1;
             on_frame(rendered_frames, expected_frames);
-            frame
+            Ok(frame)
         },
-    )
+    );
+    if result.is_ok() {
+        if let Some((_, frames)) = webcam {
+            frames.finish()?;
+        }
+    }
+    result
 }
 
-/// Resolve a decoded camera-frame index without fabricating a frame for an
-/// unrecorded interval. CameraArtifact@1 supplies an optional shared-clock
-/// range; legacy webcam plans retain a zero origin but still never clamp their
-/// last decoded frame over an unknown tail.
+/// Resolve a camera-frame index without fabricating a frame for an unrecorded
+/// interval. A successfully ended camera track leaves the overlay absent.
+/// CameraArtifact@1 supplies an optional shared-clock range; legacy plans
+/// retain a zero origin.
 pub(crate) fn webcam_frame_index(
     webcam: &record_core::WebcamOverlay,
     t_ms: u64,
     fps: f64,
-    frame_count: usize,
 ) -> Option<usize> {
-    if frame_count == 0 || !fps.is_finite() || fps <= 0.0 {
+    if !fps.is_finite() || fps <= 0.0 {
         return None;
     }
     let camera_ms = if let Some(clock) = webcam.camera_clock {
@@ -148,8 +173,7 @@ pub(crate) fn webcam_frame_index(
     } else {
         t_ms
     };
-    let index = (camera_ms as f64 * fps / 1000.0).floor() as usize;
-    (index < frame_count).then_some(index)
+    Some((camera_ms as f64 * fps / 1000.0).floor() as usize)
 }
 
 /// Render a SINGLE composed frame to a PNG (no encode — fast visual/golden check).
@@ -198,18 +222,11 @@ mod tests {
             }),
             timeline: vec![],
         };
-        assert_eq!(super::webcam_frame_index(&webcam, 499, 30.0, 30), None);
-        assert_eq!(super::webcam_frame_index(&webcam, 500, 30.0, 30), Some(0));
-        assert_eq!(
-            super::webcam_frame_index(&webcam, 1_000, 30.0, 30),
-            Some(15)
-        );
-        assert_eq!(
-            super::webcam_frame_index(&webcam, 1_499, 30.0, 30),
-            Some(29)
-        );
-        assert_eq!(super::webcam_frame_index(&webcam, 1_500, 30.0, 30), None);
-        assert_eq!(super::webcam_frame_index(&webcam, 1_499, 30.0, 5), None);
+        assert_eq!(super::webcam_frame_index(&webcam, 499, 30.0), None);
+        assert_eq!(super::webcam_frame_index(&webcam, 500, 30.0), Some(0));
+        assert_eq!(super::webcam_frame_index(&webcam, 1_000, 30.0), Some(15));
+        assert_eq!(super::webcam_frame_index(&webcam, 1_499, 30.0), Some(29));
+        assert_eq!(super::webcam_frame_index(&webcam, 1_500, 30.0), None);
     }
 
     fn ffmpeg_present() -> bool {
@@ -260,5 +277,174 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn installed_mac_camera_clock_and_geometry_survive_full_ffmpeg_pipeline() {
+        if !ffmpeg_present() {
+            eprintln!("skip camera pipeline: ffmpeg not on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let src = dir.path().join("screen.mp4");
+        let cam = dir.path().join("camera.mov");
+        let out = dir.path().join("render.mp4");
+        for (path, input) in [
+            (&src, "color=c=0x202830:s=1040x504:r=24:d=5.2"),
+            (&cam, "color=c=red:s=1920x1080:r=24:d=4.0"),
+        ] {
+            let encoded = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-v", "error", "-y", "-f", "lavfi", "-i", input, "-c:v", "libx264", "-pix_fmt",
+                    "yuv420p",
+                ])
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(
+                encoded.status.success(),
+                "{}",
+                String::from_utf8_lossy(&encoded.stderr)
+            );
+        }
+        let mut plan = EditPlan::empty(1040, 504, 5_200, 24.0);
+        plan.webcam = Some(WebcamOverlay {
+            source: cam.to_string_lossy().into_owned(),
+            shape: WebcamShape::Circle,
+            anchor: Anchor::BottomRight,
+            margin: 0.04,
+            size: 0.22,
+            camera_clock: Some(CameraClockRange {
+                first_frame_offset_ms: 1_122,
+                end_frame_offset_ms: 5_074,
+            }),
+            timeline: vec![],
+        });
+        let frames =
+            super::render_video(src.to_str().unwrap(), &plan, out.to_str().unwrap()).unwrap();
+        assert!(frames >= 95);
+        let sampled = std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(&out)
+            .args([
+                "-vf",
+                "select=eq(n\\,94)",
+                "-vsync",
+                "0",
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "rgb24",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            sampled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&sampled.stderr)
+        );
+        assert_eq!(sampled.stdout.len(), 1040 * 504 * 3);
+        let center = (428 * 1040 + 964) * 3;
+        assert!(
+            sampled.stdout[center] > 150 && sampled.stdout[center + 1] < 80,
+            "full render omitted the admitted camera center: {:?}",
+            &sampled.stdout[center..center + 3]
+        );
+    }
+
+    #[test]
+    fn legacy_short_camera_track_ends_overlay_without_aborting_screen_render() {
+        if !ffmpeg_present() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let src = dir.path().join("screen.mp4");
+        let cam = dir.path().join("short-camera.mp4");
+        let out = dir.path().join("render.mp4");
+        for (path, input) in [
+            (&src, "color=c=0x202830:s=128x72:r=10:d=1.5"),
+            (&cam, "color=c=red:s=64x64:r=10:d=0.3"),
+        ] {
+            let encoded = std::process::Command::new(&ffmpeg)
+                .args([
+                    "-v", "error", "-y", "-f", "lavfi", "-i", input, "-c:v", "libx264",
+                ])
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(
+                encoded.status.success(),
+                "{}",
+                String::from_utf8_lossy(&encoded.stderr)
+            );
+        }
+        let mut plan = EditPlan::empty(128, 72, 1_500, 10.0);
+        plan.webcam = Some(WebcamOverlay {
+            source: cam.to_string_lossy().into_owned(),
+            shape: WebcamShape::Circle,
+            anchor: Anchor::BottomRight,
+            margin: 0.04,
+            size: 0.35,
+            camera_clock: None,
+            timeline: vec![],
+        });
+        let frames =
+            super::render_video(src.to_str().unwrap(), &plan, out.to_str().unwrap()).unwrap();
+        assert!(
+            frames >= 14,
+            "screen frames must continue after camera EOF: {frames}"
+        );
+        assert!(std::fs::metadata(&out).unwrap().len() > 1000);
+    }
+
+    #[test]
+    fn selected_camera_is_validated_even_when_its_clock_misses_the_screen() {
+        if !ffmpeg_present() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let src = dir.path().join("screen.mp4");
+        let bad_cam = dir.path().join("invalid.mov");
+        let out = dir.path().join("render.mp4");
+        let encoded = std::process::Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=64x64:r=10:d=0.3",
+                "-c:v",
+                "libx264",
+            ])
+            .arg(&src)
+            .output()
+            .unwrap();
+        assert!(encoded.status.success());
+        std::fs::write(&bad_cam, b"invalid camera movie").unwrap();
+        let mut plan = EditPlan::empty(64, 64, 300, 10.0);
+        plan.webcam = Some(WebcamOverlay {
+            source: bad_cam.to_string_lossy().into_owned(),
+            shape: WebcamShape::Circle,
+            anchor: Anchor::BottomRight,
+            margin: 0.04,
+            size: 0.25,
+            camera_clock: Some(CameraClockRange {
+                first_frame_offset_ms: 240,
+                end_frame_offset_ms: 290,
+            }),
+            timeline: vec![],
+        });
+        let error =
+            super::render_video(src.to_str().unwrap(), &plan, out.to_str().unwrap()).unwrap_err();
+        assert_eq!(error.code, super::error_codes::FFMPEG);
+        assert!(error.message.contains("webcam decode"), "{error}");
     }
 }

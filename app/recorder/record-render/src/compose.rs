@@ -527,6 +527,42 @@ mod tests {
     }
 
     #[test]
+    fn camera_at_installed_mac_reset_geometry_covers_bottom_right_pixels() {
+        let src = solid_source(1040, 504, Color::from_rgba8(30, 34, 40, 255));
+        let cam = solid_source(110, 110, Color::from_rgba8(220, 20, 40, 255));
+        let mut plan = EditPlan::empty(1040, 504, 5_100, 24.0);
+        plan.webcam = Some(WebcamOverlay {
+            source: "cam.mov".into(),
+            shape: WebcamShape::Circle,
+            anchor: Anchor::BottomRight,
+            margin: 0.04,
+            size: 0.22,
+            camera_clock: Some(record_core::CameraClockRange {
+                first_frame_offset_ms: 1_122,
+                end_frame_offset_ms: 5_074,
+            }),
+            timeline: vec![WebcamKeyframe {
+                t_ms: 3_500,
+                visible: Some(true),
+                x: Some(0.874),
+                y: Some(0.74),
+                size: Some(0.22),
+                shape: Some(WebcamShape::Circle),
+            }],
+        });
+        let out = Compositor::new(&plan).frame_webcam(&src, Some(&cam), 3_916);
+        assert_eq!((out.width(), out.height()), (1040, 504));
+        assert!(
+            is_red(pixel_rgba(&out, 964, 428)),
+            "camera center must be visible"
+        );
+        assert!(
+            !is_red(pixel_rgba(&out, 800, 428)),
+            "outside bubble stays screen"
+        );
+    }
+
+    #[test]
     fn webcam_timeline_visibility_hides_overlay() {
         let src = solid_source(320, 180, Color::from_rgba8(40, 80, 180, 255));
         let cam = solid_source(64, 64, Color::from_rgba8(240, 20, 20, 255));

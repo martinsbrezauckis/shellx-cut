@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import { sourceContentManifest } from './source-content-manifest.mjs'
@@ -21,6 +21,24 @@ function digest(path, label) {
   } catch (error) {
     identityError(`cannot read ${label} (${path}): ${error.message}`)
   }
+}
+
+function packagedDistFiles(dist) {
+  const files = []
+  function visit(directory, relative = '') {
+    for (const name of readdirSync(directory).sort()) {
+      if (!relative && name === UI_DIST_IDENTITY_FILE) continue
+      const path = join(directory, name)
+      const entry = lstatSync(path)
+      const packagePath = relative ? `${relative}/${name}` : name
+      if (entry.isDirectory()) visit(path, packagePath)
+      else if (entry.isFile()) files.push({ path: packagePath, sha256: digest(path, packagePath) })
+      else identityError(`ui/dist contains a non-regular package entry: ${packagePath}`)
+    }
+  }
+  visit(dist)
+  if (!files.some((entry) => entry.path === 'index.html')) identityError('ui/dist file manifest is missing index.html')
+  return files
 }
 
 function packageVersion(root) {
@@ -65,6 +83,7 @@ export function writeUiDistIdentity({ repoRoot, distPath } = {}) {
   const identity = currentUiDistIdentity({ repoRoot: root })
   stampUiDistIndexIdentity(indexPath, identity.source.content_manifest.sha256)
   mkdirSync(dist, { recursive: true })
+  identity.dist = { files: packagedDistFiles(dist) }
   writeFileSync(join(dist, UI_DIST_IDENTITY_FILE), `${JSON.stringify(identity, null, 2)}\n`)
   return identity
 }
@@ -131,5 +150,8 @@ export function checkUiDistIdentity({ repoRoot, distPath } = {}) {
   same('source-content manifest bytes', built.source?.content_manifest?.bytes, current.source.content_manifest.bytes)
   same('source-content manifest sha256', built.source?.content_manifest?.sha256, current.source.content_manifest.sha256)
   same('ui/dist index source-content manifest sha256', readUiDistIndexIdentity(join(dist, 'index.html')), current.source.content_manifest.sha256)
+  if (JSON.stringify(built.dist?.files) !== JSON.stringify(packagedDistFiles(dist))) {
+    identityError('ui/dist file manifest mismatch; rebuild with npm --prefix ui run build')
+  }
   return current
 }

@@ -86,7 +86,7 @@ pub fn render_pipe<F: FnMut(&[u8], u64) -> Vec<u8>>(
     fps: f64,
     audio_input: &str,
     normalize: bool,
-    compose: F,
+    mut compose: F,
 ) -> Result<u64> {
     render_pipe_with_control(
         src,
@@ -97,13 +97,13 @@ pub fn render_pipe<F: FnMut(&[u8], u64) -> Vec<u8>>(
         audio_input,
         normalize,
         &default_control(),
-        compose,
+        |frame, time_ms| Ok(compose(frame, time_ms)),
     )
 }
 
 /// Cancellable form used by the server's tracked recording jobs.
 #[allow(clippy::too_many_arguments)]
-pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Vec<u8>>(
+pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Result<Vec<u8>>>(
     src: &str,
     out: &str,
     out_w: u32,
@@ -202,7 +202,7 @@ pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Vec<u8>>(
                 break;
             }
             let time_ms = (count as f64 * 1000.0 / fps) as u64;
-            let composed = compose(&frame, time_ms);
+            let composed = compose(&frame, time_ms)?;
             control.check("compose recorder frame")?;
             if let Err(error) = stdin.write_all(&composed) {
                 if error.kind() == std::io::ErrorKind::BrokenPipe {
@@ -226,10 +226,12 @@ pub fn render_pipe_with_control<F: FnMut(&[u8], u64) -> Vec<u8>>(
     let decode_status = decoder.wait();
     let encode_status = encoder.wait();
     let stderr = finish_reader(stderr_reader, &mut encoder, "read encode stderr");
+    // Intentional pipe shutdown makes child exits nonzero after a compose error.
+    // Preserve that first product/camera error after all children are reaped.
+    let count = result?;
     let decode_status = decode_status?;
     let encode_status = encode_status?;
     let stderr = stderr?;
-    let count = result?;
     if !decode_status.success() {
         return Err(ff_err(
             "ffmpeg decode failed",
@@ -289,4 +291,60 @@ pub fn mp4_to_gif_with_control(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compose_error_survives_owned_pipe_cleanup() {
+        let ffmpeg = ffmpeg_bin();
+        if !Command::new(&ffmpeg)
+            .arg("-version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("screen.mp4");
+        let output = dir.path().join("out.mp4");
+        let made = Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=64x64:r=10:d=0.5",
+                "-c:v",
+                "libx264",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(made.status.success());
+        let error = render_pipe_with_control(
+            source.to_str().unwrap(),
+            output.to_str().unwrap(),
+            64,
+            64,
+            10.0,
+            source.to_str().unwrap(),
+            false,
+            &default_control(),
+            |_, _| {
+                Err(record_core::RecordError::new(
+                    "camera_sentinel",
+                    "camera failed",
+                    "original",
+                ))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "camera_sentinel");
+        assert_eq!(error.cause, "original");
+    }
 }
