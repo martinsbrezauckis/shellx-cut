@@ -639,7 +639,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     if (startAdmissionUnknown) return UNKNOWN_START_ADMISSION
     const frameRateError = recordingFrameRateDraftError(customFps, fps)
     if (frameRateError) return frameRateError
-    if (!project?.project_identity) return 'Open a current project before recording.'
     if (startAllowed === null) return 'Wait for source checks to finish.'
     if (startAllowed === false) return 'Screen capture is not ready on this machine.'
     if (sourceKind === 'window' && !windowCaptureSupported) return 'Window capture is unavailable on this machine. Choose Display.'
@@ -664,7 +663,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     )
     if (cameraError) return cameraError
     return null
-  }, [cameraCapability, cameraDeviceId, cards, customFps, fps, monitorIdx, monitors, project?.project_identity, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowCaptureSupported, windowTargetId])
+  }, [cameraCapability, cameraDeviceId, cards, customFps, fps, monitorIdx, monitors, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowCaptureSupported, windowTargetId])
   useEffect(() => {
     session.setStartGuard(preflightStartError)
     return () => session.setStartGuard(null)
@@ -876,8 +875,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         </div>
         <RecordingReadinessSummary cards={cards} ready={ready} startAllowed={startAllowed} />
       </header>
-
-      {!project && <p className="rec__source-note" data-cut-rec-no-project>Open a project before recording.</p>}
 
       {(
         <>

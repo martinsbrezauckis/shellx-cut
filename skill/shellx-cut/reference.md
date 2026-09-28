@@ -99,6 +99,11 @@ return `conflict`; `project.delete` remains available only for a different close
 project. An unbound native reservation refuses every project transition. A UI state
 change does not prove that ownership has released.
 
+The installed Record UI and global F9 use the open project if there is one. If
+there is none, they create a new recording project before starting capture and
+pass its identity to `screen_record.start`. Direct verb callers must create or
+open a project themselves before invoking that project-bound recorder verb.
+
 | Verb | Args | Returns | Ops | Job |
 |---|---|---|---|---|
 | `project.create` | `{name, settings?, dir?, starter?}` — dir defaults to a managed `<ShellX Cut Projects>/<name>.cutproj` under the OS home (`~/Documents/ShellX Cut Projects/` on Windows, `~/ShellX Cut Projects/` on macOS/Linux), falling back to `<cwd>` only when no home resolves; a relative dir is canonicalized to absolute so internal paths (exports/, receipts/) never double up or resolve against the server cwd (regression behavior); settings use an internal 1920×1080@30, 48 kHz fallback, but when they are omitted the first imported video automatically adopts its source width/height/fps while the project format remains untouched; `starter:"first-edit"` installs the bundled synthetic clip inside the new project | `{path, project, starter_asset_path?}` — `path` is always absolute; import the optional starter through `media.import` | yes (create is op #1) | no |

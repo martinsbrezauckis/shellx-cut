@@ -1779,9 +1779,9 @@
       "group": "record",
       "title": "Recording hotkeys",
       "where": "Record transport",
-      "description": "F9 is one Start/Stop action across Cut, including Edit and another focused app when the OS global route has been observed. Start revalidates the last valid project, source, devices, and permissions; invalid setup opens Record with a reason and starts no capture. F12 adds a marker. Record shows a passive global, provisional, or focused-only indicator and the reason for degraded scope.",
+      "description": "F9 is one Start/Stop action across Cut, including Edit and another focused app when the OS global route has been observed. Start uses the open project when one exists; otherwise Cut creates a new recording project before capture. It revalidates the last valid setup, source, devices, and permissions; invalid setup opens Record with a reason and starts no capture. F12 adds a marker. Record shows a passive global, provisional, or focused-only indicator and the reason for degraded scope.",
       "requirement": "Windows and macOS attempt registration automatically. GNOME Wayland attempts an owned binding on first launch. Global status requires observed callback proof; general Settings holds an advanced opt-out.",
-      "api": "screen_record.start, screen_record.status, screen_record.stop, screen_record.studio_event"
+      "api": "project.create, screen_record.start, screen_record.status, screen_record.stop, screen_record.studio_event"
     },
     {
       "id": "cut.record.raw_mode",
@@ -1799,9 +1799,9 @@
       "group": "record",
       "title": "Polished clip in Edit",
       "where": "Record workspace",
-      "description": "Polished saves the same unchanged original MP4 and adds an editable clip to the current project with zoom-to-cursor, cursor smoothing, and framing. Show keystrokes is optional, off by default, and shown directly beneath this mode. Export MP4 or GIF chooses a file after Stop.",
-      "requirement": "Requires FFmpeg, a current open project, and a finalized capture. Camera composition requires an admitted camera artifact.",
-      "api": "screen_record.stop {mux_raw:true, autoedit:true}, screen_record.polish, screen_record.export"
+      "description": "Polished saves the same unchanged original MP4 and adds an editable clip to the open project; when no project is open, Cut creates a new recording project first. The editable clip receives zoom-to-cursor, cursor smoothing, and framing. Show keystrokes is optional, off by default, and shown directly beneath this mode. Export MP4 or GIF chooses a file after Stop.",
+      "requirement": "Requires FFmpeg and a finalized capture. Camera composition requires an admitted camera artifact.",
+      "api": "project.create, screen_record.stop {mux_raw:true, autoedit:true}, screen_record.polish, screen_record.export"
     },
     {
       "id": "cut.record.studio_event_api",
@@ -1810,7 +1810,7 @@
       "title": "Studio event API",
       "where": "Debug API",
       "description": "Agents and the UI append timed Studio events for background style, recording markers, and camera visibility or placement. Camera events replay against the finalized separate camera take when one exists.",
-      "requirement": "Requires an open project and a valid capture_id returned by screen_record.start.",
+      "requirement": "Requires a valid project-bound capture_id returned by screen_record.start.",
       "api": "screen_record.studio_event"
     },
     {
@@ -1919,9 +1919,9 @@
       "group": "workflow",
       "title": "Record, save, and export",
       "where": "Record workspace and status bar",
-      "description": "Choose a real source, check readiness and native preview, select Raw MP4 or Polished clip in Edit, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip. During capture, the preview uses frames from the exact capture owner. If Stop fails, Cut checks that capture status: Retry Stop is offered only while live, terminal is shown as ended, and uncertain ownership stays unknown. Export or Save a copy chooses optional destinations after Stop.",
+      "description": "Choose a real source, check readiness and native preview, select Raw MP4 or Polished clip in Edit, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip. If no project is open, Start or global F9 creates a new recording project automatically; an open project is used as-is. During capture, the preview uses frames from the exact capture owner. If Stop fails, Cut checks that capture status: Retry Stop is offered only while live, terminal is shown as ended, and uncertain ownership stays unknown. Export or Save a copy chooses optional destinations after Stop.",
       "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Global F9, live preview, output, and native badge behavior need installed-host verification.",
-      "api": "screen_record.preview_start, screen_record.live_frame, screen_record.start, screen_record.status, screen_record.stop, screen_record.polish, screen_record.export, screen_record.copy_raw"
+      "api": "project.create, screen_record.preview_start, screen_record.live_frame, screen_record.start, screen_record.status, screen_record.stop, screen_record.polish, screen_record.export, screen_record.copy_raw"
     },
     {
       "id": "cut.workflow.review",

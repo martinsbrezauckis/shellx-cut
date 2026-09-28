@@ -694,6 +694,9 @@ route to the same surface registry.
   app has focus when the OS has admitted the global shortcut. Start rechecks
   the last valid setup against the current project, source, devices, and
   permissions; invalid setup opens Record with a reason and starts no capture.
+  When no project is open, Start or F9 creates a new recording project first;
+  an already open project is used as-is. The action does not restore a
+  minimized Cut window.
   Windows/macOS attempt registration automatically, and GNOME Wayland attempts
   an owned custom binding on first launch. A passive indicator reports global
   scope only after it is observed; conflict, failure, or an explicit opt-out
@@ -708,8 +711,9 @@ route to the same surface registry.
   device and Polished mode make them available. A disabled control shows why.
 - **After Stop** offers exactly Raw MP4 and Polished clip in Edit. Both save the
   unchanged original MP4 in the default export folder. Polished also adds an
-  editable clip to the current project with zoom-to-cursor, cursor smoothing,
-  and framing. Its optional **Show keystrokes** setting starts off and sits
+  editable clip to the current project (including the project created at Start
+  when none was open) with zoom-to-cursor, cursor smoothing, and framing. Its
+  optional **Show keystrokes** setting starts off and sits
   beneath the mode choice; there is no second polish toggle or pre-record
   destination picker. Export or Save a copy chooses an optional destination
   after Stop. The Recording details disclosure gives stream and pointer facts.

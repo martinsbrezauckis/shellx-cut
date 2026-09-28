@@ -509,6 +509,12 @@ from `project.state.project_identity`. Under the project-transition lock it refu
 a closed or changed project before rehearsal cleanup, native admission, marker,
 or capture reservation.
 
+The installed Record UI and global F9 handle the no-project case before calling
+this verb: they create a uniquely named recording project through
+`project.create`, bind its returned identity, and then pass that identity as
+`expected_project_identity`. Direct Debug API callers still need to create or
+open a project and provide the matching identity themselves.
+
 `screen_record.start` creates a private, project-local checkpoint journal before a
 backend starts. Its output is not an open live MP4: each Linux, Windows, or macOS
 segment must finalize, hash, and fully decode before recovery may use it. On daemon or

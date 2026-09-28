@@ -11,6 +11,10 @@
 .app__recording-session[data-cut-recording-session="done"] { background: #234435; }
 .app__recording-session[data-cut-recording-session="error"],
 .app__recording-session[data-cut-recording-session="recovery"] { background: #684323; }
+.app__recording-session[data-cut-recording-session="error"][data-cut-recording-no-project="true"] {
+  color: var(--ink-2, #a8a8a4);
+  background: var(--surface-2, #131312);
+}
 .app__recording-session span:first-child { flex: 1; }
 .app__recording-session button {
   border: 1px solid currentColor;

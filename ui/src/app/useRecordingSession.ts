@@ -65,9 +65,10 @@ async function appendInitialStudioEvent(captureId: string, event: StudioEventPay
 }
 
 /** Exactly one owner for native capture, result, recovery, and both F9 routes. */
-export function useRecordingSession({ project, onOpenRecord, onResult }: {
+export function useRecordingSession({ project, onOpenRecord, onEnsureProject, onResult }: {
   project: Project | null
   onOpenRecord: () => void
+  onEnsureProject: () => Promise<Project | null>
   onResult: () => void
 }) {
   const [state, setState] = useState<RecordingSessionState>(INITIAL)
@@ -77,6 +78,8 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
   projectRef.current = project
   const openRef = useRef(onOpenRecord)
   openRef.current = onOpenRecord
+  const ensureProjectRef = useRef(onEnsureProject)
+  ensureProjectRef.current = onEnsureProject
   const resultRef = useRef(onResult)
   resultRef.current = onResult
   const presetRef = useRef<RecordingPreset | null>(loadRecordingPreset())
@@ -104,21 +107,45 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
 
   const showSetup = useCallback((message: string) => {
     publish({ phase: 'error', message })
-    openRef.current()
+    // A global F9 press must not move the user out of the workspace when the
+    // fallback project could not be created. Keep the current surface in place
+    // so the bounded failure is visible without restoring a minimized window.
+    // Other setup failures with a project open still open Record so the user
+    // can correct the admitted source/device.
+    if (projectRef.current?.project_identity) openRef.current()
   }, [publish])
+
+  const ensureCurrentProject = useCallback(async (): Promise<Project | null> => {
+    const current = projectRef.current
+    if (current?.project_identity) return current
+    try {
+      const created = await ensureProjectRef.current()
+      if (created?.project_identity) {
+        projectRef.current = created
+        return created
+      }
+    } catch { /* the caller publishes one bounded failure below */ }
+    return null
+  }, [])
 
   const start = useCallback(async (draft?: RecordingPreset | null) => {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
-    const blocked = startGuardRef.current?.()
+    const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
     if (blocked) { showSetup(blocked); return }
     const preset = draft === undefined ? presetRef.current : draft
     if (!preset) { showSetup('Choose a source and save a valid recording setup first.'); return }
-    const currentProject = projectRef.current
-    if (!currentProject?.project_identity) { showSetup('Open a project before recording.'); return }
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
-    publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw, rawPath: null, source: null, plan: null, clipId: null, endedAt: null, recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, cursorCorrelation: null, cadence: null, quality: null })
     try {
+      const currentProject = await ensureCurrentProject()
+      if (!currentProject) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
+      // A no-project F9/Start may have created the fallback while the Record
+      // panel's source checks were still running. Re-run that product-owned
+      // guard before the immediate-start path so it cannot skip a stale source
+      // or device validation just because project admission was asynchronous.
+      const guardFailure = startGuardRef.current?.()
+      if (guardFailure) { showSetup(guardFailure); return }
+      publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw, rawPath: null, source: null, plan: null, clipId: null, endedAt: null, recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, cursorCorrelation: null, cadence: null, quality: null })
       const doctor = await callVerb('screen_record.doctor', {})
       if (!doctor.ok) { showSetup(`Recorder checks failed: ${doctor.error?.message ?? 'unavailable'}`); return }
       const invalid = validateRecordingPreset(preset, doctor.result)
@@ -180,7 +207,7 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
     } catch (error) {
       showSetup(`Recorder start failed: ${error instanceof Error ? error.message : 'server unavailable'}`)
     } finally { busyRef.current = false; toggleGateRef.current.setInFlight(false) }
-  }, [publish, showSetup])
+  }, [ensureCurrentProject, publish, showSetup])
 
   const cancelCountdown = useCallback(() => {
     if (countdownRef.current === null) return
@@ -192,13 +219,21 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
     publish({ phase: 'idle', countdownRemaining: 0, message: 'Countdown cancelled. Nothing was recorded.' })
   }, [publish])
 
-  const requestStart = useCallback((draft?: RecordingPreset | null, seconds = draft?.startCountdownSeconds ?? countdownSeconds) => {
+  const requestStart = useCallback(async (draft?: RecordingPreset | null, seconds = draft?.startCountdownSeconds ?? countdownSeconds) => {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
-    const blocked = startGuardRef.current?.()
+    const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
     if (blocked) { showSetup(blocked); return }
     if (draft === null || (draft === undefined && !presetRef.current)) { showSetup('Choose a current source and valid recording setup first.'); return }
+    if (!projectRef.current?.project_identity) {
+      busyRef.current = true
+      toggleGateRef.current.setInFlight(true)
+      const ensured = await ensureCurrentProject()
+      busyRef.current = false
+      toggleGateRef.current.setInFlight(false)
+      if (!ensured) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
+    }
     const requestedProjectIdentity = projectRef.current?.project_identity
-    if (!requestedProjectIdentity) { showSetup('Open a project before recording.'); return }
+    if (!requestedProjectIdentity) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
     if (seconds <= 0) { void start(draft); return }
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
@@ -223,7 +258,7 @@ export function useRecordingSession({ project, onOpenRecord, onResult }: {
         void start(draft)
       })
     }, 100)
-  }, [countdownSeconds, publish, showSetup, start])
+  }, [countdownSeconds, ensureCurrentProject, publish, showSetup, start])
 
   useEffect(() => () => {
     countdownGuardRef.current.cancel()

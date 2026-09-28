@@ -460,6 +460,15 @@ export default function App() {
     })
   ), [])
 
+  const ensureRecordingProject = useCallback(async (): Promise<SyncedProject | null> => {
+    if (projectRef.current?.project_identity) return projectRef.current
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+    const created = await callVerb('project.create', { name: `Recording ${suffix}` })
+    if (!created.ok || !created.result?.project) return null
+    projectRef.current = created.result.project
+    return (await syncProject(true)) ?? created.result.project
+  }, [syncProject])
+
   // Reconcile only after the delta stream is quiet, except for the large hard
   // cap. The snapshot itself uses the same coalescer as job progress, so it
   // can never race an op pull or multiply into a request storm.
@@ -518,6 +527,7 @@ export default function App() {
   const recordingSession = useRecordingSession({
     project,
     onOpenRecord: () => { requestLayout((current) => ({ ...current, workspaceMode: 'record' })) },
+    onEnsureProject: ensureRecordingProject,
     onResult: () => { void resync() },
   })
 
@@ -776,7 +786,12 @@ export default function App() {
       )}
 
       {recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record' && (
-        <div className="app__recording-session" data-cut-recording-session={recordingSession.state.phase} role="status">
+        <div
+          className="app__recording-session"
+          data-cut-recording-session={recordingSession.state.phase}
+          data-cut-recording-no-project={!project ? 'true' : undefined}
+          role="status"
+        >
           <span>{recordingSession.state.message}</span>
           {recordingSession.state.indicatorWarning && <span> · {recordingSession.state.indicatorWarning}</span>}
           {(recordingSession.state.phase === 'recording' || recordingSession.state.phase === 'recovery') && (
@@ -784,7 +799,7 @@ export default function App() {
               {recordingSession.state.phase === 'recording' ? 'Stop' : recordingSession.state.recoveryAction === 'retry_stop' ? 'Retry Stop' : 'Check status'}
             </button>
           )}
-          <button type="button" data-cut-action="record-session-open" onClick={() => requestLayout((current) => ({ ...current, workspaceMode: 'record' }))}>Open Record</button>
+          {project && <button type="button" data-cut-action="record-session-open" onClick={() => requestLayout((current) => ({ ...current, workspaceMode: 'record' }))}>Open Record</button>}
         </div>
       )}
 
