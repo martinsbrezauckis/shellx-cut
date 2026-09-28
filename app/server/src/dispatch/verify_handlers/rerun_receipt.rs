@@ -25,6 +25,20 @@ pub(super) fn selected_render_receipt_with_path(
     requested_id: &str,
 ) -> Result<(PathBuf, cut_core::RenderReceipt), CutError> {
     plain_receipt_dir(receipts)?;
+    // Keep an explicitly selected symlink distinguishable from a missing
+    // receipt. `resolve_receipt_path` intentionally rejects non-regular leaves
+    // early for general verify callers; rerun needs the stronger conflict
+    // classification so its caller can explain the unsafe receipt identity.
+    let selected = receipts.join(format!("{requested_id}.json"));
+    if std::fs::symlink_metadata(&selected).is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(CutError::new(
+            error_codes::CONFLICT,
+            "selected render receipt is not a local regular file in the receipt directory",
+            format!("refusing unsafe receipt path {}", selected.display()),
+        )
+        .with_suggested_action("render again to create a fresh local render receipt"));
+    }
     let path = resolve_receipt_path(receipts, Some(requested_id))?;
     let receipts_dir = receipts.canonicalize().map_err(|error| {
         CutError::new(

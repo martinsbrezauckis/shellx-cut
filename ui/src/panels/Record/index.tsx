@@ -882,7 +882,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       {(
         <>
           <div className="rec__body">
-          <div className="rec__studio" data-cut-rec-studio>
             <div className="rec__preview-column">
             {hasCaptureResult ? (
               <RecordingResultPanel
@@ -987,7 +986,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
               onCameraSize={setStudioCameraSize}
               onCameraReset={resetStudioCamera}
             />
-          </div>
 
           {/* Screen and sound retain the only source and audio selectors. */}
           <aside className="rec__settings" data-cut-rec-settings data-cut-rec-quality-supported={Boolean(qualityCapability)}>

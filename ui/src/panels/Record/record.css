@@ -41,11 +41,12 @@
   width: 100%;
   display: grid;
   grid-template-columns: minmax(290px, 330px) minmax(0, 1fr) minmax(290px, 330px);
+  grid-template-rows: minmax(0, 1fr);
   grid-template-areas:
     "settings preview controls";
   gap: 16px;
-  align-items: start;
-  align-content: start;
+  align-items: stretch;
+  align-content: stretch;
   padding: 16px 24px 24px;
   margin: 0;
   overflow-x: hidden;
@@ -673,11 +674,6 @@
   white-space: nowrap;
 }
 
-.rec__studio {
-  /* Keep the existing React grouping while its children join the three-column
-     workspace grid. This also prevents an empty grid track above the preview. */
-  display: contents;
-}
 .rec__preview-column { grid-area: preview; display: grid; align-content: start; gap: 12px; min-width: 0; }
 .rec__preview-tools {
   display: grid;
@@ -1033,6 +1029,7 @@
 @media (max-width: 1360px) {
   .rec__body {
     grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas: "settings preview" "controls controls";
     padding-inline: 16px;
   }
@@ -1049,6 +1046,7 @@
 @media (max-width: 920px) {
   .rec__body {
     grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
     grid-template-areas: "preview" "settings" "controls";
     padding: 18px;
   }
