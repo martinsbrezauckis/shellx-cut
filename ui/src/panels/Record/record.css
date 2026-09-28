@@ -39,14 +39,7 @@
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
-  display: grid;
-  grid-template-columns: minmax(290px, 330px) minmax(0, 1fr) minmax(290px, 330px);
-  grid-template-rows: minmax(0, 1fr);
-  grid-template-areas:
-    "settings preview controls";
-  gap: 16px;
-  align-items: stretch;
-  align-content: stretch;
+  display: block;
   padding: 16px 24px 24px;
   margin: 0;
   overflow-x: hidden;
@@ -674,6 +667,17 @@
   white-space: nowrap;
 }
 
+.rec__studio {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  grid-template-columns: minmax(290px, 330px) minmax(0, 1fr) minmax(290px, 330px);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "settings preview controls";
+  gap: 16px;
+  align-items: stretch;
+}
 .rec__preview-column { grid-area: preview; display: grid; align-content: start; gap: 12px; min-width: 0; }
 .rec__preview-tools {
   display: grid;
@@ -984,6 +988,10 @@
 }
 .rec[data-cut-record-phase="recording"] .rec__body,
 .rec[data-cut-record-phase="finalizing"] .rec__body {
+  overflow-y: auto;
+}
+.rec[data-cut-record-phase="recording"] .rec__studio,
+.rec[data-cut-record-phase="finalizing"] .rec__studio {
   grid-template-columns: minmax(0, 1fr) minmax(290px, 330px);
   grid-template-areas: "preview controls";
 }
@@ -1013,7 +1021,8 @@
 /* Keep the default setup and scene actions in the first 1080p viewport. Scene
    explanations remain on each button's title; unavailable reasons stay inline. */
 @media (min-width: 1361px) and (max-height: 1200px) {
-  .rec__body { gap: 12px; padding-top: 8px; padding-bottom: 4px; }
+  .rec__body { padding-top: 8px; padding-bottom: 4px; }
+  .rec__studio { gap: 12px; }
   /* Leave room for the preview tools and transport in a normal 1080p app
      window. A tiny body overflow otherwise creates an unnecessary scrollbar. */
   .rec-studio-preview { height: min(33vh, 360px); min-height: 280px; }
@@ -1027,14 +1036,13 @@
 }
 
 @media (max-width: 1360px) {
-  .rec__body {
+  .rec__studio {
     grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas: "settings preview" "controls controls";
-    padding-inline: 16px;
   }
-  .rec[data-cut-record-phase="recording"] .rec__body,
-  .rec[data-cut-record-phase="finalizing"] .rec__body {
+  .rec[data-cut-record-phase="recording"] .rec__studio,
+  .rec[data-cut-record-phase="finalizing"] .rec__studio {
     grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
     grid-template-areas: "preview controls";
   }
@@ -1044,14 +1052,13 @@
 }
 
 @media (max-width: 920px) {
-  .rec__body {
+  .rec__studio {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto;
     grid-template-areas: "preview" "settings" "controls";
-    padding: 18px;
   }
-  .rec[data-cut-record-phase="recording"] .rec__body,
-  .rec[data-cut-record-phase="finalizing"] .rec__body {
+  .rec[data-cut-record-phase="recording"] .rec__studio,
+  .rec[data-cut-record-phase="finalizing"] .rec__studio {
     grid-template-columns: 1fr;
     grid-template-areas: "preview" "controls";
   }

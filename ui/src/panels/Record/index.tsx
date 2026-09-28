@@ -882,6 +882,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       {(
         <>
           <div className="rec__body">
+          <div className="rec__studio" data-cut-rec-studio>
             <div className="rec__preview-column">
             {hasCaptureResult ? (
               <RecordingResultPanel
@@ -1067,6 +1068,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
             </div>
 
           </aside>
+          </div>
         </div>
 
         {/* Transport / HUD. It is deliberately a sibling of the scrollable setup
