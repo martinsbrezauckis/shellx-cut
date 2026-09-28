@@ -460,18 +460,32 @@ export default function App() {
     })
   ), [])
 
+  const recordingCreatedProjectName = useRef<string | null>(null)
   const ensureRecordingProject = useCallback(async (): Promise<SyncedProject | null> => {
     if (projectRef.current?.project_identity) return projectRef.current
     const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
-    const created = await callVerb('project.create', { name: `Recording ${suffix}` })
-    if (!created.ok || !created.result?.project) return null
-    projectRef.current = created.result.project
-    setProject(created.result.project)
-    const synced = await syncProject(true)
-    // A confirmed close/switch must not be replaced by the earlier create
-    // reply. An unavailable pull may retain that reply, which is already a
-    // complete server result and now visible to React as well as the ref.
-    return synced === null ? null : synced ?? created.result.project
+    const name = `Recording ${suffix}`
+    // project.create also broadcasts project_changed. Its normal handler
+    // switches to Edit; this recording-owned creation must leave Record (or
+    // a minimized Edit workspace) in place while the capture begins.
+    recordingCreatedProjectName.current = name
+    try {
+      const created = await callVerb('project.create', { name })
+      if (!created.ok || !created.result?.project) {
+        if (recordingCreatedProjectName.current === name) recordingCreatedProjectName.current = null
+        return null
+      }
+      projectRef.current = created.result.project
+      setProject(created.result.project)
+      const synced = await syncProject(true)
+      // A confirmed close/switch must not be replaced by the earlier create
+      // reply. An unavailable pull may retain that reply, which is already a
+      // complete server result and now visible to React as well as the ref.
+      return synced === null ? null : synced ?? created.result.project
+    } catch (error) {
+      if (recordingCreatedProjectName.current === name) recordingCreatedProjectName.current = null
+      throw error
+    }
   }, [syncProject])
 
   // Reconcile only after the delta stream is quiet, except for the large hard
@@ -650,6 +664,10 @@ export default function App() {
           // Project create/open/close can originate from REST, CLI, MCP, or
           // another UI client. Refresh the visible workspace even though these
           // transitions do not append a project op.
+          if (ev.open && ev.name === recordingCreatedProjectName.current) {
+            recordingCreatedProjectName.current = null
+            break
+          }
           void onProjectSwitched()
           break
         case 'doctor_updated':
