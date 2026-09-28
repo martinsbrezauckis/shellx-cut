@@ -1258,8 +1258,8 @@ pub(crate) async fn load_transcript(
         )
         .with_suggested_action("call media.transcribe{asset} and wait for the job to finish")
     })?;
-    let path = store.dir.join(rel);
-    let t: cut_perception::Transcript = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let bytes = crate::transcript_receipt::read(&store.dir, asset_id, rel)?;
+    let t: cut_perception::Transcript = serde_json::from_slice(&bytes)?;
     Ok(t)
 }
 

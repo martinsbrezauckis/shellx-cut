@@ -9,7 +9,7 @@ import type { RecordingStartResult } from '../panels/Record/recordingStartResult
 import type { RecordingCadence } from '../panels/Record/recordingCadence'
 import type { StudioRawStreams, CursorCorrelation, StudioEventPayload } from '../panels/Record/studioTypes'
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
-import { loadRecordingPreset, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
+import { firstUseRecordingPreset, loadRecordingPreset, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
 import { RecordingToggleGate, classifyStopFailure, stopArgs } from './recordingSessionModel'
 
 export type RecordingPhase = 'idle' | 'countdown' | 'starting' | 'recording' | 'finalizing' | 'recovery' | 'done' | 'error'
@@ -132,11 +132,18 @@ export function useRecordingSession({ project, onOpenRecord, onEnsureProject, on
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
     const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
     if (blocked) { showSetup(blocked); return }
-    const preset = draft === undefined ? presetRef.current : draft
-    if (!preset) { showSetup('Choose a source and save a valid recording setup first.'); return }
+    let preset = draft === undefined ? presetRef.current : draft
+    if (draft === null) { showSetup('Choose a current source and valid recording setup first.'); return }
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)
     try {
+      if (!preset) {
+        publish({ phase: 'starting', message: 'Checking the primary display for your first recording…' })
+        const discovery = await callVerb('screen_record.doctor', {})
+        if (!discovery.ok) { showSetup(`Recorder checks failed: ${discovery.error?.message ?? 'unavailable'}`); return }
+        preset = firstUseRecordingPreset(discovery.result)
+        if (!preset) { showSetup('No current screen source is available. Open Record to check capture setup.'); return }
+      }
       const currentProject = await ensureCurrentProject()
       if (!currentProject) { showSetup('Could not create a project for this recording. Try F9 again.'); return }
       // A no-project F9/Start may have created the fallback while the Record
@@ -146,6 +153,8 @@ export function useRecordingSession({ project, onOpenRecord, onEnsureProject, on
       const guardFailure = startGuardRef.current?.()
       if (guardFailure) { showSetup(guardFailure); return }
       publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw, rawPath: null, source: null, plan: null, clipId: null, endedAt: null, recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, cursorCorrelation: null, cadence: null, quality: null })
+      // A fallback project may take time to create. Recheck the source again
+      // immediately before Start, including on first use.
       const doctor = await callVerb('screen_record.doctor', {})
       if (!doctor.ok) { showSetup(`Recorder checks failed: ${doctor.error?.message ?? 'unavailable'}`); return }
       const invalid = validateRecordingPreset(preset, doctor.result)
@@ -223,7 +232,10 @@ export function useRecordingSession({ project, onOpenRecord, onEnsureProject, on
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
     const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
     if (blocked) { showSetup(blocked); return }
-    if (draft === null || (draft === undefined && !presetRef.current)) { showSetup('Choose a current source and valid recording setup first.'); return }
+    if (draft === null) { showSetup('Choose a current source and valid recording setup first.'); return }
+    // With no saved setup, F9 uses a freshly checked primary screen. There is
+    // no prior countdown preference, and Start owns project creation/admission.
+    if (draft === undefined && !presetRef.current) { void start(); return }
     if (!projectRef.current?.project_identity) {
       busyRef.current = true
       toggleGateRef.current.setInFlight(true)

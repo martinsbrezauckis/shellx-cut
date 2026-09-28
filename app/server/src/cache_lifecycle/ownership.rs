@@ -5,11 +5,13 @@ use crate::output_paths::write_output_atomic;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Component, Path};
 
 mod recovery;
 pub(crate) use recovery::pending_rebuild_outputs_for_asset;
 pub(super) use recovery::retire_orphaned_pending_outputs;
+const MAX_OWNERSHIP_LEDGER_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct OwnershipLedger {
@@ -133,8 +135,8 @@ fn ledger_path(project_dir: &Path) -> Result<PathBuf, CutError> {
 
 pub(super) fn read_ledger(project_dir: &Path) -> Result<OwnershipLedger, CutError> {
     let path = ledger_path(project_dir)?;
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(OwnershipLedger::default())
         }
@@ -145,6 +147,37 @@ pub(super) fn read_ledger(project_dir: &Path) -> Result<OwnershipLedger, CutErro
             ))
         }
     };
+    if file
+        .metadata()
+        .map_err(|_| {
+            cache_error(
+                "cache ownership cannot be verified",
+                "the cache ownership ledger cannot be inspected",
+            )
+        })?
+        .len()
+        > MAX_OWNERSHIP_LEDGER_BYTES
+    {
+        return Err(cache_error(
+            "cache ownership cannot be verified",
+            "the cache ownership ledger exceeds its byte limit",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_OWNERSHIP_LEDGER_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            cache_error(
+                "cache ownership cannot be verified",
+                "the cache ownership ledger cannot be read",
+            )
+        })?;
+    if bytes.len() as u64 > MAX_OWNERSHIP_LEDGER_BYTES {
+        return Err(cache_error(
+            "cache ownership cannot be verified",
+            "the cache ownership ledger exceeds its byte limit",
+        ));
+    }
     let ledger: OwnershipLedger = serde_json::from_slice(&bytes).map_err(|_| {
         cache_error(
             "cache ownership cannot be verified",
@@ -160,6 +193,19 @@ pub(super) fn read_ledger(project_dir: &Path) -> Result<OwnershipLedger, CutErro
     Ok(ledger)
 }
 
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_ownership_ledger_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join(LEDGER_NAME)).unwrap();
+        file.set_len(MAX_OWNERSHIP_LEDGER_BYTES + 1).unwrap();
+        assert!(read_ledger(dir.path()).is_err());
+    }
+}
+
 pub(super) fn write_ledger(project_dir: &Path, ledger: &OwnershipLedger) -> Result<(), CutError> {
     let path = ledger_path(project_dir)?;
     let bytes = serde_json::to_vec_pretty(ledger).map_err(|_| {
@@ -168,6 +214,12 @@ pub(super) fn write_ledger(project_dir: &Path, ledger: &OwnershipLedger) -> Resu
             "the ownership ledger could not be encoded",
         )
     })?;
+    if bytes.len() as u64 > MAX_OWNERSHIP_LEDGER_BYTES {
+        return Err(cache_error(
+            "cache ownership cannot be recorded",
+            "the cache ownership ledger exceeds its byte limit",
+        ));
+    }
     write_output_atomic(&path, bytes).map_err(|_| {
         cache_error(
             "cache ownership cannot be recorded",

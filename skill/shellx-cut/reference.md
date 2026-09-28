@@ -103,6 +103,9 @@ The installed Record UI and global F9 use the open project if there is one. If
 there is none, they create a new recording project before starting capture and
 pass its identity to `screen_record.start`. Direct verb callers must create or
 open a project themselves before invoking that project-bound recorder verb.
+On first use without saved Record settings, F9 admits a current primary display
+(or the Linux portal chooser) for a screen-only polished take with audio,
+camera, and keystrokes off. Later F9 starts reuse the last valid Record setup.
 
 | Verb | Args | Returns | Ops | Job |
 |---|---|---|---|---|

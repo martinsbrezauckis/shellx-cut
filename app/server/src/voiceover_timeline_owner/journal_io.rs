@@ -10,6 +10,7 @@ use record_recovery::CaptureRoot;
 use super::journal::{VoiceoverTakeJournalEntry, VoiceoverTakeJournalState};
 
 pub(super) const VOICEOVER_TAKE_JOURNAL_FILE: &str = ".voiceover-take.jsonl";
+const MAX_VOICEOVER_JOURNAL_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One fixed, private journal leaf under a validated project capture directory.
 /// Each append validates a cloned state before it reaches disk, writes canonical
@@ -224,9 +225,21 @@ fn same_open_file(_left: &File, _right: &File) -> Result<bool, CutError> {
 fn read_exact_entries(file: &mut File) -> Result<Vec<VoiceoverTakeJournalEntry>, CutError> {
     file.seek(SeekFrom::Start(0))
         .map_err(|_| io_error("read private voiceover journal"))?;
+    if file
+        .metadata()
+        .map_err(|_| io_error("inspect private voiceover journal"))?
+        .len()
+        > MAX_VOICEOVER_JOURNAL_BYTES
+    {
+        return Err(io_error("private voiceover journal exceeds its byte limit"));
+    }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    file.take(MAX_VOICEOVER_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|_| io_error("read private voiceover journal"))?;
+    if bytes.len() as u64 > MAX_VOICEOVER_JOURNAL_BYTES {
+        return Err(io_error("private voiceover journal exceeds its byte limit"));
+    }
     if !bytes.ends_with(b"\n") {
         return Err(io_error("private voiceover journal has a torn final entry"));
     }
@@ -260,12 +273,37 @@ fn append_canonical_entry(
 ) -> Result<(), CutError> {
     let bytes = serde_json::to_vec(entry)
         .map_err(|_| io_error("serialize private voiceover journal entry"))?;
+    let current_len = file
+        .metadata()
+        .map_err(|_| io_error("inspect private voiceover journal"))?
+        .len();
+    if current_len
+        .saturating_add(bytes.len() as u64)
+        .saturating_add(1)
+        > MAX_VOICEOVER_JOURNAL_BYTES
+    {
+        return Err(io_error("private voiceover journal exceeds its byte limit"));
+    }
     file.write_all(&bytes)
         .and_then(|()| file.write_all(b"\n"))
         .and_then(|()| file.flush())
         .and_then(|()| file.sync_all())
         .map_err(|_| io_error("sync private voiceover journal entry"))?;
     sync_parent(path)
+}
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_voiceover_journal_is_rejected_before_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(VOICEOVER_TAKE_JOURNAL_FILE);
+        let mut file = File::create(&path).unwrap();
+        file.set_len(MAX_VOICEOVER_JOURNAL_BYTES + 1).unwrap();
+        assert!(read_exact_entries(&mut file).is_err());
+    }
 }
 
 #[cfg(unix)]

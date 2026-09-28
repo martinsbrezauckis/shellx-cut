@@ -61,6 +61,57 @@ fn v1_scanner_defers_pause_session_owned_capture_without_promoting_it() {
 }
 
 #[test]
+fn oversized_pause_session_journal_fails_closed_before_reading() {
+    let temp = tempfile::tempdir().unwrap();
+    let capture = temp.path().join("pause-owned");
+    begin(&capture, "pause-owned").unwrap();
+    let path = capture.join(record_recovery::RECORDING_SESSION_JOURNAL_FILE);
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(super::ownership::MAX_OWNERSHIP_JOURNAL_BYTES + 1)
+        .unwrap();
+
+    let result = scan(temp.path(), "missing-ffmpeg", "missing-ffprobe");
+    assert_eq!(
+        result.failed_closed,
+        ["pause-owned: pause_session_ownership_unsafe"]
+    );
+    assert!(path.is_file());
+    assert!(read_manifest(&capture).unwrap().receipt.is_none());
+}
+
+#[test]
+fn oversized_completion_project_does_not_seal_a_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let capture = temp.path().join("cap");
+    begin(&capture, "cap").unwrap();
+    std::fs::write(capture.join("source.mp4"), b"source").unwrap();
+    let project = capture.join("project.json");
+    std::fs::File::create(&project)
+        .unwrap()
+        .set_len(super::ownership::MAX_COMPLETION_PROJECT_BYTES + 1)
+        .unwrap();
+
+    let result = scan(temp.path(), "missing-ffmpeg", "missing-ffprobe");
+    assert!(result.recovered.is_empty());
+    assert_eq!(result.deferred, ["cap"]);
+    assert!(read_manifest(&capture).unwrap().receipt.is_none());
+    assert!(project.is_file());
+}
+
+#[test]
+fn recovery_scan_limits_capture_directory_count() {
+    let temp = tempfile::tempdir().unwrap();
+    for index in 0..=MAX_RECOVERY_CAPTURE_ENTRIES {
+        std::fs::create_dir(temp.path().join(format!("cap-{index}"))).unwrap();
+    }
+    let result = scan(temp.path(), "missing-ffmpeg", "missing-ffprobe");
+    assert!(result
+        .failed_closed
+        .contains(&"capture-scan-limit: exceeded".into()));
+}
+
+#[test]
 fn sealed_normal_project_retries_torn_tail_archive_without_remuxing_source() {
     use std::io::Write;
 

@@ -15,6 +15,10 @@ use crate::manifest::{
     MANIFEST_FILE,
 };
 
+// A recording checkpoint is small and is appended every 15 seconds. Leave
+// room for long sessions while refusing planted project files before parsing.
+const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Entry {
@@ -64,10 +68,21 @@ fn read_nofollow(path: &Path) -> Result<Vec<u8>, ManifestError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    let mut file = options.open(path).map_err(|source| io(path, source))?;
+    let file = options.open(path).map_err(|source| io(path, source))?;
+    if file.metadata().map_err(|source| io(path, source))?.len() > MAX_MANIFEST_BYTES {
+        return Err(ManifestError::Invalid(
+            "capture manifest exceeds its size limit".into(),
+        ));
+    }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|source| io(path, source))?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(ManifestError::Invalid(
+            "capture manifest exceeds its size limit".into(),
+        ));
+    }
     Ok(bytes)
 }
 
@@ -202,7 +217,7 @@ impl ParseState {
 
 #[cfg(test)]
 mod tests {
-    use super::{read, Entry, OpenCheckpoint};
+    use super::{read, Entry, OpenCheckpoint, MAX_MANIFEST_BYTES};
     use crate::{
         recover_interrupted, CaptureStart, Checkpoint, CheckpointFacts, ManifestError,
         ManifestOwner, OwnerState, MANIFEST_FILE,
@@ -234,6 +249,20 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(root.join(MANIFEST_FILE), format!("{body}\n")).unwrap();
+    }
+
+    #[test]
+    fn oversized_manifest_is_rejected_without_parsing_or_repairing() {
+        let root = tempdir().unwrap();
+        let path = root.path().join(MANIFEST_FILE);
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_MANIFEST_BYTES + 1)
+            .unwrap();
+        assert!(
+            matches!(read(root.path()), Err(ManifestError::Invalid(detail)) if detail.contains("size limit"))
+        );
+        assert_eq!(fs::metadata(path).unwrap().len(), MAX_MANIFEST_BYTES + 1);
     }
 
     fn start() -> Entry {

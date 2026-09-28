@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { RecordingToggleGate, classifyStopFailure, stopArgs } from '../src/app/recordingSessionModel'
-import { doctorAllowsPortalDisplay, parseRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from '../src/app/recordingPreset'
+import { doctorAllowsPortalDisplay, firstUseRecordingPreset, parseRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from '../src/app/recordingPreset'
 
 const preset: RecordingPreset = {
   schema: 'shellx-cut/recording-preset/1',
@@ -20,6 +20,20 @@ assert.match(validateRecordingPreset({ ...preset, source: { kind: 'display', mon
 assert.match(validateRecordingPreset(preset, { ...doctor, start_allowed: false }) ?? '', /unavailable/)
 const portalDoctor = { start_allowed: true, monitors: [], cards: [{ name: 'gstreamer' }, { name: 'wayland_input' }] }
 assert.equal(doctorAllowsPortalDisplay(portalDoctor), true)
+assert.deepEqual(firstUseRecordingPreset({ start_allowed: true, monitors: [
+  { id: 'secondary', primary: false }, { id: 'primary', primary: true },
+] }), {
+  schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'primary' },
+  fps: 30, durationMs: null, startCountdownSeconds: 0,
+  audio: false, systemAudio: false, keys: false, raw: false,
+  studio: { background: 'gradient' },
+}, 'first-use F9 uses the current primary display, without silently enabling audio or camera')
+assert.equal(validateRecordingPreset(firstUseRecordingPreset(portalDoctor)!, portalDoctor), null,
+  'first-use Linux F9 can admit the current portal chooser without a fabricated monitor')
+assert.equal(firstUseRecordingPreset({ start_allowed: false, monitors: [{ id: 'primary', primary: true }] }), null,
+  'first-use F9 must not start after a failed current Doctor check')
+assert.equal(firstUseRecordingPreset({ start_allowed: true, monitors: [{ primary: true }] }), null,
+  'first-use F9 must not invent a monitor identity')
 assert.equal(validateRecordingPreset({ ...preset, source: { kind: 'portal_display' } }, portalDoctor), null,
   'Linux portal display starts through its native chooser without a fabricated monitor id')
 assert.match(validateRecordingPreset({ ...preset, source: { kind: 'portal_display' } }, doctor) ?? '', /portal/,

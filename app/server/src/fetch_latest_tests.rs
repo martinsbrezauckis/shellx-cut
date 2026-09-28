@@ -46,6 +46,59 @@ fn served_attempts(
     (base, server)
 }
 
+fn served_body(
+    body: Vec<u8>,
+    declared_length: Option<u64>,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/resource", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 1024];
+        stream.read(&mut request).unwrap();
+        write!(stream, "HTTP/1.1 200 OK\r\nConnection: close\r\n").unwrap();
+        if let Some(length) = declared_length {
+            write!(stream, "Content-Length: {length}\r\n").unwrap();
+        }
+        stream.write_all(b"\r\n").unwrap();
+        stream.write_all(&body).unwrap();
+    });
+    (url, server)
+}
+
+#[test]
+fn checksum_manifest_without_length_is_bounded_after_decoding() {
+    let (url, server) = served_body(vec![b'a'; 17], None);
+    let error = http_get_string_with_limit(&url, 16).unwrap_err();
+    server.join().unwrap();
+    assert!(error.error.message.contains("checksum manifest exceeds"));
+    assert!(!error.transient);
+}
+
+#[test]
+fn archive_without_length_stops_before_writing_over_limit() {
+    let (url, server) = served_body(vec![b'a'; 17], None);
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("archive");
+    let error = download_hashing_with_limit(&url, &dest, &|_, _| {}, 16).unwrap_err();
+    server.join().unwrap();
+    assert!(error.error.message.contains("tool archive exceeds"));
+    assert!(std::fs::metadata(dest).unwrap().len() <= 16);
+    assert!(!error.transient);
+}
+
+#[test]
+fn false_oversized_content_length_is_rejected_before_staging() {
+    let (url, server) = served_body(b"small".to_vec(), Some(17));
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("archive");
+    let error = download_hashing_with_limit(&url, &dest, &|_, _| {}, 16).unwrap_err();
+    server.join().unwrap();
+    assert!(error.error.message.contains("tool archive exceeds"));
+    assert!(!dest.exists());
+}
+
 #[test]
 fn latest_manifest_404_recovers_with_fresh_checksum_and_verified_archive() {
     let spec = tool_spec("ffmpeg", "windows", "x86_64").unwrap();

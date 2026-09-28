@@ -97,6 +97,26 @@ export function doctorAllowsPortalDisplay(doctor: unknown): boolean {
     && d.cards.some((card) => card.name === 'wayland_input')
 }
 
+/** First-use F9 needs one current screen source without opening Record. */
+export function firstUseRecordingPreset(doctor: unknown): RecordingPreset | null {
+  if (!doctor || typeof doctor !== 'object') return null
+  const d = doctor as { start_allowed?: boolean; ready?: boolean; monitors?: unknown }
+  if ((d.start_allowed ?? d.ready) !== true) return null
+  const monitors = Array.isArray(d.monitors) ? d.monitors as Array<{ id?: unknown; primary?: unknown }> : []
+  const named = monitors.filter((m) => m && typeof m.id === 'string' && m.id.trim() === m.id && m.id.length > 0)
+  const primary = named.find((m) => m.primary === true) ?? named[0]
+  const source: RecordingPreset['source'] | null = primary
+    ? { kind: 'display', monitorId: primary.id as string }
+    : doctorAllowsPortalDisplay(d) ? { kind: 'portal_display' } : null
+  if (!source) return null
+  return {
+    schema: 'shellx-cut/recording-preset/1', source, fps: 30,
+    durationMs: null, startCountdownSeconds: 0,
+    audio: false, systemAudio: false, keys: false, raw: false,
+    studio: { background: 'gradient' },
+  }
+}
+
 export function validateRecordingPreset(preset: RecordingPreset, doctor: unknown): string | null {
   if (!doctor || typeof doctor !== 'object') return 'Recorder checks did not return a current result.'
   const d = doctor as Record<string, unknown>

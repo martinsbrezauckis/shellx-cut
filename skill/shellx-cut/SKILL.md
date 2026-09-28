@@ -277,7 +277,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   source, permission, or first frame from a fixture or a visible control.
 >   F9 is one Cut-wide Start/Stop action, including from Edit or while another
 >   app has focus when the OS admits a global callback. Reuse only the last
->   validated setup intent. Start uses the open project when one exists, or
+>   validated setup intent. With no saved setup, first-use F9 checks the
+>   current primary display or Linux portal and starts a screen-only polished
+>   take with audio, camera, and keystrokes off. Start uses the open project when one exists, or
 >   creates a new recording project when none is open; it then rechecks the
 >   exact source, devices, and permissions before capture. Global F9 does not
 >   restore a minimized Cut window. If setup is stale, open Record with a

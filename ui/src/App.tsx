@@ -749,6 +749,7 @@ export default function App() {
       className="app"
       data-cut-app-root
       data-cut-workspace-mode={layout.workspaceMode}
+      data-cut-recording-banner={recordingSession.state.phase !== 'idle' && layout.workspaceMode !== 'record' ? 'true' : undefined}
       data-cut-drawer={activeDrawer ?? undefined}
     >
       {layout.workspaceMode === 'record' ? (

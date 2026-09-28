@@ -299,6 +299,12 @@ kbd { font:var(--fs-ui-xs) var(--mono); background:var(--surface-2);
   min-height: 680px;
 }
 
+/* A background F9 capture adds a compact status row above the workspace.
+   Give it its own grid track so it cannot consume the editor's middle row. */
+.app[data-cut-recording-banner="true"] {
+  grid-template-rows: 54px auto minmax(0, 1fr) 40px;
+}
+
 /* One shared, non-blocking failure surface for human-triggered verbs. It stays
    above drawers/modals without stealing focus and offers setup only when the
    engine identifies a missing capability. */
@@ -571,6 +577,7 @@ kbd { font:var(--fs-ui-xs) var(--mono); background:var(--surface-2);
    Below the native 1100px floor, #root deliberately scrolls. */
 @media (max-width: 1279px) {
   .app { grid-template-rows: auto minmax(0, 1fr) 40px; }
+  .app[data-cut-recording-banner="true"] { grid-template-rows: auto auto minmax(0, 1fr) 40px; }
   .app__transcript { min-width: 260px; }
   .app__preview { min-width: 380px; }
   .app__rail { max-width: 320px; }

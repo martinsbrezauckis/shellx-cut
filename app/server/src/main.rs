@@ -61,6 +61,7 @@ mod startup_tasks;
 mod state;
 mod stt_settings;
 mod track;
+mod transcript_receipt;
 mod translate;
 mod ui_bridge;
 mod userdata;

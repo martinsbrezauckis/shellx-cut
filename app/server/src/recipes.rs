@@ -273,10 +273,12 @@ impl RecipeFacts {
         let duration_ms = cut_core::edl_from_project(project).duration_ms as i64;
         let transcript_words = project
             .assets
-            .values()
-            .filter_map(|a| a.transcript.as_ref())
-            .filter_map(|rel| std::fs::read_to_string(dir.join(rel)).ok())
-            .filter_map(|s| serde_json::from_str::<Value>(&s).ok())
+            .iter()
+            .filter_map(|(id, asset)| {
+                let relative = asset.transcript.as_deref()?;
+                crate::transcript_receipt::read(dir, id, relative).ok()
+            })
+            .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .filter_map(|v| {
                 v.get("words")
                     .and_then(|w| w.as_array())

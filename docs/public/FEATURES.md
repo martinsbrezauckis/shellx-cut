@@ -694,6 +694,10 @@ route to the same surface registry.
   app has focus when the OS has admitted the global shortcut. Start rechecks
   the last valid setup against the current project, source, devices, and
   permissions; invalid setup opens Record with a reason and starts no capture.
+  On first use with no saved setup, F9 checks the current primary display (or
+  the Linux screen-sharing picker) and starts a screen-only polished take with
+  microphone, system audio, camera, and keystrokes off. Later F9 presses use
+  the last validated Record settings.
   When no project is open, Start or F9 creates a new recording project first;
   an already open project is used as-is. The action does not restore a
   minimized Cut window.

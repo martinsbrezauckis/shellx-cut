@@ -66,6 +66,11 @@ const BTBN_FFMPEG_BASE: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/d
 /// astral-sh's maintained latest-release alias for the uv provisioner.
 const UV_BASE: &str = "https://github.com/astral-sh/uv/releases/latest/download";
 
+/// Bound both decoded checksum metadata and staged archive bytes. The archive
+/// allowance is well above the current registry assets, including FFmpeg.
+const MAX_CHECKSUM_BYTES: u64 = 1024 * 1024;
+const MAX_TOOL_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// How a tool's checksum is published — the two release conventions we support.
 #[derive(Clone, Copy)]
 enum ChecksumSource {
@@ -404,18 +409,34 @@ fn expected_sha256(
 
 /// GET a small text resource (the checksum manifest). Errors are actionable.
 fn http_get_string(url: &str) -> Result<String, FetchAttemptError> {
+    http_get_string_with_limit(url, MAX_CHECKSUM_BYTES)
+}
+
+fn http_get_string_with_limit(url: &str, limit: u64) -> Result<String, FetchAttemptError> {
     require_https(url).map_err(FetchAttemptError::permanent)?;
     let resp = ureq::get(url)
         .call()
         .map_err(|e| FetchAttemptError::network("fetch checksum manifest", url, e))?;
-    let body = resp
-        .into_body()
-        .read_to_string()
+    reject_oversized_length(&resp, limit, "checksum manifest")?;
+    let mut bytes = Vec::new();
+    resp.into_body()
+        .into_reader()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| FetchAttemptError {
             error: net_err("read checksum manifest", url, e),
             transient: true,
         })?;
-    Ok(body)
+    if bytes.len() as u64 > limit {
+        return Err(size_limit_error("checksum manifest", limit));
+    }
+    String::from_utf8(bytes).map_err(|e| {
+        FetchAttemptError::permanent(CutError::new(
+            error_codes::JOB_FAILED,
+            "checksum manifest is not UTF-8",
+            e.to_string(),
+        ))
+    })
 }
 
 /// Stream-download `url` to `dest`, computing sha256 as bytes arrive (never
@@ -426,10 +447,20 @@ fn download_hashing(
     dest: &Path,
     progress: &dyn Fn(f32, &str),
 ) -> Result<(u64, String), FetchAttemptError> {
+    download_hashing_with_limit(url, dest, progress, MAX_TOOL_ARCHIVE_BYTES)
+}
+
+fn download_hashing_with_limit(
+    url: &str,
+    dest: &Path,
+    progress: &dyn Fn(f32, &str),
+    limit: u64,
+) -> Result<(u64, String), FetchAttemptError> {
     require_https(url).map_err(FetchAttemptError::permanent)?;
     let resp = ureq::get(url)
         .call()
         .map_err(|e| FetchAttemptError::network("download", url, e))?;
+    reject_oversized_length(&resp, limit, "tool archive")?;
     let total: Option<u64> = resp
         .headers()
         .get("content-length")
@@ -450,6 +481,9 @@ fn download_hashing(
         })?;
         if n == 0 {
             break;
+        }
+        if n as u64 > limit.saturating_sub(written) {
+            return Err(size_limit_error("tool archive", limit));
         }
         hasher.update(&buf[..n]);
         std::io::Write::write_all(&mut file, &buf[..n])
@@ -473,6 +507,30 @@ fn download_hashing(
         .map_err(|e| FetchAttemptError::permanent(io_err("flush archive file")(e)))?;
     let hex = hex::encode(hasher.finalize());
     Ok((written, hex))
+}
+
+fn reject_oversized_length(
+    resp: &ureq::http::Response<ureq::Body>,
+    limit: u64,
+    label: &str,
+) -> Result<(), FetchAttemptError> {
+    let length = resp
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if length.is_some_and(|length| length > limit) {
+        return Err(size_limit_error(label, limit));
+    }
+    Ok(())
+}
+
+fn size_limit_error(label: &str, limit: u64) -> FetchAttemptError {
+    FetchAttemptError::permanent(CutError::new(
+        error_codes::JOB_FAILED,
+        format!("{label} exceeds the download size limit"),
+        format!("maximum accepted size: {}", human(limit)),
+    ))
 }
 
 /// Reject any non-https URL up front (the base override could in theory be

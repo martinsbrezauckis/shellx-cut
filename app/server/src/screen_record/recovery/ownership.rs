@@ -5,6 +5,9 @@ use std::path::Path;
 
 use record_recovery::{is_plain_regular_file, CaptureRoot, RECORDING_SESSION_JOURNAL_FILE};
 
+pub(super) const MAX_OWNERSHIP_JOURNAL_BYTES: u64 = 8 * 1024 * 1024;
+pub(super) const MAX_COMPLETION_PROJECT_BYTES: u64 = 4 * 1024 * 1024;
+
 pub(super) enum PauseSessionOwnership {
     Absent,
     Present,
@@ -66,14 +69,27 @@ fn requires_input_sidecars(path: &Path) -> Result<bool, std::io::Error> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let mut file = options.open(path)?;
+    let file = options.open(path)?;
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::other(
             "pause-session journal is not regular",
         ));
     }
+    if file.metadata()?.len() > MAX_OWNERSHIP_JOURNAL_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "pause-session journal exceeds its size limit",
+        ));
+    }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    file.take(MAX_OWNERSHIP_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_OWNERSHIP_JOURNAL_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "pause-session journal exceeds its size limit",
+        ));
+    }
     Ok(bytes
         .windows(b"\"input_sidecars_required\":true".len())
         .any(|slice| slice == b"\"input_sidecars_required\":true"))
@@ -89,9 +105,24 @@ pub(super) fn has_sealed_normal_project(root: &Path) -> bool {
     {
         return false;
     }
-    let Ok(bytes) = std::fs::read(project) else {
+    let Ok(file) = std::fs::File::open(project) else {
         return false;
     };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() <= MAX_COMPLETION_PROJECT_BYTES)
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_COMPLETION_PROJECT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_COMPLETION_PROJECT_BYTES
+    {
+        return false;
+    }
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return false;
     };

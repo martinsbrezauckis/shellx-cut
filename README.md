@@ -295,6 +295,14 @@ metadata): same input + EDL ⇒ same output hash.
    record to `ops.jsonl` — actor, args, **rationale**, effects, and (only for
    historic snapshot-era records) an optional inverse payload.
 2. `project.json` is only a cache, rebuilt from the log on demand.
+   Project opening limits `ops.jsonl` to 128 MiB total and 8 MiB per record;
+   an oversized `project.json` cache is skipped and rebuilt. If an older,
+   legitimate project exceeds a journal limit, keep an untouched copy and
+   migrate or split it in a trusted compatible environment before reopening.
+   Do not truncate or hand-edit the operation journal to make it fit.
+   Oversized derived receipts and recording journals are rejected separately;
+   keep the original project, then regenerate the affected analysis or recover
+   the recording from a trusted copy.
 3. Ctrl+Z/Ctrl+Shift+Z use `project.undo`/`project.redo`; review rejection uses
    `edit.restore`. A reviewed adjacent compound action may instead use the
    revision-bound, tip-only `project.group_preview` / `project.group_reject`

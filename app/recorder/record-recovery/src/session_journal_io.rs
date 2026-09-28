@@ -18,6 +18,7 @@ use crate::{
 /// derived from a validated [`CaptureRoot`] and capture-id, never accepted from
 /// a caller as a path.
 pub const RECORDING_SESSION_JOURNAL_FILE: &str = "recording-session.journal.jsonl";
+const MAX_SESSION_JOURNAL_BYTES: u64 = 8 * 1024 * 1024;
 
 /// A durable writer plus its fully replayed recording-session state.
 ///
@@ -306,9 +307,21 @@ fn read_exact_entries(
 ) -> Result<Vec<RecordingSessionJournalEntry>, SessionJournalError> {
     file.seek(SeekFrom::Start(0))
         .map_err(|source| io_error(path, source))?;
+    if file
+        .metadata()
+        .map_err(|source| io_error(path, source))?
+        .len()
+        > MAX_SESSION_JOURNAL_BYTES
+    {
+        return Err(invalid("recording session journal exceeds its byte limit"));
+    }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    file.take(MAX_SESSION_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
+    if bytes.len() as u64 > MAX_SESSION_JOURNAL_BYTES {
+        return Err(invalid("recording session journal exceeds its byte limit"));
+    }
     if !bytes.ends_with(b"\n") {
         return Err(invalid(
             "recording session journal has a torn final entry; read does not repair it",
@@ -397,12 +410,37 @@ fn append_canonical_entry(
             "could not serialize recording session entry: {source}"
         ))
     })?;
+    let current_len = file
+        .metadata()
+        .map_err(|source| io_error(path, source))?
+        .len();
+    if current_len
+        .saturating_add(bytes.len() as u64)
+        .saturating_add(1)
+        > MAX_SESSION_JOURNAL_BYTES
+    {
+        return Err(invalid("recording session journal exceeds its byte limit"));
+    }
     file.write_all(&bytes)
         .and_then(|()| file.write_all(b"\n"))
         .and_then(|()| file.flush())
         .and_then(|()| file.sync_all())
         .map_err(|source| io_error(path, source))?;
     sync_parent(path)
+}
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_session_journal_is_rejected_before_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(RECORDING_SESSION_JOURNAL_FILE);
+        let mut file = File::create(&path).unwrap();
+        file.set_len(MAX_SESSION_JOURNAL_BYTES + 1).unwrap();
+        assert!(read_exact_entries(&mut file, &path).is_err());
+    }
 }
 
 #[cfg(unix)]

@@ -12,6 +12,7 @@
 
 use crate::types::{PerceptionReport, Transcript, PERCEPTION_SCHEMA};
 use cut_core::{error_codes, CutError};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::Arc;
@@ -34,6 +35,7 @@ pub use owned::{
 };
 use runtime_cache::{cache_matches_runtime_context, runtime_context_provenance};
 pub use runtime_cache::{effective_stt_selection, EffectiveSttSelection};
+const MAX_PERCEPTION_REPORT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Progress sink the sidecar drives from the python child's stderr `PROGRESS`
 /// lines. `f` is 0.0..1.0 within the CURRENT instrument run; `label` is a
@@ -933,11 +935,45 @@ pub fn load_report(
     asset_id: &str,
 ) -> Result<Option<PerceptionReport>, CutError> {
     let path = receipts_dir.join(format!("{asset_id}.perception.json"));
-    if !path.exists() {
-        return Ok(None);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || reparse {
+        return Err(CutError::new(
+            error_codes::SIDECAR,
+            "perception report is not a plain file",
+            path.display().to_string(),
+        ));
     }
-    let report: PerceptionReport =
-        serde_json::from_str(&std::fs::read_to_string(&path)?).map_err(CutError::from)?;
+    let file = std::fs::File::open(&path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() || opened.len() > MAX_PERCEPTION_REPORT_BYTES {
+        return Err(CutError::new(
+            error_codes::SIDECAR,
+            "perception report is not a bounded regular file",
+            path.display().to_string(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PERCEPTION_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PERCEPTION_REPORT_BYTES {
+        return Err(CutError::new(
+            error_codes::SIDECAR,
+            "perception report exceeds its byte limit",
+            path.display().to_string(),
+        ));
+    }
+    let report: PerceptionReport = serde_json::from_slice(&bytes).map_err(CutError::from)?;
     if report.schema != PERCEPTION_SCHEMA {
         return Err(CutError::new(
             error_codes::SIDECAR,
@@ -1457,6 +1493,24 @@ mod tests {
             r#"{"schema":"other/9","asset_hash":"x","source_path":"y"}"#,
         )
         .unwrap();
+        assert!(load_report(dir.path(), "a1").is_err());
+    }
+
+    #[test]
+    fn load_report_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("a1.perception.json")).unwrap();
+        file.set_len(MAX_PERCEPTION_REPORT_BYTES + 1).unwrap();
+        assert!(load_report(dir.path(), "a1").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_report_rejects_symlink_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.json");
+        std::fs::write(&target, "{}").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("a1.perception.json")).unwrap();
         assert!(load_report(dir.path(), "a1").is_err());
     }
 }

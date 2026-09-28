@@ -108,6 +108,24 @@ fn deleting_snapshots_falls_back_to_full_journal_replay() {
     assert_eq!(stats.replayed_ops, ops.len());
 }
 
+#[test]
+fn excessive_snapshot_entries_fall_back_to_journal_without_deleting_cache() {
+    let temp = tempfile::tempdir().unwrap();
+    let ops = marker_log(5);
+    let journal = journal(&ops);
+    let root = snapshot_dir(temp.path());
+    std::fs::create_dir_all(&root).unwrap();
+    for index in 0..=MAX_SNAPSHOT_SCAN_ENTRIES {
+        std::fs::write(root.join(format!("snapshot-{index:012}.json")), b"invalid").unwrap();
+    }
+
+    let (rebuilt, stats) = rebuild(temp.path(), &journal, ops.len()).unwrap();
+    assert_eq!(rebuilt, rebuild_from_log(&ops).unwrap());
+    assert_eq!(stats.snapshot_prefix, 0);
+    assert!(stats.rejected_snapshot);
+    assert!(root.join("snapshot-000000000000.json").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn linked_snapshot_cache_is_neither_read_pruned_nor_written() {

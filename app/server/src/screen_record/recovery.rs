@@ -16,6 +16,7 @@ mod ownership;
 use ownership::{has_sealed_normal_project, pause_session_ownership, PauseSessionOwnership};
 
 pub(crate) const CHECKPOINT_INTERVAL_MS: u64 = 15_000;
+const MAX_RECOVERY_CAPTURE_ENTRIES: usize = 512;
 
 pub(crate) fn validate_capture_id(capture_id: &str) -> Result<(), CutError> {
     let valid = !capture_id.is_empty()
@@ -130,7 +131,17 @@ pub(crate) fn scan(cache: &Path, ffmpeg: &str, ffprobe: &str) -> RecoveryScan {
     let Ok(entries) = std::fs::read_dir(cache) else {
         return scan;
     };
-    for entry in entries.flatten() {
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_RECOVERY_CAPTURE_ENTRIES {
+            scan.failed_closed
+                .push("capture-scan-limit: exceeded".into());
+            break;
+        }
+        let Ok(entry) = entry else {
+            scan.failed_closed
+                .push("capture-entry-unavailable: io_error".into());
+            continue;
+        };
         let root = entry.path();
         if !is_plain_dir(&root).unwrap_or(false) {
             continue;

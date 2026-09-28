@@ -14,6 +14,10 @@ use std::cell::Cell;
 const SNAPSHOT_SCHEMA: &str = "shellx-cut/history-snapshot/1";
 pub(super) const SNAPSHOT_INTERVAL: usize = 4_096;
 const MAX_SNAPSHOTS: usize = 8;
+// Retention normally leaves eight entries. Imported caches can contain many
+// more; ignore the disposable cache rather than spending unbounded work on it.
+const MAX_SNAPSHOT_SCAN_ENTRIES: usize = 256;
+const MAX_SNAPSHOT_REPLAY_BYTES: u64 = 512 * 1024 * 1024;
 const SNAPSHOT_DIR: &str = ".history-snapshots";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -160,7 +164,11 @@ fn nearest_verified_snapshot(
         Ok(None) => return Ok((None, false)),
         Err(_) => return Ok((None, true)),
     };
-    for path in snapshot_paths(&root) {
+    let Some(paths) = snapshot_paths(&root) else {
+        return Ok((None, true));
+    };
+    let mut total_bytes = 0u64;
+    for path in paths {
         let bytes = match read_bounded_replay_cache(&path) {
             BoundedCacheRead::Bytes(bytes) => bytes,
             BoundedCacheRead::Oversized => {
@@ -173,6 +181,12 @@ fn nearest_verified_snapshot(
                 continue;
             }
         };
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        if total_bytes > MAX_SNAPSHOT_REPLAY_BYTES {
+            // Partial snapshot selection could choose a non-nearest prefix.
+            // Replaying the journal is always correct and leaves cache bytes intact.
+            return Ok((None, true));
+        }
         let Ok(snapshot) = serde_json::from_slice::<Snapshot>(&bytes) else {
             rejected = true;
             let _ = std::fs::remove_file(&path);
@@ -267,23 +281,27 @@ fn snapshot_path(root: &Path, prefix_len: usize) -> PathBuf {
     root.join(format!("snapshot-{prefix_len:012}.json"))
 }
 
-fn snapshot_paths(root: &Path) -> Vec<PathBuf> {
+fn snapshot_paths(root: &Path) -> Option<Vec<PathBuf>> {
     let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
+        return Some(Vec::new());
     };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            let name = name.to_str()?;
-            (name.starts_with("snapshot-")
-                && name.ends_with(".json")
-                && entry.file_type().ok()?.is_file())
-            .then(|| entry.path())
-        })
-        .collect();
+    let mut paths = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_SNAPSHOT_SCAN_ENTRIES {
+            return None;
+        }
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with("snapshot-")
+            && name.ends_with(".json")
+            && entry.file_type().ok().is_some_and(|kind| kind.is_file())
+        {
+            paths.push(entry.path());
+        }
+    }
     paths.sort();
-    paths
+    Some(paths)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CutError> {
@@ -314,7 +332,10 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CutError> {
 }
 
 fn prune_old_snapshots(root: &Path) {
-    let paths: Vec<_> = snapshot_paths(root)
+    let Some(paths) = snapshot_paths(root) else {
+        return;
+    };
+    let paths: Vec<_> = paths
         .into_iter()
         .filter(|path| {
             std::fs::metadata(path).is_ok_and(|metadata| metadata.len() <= MAX_REPLAY_CACHE_BYTES)
