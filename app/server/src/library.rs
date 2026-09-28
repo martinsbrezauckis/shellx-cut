@@ -530,10 +530,24 @@ fn slim_probe(probe: &cut_media::MediaProbe) -> LibProbe {
     }
 }
 
+fn verified_content_hash(path: &Path, known_hash: Option<String>) -> Result<String, CutError> {
+    let actual_hash = cut_core::hash_file(path)?;
+    match known_hash {
+        Some(h) if is_exact_sha256(&h) && h != actual_hash => Err(CutError::new(
+            cut_core::error_codes::INVALID_ARGS,
+            "library asset hash does not match the selected file".to_string(),
+            "re-import or relink the project asset before adding it to the library",
+        )),
+        // A restored project may carry a legacy or malicious non-digest value.
+        // Always use the bytes on disk as the managed identity.
+        _ => Ok(actual_hash),
+    }
+}
+
 /// Add a media file to the library: ffprobe-VALIDATE (corrupt → error) + classify,
 /// content-hash, then LINK (`copy=false`, default) or COPY into the blob store
-/// (`copy=true`). Idempotent by content id. `known_hash` skips re-hashing when the
-/// caller already has it (an in-project asset). Returns the stored item.
+/// (`copy=true`). Idempotent by content id. A caller-supplied `known_hash` is
+/// checked against the file rather than trusted as a managed identity.
 #[allow(clippy::too_many_arguments)]
 pub fn add_from_path(
     path: &Path,
@@ -554,12 +568,7 @@ pub fn add_from_path(
     }
     // VALIDATE + classify via ffprobe (rejects corrupt; derives kind, not a caller hint).
     let probe = cut_media::probe(path)?;
-    let hash = match known_hash {
-        // A restored project may carry a legacy or malicious non-digest value.
-        // Re-hash the source rather than allowing it to become a blob path.
-        Some(h) if is_exact_sha256(&h) => h,
-        Some(_) | None => cut_core::hash_file(path)?,
-    };
+    let hash = verified_content_hash(path, known_hash)?;
     let id = id_from_hash(&hash);
     let ext = ext_of(path);
     let display = name.unwrap_or_else(|| {
@@ -623,6 +632,9 @@ pub(crate) fn item_media_path_from_item(
     blobs_dir: Option<&Path>,
 ) -> Option<PathBuf> {
     let path = if let Some(blob) = &item.blob {
+        if !is_safe_blob_filename(blob) {
+            return None;
+        }
         blobs_dir?.join(blob)
     } else {
         PathBuf::from(item.src_path.as_ref()?)
@@ -922,9 +934,36 @@ mod tests {
     }
 
     #[test]
+    fn item_media_path_rejects_untrusted_blob_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = dir.path().join("outside.mp4");
+        std::fs::write(&outside, b"outside").unwrap();
+        let mut item = img("asset", "outside.mp4", 1);
+        item.src_path = None;
+        item.blob = Some("../outside.mp4".into());
+
+        assert_eq!(
+            item_media_path_from_item(&item, Some(dir.path())),
+            None,
+            "restored blob names must stay inside the library blob root"
+        );
+    }
+
+    #[test]
     fn blob_filename_requires_an_exact_sha256() {
         assert!(blob_filename("sha256:short", "mp4").is_err());
         assert!(blob_filename(&format!("sha256:{}", "a".repeat(64)), "mp4").is_ok());
+    }
+
+    #[test]
+    fn verified_content_hash_rejects_forged_exact_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("asset.bin");
+        std::fs::write(&path, b"real bytes").unwrap();
+        let forged = format!("sha256:{}", "a".repeat(64));
+
+        assert!(verified_content_hash(&path, Some(forged)).is_err());
+        assert!(verified_content_hash(&path, Some("legacy-hash".into())).is_ok());
     }
 
     #[test]
