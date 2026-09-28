@@ -47,7 +47,16 @@
   overscroll-behavior: contain;
 }
 
-.rec > .rec__source-note { margin: 0; padding: 5px 24px 0; }
+.rec > .rec__source-note {
+  /* This is a sibling of the body, not a wrapping field note. The generic
+     source-note rule below uses flex-basis:100% for notes inside horizontal
+     fields; allowing that basis here makes the one-line no-project message
+     consume the whole Record column and pushes the workspace to the bottom. */
+  flex: none;
+  flex-basis: auto;
+  margin: 0;
+  padding: 5px 24px 0;
+}
 
 .rec__readiness {
   position: relative;
@@ -1037,9 +1046,15 @@
 
 @media (max-width: 1360px) {
   .rec__studio {
-    grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-    grid-template-areas: "settings preview" "controls controls";
+    /* Windows' normal 125–150% display scaling makes a 1080p window about
+       900–1,000 CSS px wide. Keep the complete setup visible there: moving
+       controls into an implicit second row recreates the old black gap and
+       trapped scroll frame. Compact all three rails until the viewport is
+       genuinely narrow. */
+    grid-template-columns: minmax(220px, 260px) minmax(240px, 1fr) minmax(220px, 260px);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "settings preview controls";
+    gap: 10px;
   }
   .rec[data-cut-record-phase="recording"] .rec__studio,
   .rec[data-cut-record-phase="finalizing"] .rec__studio {
