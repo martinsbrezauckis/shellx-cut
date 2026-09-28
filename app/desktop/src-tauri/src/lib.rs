@@ -599,6 +599,10 @@ fn spawn_engine(
         // adopted cutd returns before this spawn path and has no marker; scrub
         // inherited values so an external parent cannot become a controller.
         macos_controller_owner::apply_to_spawned_child(&mut cmd, ui_present);
+        // LaunchServices can terminate the shell without delivering Tauri's
+        // exit callbacks. Give the child a narrow parent-liveness contract so
+        // cutd can close itself when this exact desktop process disappears.
+        cmd.env("SHELLX_CUT_PARENT_PID", std::process::id().to_string());
     }
     let agent_docs_dir = resource_dir.join("agent-docs");
     if agent_docs_dir.join("skill/shellx-cut/SKILL.md").is_file() {

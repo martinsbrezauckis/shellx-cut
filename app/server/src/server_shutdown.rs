@@ -32,8 +32,31 @@ async fn wait_for_unix_server_shutdown(
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = terminate.recv() => {}
+        _ = wait_for_desktop_parent_exit() => {}
     }
     state.request_server_shutdown();
+}
+
+/// A macOS LaunchServices Quit can terminate the Tauri shell without sending
+/// the normal Tauri run events. The desktop sets this variable only for its
+/// own spawned child; a standalone `cutd serve` has no watchdog.
+#[cfg(target_os = "macos")]
+async fn wait_for_desktop_parent_exit() {
+    if std::env::var_os("SHELLX_CUT_PARENT_PID").is_none() {
+        std::future::pending::<()>().await;
+        return;
+    }
+    loop {
+        if unsafe { libc::getppid() } == 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn wait_for_desktop_parent_exit() {
+    std::future::pending::<()>().await;
 }
 
 #[cfg(all(test, unix))]
