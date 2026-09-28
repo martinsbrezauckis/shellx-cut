@@ -20,6 +20,7 @@
 //! Deps: serde, cut_media::probe (validate+classify), cut_core::hash_file, userdata.
 
 use crate::userdata;
+use cut_core::store::is_exact_sha256;
 use cut_core::CutError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -435,18 +436,53 @@ pub fn save(m: &LibraryManifest) -> Result<(), CutError> {
 
 /// Absolute path of a stored blob (`~/.shellx-cut/library/blobs/<file>`).
 pub fn blob_path(file: &str) -> Option<PathBuf> {
+    if !is_safe_blob_filename(file) {
+        return None;
+    }
     userdata::library_blobs_dir().map(|d| d.join(file))
 }
 
-/// Copy `src` into the content-addressed blob store as `<hash_hex>.<ext>` (skipping
-/// the copy if it already exists — free dedup). Returns the blob filename.
-fn store_blob(src: &Path, hash: &str, ext: &str) -> Result<String, CutError> {
+/// Library blobs are content-addressed filenames, never caller-controlled paths.
+/// Keep this check independent of the HTTP route because manifests can be
+/// restored from an untrusted project or an older local state file.
+fn is_safe_blob_filename(file: &str) -> bool {
+    !file.is_empty()
+        && !file.contains('/')
+        && !file.contains('\\')
+        && !file.contains("..")
+        && Path::new(file)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn blob_filename(hash: &str, ext: &str) -> Result<String, CutError> {
+    if !is_exact_sha256(hash) {
+        return Err(CutError::new(
+            cut_core::error_codes::INVALID_ARGS,
+            "library blob needs an exact SHA-256 identity".to_string(),
+            "re-import the media so Cut can establish a full content hash",
+        ));
+    }
     let hex = hash.strip_prefix("sha256:").unwrap_or(hash);
     let file = if ext.is_empty() {
         hex.to_string()
     } else {
         format!("{hex}.{ext}")
     };
+    if !is_safe_blob_filename(&file) {
+        return Err(CutError::new(
+            cut_core::error_codes::INVALID_ARGS,
+            "library blob filename is invalid".to_string(),
+            "re-import the media so Cut can establish a safe blob name",
+        ));
+    }
+    Ok(file)
+}
+
+/// Copy `src` into the content-addressed blob store as `<hash_hex>.<ext>` (skipping
+/// the copy if it already exists — free dedup). Returns the blob filename.
+fn store_blob(src: &Path, hash: &str, ext: &str) -> Result<String, CutError> {
+    let file = blob_filename(hash, ext)?;
     let dir = userdata::library_blobs_dir().ok_or_else(|| {
         CutError::new(
             cut_core::error_codes::IO,
@@ -519,8 +555,10 @@ pub fn add_from_path(
     // VALIDATE + classify via ffprobe (rejects corrupt; derives kind, not a caller hint).
     let probe = cut_media::probe(path)?;
     let hash = match known_hash {
-        Some(h) => h,
-        None => cut_core::hash_file(path)?,
+        // A restored project may carry a legacy or malicious non-digest value.
+        // Re-hash the source rather than allowing it to become a blob path.
+        Some(h) if is_exact_sha256(&h) => h,
+        Some(_) | None => cut_core::hash_file(path)?,
     };
     let id = id_from_hash(&hash);
     let ext = ext_of(path);
@@ -872,6 +910,21 @@ mod tests {
         let id = id_from_hash("sha256:0123456789abcdef0123456789abcdef");
         assert_eq!(id, "0123456789abcdef");
         assert_eq!(id_from_hash("deadbeef").len(), 8);
+    }
+
+    #[test]
+    fn blob_paths_reject_traversal_and_absolute_names() {
+        assert!(!is_safe_blob_filename("../outside.mp4"));
+        assert!(!is_safe_blob_filename("nested/blob.mp4"));
+        assert!(!is_safe_blob_filename("C:\\outside.mp4"));
+        assert!(!is_safe_blob_filename("/outside.mp4"));
+        assert!(is_safe_blob_filename("0123456789abcdef.mp4"));
+    }
+
+    #[test]
+    fn blob_filename_requires_an_exact_sha256() {
+        assert!(blob_filename("sha256:short", "mp4").is_err());
+        assert!(blob_filename(&format!("sha256:{}", "a".repeat(64)), "mp4").is_ok());
     }
 
     #[test]
