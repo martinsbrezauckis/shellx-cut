@@ -862,9 +862,12 @@ route to the same surface registry.
   screen capture continues and the absent system-audio stream remains explicit.
 - Windows screen recording uses the standard system capture border. Cut does not
   request the separate borderless-capture permission when starting a recording.
-- Exports and recordings can use a default export folder or per-action Save As;
-  default filename collisions are resolved with a numbered sibling file, while
+- General exports can use a default export folder or per-action Save As; default
+  filename collisions are resolved with a numbered sibling file, while
   confirmed Save As targets can replace existing export media/sidecar files.
+  Recording always publishes the unchanged raw MP4 to the default export folder
+  in both Raw and Polished modes. Optional destination selection is available
+  only after Stop through Export or Save a copy.
 - A completed raw recording can be copied byte-for-byte to another fenced MP4
   destination through a cancellable job; the saved source stays in its export
   folder and the copy does not change the timeline.

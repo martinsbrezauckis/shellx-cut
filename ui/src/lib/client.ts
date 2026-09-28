@@ -752,8 +752,8 @@ export interface VerbArgs {
   'screen_record.rehearsal_discard': { handle?: string }
   'screen_record.status': { capture_id: string }
   'screen_record.live_frame': { capture_id: string }
-  // Proposed v0.6.113 recording-scenes API. Record negotiates Doctor support
-  // before it ever sends this optional request to a current engine.
+  // Recording-scenes API. Record negotiates Doctor support before it ever
+  // sends this optional request to a current engine.
   'screen_record.scene_activate': RecordingSceneActivateArgs
   'screen_record.scene_timer': RecordingSceneTimerArgs
   'screen_record.pause': { capture_id: string }
