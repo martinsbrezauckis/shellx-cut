@@ -466,7 +466,12 @@ export default function App() {
     const created = await callVerb('project.create', { name: `Recording ${suffix}` })
     if (!created.ok || !created.result?.project) return null
     projectRef.current = created.result.project
-    return (await syncProject(true)) ?? created.result.project
+    setProject(created.result.project)
+    const synced = await syncProject(true)
+    // A confirmed close/switch must not be replaced by the earlier create
+    // reply. An unavailable pull may retain that reply, which is already a
+    // complete server result and now visible to React as well as the ref.
+    return synced === null ? null : synced ?? created.result.project
   }, [syncProject])
 
   // Reconcile only after the delta stream is quiet, except for the large hard
