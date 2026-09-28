@@ -60,6 +60,7 @@ static constexpr int kSxcCameraClosed = 2;
     uint64_t _moviePenultimatePtsNs;
     std::atomic_uint_fast64_t _movieLastDurationNs;
     std::atomic_uint_fast64_t _movieLastCadenceNs;
+    std::atomic_bool _movieStopRequested;
     SxcCameraFrameCallback _callback;
     void *_context;
     dispatch_semaphore_t _firstFrame;
@@ -80,6 +81,7 @@ static constexpr int kSxcCameraClosed = 2;
         _moviePenultimatePtsNs = 0;
         _movieLastDurationNs.store(0);
         _movieLastCadenceNs.store(0);
+        _movieStopRequested.store(false);
         _callback = callback;
         _context = context;
         _firstFrame = dispatch_semaphore_create(0);
@@ -142,6 +144,15 @@ static constexpr int kSxcCameraClosed = 2;
             if (_moviePenultimatePtsNs > 0) {
                 _movieLastCadenceNs.store(_movieLastPtsNs.load() - _moviePenultimatePtsNs);
             }
+        }
+        // AVFoundation guarantees that stopRecording called from this
+        // callback includes the current sample and all preceding samples.
+        // A Stop request arriving from Rust is therefore completed at the
+        // file-output frame boundary instead of racing the writer from a
+        // different thread and leaving several encoded frames past the last
+        // timing callback.
+        if (_movieStopRequested.exchange(false)) {
+            [(AVCaptureMovieFileOutput *)output stopRecording];
         }
         return;
     }
@@ -350,14 +361,21 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
             return -1;
         }
         SxcCameraHandle *handle = (__bridge_transfer SxcCameraHandle *)opaque;
-        sxc_quiesce_samples(handle);
         const bool movie_was_recording = handle.movie.isRecording;
         if (movie_was_recording) {
-            [handle.movie stopRecording];
+            // The file-output callback consumes this request after recording
+            // the current sample. This is the documented sample-accurate
+            // Stop route for AVCaptureFileOutputDelegate.
+            handle.delegate->_movieStopRequested.store(true);
         }
+        sxc_quiesce_samples(handle);
         // didFinish is required for every recording request, including one
         // that stopped before isRecording could still report true.
         if (!sxc_wait_camera_event(handle.delegate->_finished, 15)) {
+            // A broken callback delivery path must still settle the native
+            // owner before returning the existing actionable error.
+            handle.delegate->_movieStopRequested.store(false);
+            if (handle.movie.isRecording) [handle.movie stopRecording];
             [handle.session stopRunning];
             handle.movie.delegate = nil;
             sxc_error(error, error_capacity, @"AVFoundation did not finish the camera recording");
