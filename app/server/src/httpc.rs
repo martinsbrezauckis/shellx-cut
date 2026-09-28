@@ -23,10 +23,10 @@ pub const SERVER_ADDR: &str = "127.0.0.1:6161";
 /// Path of the engine-address discovery file. `cutd serve` writes its bound
 /// addr here on start so `cutd mcp` / `cutd verb` reach it even on a FALLBACK
 /// port (when :6161 was held by another process and the Tauri shell picked an
-/// OS-assigned port). Deterministic per machine/user (the app-data root, NOT
-/// TMPDIR) so a Tauri-spawned serve and a separately-launched mcp agree; falls
-/// back to the OS temp dir only when no home/app-data var is set.
-fn discovery_path() -> std::path::PathBuf {
+/// OS-assigned port). An explicit `SHELLX_CUT_HOME` keeps Runner launches in
+/// their attempt state; ordinary launches use the app-data root so a separate
+/// MCP process can find the same server. The OS temp dir is the last fallback.
+fn discovery_path() -> Option<std::path::PathBuf> {
     // Tests run in parallel in ONE process and all share this machine-global path, so a
     // concurrent test writing a LIVE addr could make another test's fallback check read
     // the wrong port (the observed flake). A thread-local override isolates each test to
@@ -34,12 +34,37 @@ fn discovery_path() -> std::path::PathBuf {
     // override is thread-local, not env-based.
     #[cfg(test)]
     if let Some(p) = TEST_DISCOVERY_PATH.with(|c| c.borrow().clone()) {
-        return p;
+        return Some(p);
     }
-    let base = cut_media::toolpath::appdata_tools_dir()
-        .and_then(|p| p.parent().map(|x| x.to_path_buf()))
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("engine.addr")
+    discovery_path_for(
+        std::env::var_os("SHELLX_CUT_HOME").as_deref(),
+        cut_media::toolpath::appdata_tools_dir().and_then(|p| p.parent().map(|x| x.to_path_buf())),
+        &std::env::temp_dir(),
+    )
+}
+
+fn discovery_path_for(
+    cut_home: Option<&std::ffi::OsStr>,
+    appdata_root: Option<std::path::PathBuf>,
+    temp_root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if let Some(home) = cut_home.filter(|home| !home.is_empty()) {
+        let root = std::path::PathBuf::from(home);
+        if !root.is_absolute()
+            || !root.is_dir()
+            || root
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return None;
+        }
+        return Some(root.join("engine.addr"));
+    }
+    Some(
+        appdata_root
+            .unwrap_or_else(|| temp_root.to_path_buf())
+            .join("engine.addr"),
+    )
 }
 
 #[cfg(test)]
@@ -52,7 +77,7 @@ thread_local! {
 /// Record the bound address for proxy discovery (best-effort: a failed write
 /// just means proxies fall back to probing the default port).
 pub fn write_discovery(addr: &str) {
-    let path = discovery_path();
+    let Some(path) = discovery_path() else { return };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -61,11 +86,13 @@ pub fn write_discovery(addr: &str) {
 
 /// Remove the discovery file (best-effort, on graceful shutdown).
 pub fn clear_discovery() {
-    let _ = std::fs::remove_file(discovery_path());
+    if let Some(path) = discovery_path() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn read_discovery() -> Option<String> {
-    std::fs::read_to_string(discovery_path())
+    std::fs::read_to_string(discovery_path()?)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -201,6 +228,46 @@ fn parse_body(raw: &[u8]) -> Result<serde_json::Value, CutError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_uses_attempt_state_before_user_appdata_and_keeps_desktop_fallbacks() {
+        let attempt_home = std::env::current_dir().unwrap();
+        let user_appdata = attempt_home.join("different-user-appdata");
+        let user_temp = attempt_home.join("different-user-temp");
+        assert_eq!(
+            discovery_path_for(
+                Some(attempt_home.as_os_str()),
+                Some(user_appdata.clone()),
+                &user_temp,
+            ),
+            Some(attempt_home.join("engine.addr")),
+        );
+        assert_eq!(
+            discovery_path_for(None, Some(user_appdata.clone()), &user_temp),
+            Some(user_appdata.join("engine.addr")),
+        );
+        assert_eq!(
+            discovery_path_for(None, None, &user_temp),
+            Some(user_temp.join("engine.addr")),
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_discovery_home_never_falls_back_into_user_appdata() {
+        let root = std::env::current_dir().unwrap();
+        let user_appdata = root.join("different-user-appdata");
+        for invalid in [
+            std::path::PathBuf::from("relative-home"),
+            root.join("missing-discovery-home"),
+            root.join("..").join("invalid-discovery-home"),
+        ] {
+            assert_eq!(
+                discovery_path_for(Some(invalid.as_os_str()), Some(user_appdata.clone()), &root),
+                None,
+                "invalid home {invalid:?} must not select user AppData",
+            );
+        }
+    }
 
     /// A live discovery address is used by the proxy; a stale one (server gone)
     /// falls back to the default port. Saves/restores any real discovery file so

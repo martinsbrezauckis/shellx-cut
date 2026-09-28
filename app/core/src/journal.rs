@@ -12,6 +12,41 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 
+// The index retains parsed records and prefix hashes in addition to the raw
+// open-time buffer. Keep a generous bound for long editing histories while
+// refusing project-supplied files that could exhaust the process.
+pub(crate) const MAX_JOURNAL_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) fn journal_size_error(actual: u64, limit: u64) -> CutError {
+    CutError::new(
+        codes::INVALID_ARGS,
+        "operation journal exceeds the supported size",
+        format!("ops.jsonl is {actual} bytes; the limit is {limit} bytes"),
+    )
+    .with_suggested_action(
+        "keep this project copy unchanged; restore a smaller known-good copy or use project repair tooling to inspect the journal",
+    )
+}
+
+fn record_size_error(offset: usize, actual: usize) -> CutError {
+    CutError::new(
+        codes::INVALID_ARGS,
+        "operation journal contains an oversized record",
+        format!("ops.jsonl byte {offset}: record is {actual} bytes; the limit is {MAX_RECORD_BYTES} bytes"),
+    )
+    .with_suggested_action(
+        "keep this project copy unchanged; restore a known-good copy or use project repair tooling to inspect the record",
+    )
+}
+
+fn ensure_newline_room(byte_len: u64, limit: u64) -> Result<(), CutError> {
+    if byte_len >= limit {
+        return Err(journal_size_error(byte_len.saturating_add(1), limit));
+    }
+    Ok(())
+}
+
 pub(crate) struct JournalScan {
     pub next_seq: u64,
     pub recovery: Option<JournalRecovery>,
@@ -71,6 +106,9 @@ fn parse(bytes: &[u8]) -> Result<ParsedJournal, CutError> {
         let newline = bytes[start..].iter().position(|byte| *byte == b'\n');
         let end = newline.map_or(bytes.len(), |relative| start + relative);
         let next = newline.map_or(bytes.len(), |_| end + 1);
+        if end - start > MAX_RECORD_BYTES {
+            return Err(record_size_error(start, end - start));
+        }
         let line = trimmed(&bytes[start..end]);
         if !line.is_empty() {
             match serde_json::from_slice::<OpRecord>(line) {
@@ -239,9 +277,27 @@ fn next_sequence(records: &[OpRecord]) -> u64 {
 pub(crate) fn open_and_recover(path: &Path) -> Result<JournalScan, CutError> {
     let mut read_file = open_plain_journal(path, false, false, None)?;
     let original = read_file.metadata()?;
+    if original.len() > MAX_JOURNAL_BYTES {
+        return Err(journal_size_error(original.len(), MAX_JOURNAL_BYTES));
+    }
     let mut bytes = Vec::new();
-    read_file.read_to_end(&mut bytes)?;
+    (&mut read_file)
+        .take(MAX_JOURNAL_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+        return Err(journal_size_error(bytes.len() as u64, MAX_JOURNAL_BYTES));
+    }
+    if read_file.metadata()?.len() != bytes.len() as u64 {
+        return Err(CutError::new(
+            codes::CONFLICT,
+            "operation journal changed while opening",
+            format!("journal length changed at {}", path.display()),
+        ));
+    }
     let parsed = parse(&bytes)?;
+    if parsed.torn_tail.is_none() && !bytes.is_empty() && bytes.last() != Some(&b'\n') {
+        ensure_newline_room(bytes.len() as u64, MAX_JOURNAL_BYTES)?;
+    }
     // Acquire the write handle before creating recovery evidence. If the
     // journal changed after the read, fail without creating sidecars or editing.
     let mut write_file =
@@ -382,6 +438,79 @@ mod tests {
             1,
             "fail-closed open must not create recovery sidecars"
         );
+    }
+
+    #[test]
+    fn oversized_journal_is_rejected_without_recovery_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.jsonl");
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_JOURNAL_BYTES + 1).unwrap();
+
+        let error = OpLog::open(&path).unwrap_err();
+        assert_eq!(error.code, codes::INVALID_ARGS);
+        assert!(error.message.contains("exceeds the supported size"));
+        assert!(error.suggested_action.is_some());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            MAX_JOURNAL_BYTES + 1
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn oversized_final_record_is_not_treated_as_a_recoverable_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.jsonl");
+        let mut file = File::create(&path).unwrap();
+        let valid = line(&op(0), true);
+        file.write_all(&valid).unwrap();
+        file.set_len(valid.len() as u64 + MAX_RECORD_BYTES as u64 + 1)
+            .unwrap();
+
+        let error = OpLog::open(&path).unwrap_err();
+        assert_eq!(error.code, codes::INVALID_ARGS);
+        assert!(error.message.contains("oversized record"));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            valid.len() as u64 + MAX_RECORD_BYTES as u64 + 1
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn append_refuses_a_record_that_cannot_be_reopened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.jsonl");
+        let log = OpLog::open(&path).unwrap();
+        let mut record = op(0);
+        record.args = serde_json::json!({"payload": "x".repeat(MAX_RECORD_BYTES)});
+
+        let error = log.append(&record).unwrap_err();
+        assert_eq!(error.code, codes::INVALID_ARGS);
+        assert!(error.message.contains("record exceeds"));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn large_valid_record_still_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ops.jsonl");
+        let log = OpLog::open(&path).unwrap();
+        let mut record = op(0);
+        record.rationale = Some("r".repeat(1024 * 1024));
+        log.append(&record).unwrap();
+
+        let reopened = OpLog::open(&path).unwrap();
+        assert_eq!(reopened.read_all().unwrap(), vec![record]);
+    }
+
+    #[test]
+    fn canonical_newline_requires_room_within_the_journal_limit() {
+        let error = ensure_newline_room(128, 128).unwrap_err();
+        assert_eq!(error.code, codes::INVALID_ARGS);
+        assert!(error.suggested_action.is_some());
+        ensure_newline_room(127, 128).unwrap();
     }
 
     #[test]

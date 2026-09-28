@@ -237,6 +237,17 @@ fn appdata_sidecar_dir() -> Option<PathBuf> {
     }
 }
 
+fn tools_doctor_root(
+    cut_home: Option<&std::ffi::OsStr>,
+    appdata_root: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(home) = cut_home.filter(|home| !home.is_empty()) {
+        let root = PathBuf::from(home);
+        return (root.is_absolute() && root.is_dir()).then_some(root);
+    }
+    appdata_root
+}
+
 /// The engine's persisted manual ffmpeg choice (the UI "Change ffmpeg"
 /// control, system.set_ffmpeg), when it points at an existing file. Mirrors
 /// cut-media::toolpath::override_file_with EXACTLY: an isolated
@@ -574,12 +585,13 @@ impl ToolResolution {
         })
     }
 
-    /// Write `to_json()` to `<LOCALAPPDATA or HOME equiv>\ShellX Cut\tools-doctor.json`
-    /// (the app-data root, parent of tools/). Best-effort — a failure here never
-    /// affects launch. Returns the path written, for logging.
+    /// Write `to_json()` under `SHELLX_CUT_HOME` for isolated runs, otherwise
+    /// beside the app-data tools dir. Best-effort; returns the path written.
     pub fn write_doctor_file(&self) -> Option<PathBuf> {
-        // App-data root = parent of the tools dir.
-        let root = appdata_tools_dir().and_then(|t| t.parent().map(Path::to_path_buf))?;
+        let root = tools_doctor_root(
+            std::env::var_os("SHELLX_CUT_HOME").as_deref(),
+            appdata_tools_dir().and_then(|t| t.parent().map(Path::to_path_buf)),
+        )?;
         let _ = std::fs::create_dir_all(&root);
         let path = root.join("tools-doctor.json");
         let body = serde_json::to_string_pretty(&self.to_json()).ok()?;
@@ -804,6 +816,46 @@ mod tests {
         "HOME",
         "LOCALAPPDATA",
     ];
+
+    #[test]
+    fn tools_doctor_writes_to_attempt_home_and_preserves_normal_appdata_destination() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
+        let _restore =
+            EnvRestore::capture(&["SHELLX_CUT_HOME", "LOCALAPPDATA", "XDG_DATA_HOME", "HOME"]);
+        let tmp =
+            std::env::temp_dir().join(format!("scut-doctor-path-test-{}", std::process::id()));
+        let home = tmp.join("attempt-home");
+        let appdata = tmp.join("user-appdata");
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("SHELLX_CUT_HOME", &home);
+        std::env::set_var("LOCALAPPDATA", &appdata);
+        std::env::set_var("XDG_DATA_HOME", &appdata);
+        std::env::set_var("HOME", &tmp);
+        let doctor = ToolResolution::default();
+
+        let isolated = doctor.write_doctor_file().unwrap();
+        assert_eq!(isolated, home.join("tools-doctor.json"));
+        assert!(isolated.is_file());
+        assert!(
+            !appdata.exists(),
+            "isolated launch must not create user AppData"
+        );
+
+        std::env::remove_var("SHELLX_CUT_HOME");
+        let expected_fallback = appdata_tools_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tools-doctor.json");
+        let ordinary = doctor.write_doctor_file().unwrap();
+        assert_eq!(ordinary, expected_fallback);
+        assert!(ordinary.is_file());
+
+        std::env::set_var("SHELLX_CUT_HOME", tmp.join("missing-home"));
+        assert!(doctor.write_doctor_file().is_none());
+        assert!(!tmp.join("missing-home").exists());
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
 
     /// The shell must report ffmpeg through the same ladder the engine resolves
     /// with — here the SHELLX_CUT_FFMPEG_DIR

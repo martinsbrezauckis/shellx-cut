@@ -188,7 +188,7 @@ pub(super) async fn project_create(
         // Omitted dir = a user-writable projects folder (NOT the app's launch
         // cwd, which on an installed Windows shell is opaque/unwritable). The UI
         // "New project" affordance relies on this default landing somewhere sane.
-        None => default_projects_dir(),
+        None => default_projects_dir()?,
         Some(d) => {
             let p = PathBuf::from(d);
             let expected = format!("{}.cutproj", a.name);
@@ -297,7 +297,7 @@ pub(super) async fn project_list(args: Value) -> Result<VerbResult, CutError> {
     }
     let a: Args = parse_args(args)?;
     let sort = a.sort.as_deref().unwrap_or("recent");
-    let managed = default_projects_dir();
+    let managed = default_projects_dir()?;
     let projects = crate::projects_index::list(&managed, sort, a.q.as_deref())?;
     Ok(VerbResult::ok(json!({ "projects": projects })))
 }

@@ -45,7 +45,7 @@ use crate::types::{
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 mod atomic_media_insert;
@@ -72,6 +72,42 @@ use name_policy::{validate_logged_project_name, validate_project_name};
 pub use open_health::{ProjectCacheHealth, ProjectOpenHealth, ProjectSnapshotHealth};
 pub use portable::PORTABLE_SNAPSHOT_SCHEMA;
 pub use relink::{current_relink_receipt, is_exact_sha256, RelinkGroupChange, RelinkGroupCommit};
+
+// project.json and history snapshots are disposable replay caches. A bounded
+// read protects open from a planted or growing cache while allowing large
+// ordinary timelines to use their fast path.
+const MAX_REPLAY_CACHE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PROBE_CACHE_BYTES: u64 = 4 * 1024 * 1024;
+
+enum BoundedCacheRead {
+    Bytes(Vec<u8>),
+    Oversized,
+    Unavailable,
+}
+
+fn read_bounded_cache(path: &Path, limit: u64) -> BoundedCacheRead {
+    let Ok(file) = std::fs::File::open(path) else {
+        return BoundedCacheRead::Unavailable;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return BoundedCacheRead::Unavailable;
+    };
+    if metadata.len() > limit {
+        return BoundedCacheRead::Oversized;
+    }
+    let mut bytes = Vec::new();
+    if file.take(limit + 1).read_to_end(&mut bytes).is_err() {
+        return BoundedCacheRead::Unavailable;
+    }
+    if bytes.len() as u64 > limit {
+        return BoundedCacheRead::Oversized;
+    }
+    BoundedCacheRead::Bytes(bytes)
+}
+
+fn read_bounded_replay_cache(path: &Path) -> BoundedCacheRead {
+    read_bounded_cache(path, MAX_REPLAY_CACHE_BYTES)
+}
 
 /// A project on disk: the materialized state + its op-log + dir layout.
 #[derive(Debug)]
@@ -491,9 +527,10 @@ impl ProjectStore {
         std::fs::create_dir_all(dir.join("filmstrip"))?;
         let log = OpLog::open(&dir.join("ops.jsonl"))?;
         let pj = dir.join("project.json");
-        let cached = std::fs::read_to_string(&pj)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Project>(&s).ok());
+        let cached = match read_bounded_replay_cache(&pj) {
+            BoundedCacheRead::Bytes(bytes) => serde_json::from_slice::<Project>(&bytes).ok(),
+            BoundedCacheRead::Oversized | BoundedCacheRead::Unavailable => None,
+        };
         // ops.jsonl is the source of truth. A syntactically-valid project.json
         // can still be stale after a crash/cache-write failure, so verify the
         // cache against a replay before trusting it. Derived asset pointers are
@@ -4860,10 +4897,12 @@ fn reconcile_derived_assets(project: &mut Project, dir: &Path) {
             asset.perception = present(format!("receipts/{id}.perception.json"));
         }
         if asset.probe.is_none() {
-            if let Ok(text) = std::fs::read_to_string(dir.join(format!("receipts/{id}.probe.json")))
-            {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                    asset.probe = Some(v);
+            if let BoundedCacheRead::Bytes(bytes) = read_bounded_cache(
+                &dir.join(format!("receipts/{id}.probe.json")),
+                MAX_PROBE_CACHE_BYTES,
+            ) {
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    asset.probe = Some(value);
                 }
             }
         }

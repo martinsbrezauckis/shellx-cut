@@ -138,6 +138,11 @@ pub(super) fn write(dir: &Path, journal: &JournalView, project: &Project) -> Res
     };
     let root = checked_snapshot_dir(dir, true)?.expect("created snapshot directory");
     let path = snapshot_path(&root, snapshot.prefix_len);
+    // A cache that exceeds the read limit is retained for inspection. Do not
+    // replace it while refreshing a rejected snapshot at the same prefix.
+    if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > MAX_REPLAY_CACHE_BYTES) {
+        return Ok(());
+    }
     atomic_write(&path, &serde_json::to_vec_pretty(&snapshot)?)?;
     prune_old_snapshots(&root);
     Ok(())
@@ -156,10 +161,17 @@ fn nearest_verified_snapshot(
         Err(_) => return Ok((None, true)),
     };
     for path in snapshot_paths(&root) {
-        let Ok(bytes) = std::fs::read(&path) else {
-            rejected = true;
-            let _ = std::fs::remove_file(&path);
-            continue;
+        let bytes = match read_bounded_replay_cache(&path) {
+            BoundedCacheRead::Bytes(bytes) => bytes,
+            BoundedCacheRead::Oversized => {
+                rejected = true;
+                continue;
+            }
+            BoundedCacheRead::Unavailable => {
+                rejected = true;
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
         };
         let Ok(snapshot) = serde_json::from_slice::<Snapshot>(&bytes) else {
             rejected = true;
@@ -302,7 +314,12 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CutError> {
 }
 
 fn prune_old_snapshots(root: &Path) {
-    let paths = snapshot_paths(root);
+    let paths: Vec<_> = snapshot_paths(root)
+        .into_iter()
+        .filter(|path| {
+            std::fs::metadata(path).is_ok_and(|metadata| metadata.len() <= MAX_REPLAY_CACHE_BYTES)
+        })
+        .collect();
     for path in paths.into_iter().rev().skip(MAX_SNAPSHOTS) {
         let _ = std::fs::remove_file(path);
     }

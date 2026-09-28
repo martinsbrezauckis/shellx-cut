@@ -102,6 +102,13 @@ showing Projects. A transport or other transient error is not proof of closure;
 keep the cached workspace and retry rather than falsely erasing it. REST, CLI,
 and MCP clients share these same verb/error semantics.
 
+`project.open` reads `ops.jsonl` as the durable editing history. It rejects a
+journal over 128 MiB or a single operation record over 8 MiB with `invalid_args`
+and leaves the journal and recovery evidence unchanged. Preserve the full
+project folder for repair or migration; truncating `ops.jsonl` loses history.
+Oversized derived `project.json` and snapshot caches are skipped and rebuilt
+from an admitted journal.
+
 ### Health & Recovery read
 
 `project.health {cursor?, revision?, limit?:1..128}` is the separate, read-only

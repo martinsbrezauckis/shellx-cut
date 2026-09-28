@@ -228,6 +228,18 @@ impl OpLog {
     /// Append and fsync one JSONL record so a crash never loses an acknowledgement.
     pub fn append(&self, op: &OpRecord) -> Result<AppendOutcome, CutError> {
         let encoded = serde_json::to_vec(op)?;
+        if encoded.len() > crate::journal::MAX_RECORD_BYTES {
+            return Err(CutError::new(
+                crate::error::codes::INVALID_ARGS,
+                "operation record exceeds the supported size",
+                format!(
+                    "record is {} bytes; the limit is {} bytes",
+                    encoded.len(),
+                    crate::journal::MAX_RECORD_BYTES
+                ),
+            )
+            .with_suggested_action("reduce this operation's payload before retrying"));
+        }
         let mut line = encoded.clone();
         line.push(b'\n');
         let mut index = self.index.lock().map_err(|_| {
@@ -238,6 +250,14 @@ impl OpLog {
             )
         })?;
         index.ensure_unmodified(&self.path)?;
+        let current_len = std::fs::metadata(&self.path)?.len();
+        let new_len = current_len.saturating_add(line.len() as u64);
+        if new_len > crate::journal::MAX_JOURNAL_BYTES {
+            return Err(crate::journal::journal_size_error(
+                new_len,
+                crate::journal::MAX_JOURNAL_BYTES,
+            ));
+        }
         let expected = OpRecord::format_id(index.next_seq);
         if op.op_id != expected {
             return Err(CutError::new(
@@ -249,6 +269,13 @@ impl OpLog {
         let revision = revision_for_next_sequence(index.next_seq);
         index.requests.validate_append(op, revision.as_deref())?;
         let mut f = crate::journal::open_plain_journal(&self.path, true, true, None)?;
+        if f.metadata()?.len() != current_len {
+            return Err(CutError::new(
+                crate::error::codes::CONFLICT,
+                "operation journal changed before append",
+                format!("journal length changed at {}", self.path.display()),
+            ));
+        }
         f.write_all(&line)?;
         f.sync_data()?;
         // Post-sync index updates are infallible; identity degradation is status, never Err.

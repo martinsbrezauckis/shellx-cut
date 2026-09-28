@@ -53,3 +53,45 @@ fn strict_open_preserves_cache_snapshot_and_tail_recovery_outcomes() {
     assert!(project_dir.join(&tail.quarantine_file).is_file());
     assert!(project_dir.join(&tail.note_file).is_file());
 }
+
+#[test]
+fn oversized_project_cache_is_skipped_and_rebuilt_from_journal() {
+    let root = tempfile::tempdir().unwrap();
+    let store = ProjectStore::create(root.path(), "cache-limit", None).unwrap();
+    let project_dir = store.dir.clone();
+    let expected = store.project.clone();
+    drop(store);
+
+    let cache = std::fs::File::create(project_dir.join("project.json")).unwrap();
+    cache.set_len(MAX_REPLAY_CACHE_BYTES + 1).unwrap();
+    let reopened = ProjectStore::open(&project_dir).unwrap();
+    assert_eq!(reopened.open_health().cache, ProjectCacheHealth::Rebuilt);
+    assert_eq!(reopened.project, expected);
+}
+
+#[test]
+fn oversized_snapshot_is_skipped_and_journal_replays() {
+    let root = tempfile::tempdir().unwrap();
+    let store = ProjectStore::create(root.path(), "snapshot-limit", None).unwrap();
+    let project_dir = store.dir.clone();
+    let expected = store.project.clone();
+    drop(store);
+
+    let snapshots = project_dir.join(".history-snapshots");
+    std::fs::create_dir_all(&snapshots).unwrap();
+    let snapshot_path = snapshots.join("snapshot-000000000001.json");
+    let snapshot = std::fs::File::create(&snapshot_path).unwrap();
+    snapshot.set_len(MAX_REPLAY_CACHE_BYTES + 1).unwrap();
+
+    let reopened = ProjectStore::open(&project_dir).unwrap();
+    assert_eq!(
+        reopened.open_health().snapshot,
+        ProjectSnapshotHealth::Rejected
+    );
+    assert_eq!(reopened.project, expected);
+    assert_eq!(
+        std::fs::metadata(&snapshot_path).unwrap().len(),
+        MAX_REPLAY_CACHE_BYTES + 1,
+        "an oversized snapshot must survive replay and cache refresh"
+    );
+}

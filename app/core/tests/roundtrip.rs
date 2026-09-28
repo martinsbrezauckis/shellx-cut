@@ -1581,6 +1581,29 @@ fn rebuild_reconciles_derived_asset_pointers_from_disk() {
     );
 }
 
+#[test]
+fn oversized_probe_receipt_is_skipped_during_open_replay() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = ProjectStore::create(root.path(), "probe-limit", None).unwrap();
+    let mut bare = asset();
+    bare.probe = None;
+    let (id, _) = store.record_import(None, bare, actor(), None).unwrap();
+    let project_dir = store.dir.clone();
+    drop(store);
+
+    let receipt = project_dir.join(format!("receipts/{id}.probe.json"));
+    let file = std::fs::File::create(&receipt).unwrap();
+    file.set_len(4 * 1024 * 1024 + 1).unwrap();
+    std::fs::remove_file(project_dir.join("project.json")).unwrap();
+
+    let reopened = ProjectStore::open(&project_dir).unwrap();
+    assert!(reopened.project.assets.get(&id).unwrap().probe.is_none());
+    assert_eq!(
+        std::fs::metadata(receipt).unwrap().len(),
+        4 * 1024 * 1024 + 1
+    );
+}
+
 /// Regression: a `project.format` op MUST replay. Before apply_record gained
 /// its arm, the op
 /// fell through to the "verb is not a core verb" escape, so ANY project that

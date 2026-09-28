@@ -168,6 +168,41 @@ fn webview2_data_token(value: Option<&str>) -> Result<Option<String>, String> {
     Ok(Some(value.to_string()))
 }
 
+#[cfg(any(windows, test))]
+fn webview2_data_directory(
+    token: &str,
+    cut_home: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf, String> {
+    if let Some(home) = cut_home {
+        let root = PathBuf::from(home);
+        if !root.is_absolute()
+            || !root.is_dir()
+            || root
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err("SHELLX_CUT_HOME must be an existing absolute directory for an isolated WebView2 test profile".into());
+        }
+        return Ok(root.join("webview2").join(token));
+    }
+    let root = local_app_data
+        .map(PathBuf::from)
+        .ok_or("LOCALAPPDATA is required for an isolated WebView2 test profile")?;
+    Ok(root.join("ShellX Cut WebView Tests").join(token))
+}
+
+fn engine_log_path(
+    cut_home: Option<&std::ffi::OsStr>,
+    temp_root: &std::path::Path,
+) -> Option<PathBuf> {
+    if let Some(home) = cut_home.filter(|home| !home.is_empty()) {
+        let root = PathBuf::from(home);
+        return (root.is_absolute() && root.is_dir()).then(|| root.join("shellx-cut-engine.log"));
+    }
+    Some(temp_root.join("shellx-cut-engine.log"))
+}
+
 /// Handle to the spawned cutd child, kept in Tauri managed state so we can
 /// kill it on app exit. `None` when reusing an external server (mode
 /// "external") or when startup failed — nothing to kill in either case.
@@ -545,9 +580,19 @@ fn spawn_engine(
 
     // cutd logs (tracing) go to stderr; capture them to a temp file so a
     // startup failure on the INSTALLED app (no console) stays inspectable:
-    // %TEMP%/shellx-cut-engine.log. Best-effort — Stdio::null() if create fails.
-    let log_path = std::env::temp_dir().join("shellx-cut-engine.log");
-    let log_file = std::fs::File::create(&log_path).ok();
+    // Runner's SHELLX_CUT_HOME is attempt-owned even when Windows TEMP is the
+    // interactive user's directory. Best-effort — Stdio::null() if unavailable.
+    let log_path = engine_log_path(
+        std::env::var_os("SHELLX_CUT_HOME").as_deref(),
+        &std::env::temp_dir(),
+    );
+    let log_file = log_path
+        .as_ref()
+        .and_then(|path| std::fs::File::create(path).ok());
+    let log_location = log_path
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "stderr log unavailable".into());
 
     let mut cmd = Command::new(&program);
     cmd.arg("serve").arg("--addr").arg(&addr);
@@ -679,7 +724,7 @@ fn spawn_engine(
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!(
                 "engine unavailable: cutd exited during startup ({status}); see {}",
-                log_path.display()
+                log_location
             ));
         }
         if Instant::now() >= deadline {
@@ -687,7 +732,7 @@ fn spawn_engine(
             return Err(format!(
                 "engine unavailable: cutd did not answer on {addr} within {}s; see {}",
                 ENGINE_READY_TIMEOUT.as_secs(),
-                log_path.display()
+                log_location
             ));
         }
         std::thread::sleep(Duration::from_millis(150));
@@ -936,10 +981,12 @@ pub fn run() {
             webview2_data_token(std::env::var(ENV_WEBVIEW2_DATA_TOKEN).ok().as_deref())
                 .unwrap_or_else(|reason| panic!("[shellx-cut] {reason}"));
         let data_directory = data_token.map(|token| {
-            let local_app_data = std::env::var_os("LOCALAPPDATA")
-                .map(PathBuf::from)
-                .expect("LOCALAPPDATA is required for an isolated WebView2 test profile");
-            local_app_data.join("ShellX Cut WebView Tests").join(token)
+            webview2_data_directory(
+                &token,
+                std::env::var_os("SHELLX_CUT_HOME").as_deref(),
+                std::env::var_os("LOCALAPPDATA").as_deref(),
+            )
+            .unwrap_or_else(|reason| panic!("[shellx-cut] {reason}"))
         });
         if browser_args.is_some() || data_directory.is_some() {
             let main_window = context
@@ -1378,6 +1425,69 @@ mod tests {
                 "must reject {invalid:?}"
             );
         }
+    }
+
+    #[test]
+    fn webview2_test_profile_stays_under_attempt_home_when_user_appdata_is_present() {
+        let attempt_home = std::env::current_dir().unwrap();
+        let user_appdata = attempt_home.join("different-user-appdata");
+        let selected = webview2_data_directory(
+            "run_123",
+            Some(attempt_home.as_os_str()),
+            Some(user_appdata.as_os_str()),
+        )
+        .unwrap();
+        assert_eq!(selected, attempt_home.join("webview2").join("run_123"));
+        assert!(!selected.starts_with(user_appdata));
+    }
+
+    #[test]
+    fn webview2_test_profile_preserves_desktop_fallback_and_rejects_invalid_attempt_home() {
+        let appdata = std::env::current_dir().unwrap().join("user-appdata");
+        assert_eq!(
+            webview2_data_directory("run_123", None, Some(appdata.as_os_str())).unwrap(),
+            appdata.join("ShellX Cut WebView Tests").join("run_123")
+        );
+        assert!(webview2_data_directory("run_123", None, None).is_err());
+        for invalid in [
+            PathBuf::from(""),
+            PathBuf::from("relative/attempt"),
+            std::env::current_dir()
+                .unwrap()
+                .join("missing-attempt-home"),
+            std::env::current_dir()
+                .unwrap()
+                .join("..")
+                .join("invalid-attempt-home"),
+        ] {
+            assert!(
+                webview2_data_directory(
+                    "run_123",
+                    Some(invalid.as_os_str()),
+                    Some(appdata.as_os_str()),
+                )
+                .is_err(),
+                "must reject invalid attempt root {invalid:?} without using AppData"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_log_uses_attempt_home_before_user_temp() {
+        let attempt_home = std::env::current_dir().unwrap();
+        let user_temp = attempt_home.join("different-user-temp");
+        assert_eq!(
+            engine_log_path(Some(attempt_home.as_os_str()), &user_temp),
+            Some(attempt_home.join("shellx-cut-engine.log"))
+        );
+        assert_eq!(
+            engine_log_path(None, &user_temp),
+            Some(user_temp.join("shellx-cut-engine.log"))
+        );
+        assert_eq!(
+            engine_log_path(Some(std::ffi::OsStr::new("relative-home")), &user_temp),
+            None
+        );
     }
 
     #[test]
