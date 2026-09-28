@@ -73,8 +73,11 @@ if [ ! -e "$artifact" ]; then
 fi
 
 if [ "$callback_mode" = "--verify-only" ]; then
-  echo "windows-artifact-sign: verification-only callback requires official signing" >&2
-  exit 1
+  # NSIS invokes the callback once more for its generated uninstaller.  A
+  # public unsigned build has no signature to verify, but it must still be
+  # able to finish bundling so local Record/UI qualification can install it.
+  echo "windows-artifact-sign: unsigned public-source build (verification skipped)"
+  exit 0
 fi
 
 echo "windows-artifact-sign: unsigned public-source build"
