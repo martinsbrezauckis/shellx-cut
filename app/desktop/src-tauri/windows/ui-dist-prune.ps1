@@ -13,12 +13,27 @@ if (-not [string]::Equals([IO.Path]::GetDirectoryName($target), $root, [StringCo
 }
 
 $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$administrators = 'S-1-5-32-544'
+$localAppData = [IO.Path]::GetFullPath([Environment]::GetFolderPath('LocalApplicationData')).TrimEnd('\')
+function Is-UnderLocalAppData([string]$path) {
+  return [string]::Equals($path, $localAppData, [StringComparison]::OrdinalIgnoreCase) -or
+    $path.StartsWith($localAppData + '\', [StringComparison]::OrdinalIgnoreCase)
+}
 function Assert-RealOwned([string]$path) {
   $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
   if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Reparse path: $path" }
-  if ((Get-Acl -LiteralPath $path -ErrorAction Stop).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) {
+  $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+  $actualOwner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if ($actualOwner -eq $owner) { return $item }
+  if ($actualOwner -ne $administrators -or -not (Is-UnderLocalAppData $root)) {
     throw "Foreign owner: $path"
   }
+  $hasFullControl = @($acl.Access | Where-Object {
+    if ($_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { return $false }
+    try { $identitySid = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { return $false }
+    $identitySid -eq $owner -and (($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq [Security.AccessControl.FileSystemRights]::FullControl)
+  }).Count -gt 0
+  if (-not $hasFullControl) { throw "Foreign owner: $path" }
   return $item
 }
 
