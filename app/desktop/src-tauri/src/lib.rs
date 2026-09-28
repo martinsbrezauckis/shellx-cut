@@ -1216,6 +1216,15 @@ pub fn run() {
         .build(context)
         .expect("error while building shellx-cut desktop shell");
     app.run(|app_handle, event| {
+        // macOS may close the last window through LaunchServices without
+        // delivering the window-destroyed callback before the process exits.
+        // Reap the exact child at the exit request as well, so a normal Quit
+        // never leaves an owned cutd listener behind on 127.0.0.1:6161.
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            record_indicator::reset(app_handle);
+            record_hotkey::release_runtime(app_handle);
+            stop_owned_engine(app_handle);
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             record_indicator::reset(app_handle);
             record_hotkey::release_runtime(app_handle);
