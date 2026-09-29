@@ -547,6 +547,7 @@ pub fn list_monitors() -> Vec<MonitorInfo> {
 ///   native window id that is revalidated exactly at capture start.
 /// - **Linux / headless**: returns an EMPTY vec. Cut's Linux portal capture
 ///   currently admits monitors only; see [`window_capture_supported`].
+///
 /// An empty list alone does not establish whether Window capture is supported.
 pub fn window_capture_supported() -> bool {
     cfg!(any(

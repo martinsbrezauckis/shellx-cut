@@ -80,7 +80,7 @@
       "title": "Projects",
       "where": "Top bar",
       "description": "Open, switch, create, or return to recent Cut projects. With a project open, Make a copy prepares a portable .cutproj with only the media it uses.",
-      "requirement": "Project files use .cutproj directories. A portable copy needs an open project and the desktop app to choose its destination folder.",
+      "requirement": "Project files use .cutproj directories. A portable copy needs an open project and the desktop app to choose its destination folder. If Cut refuses an older project because ops.jsonl exceeds 128 MiB or one operation exceeds 8 MiB, keep the project folder unchanged. Restore a smaller known-good copy, or arrange repair or migration from a full copy; do not truncate ops.jsonl because it contains the editing history.",
       "api": "project.list, project.open, project.create, project.package_plan, project.package_create"
     },
     {

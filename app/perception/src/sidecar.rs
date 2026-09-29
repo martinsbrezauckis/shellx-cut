@@ -1428,6 +1428,9 @@ mod tests {
     /// NOT satisfy a Full one.
     #[test]
     fn audio_set_skips_scenes_and_caches_correctly() {
+        let _guard = NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+        let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+        std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
         assert!(
             !InstrumentSet::AudioFull.names().contains(&"scenes"),
             "audio set must not request video instruments"
@@ -1461,6 +1464,10 @@ mod tests {
             None,
         )
         .is_err());
+        match prior {
+            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
+            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
+        }
     }
 
     /// Stale hash (file changed since analysis) also bypasses the cache.

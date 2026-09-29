@@ -12,27 +12,13 @@ use record_recovery::{
 };
 use serde::Serialize;
 
+mod identity;
 mod ownership;
+pub(crate) use identity::validate_capture_id;
 use ownership::{has_sealed_normal_project, pause_session_ownership, PauseSessionOwnership};
 
 pub(crate) const CHECKPOINT_INTERVAL_MS: u64 = 15_000;
 const MAX_RECOVERY_CAPTURE_ENTRIES: usize = 512;
-
-pub(crate) fn validate_capture_id(capture_id: &str) -> Result<(), CutError> {
-    let valid = !capture_id.is_empty()
-        && capture_id.len() <= 128
-        && capture_id.chars().all(|character| {
-            character.is_ascii_alphanumeric() || character == '_' || character == '-'
-        });
-    valid.then_some(()).ok_or_else(|| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            "capture_id is not valid",
-            "capture_id must be the filesystem-safe id returned by screen_record.start",
-        )
-        .with_suggested_action("pass the exact capture_id from screen_record.start")
-    })
-}
 
 pub(crate) fn scan_recovery_for_project(project_dir: &Path) -> Result<RecoveryScan, CutError> {
     let Some(cache) = crate::screen_record::containment::existing_cache_dir(project_dir)? else {
