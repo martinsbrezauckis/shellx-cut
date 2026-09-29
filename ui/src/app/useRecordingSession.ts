@@ -9,7 +9,7 @@ import type { RecordingStartResult } from '../panels/Record/recordingStartResult
 import type { RecordingCadence } from '../panels/Record/recordingCadence'
 import type { StudioRawStreams, CursorCorrelation, StudioEventPayload } from '../panels/Record/studioTypes'
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
-import { firstUseRecordingPreset, loadRecordingPreset, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
+import { firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
 import { RecordingToggleGate, classifyStopFailure, stopArgs } from './recordingSessionModel'
 
 export type RecordingPhase = 'idle' | 'countdown' | 'starting' | 'recording' | 'finalizing' | 'recovery' | 'done' | 'error'
@@ -65,9 +65,8 @@ async function appendInitialStudioEvent(captureId: string, event: StudioEventPay
 }
 
 /** Exactly one owner for native capture, result, recovery, and both F9 routes. */
-export function useRecordingSession({ project, onOpenRecord, onEnsureProject, onResult }: {
+export function useRecordingSession({ project, onEnsureProject, onResult }: {
   project: Project | null
-  onOpenRecord: () => void
   onEnsureProject: () => Promise<Project | null>
   onResult: () => void
 }) {
@@ -76,8 +75,6 @@ export function useRecordingSession({ project, onOpenRecord, onEnsureProject, on
   stateRef.current = state
   const projectRef = useRef(project)
   projectRef.current = project
-  const openRef = useRef(onOpenRecord)
-  openRef.current = onOpenRecord
   const ensureProjectRef = useRef(onEnsureProject)
   ensureProjectRef.current = onEnsureProject
   const resultRef = useRef(onResult)
@@ -107,12 +104,8 @@ export function useRecordingSession({ project, onOpenRecord, onEnsureProject, on
 
   const showSetup = useCallback((message: string) => {
     publish({ phase: 'error', message })
-    // A global F9 press must not move the user out of the workspace when the
-    // fallback project could not be created. Keep the current surface in place
-    // so the bounded failure is visible without restoring a minimized window.
-    // Other setup failures with a project open still open Record so the user
-    // can correct the admitted source/device.
-    if (projectRef.current?.project_identity) openRef.current()
+    // The app-level status banner owns background F9 failures. Do not switch
+    // workspace or restore a minimized window to present setup errors.
   }, [publish])
 
   const ensureCurrentProject = useCallback(async (): Promise<Project | null> => {
@@ -133,6 +126,7 @@ export function useRecordingSession({ project, onOpenRecord, onEnsureProject, on
     const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
     if (blocked) { showSetup(blocked); return }
     let preset = draft === undefined ? presetRef.current : draft
+    if (preset) preset = normalizeRecordingPresetForStart(preset)
     if (draft === null) { showSetup('Choose a current source and valid recording setup first.'); return }
     busyRef.current = true
     toggleGateRef.current.setInFlight(true)

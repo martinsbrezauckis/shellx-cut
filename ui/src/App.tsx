@@ -545,7 +545,6 @@ export default function App() {
 
   const recordingSession = useRecordingSession({
     project,
-    onOpenRecord: () => { requestLayout((current) => ({ ...current, workspaceMode: 'record' })) },
     onEnsureProject: ensureRecordingProject,
     onResult: () => { void resync() },
   })

@@ -8,35 +8,15 @@ use super::*;
 use crate::dispatch::edit_tools::{
     install_assets_fetch_project_transition_gate, AssetsFetchProjectTransitionGate,
 };
+use std::time::Duration;
+
+// Enrichment runs real media work after the deterministic transition gate releases.
+// Bound inactivity, not the total duration of a healthy, progressing job.
+const BACKGROUND_JOB_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn wait_for_owned_jobs_to_settle(state: &AppState, job_ids: &[String]) {
     let mut events = state.events.subscribe();
-    let settled = tokio::time::timeout(TEST_TIMEOUT, async {
-        loop {
-            let active = job_ids
-                .iter()
-                .filter_map(|job_id| state.jobs.get(job_id))
-                .filter(|job| {
-                    matches!(
-                        job.state,
-                        crate::jobs::JobState::Queued | crate::jobs::JobState::Running
-                    )
-                })
-                .map(|job| job.job_id)
-                .collect::<Vec<_>>();
-            if active.is_empty() {
-                return;
-            }
-            match events.recv().await {
-                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("job event stream closed while waiting for {active:?}")
-                }
-            }
-        }
-    })
-    .await;
-    if settled.is_err() {
+    loop {
         let active = job_ids
             .iter()
             .filter_map(|job_id| state.jobs.get(job_id))
@@ -46,9 +26,51 @@ async fn wait_for_owned_jobs_to_settle(state: &AppState, job_ids: &[String]) {
                     crate::jobs::JobState::Queued | crate::jobs::JobState::Running
                 )
             })
-            .map(|job| format!("{} ({})", job.job_id, job.kind))
             .collect::<Vec<_>>();
-        panic!("b-roll background jobs did not settle before project switch: {active:?}");
+        if active.is_empty() {
+            return;
+        }
+        let progress = tokio::time::timeout(BACKGROUND_JOB_IDLE_TIMEOUT, async {
+            loop {
+                match events.recv().await {
+                    Ok(crate::events::Event::JobProgress { job_id, .. })
+                        if active.iter().any(|job| job.job_id == job_id) =>
+                    {
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("job event stream closed while waiting for b-roll jobs")
+                    }
+                }
+            }
+        })
+        .await;
+        if progress.is_err() {
+            let active = job_ids
+                .iter()
+                .filter_map(|job_id| state.jobs.get(job_id))
+                .filter(|job| {
+                    matches!(
+                        job.state,
+                        crate::jobs::JobState::Queued | crate::jobs::JobState::Running
+                    )
+                })
+                .map(|job| {
+                    format!(
+                        "{} ({}, {:?}, {:.0}%)",
+                        job.job_id,
+                        job.kind,
+                        job.state,
+                        job.progress * 100.0
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !active.is_empty() {
+                panic!("b-roll background jobs had no progress before project switch: {active:?}");
+            }
+        }
     }
 }
 

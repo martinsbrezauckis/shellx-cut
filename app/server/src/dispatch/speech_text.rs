@@ -527,7 +527,7 @@ fn read_expected_perception_report(
     rel: &str,
 ) -> Result<cut_perception::PerceptionReport, CutError> {
     let expected = format!("receipts/{asset_id}.perception.json");
-    if rel != &expected {
+    if rel != expected {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
             format!("asset '{asset_id}' has an invalid perception receipt pointer"),

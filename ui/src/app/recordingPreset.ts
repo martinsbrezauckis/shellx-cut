@@ -24,6 +24,23 @@ export interface RecordingPreset {
   studio?: RecordingStudioPreset
 }
 
+/** Camera-free takes keep the selected timer, but start on Screen. */
+export function normalizeRecordingPresetForStart(preset: RecordingPreset): RecordingPreset {
+  if (!preset.raw && preset.cameraId) return preset
+  const { cameraId: _cameraId, scenes, studio, ...withoutCamera } = preset
+  const candidate = scenes && typeof scenes === 'object' ? scenes as {
+    initial_scene_id?: unknown
+    presets?: Array<{ id?: unknown; layout?: { kind?: unknown } }>
+  } : null
+  const screenExists = Array.isArray(candidate?.presets)
+    && candidate.presets.some(scene => scene.id === 'screen' && scene.layout?.kind === 'screen')
+  return {
+    ...withoutCamera,
+    ...(studio ? { studio: { background: studio.background } } : {}),
+    ...(screenExists ? { scenes: { ...candidate, initial_scene_id: 'screen' } } : {}),
+  }
+}
+
 const KEY = 'shellx-cut.recording-preset.v1'
 
 export function parseRecordingPreset(value: unknown): RecordingPreset | null {
@@ -73,11 +90,14 @@ export function parseRecordingPreset(value: unknown): RecordingPreset | null {
 }
 
 export function loadRecordingPreset(): RecordingPreset | null {
-  try { return parseRecordingPreset(JSON.parse(localStorage.getItem(KEY) ?? 'null')) } catch { return null }
+  try {
+    const preset = parseRecordingPreset(JSON.parse(localStorage.getItem(KEY) ?? 'null'))
+    return preset ? normalizeRecordingPresetForStart(preset) : null
+  } catch { return null }
 }
 
 export function saveRecordingPreset(preset: RecordingPreset): void {
-  const safe = parseRecordingPreset(preset)
+  const safe = parseRecordingPreset(normalizeRecordingPresetForStart(preset))
   if (!safe) throw new Error('Cannot save an invalid recording setup')
   localStorage.setItem(KEY, JSON.stringify(safe))
 }

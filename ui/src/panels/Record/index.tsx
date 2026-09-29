@@ -43,7 +43,7 @@ import {
   type CameraCapability,
 } from './CameraControl'
 import { useAppRecordingSession } from '../../app/RecordingSessionContext'
-import { doctorAllowsPortalDisplay, type RecordingPreset } from '../../app/recordingPreset'
+import { doctorAllowsPortalDisplay, normalizeRecordingPresetForStart, type RecordingPreset } from '../../app/recordingPreset'
 import { useRecordingQuality } from './useRecordingQuality'
 import {
   DUR_PRESETS,
@@ -612,7 +612,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
         ? { kind: 'display' as const, monitorId: monitorTargetId }
         : portalDisplay ? { kind: 'portal_display' as const } : null
     if (!source) return null
-    return {
+    return normalizeRecordingPresetForStart({
       schema: 'shellx-cut/recording-preset/1', source, fps, durationMs: capMs,
       startCountdownSeconds: session.countdownSeconds,
       audio, systemAudio, keys: !rawCapture && !recordingPause.enabled && keys,
@@ -627,7 +627,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
           ? { camera: { x: studio.camera.x, y: studio.camera.y, size: studio.camera.size, shape: studio.camera.shape } }
           : {}),
       },
-    }
+    })
   }, [sourceKind, windowCaptureSupported, monitorIdx, monitors, cards, startAllowed, monitorTargetId, selectedMonitorCurrent, windowTargetId, fps, capMs, audio, systemAudio, keys, rawCapture, recordingPause.enabled, qualityRequest, studio, cameraDeviceId, sceneStartConfig, session.countdownSeconds])
 
   useEffect(() => {
@@ -1045,7 +1045,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                   data-cut-rec-mode="raw"
                   aria-pressed={rawCapture}
                   disabled={busy}
-                  onClick={() => setRawCapture(true)}
+                  onClick={() => {
+                    setRawCapture(true)
+                    if (phase === 'idle' || phase === 'error' || phase === 'done') void selectScene('screen')
+                  }}
                   title="Raw capture — save the recording exactly as captured (your sound sources included), with no auto-edit or polish."
                 >
                   Raw MP4 file

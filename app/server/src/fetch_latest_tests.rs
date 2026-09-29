@@ -55,8 +55,16 @@ fn served_body(
     let url = format!("http://{}/resource", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0u8; 1024];
-        stream.read(&mut request).unwrap();
+        let mut request = Vec::new();
+        let mut reader = std::io::BufReader::new(&mut stream).take(8 * 1024);
+        while !request.ends_with(b"\r\n\r\n") {
+            assert!(
+                std::io::BufRead::read_until(&mut reader, b'\n', &mut request).unwrap() > 0,
+                "fixture request must end within 8 KiB"
+            );
+        }
+        assert!(request.starts_with(b"GET /resource "));
+        drop(reader);
         write!(stream, "HTTP/1.1 200 OK\r\nConnection: close\r\n").unwrap();
         if let Some(length) = declared_length {
             write!(stream, "Content-Length: {length}\r\n").unwrap();
