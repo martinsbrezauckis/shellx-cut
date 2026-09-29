@@ -518,10 +518,72 @@ pub(super) async fn load_perception_report(
         )
         .with_suggested_action("call media.perception{asset} and wait for the job to finish")
     })?;
-    let path = store.dir.join(rel);
-    let rep: cut_perception::PerceptionReport =
-        serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-    Ok(rep)
+    read_expected_perception_report(&store.receipts_dir(), asset_id, rel)
+}
+
+fn read_expected_perception_report(
+    receipts_dir: &std::path::Path,
+    asset_id: &str,
+    rel: &str,
+) -> Result<cut_perception::PerceptionReport, CutError> {
+    let expected = format!("receipts/{asset_id}.perception.json");
+    if rel != &expected {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!("asset '{asset_id}' has an invalid perception receipt pointer"),
+            "the cached report path must name this asset's project-local receipt",
+        )
+        .with_suggested_action("re-run media.perception for this asset"));
+    }
+    cut_perception::load_report(receipts_dir, asset_id)?.ok_or_else(|| {
+        CutError::new(
+            error_codes::NOT_FOUND,
+            format!("asset '{asset_id}' perception report is missing"),
+            "the project's derived perception receipt is missing",
+        )
+        .with_suggested_action("re-run media.perception for this asset")
+    })
+}
+
+#[cfg(test)]
+mod perception_receipt_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn cached_perception_pointer_must_name_the_bounded_local_receipt() {
+        let project = tempfile::tempdir().unwrap();
+        let receipts = project.path().join("receipts");
+        std::fs::create_dir(&receipts).unwrap();
+        let outside = project.path().join("outside.json");
+        std::fs::write(&outside, b"{}").unwrap();
+        let error = read_expected_perception_report(&receipts, "a1", outside.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(error.code, error_codes::INVALID_ARGS);
+        assert_eq!(std::fs::read(&outside).unwrap(), b"{}");
+
+        let receipt = receipts.join("a1.perception.json");
+        std::fs::write(
+            &receipt,
+            br#"{"schema":"shellx-cut/perception/1","asset_hash":"x","source_path":"clip.mp4"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_expected_perception_report(&receipts, "a1", "receipts/a1.perception.json")
+                .unwrap()
+                .source_path,
+            "clip.mp4"
+        );
+        std::fs::File::options()
+            .write(true)
+            .open(&receipt)
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(
+            read_expected_perception_report(&receipts, "a1", "receipts/a1.perception.json")
+                .is_err()
+        );
+    }
 }
 
 /// One weighted scoring factor for score.clip — value normalized to 0..1. Only

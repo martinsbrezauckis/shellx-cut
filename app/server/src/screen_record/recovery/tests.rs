@@ -41,6 +41,33 @@ fn sealed_project_repairs_the_missing_complete_receipt_without_recovery() {
 }
 
 #[test]
+fn sealed_project_recovery_bounds_oversized_system_audio_timing() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = temp.path().join("screen_record");
+    let capture = cache.join("cap");
+    begin(&capture, "cap").unwrap();
+    std::fs::write(capture.join("source.mp4"), b"already verified source").unwrap();
+    record_recovery::replace_synced(
+        &capture.join("project.json"),
+        br#"{"source_video":"source.mp4"}"#,
+    )
+    .unwrap();
+    let timing = capture.join("system-audio.json");
+    std::fs::File::create(&timing)
+        .unwrap()
+        .set_len(crate::screen_record::system_audio::MAX_SYSTEM_AUDIO_TIMING_BYTES + 1)
+        .unwrap();
+
+    let result = scan(&cache, "missing-ffmpeg", "missing-ffprobe");
+    assert!(result.failed_closed.is_empty());
+    assert!(result.recovered.is_empty());
+    let receipt = read_manifest(&capture).unwrap().receipt.unwrap();
+    assert_eq!(receipt.state, RecoveryState::Complete);
+    assert_eq!(receipt.audio_first_packet_offset_ms, None);
+    assert!(timing.exists());
+}
+
+#[test]
 fn v1_scanner_defers_pause_session_owned_capture_without_promoting_it() {
     let temp = tempfile::tempdir().unwrap();
     let cache = temp.path().join("screen_record");

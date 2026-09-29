@@ -9,6 +9,7 @@
 use super::system_audio_capture::capture_system_audio_until;
 use cut_core::{error_codes, CutError};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ mod publication;
 
 pub(crate) const SYSTEM_AUDIO_TIMING_FILE: &str = "system-audio.json";
 const SYSTEM_AUDIO_TIMING_SCHEMA: &str = "shellx-cut/system-audio-timing/1";
+pub(super) const MAX_SYSTEM_AUDIO_TIMING_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SystemAudioTiming {
@@ -99,7 +101,7 @@ pub(crate) fn read_timing(capture_dir: &Path) -> Result<Option<SystemAudioTiming
     if !publication::local_regular_file_or_absent(&path, "inspect system-audio timing")? {
         return Ok(None);
     }
-    let bytes = std::fs::read(&path).map_err(|error| {
+    let file = std::fs::File::open(&path).map_err(|error| {
         CutError::new(
             error_codes::IO,
             format!(
@@ -109,6 +111,30 @@ pub(crate) fn read_timing(capture_dir: &Path) -> Result<Option<SystemAudioTiming
             "retry the capture or remove the incomplete system-audio timing sidecar",
         )
     })?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_SYSTEM_AUDIO_TIMING_BYTES {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!(
+                "system-audio timing at {} exceeds its 64 KiB limit",
+                path.display()
+            ),
+            "the timing receipt must be a small regular JSON file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SYSTEM_AUDIO_TIMING_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SYSTEM_AUDIO_TIMING_BYTES {
+        return Err(CutError::new(
+            error_codes::INVALID_ARGS,
+            format!(
+                "system-audio timing at {} exceeds its 64 KiB limit",
+                path.display()
+            ),
+            "the timing receipt grew while being read",
+        ));
+    }
     let timing: SystemAudioTiming = serde_json::from_slice(&bytes).map_err(|error| {
         CutError::new(
             error_codes::INVALID_ARGS,
@@ -271,6 +297,28 @@ mod tests {
         assert_eq!(read_timing(dir.path()).unwrap(), Some(expected));
         assert!(!publication::pending_timing_path(dir.path()).exists());
         assert!(!dir.path().join("system-audio.json.pending.part").exists());
+    }
+
+    #[test]
+    fn oversized_timing_sidecar_is_rejected_before_json_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = timing_path(dir.path());
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(super::MAX_SYSTEM_AUDIO_TIMING_BYTES + 1)
+            .unwrap();
+        let error = read_timing(dir.path()).unwrap_err();
+        assert_eq!(error.code, error_codes::INVALID_ARGS);
+        assert!(error.message.contains("64 KiB limit"));
+    }
+
+    #[test]
+    fn timing_sidecar_at_byte_limit_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = serde_json::to_vec(&timing(Some(37))).unwrap();
+        bytes.resize(super::MAX_SYSTEM_AUDIO_TIMING_BYTES as usize, b' ');
+        std::fs::write(timing_path(dir.path()), bytes).unwrap();
+        assert_eq!(read_timing(dir.path()).unwrap(), Some(timing(Some(37))));
     }
 
     #[cfg(unix)]

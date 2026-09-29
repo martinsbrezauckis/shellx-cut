@@ -3,6 +3,30 @@ use cut_core::{Actor, OpEffect, OpStatus};
 use serde_json::{json, Map};
 use std::fs;
 
+#[test]
+fn plan_hash_enforces_its_limit_before_allocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("plan.json");
+    fs::write(&path, b"small plan").unwrap();
+    assert_eq!(
+        hash_small_plan(&path),
+        Some(format!("{:x}", Sha256::digest(b"small plan")))
+    );
+    let exact_limit = vec![b'p'; 4 * 1024 * 1024];
+    fs::write(&path, &exact_limit).unwrap();
+    assert_eq!(
+        hash_small_plan(&path),
+        Some(format!("{:x}", Sha256::digest(&exact_limit)))
+    );
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(4 * 1024 * 1024 + 1)
+        .unwrap();
+    assert_eq!(hash_small_plan(&path), None);
+}
+
 fn write_effect_package(root: &Path, extra_keyed_layers: usize) {
     fs::write(
         root.join("manifest.json"),

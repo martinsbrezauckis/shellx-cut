@@ -78,10 +78,11 @@ export default function ProjectsPanel({ onReopen, currentName, active, b5Receipt
     else setErr(explainProjectError(r.error, 'Could not load projects'))
     setLoading(false)
   }, [])
-  // Refresh whenever the tab becomes active (a new project may have been created/opened).
+  // A global F9 can create a recording project while Projects stays active.
+  // Refresh then as well as when the tab is opened so the new project is listed.
   useEffect(() => {
     if (active) void load()
-  }, [active, load])
+  }, [active, currentName, load])
 
   const reopen = useCallback(
     async (p: ProjectEntry) => {

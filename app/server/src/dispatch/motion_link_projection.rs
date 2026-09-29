@@ -8,6 +8,7 @@ use cut_core::OpRecord;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_VISIBLE_EFFECT_LAYERS: usize = 64;
@@ -133,10 +134,15 @@ fn source_is_dirty(link: &Value, source: Option<&Path>, plan: Option<&Path>) -> 
 }
 
 fn hash_small_plan(path: &Path) -> Option<String> {
-    std::fs::read(path)
-        .ok()
-        .filter(|bytes| bytes.len() as u64 <= 4 * 1024 * 1024)
-        .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+    const MAX_PLAN_BYTES: u64 = 4 * 1024 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_PLAN_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PLAN_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_PLAN_BYTES).then(|| format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn link_state(
