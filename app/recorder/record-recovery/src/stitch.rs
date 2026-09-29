@@ -85,24 +85,42 @@ pub fn stitch_complete_with_media(
     let mut rows = String::new();
     let mut expected_duration_ms = 0u64;
     let mut expected_frames = 0u64;
-    for (index, segment) in usable.iter().enumerate() {
+    let source_media = usable
+        .iter()
+        .map(|segment| checkpoint_media(root, segment, ffmpeg, ffprobe))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Native display capture may deliver very few frames while the screen is
+    // static. Its final packet can still occupy hundreds of milliseconds. A
+    // VFR tpad alone then starts cloning at that packet's presentation time,
+    // earlier than the verified container end, and loses capture-clock time.
+    // Normalize all segments to one bounded cadence before extending them.
+    let fps = stitch_frame_rate(&source_media);
+    for (index, (segment, source_media)) in usable.iter().zip(&source_media).enumerate() {
         let leading_gap_ms = leading_gap(&usable, index)?;
         if !is_local_checkpoint_file(root, segment.sequence)? {
             return Err(ManifestError::Invalid("checkpoint became unsafe".into()));
         }
         let source = checkpoint_path(root, segment.sequence);
-        let source_media = checkpoint_media(root, segment, ffmpeg, ffprobe)?;
         if source_media.has_audio {
             return Err(ManifestError::Invalid(
                 "checkpoint media contains embedded audio".into(),
             ));
         }
-        let capture_span_ms = capture_span_ms(segment, &source_media)?;
+        let capture_span_ms = capture_span_ms(segment, source_media)?;
         let transcode = workspace.reserve(&format!("segment-{:06}.mp4", segment.sequence))?;
         let start_padding = format!("{:.3}", leading_gap_ms as f64 / 1000.0);
+        // The extra second guarantees cloned frames beyond the desired end;
+        // trim then fixes the segment to its measured capture-clock span.
         let stop_padding = format!(
             "{:.3}",
-            capture_span_ms.saturating_sub(source_media.duration_ms) as f64 / 1000.0
+            capture_span_ms
+                .saturating_sub(source_media.duration_ms)
+                .saturating_add(1_000) as f64
+                / 1000.0
+        );
+        let target_duration = format!(
+            "{:.3}",
+            capture_span_ms.saturating_add(leading_gap_ms) as f64 / 1000.0
         );
         let status = bounded_status(
             Command::new(ffmpeg)
@@ -111,7 +129,7 @@ pub fn stitch_complete_with_media(
                 .args([
                     "-vf",
                     &format!(
-                        "tpad=start_mode=clone:start_duration={start_padding}:stop_mode=clone:stop_duration={stop_padding}"
+                        "fps={fps},tpad=start_mode=clone:start_duration={start_padding}:stop_mode=clone:stop_duration={stop_padding},trim=duration={target_duration},setpts=PTS-STARTPTS"
                     ),
                     "-an",
                     "-c:v",
@@ -181,6 +199,17 @@ pub fn stitch_complete_with_media(
         path: final_path,
         media: final_media,
     })
+}
+
+fn stitch_frame_rate(sources: &[MediaFacts]) -> u64 {
+    sources
+        .iter()
+        .flat_map(|media| [media.r_frame_rate, media.avg_frame_rate])
+        .flatten()
+        .map(|rate| u128::from(rate.num).div_ceil(u128::from(rate.den)))
+        .max()
+        .unwrap_or(30)
+        .clamp(30, 240) as u64
 }
 
 fn leading_gap(segments: &[Checkpoint], index: usize) -> Result<u64, ManifestError> {
