@@ -209,7 +209,7 @@ pub(in crate::dispatch) async fn library_list(args: Value) -> Result<VerbResult,
             })
             .collect();
         (items, m.folders.clone(), m.tag_facets(), total, next_offset)
-    });
+    })?;
     Ok(VerbResult::ok(json!({
         "items": items,
         "folders": folders,

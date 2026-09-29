@@ -4,10 +4,13 @@ import { isBlockingOverlayActive, shouldIgnoreGlobalShortcut } from '../lib/dom'
 import { matchesFixedAction } from '../lib/keymap'
 import { onRecordHotkey } from '../lib/tauri'
 import { recordingStartResult } from '../panels/Record/recordingStartResult'
+import { useRecordingPause } from '../panels/Record/useRecordingPause'
 import { markRecordingStartAdmissionUnknown } from '../panels/Record/recordingStartAdmission'
 import type { RecordingStartResult } from '../panels/Record/recordingStartResult'
 import type { RecordingCadence } from '../panels/Record/recordingCadence'
-import type { StudioRawStreams, CursorCorrelation, StudioEventPayload } from '../panels/Record/studioTypes'
+import type { StudioRawStreams, CursorCorrelation, StudioEventPayload, StudioState } from '../panels/Record/studioTypes'
+import type { RecordingSourceKind } from '../panels/Record/regionPickerModel'
+import type { RecordingOutputSize, RecordingQualityProfile } from '../panels/Record/recordingQuality'
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
 import { firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
 import { RecordingToggleGate, classifyStopFailure, stopArgs } from './recordingSessionModel'
@@ -36,6 +39,28 @@ export interface RecordingSessionState {
   quality: unknown
   rawHasMic: boolean
   rawHasSystem: boolean
+}
+
+/** Visible Record controls kept only for this app session, including invalid choices. */
+export interface RecordingDraftView {
+  sourceKind: RecordingSourceKind
+  monitorIdx: number | null
+  monitorTargetId: string | null
+  windowTargetId: string | null
+  fps: number
+  customFps: string
+  durationMs: number | null
+  audio: boolean
+  systemAudio: boolean
+  keys: boolean
+  raw: boolean
+  cameraDeviceId: string | null
+  studio: StudioState
+  cameraLayoutCustomized: boolean
+  sceneId: string | null
+  pauseEnabled: boolean
+  outputSize: RecordingOutputSize
+  qualityProfile: RecordingQualityProfile
 }
 
 const INITIAL: RecordingSessionState = {
@@ -80,6 +105,17 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
   const resultRef = useRef(onResult)
   resultRef.current = onResult
   const presetRef = useRef<RecordingPreset | null>(loadRecordingPreset())
+  // Live Pause/Resume acknowledgements must outlive Record panel navigation.
+  const recordingPause = useRecordingPause(Boolean(presetRef.current?.pause))
+  // The mounted Record controls own the current draft. Keep its latest value
+  // through an Edit handoff without promoting it to an admitted/saved preset.
+  // `null` is an invalid or incomplete choice and must not fall back to a take.
+  const draftRef = useRef<RecordingPreset | null | undefined>(undefined)
+  const draftViewRef = useRef<RecordingDraftView | null>(null)
+  const setDraft = useCallback((draft: RecordingPreset | null, view: RecordingDraftView) => {
+    draftRef.current = draft
+    draftViewRef.current = view
+  }, [])
   const busyRef = useRef(false)
   const unknownStartRef = useRef(false)
   const toggleGateRef = useRef(new RecordingToggleGate())
@@ -88,8 +124,6 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
   const activePresetRef = useRef<RecordingPreset | null>(null)
   const previewReleaseRef = useRef<(() => Promise<void> | void) | null>(null)
   const setPreviewRelease = useCallback((release: (() => Promise<void> | void) | null) => { previewReleaseRef.current = release }, [])
-  const draftProviderRef = useRef<(() => RecordingPreset | null) | null>(null)
-  const setDraftProvider = useCallback((provider: (() => RecordingPreset | null) | null) => { draftProviderRef.current = provider }, [])
   const startGuardRef = useRef<(() => string | null) | null>(null)
   const setStartGuard = useCallback((guard: (() => string | null) | null) => { startGuardRef.current = guard }, [])
   const countdownRef = useRef<number | null>(null)
@@ -101,6 +135,10 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     stateRef.current = next
     setState(next)
   }, [])
+
+  useEffect(() => {
+    if (!state.captureId) recordingPause.clearCapture()
+  }, [state.captureId, recordingPause.clearCapture])
 
   const showSetup = useCallback((message: string) => {
     publish({ phase: 'error', message })
@@ -125,7 +163,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     if (busyRef.current || captureRef.current || unknownStartRef.current) return
     const blocked = projectRef.current?.project_identity ? startGuardRef.current?.() : null
     if (blocked) { showSetup(blocked); return }
-    let preset = draft === undefined ? presetRef.current : draft
+    let preset = draft === undefined ? (draftRef.current === undefined ? presetRef.current : draftRef.current) : draft
     if (preset) preset = normalizeRecordingPresetForStart(preset)
     if (draft === null) { showSetup('Choose a current source and valid recording setup first.'); return }
     busyRef.current = true
@@ -229,7 +267,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     if (draft === null) { showSetup('Choose a current source and valid recording setup first.'); return }
     // With no saved setup, F9 uses a freshly checked primary screen. There is
     // no prior countdown preference, and Start owns project creation/admission.
-    if (draft === undefined && !presetRef.current) { void start(); return }
+    if (draft === undefined && draftRef.current === undefined && !presetRef.current) { void start(); return }
     if (!projectRef.current?.project_identity) {
       busyRef.current = true
       toggleGateRef.current.setInFlight(true)
@@ -403,7 +441,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
     if (captureRef.current) { void stop(); return }
     if (stateRef.current.phase === 'recovery' || unknownStartRef.current) return
     if (isBlockingOverlayActive()) return
-    requestStart(draftProviderRef.current ? draftProviderRef.current() : undefined)
+    requestStart(draftRef.current)
   }
   useEffect(() => {
     const off = onRecordHotkey(() => toggleRef.current())
@@ -425,8 +463,8 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
   }, [])
 
   return { state, start, requestStart, cancelCountdown, countdownSeconds, setCountdownSeconds, stop, reset,
-    setPreviewRelease, setDraftProvider, setStartGuard, refreshStopStatus,
-    toggle: () => toggleRef.current(), preset: presetRef.current }
+    recordingPause, setPreviewRelease, setDraft, setStartGuard, refreshStopStatus,
+    toggle: () => toggleRef.current(), preset: presetRef.current, draft: draftRef.current, draftView: draftViewRef.current }
 }
 
 export type RecordingSession = ReturnType<typeof useRecordingSession>

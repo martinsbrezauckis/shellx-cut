@@ -60,6 +60,7 @@ static constexpr int kSxcCameraClosed = 2;
     uint64_t _moviePenultimatePtsNs;
     std::atomic_uint_fast64_t _movieLastDurationNs;
     std::atomic_uint_fast64_t _movieLastCadenceNs;
+    std::atomic_uint_fast64_t _movieCallbackCount;
     std::atomic_bool _movieStopRequested;
     SxcCameraFrameCallback _callback;
     void *_context;
@@ -81,6 +82,7 @@ static constexpr int kSxcCameraClosed = 2;
         _moviePenultimatePtsNs = 0;
         _movieLastDurationNs.store(0);
         _movieLastCadenceNs.store(0);
+        _movieCallbackCount.store(0);
         _movieStopRequested.store(false);
         _callback = callback;
         _context = context;
@@ -133,6 +135,7 @@ static constexpr int kSxcCameraClosed = 2;
         // the native final sample names the same timeline endpoint as the
         // encoded packet proof. A later unencoded sample still fails that proof.
         @synchronized (self) {
+            _movieCallbackCount.fetch_add(1);
             const uint64_t greatest = _movieLastPtsNs.load();
             if (pts > greatest) {
                 _moviePenultimatePtsNs = greatest;
@@ -350,13 +353,15 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
                                             int32_t *device_lost, uint64_t *movie_start_pts_ns,
                                             uint64_t *movie_last_pts_ns,
                                             uint64_t *movie_last_duration_ns,
-                                            uint64_t *movie_last_cadence_ns) {
+                                            uint64_t *movie_last_cadence_ns,
+                                            uint64_t *movie_callback_count) {
     @autoreleasepool {
         if (device_lost) *device_lost = 0;
         if (movie_start_pts_ns) *movie_start_pts_ns = 0;
         if (movie_last_pts_ns) *movie_last_pts_ns = 0;
         if (movie_last_duration_ns) *movie_last_duration_ns = 0;
         if (movie_last_cadence_ns) *movie_last_cadence_ns = 0;
+        if (movie_callback_count) *movie_callback_count = 0;
         if (!opaque) {
             sxc_error(error, error_capacity, @"Camera owner is missing");
             return -1;
@@ -398,6 +403,7 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
             if (movie_last_pts_ns) *movie_last_pts_ns = handle.delegate->_movieLastPtsNs.load();
             if (movie_last_duration_ns) *movie_last_duration_ns = handle.delegate->_movieLastDurationNs.load();
             if (movie_last_cadence_ns) *movie_last_cadence_ns = handle.delegate->_movieLastCadenceNs.load();
+            if (movie_callback_count) *movie_callback_count = handle.delegate->_movieCallbackCount.load();
         }
         return 0;
     }

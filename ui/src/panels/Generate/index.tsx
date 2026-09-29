@@ -41,11 +41,14 @@ import {
 import { baseVideoTrackId } from '../../lib/layerStack'
 import { Icon } from '../../icons'
 import GenerationHistory, { GenerationReferences } from './GenerationHistory'
+import { generationHistoryMatchesScope, generationJobStorageKey, generationProjectKey, readStoredGenerationJob, type StoredGenerationJob } from './generationProjectScope'
+import { GenerateRequestScopeGuard } from '../GenerateTemplates/generateRequestScope'
 import '../drawer.css'
 import './generate.css'
 
 export interface GenerateDrawerProps {
   project: Project | null
+  projectScope: number
   playheadMs?: number
   selectedClipId?: string | null
   /** Refresh the project snapshot after a successful import (so the new asset shows
@@ -60,15 +63,11 @@ type Provider = 'codex' | 'grok' | 'antigravity'
 type Kind = 'image' | 'video'
 type PlacementMode = 'asset' | 'insert' | 'replace'
 type RetryPlacement = { mode: 'replace'; target_clip: string }
+const GENERATION_JOB_STORED_EVENT = 'cut:generate-job-stored'
 
 function secondsLabel(ms: number): string {
   const seconds = ms / 1000
   return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s`
-}
-
-interface StoredGenerationJob {
-  job_id: string
-  retry_placement?: RetryPlacement
 }
 
 const PROVIDERS: { id: Provider; label: string; kinds: Kind[] }[] = [
@@ -76,8 +75,6 @@ const PROVIDERS: { id: Provider; label: string; kinds: Kind[] }[] = [
   { id: 'grok', label: 'Grok — grok-imagine (images + video)', kinds: ['image', 'video'] },
   { id: 'antigravity', label: 'Antigravity — agy (images)', kinds: ['image'] },
 ]
-
-const GENERATION_JOB_STORAGE_KEY = 'cut.generate.active-job'
 
 function selectedVideoMedia(project: Project | null, clipId?: string | null) {
   if (!project || !clipId) return null
@@ -99,25 +96,6 @@ function retryFromPlacement(placement?: GeneratedAssetPlacement | null): RetryPl
   return placement?.target_clip ? { mode: 'replace', target_clip: placement.target_clip } : null
 }
 
-function readStoredGenerationJob(value: string | null): StoredGenerationJob | null {
-  if (!value) return null
-  try {
-    const parsed = JSON.parse(value) as Partial<StoredGenerationJob>
-    if (typeof parsed.job_id === 'string') {
-      return {
-        job_id: parsed.job_id,
-        retry_placement: parsed.retry_placement?.mode === 'replace'
-          && typeof parsed.retry_placement.target_clip === 'string'
-          ? parsed.retry_placement
-          : undefined,
-      }
-    }
-  } catch {
-    // Legacy builds stored the bare job id.
-  }
-  return { job_id: value }
-}
-
 function providerFromInput(value: string, fallback: Provider): Provider {
   for (const provider of PROVIDERS) {
     if (provider.id === value) return provider.id
@@ -127,6 +105,7 @@ function providerFromInput(value: string, fallback: Provider): Provider {
 
 export default function GenerateDrawer({
   project,
+  projectScope,
   playheadMs = 0,
   selectedClipId,
   onGenerated,
@@ -153,10 +132,45 @@ export default function GenerateDrawer({
   const [err, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
+  const [jobStorageRevision, setJobStorageRevision] = useState(0)
   const [phase, setPhase] = useState('')
   const activeJobRef = useRef<string | null>(null)
   const activeRetryRef = useRef<RetryPlacement | null>(null)
   const pollTimer = useRef<number | null>(null)
+  const generationRequestGuard = useRef(new GenerateRequestScopeGuard(projectScope))
+  const historyRequestGuard = useRef(new GenerateRequestScopeGuard(projectScope))
+  generationRequestGuard.current.setProjectScope(projectScope)
+  historyRequestGuard.current.setProjectScope(projectScope)
+  const currentProjectScopeRef = useRef(projectScope)
+  currentProjectScopeRef.current = projectScope
+  const historyOwnerScopeRef = useRef<number | null>(null)
+  if (historyOwnerScopeRef.current !== projectScope) historyOwnerScopeRef.current = null
+  const projectKey = generationProjectKey(project, projectScope)
+  const currentProjectKeyRef = useRef(projectKey)
+  currentProjectKeyRef.current = projectKey
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    mountedRef.current = true
+    generationRequestGuard.current.setProjectScope(currentProjectScopeRef.current)
+    historyRequestGuard.current.setProjectScope(currentProjectScopeRef.current)
+    return () => {
+      mountedRef.current = false
+      generationRequestGuard.current.setProjectScope(Number.MIN_SAFE_INTEGER)
+      historyRequestGuard.current.setProjectScope(Number.MIN_SAFE_INTEGER)
+      activeJobRef.current = null
+      if (pollTimer.current) window.clearTimeout(pollTimer.current)
+    }
+  }, [])
+  useEffect(() => {
+    const onStored = (event: Event) => {
+      const ownerKey = (event as CustomEvent<{ projectKey: string }>).detail?.projectKey
+      if (mountedRef.current && ownerKey === currentProjectKeyRef.current) {
+        setJobStorageRevision((current) => current + 1)
+      }
+    }
+    window.addEventListener(GENERATION_JOB_STORED_EVENT, onStored)
+    return () => window.removeEventListener(GENERATION_JOB_STORED_EVENT, onStored)
+  }, [])
   const hasProject = !!project
   const videoTracks = useMemo(
     () => project?.tracks.filter((track) => track.kind === 'video') ?? [],
@@ -197,6 +211,7 @@ export default function GenerateDrawer({
   }, [project, insertTrack, preferredInsertTrack, videoTracks])
 
   const refreshHistory = useCallback(async () => {
+    const request = historyRequestGuard.current.begin()
     if (!hasProject) {
       setHistory([])
       setHistoryLoading(false)
@@ -205,15 +220,27 @@ export default function GenerateDrawer({
     setHistoryLoading(true)
     try {
       const response = await callVerb('assets.generated_list', { limit: 100 })
+      if (!historyRequestGuard.current.isCurrent(request)) return
       setHistory(response.ok ? response.result?.items ?? [] : [])
+      historyOwnerScopeRef.current = projectScope
     } catch {
+      if (!historyRequestGuard.current.isCurrent(request)) return
       setHistory([])
     } finally {
-      setHistoryLoading(false)
+      if (historyRequestGuard.current.isCurrent(request)) setHistoryLoading(false)
     }
-  }, [hasProject])
+  }, [hasProject, projectScope])
 
-  useEffect(() => { void refreshHistory() }, [historyScope, refreshHistory])
+  useEffect(() => {
+    historyOwnerScopeRef.current = null
+    setHistory([])
+    void refreshHistory()
+  }, [historyScope, refreshHistory])
+
+  useEffect(() => {
+    setHistoryBusy(false)
+    setChosenAssetId(null)
+  }, [projectScope])
 
   useEffect(() => {
     const available = new Set(Object.keys(project?.assets ?? {}))
@@ -238,6 +265,8 @@ export default function GenerateDrawer({
     onGenerated?.()
     void refreshHistory()
   }, [onGenerated, refreshHistory])
+  const finishGenerationRef = useRef(finishGeneration)
+  finishGenerationRef.current = finishGeneration
 
   const toggleReference = (assetId: string) => {
     setReferences((current) => {
@@ -253,7 +282,7 @@ export default function GenerateDrawer({
   }
 
   const prepareVariation = (record: GeneratedAssetRecord) => {
-    if (!record.provider || !record.kind) return
+    if (!record.provider || !record.kind || !generationHistoryMatchesScope(historyOwnerScopeRef.current, projectScope)) return
     setProvider(record.provider)
     setKind(record.kind)
     setPrompt(record.prompt)
@@ -266,34 +295,36 @@ export default function GenerateDrawer({
     setNote('New variation prepared. Review the inputs, then use the two-step generation confirmation.')
   }
 
-  const pollGeneration = useCallback((id: string, delayMs = 600) => {
+  const pollGeneration = useCallback((id: string, ownerKey: string, delayMs = 600) => {
+    const request = generationRequestGuard.current.begin()
+    const current = () => mountedRef.current && activeJobRef.current === id && generationRequestGuard.current.isCurrent(request)
     const poll = async () => {
-      if (activeJobRef.current !== id) return
+      if (!current()) return
       let response
       try {
         response = await callVerb('jobs.status', { job_id: id })
       } catch {
-        if (activeJobRef.current !== id) return
+        if (!current()) return
         setPhase('Waiting for server…')
         pollTimer.current = window.setTimeout(() => void poll(), 1200)
         return
       }
-      if (activeJobRef.current !== id) return
+      if (!current()) return
       const job = response.ok ? response.result : undefined
       if (job?.state === 'done') {
         const retry = activeRetryRef.current
         activeJobRef.current = null
         activeRetryRef.current = null
-        localStorage.removeItem(GENERATION_JOB_STORAGE_KEY)
+        localStorage.removeItem(generationJobStorageKey(ownerKey))
         setJobId(null); setBusy(false); setPhase('')
-        finishGeneration(job.result as AssetsGenerateJobResult, retry)
+        finishGenerationRef.current(job.result as AssetsGenerateJobResult, retry)
         return
       }
       if (job?.state === 'failed') {
         const retry = activeRetryRef.current
         activeJobRef.current = null
         activeRetryRef.current = null
-        localStorage.removeItem(GENERATION_JOB_STORAGE_KEY)
+        localStorage.removeItem(generationJobStorageKey(ownerKey))
         setJobId(null); setBusy(false); setPhase('')
         setRetryPlacement(retry)
         setErr(job.error?.code === 'job_cancelled'
@@ -305,7 +336,7 @@ export default function GenerateDrawer({
         const retry = activeRetryRef.current
         activeJobRef.current = null
         activeRetryRef.current = null
-        localStorage.removeItem(GENERATION_JOB_STORAGE_KEY)
+        localStorage.removeItem(generationJobStorageKey(ownerKey))
         setJobId(null); setBusy(false); setPhase('')
         setRetryPlacement(retry)
         setErr(`${response.error?.code ?? 'failed'}: ${response.error?.message ?? 'generation job was not found'}`)
@@ -316,20 +347,26 @@ export default function GenerateDrawer({
       pollTimer.current = window.setTimeout(() => void poll(), 600)
     }
     pollTimer.current = window.setTimeout(() => void poll(), delayMs)
-  }, [finishGeneration])
+  }, [])
 
   useEffect(() => {
-    const active = readStoredGenerationJob(localStorage.getItem(GENERATION_JOB_STORAGE_KEY))
+    if (pollTimer.current) window.clearTimeout(pollTimer.current)
+    activeJobRef.current = null
+    activeRetryRef.current = null
+    setJobId(null); setBusy(false); setPhase('')
+    setRetryPlacement(null); setErr(null); setNote(null); setArmed(false)
+    if (!projectKey) return
+    const active = readStoredGenerationJob(localStorage.getItem(generationJobStorageKey(projectKey)), projectKey)
     if (active) {
       activeJobRef.current = active.job_id
       activeRetryRef.current = active.retry_placement ?? null
       setJobId(active.job_id); setBusy(true); setPhase('Resuming…')
-      pollGeneration(active.job_id, 0)
+      pollGeneration(active.job_id, projectKey, 0)
     }
     return () => {
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
     }
-  }, [pollGeneration])
+  }, [pollGeneration, projectKey, projectScope, jobStorageRevision])
 
   const canGenerate = !!prompt.trim() && !busy
 
@@ -364,6 +401,9 @@ export default function GenerateDrawer({
     }
     if (!armed) { setErr(null); setNote(null); setArmed(true); return }
 
+    const ownerKey = projectKey
+    if (!ownerKey) return
+    const request = generationRequestGuard.current.begin()
     setArmed(false)
     setBusy(true); setErr(null); setNote(null)
     try {
@@ -383,21 +423,30 @@ export default function GenerateDrawer({
       const res: AssetsGenerateResult | undefined = r.ok ? r.result : undefined
       if (r.ok && res?.job_id) {
         const retry = retryFromPlacement(res.placement)
-        activeJobRef.current = res.job_id
-        activeRetryRef.current = retry
-        localStorage.setItem(GENERATION_JOB_STORAGE_KEY, JSON.stringify({
+        // A response can arrive after B opens. Retain A's real job for its
+        // original project, but do not display or poll it in B.
+        localStorage.setItem(generationJobStorageKey(ownerKey), JSON.stringify({
           job_id: res.job_id,
+          project_key: ownerKey,
           retry_placement: retry ?? undefined,
         } satisfies StoredGenerationJob))
+        if (!mountedRef.current || !generationRequestGuard.current.isCurrent(request)) {
+          window.dispatchEvent(new CustomEvent(GENERATION_JOB_STORED_EVENT, { detail: { projectKey: ownerKey } }))
+          return
+        }
+        activeJobRef.current = res.job_id
+        activeRetryRef.current = retry
         setRetryPlacement(null)
         setJobId(res.job_id); setPhase('Queued…')
         if (res.placement?.mode === 'insert') onGenerated?.()
-        pollGeneration(res.job_id)
+        pollGeneration(res.job_id, ownerKey)
       } else {
+        if (!mountedRef.current || !generationRequestGuard.current.isCurrent(request)) return
         setBusy(false)
         setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'generation failed'}`)
       }
     } catch {
+      if (!mountedRef.current || !generationRequestGuard.current.isCurrent(request)) return
       setErr('server unreachable')
       setBusy(false)
     }
@@ -405,14 +454,16 @@ export default function GenerateDrawer({
 
   const cancelGeneration = async () => {
     const active = activeJobRef.current
-    if (!active) return
+    const ownerKey = projectKey
+    const ownerScope = projectScope
+    if (!active || !ownerKey) return
     const retry = activeRetryRef.current
     setPhase('Cancelling…')
     let response
     try {
       response = await callVerb('jobs.cancel', { job_id: active })
     } catch {
-      if (activeJobRef.current !== active) return
+      if (!mountedRef.current || activeJobRef.current !== active || currentProjectScopeRef.current !== ownerScope) return
       setPhase('Waiting for server…')
       setErr('Server unreachable; the generation job is still being tracked.')
       return
@@ -420,14 +471,14 @@ export default function GenerateDrawer({
     // Polling may have observed the terminal cancellation while this response
     // was in flight. It already settled the same job and restored its retry
     // target; a late cancel response must not clear that state or a newer job.
-    if (activeJobRef.current !== active) return
+    if (!mountedRef.current || activeJobRef.current !== active || currentProjectScopeRef.current !== ownerScope) return
     if (!response.ok) {
       setErr(`${response.error?.code ?? 'failed'}: ${response.error?.message ?? 'could not cancel generation'}`)
       return
     }
     activeJobRef.current = null
     activeRetryRef.current = null
-    localStorage.removeItem(GENERATION_JOB_STORAGE_KEY)
+    localStorage.removeItem(generationJobStorageKey(ownerKey))
     if (pollTimer.current) window.clearTimeout(pollTimer.current)
     setRetryPlacement(retry)
     setJobId(null); setBusy(false); setPhase('')
@@ -444,7 +495,8 @@ export default function GenerateDrawer({
   }
 
   const placeExisting = async (record: GeneratedAssetRecord, mode: 'insert' | 'replace') => {
-    if (!project || record.integrity !== 'verified') return
+    if (!project || record.integrity !== 'verified' || !generationHistoryMatchesScope(historyOwnerScopeRef.current, projectScope)) return
+    const ownerScope = projectScope
     setHistoryBusy(true); setErr(null); setNote(null); setChosenAssetId(record.asset_id)
     try {
       const response = mode === 'insert'
@@ -462,6 +514,7 @@ export default function GenerateDrawer({
           link_audio: false,
           rationale: `human: replace with generated take ${record.generation_id}`,
         })
+      if (!mountedRef.current || currentProjectScopeRef.current !== ownerScope) return
       if (!response.ok) {
         setErr(`${response.error?.code ?? 'failed'}: ${response.error?.message ?? `could not ${mode} generated media`}`)
         return
@@ -469,9 +522,10 @@ export default function GenerateDrawer({
       setNote(`${mode === 'insert' ? 'Inserted' : 'Replaced with'} ${record.generation_id}.`)
       onGenerated?.()
     } catch {
+      if (!mountedRef.current || currentProjectScopeRef.current !== ownerScope) return
       setErr(`server unreachable while trying to ${mode} generated media`)
     } finally {
-      setHistoryBusy(false)
+      if (mountedRef.current && currentProjectScopeRef.current === ownerScope) setHistoryBusy(false)
     }
   }
 
@@ -703,15 +757,19 @@ export default function GenerateDrawer({
       </p>
 
       <GenerationHistory
-        items={history}
+        key={projectScope}
+        items={generationHistoryMatchesScope(historyOwnerScopeRef.current, projectScope) ? history : []}
         loading={historyLoading}
         selectedReferences={references}
         chosenAssetId={chosenAssetId}
         canInsert={insertTrackReady && !historyBusy}
         canReplace={selectedReplaceReady && !historyBusy}
-        onToggleReference={toggleReference}
+        onToggleReference={(id) => {
+          if (generationHistoryMatchesScope(historyOwnerScopeRef.current, projectScope)) toggleReference(id)
+        }}
         onPrepareVariation={prepareVariation}
         onChoose={(record) => {
+          if (!generationHistoryMatchesScope(historyOwnerScopeRef.current, projectScope)) return
           setChosenAssetId(record.asset_id)
           setNote(`Chosen ${record.generation_id} for timeline placement.`)
           setErr(null)

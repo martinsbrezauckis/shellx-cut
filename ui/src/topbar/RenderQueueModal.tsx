@@ -20,6 +20,7 @@ import { mediaBasename } from '../lib/mediaPath'
 import { renderQueueTerminalError, type RenderQueueTerminalResult } from '../lib/renderQueueTerminal'
 import { isTauri, pickRenderOutput } from '../lib/tauri'
 import { Icon } from '../icons'
+import type { VideoPreflightStatus } from './videoPreflight'
 import { useBlockingOverlay } from '../components/overlay/useBlockingOverlay'
 import './renderqueue.css'
 
@@ -76,9 +77,10 @@ interface QueueResult extends RenderQueueTerminalResult {
 
 export interface RenderQueueModalProps {
   onClose: () => void
+  onPreflight: (actionLabel: string, action: () => Promise<void>, onCancel: () => void, isActive: () => boolean) => Promise<VideoPreflightStatus>
 }
 
-export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
+export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueModalProps) {
   const overlay = useBlockingOverlay<HTMLDivElement>(onClose)
   // Start with TWO rows — a batch is ≥2 deliveries; one row would just be Render.
   const [rows, setRows] = useState<Row[]>([newRow(), { ...newRow(), aspect: '9:16' }])
@@ -89,29 +91,44 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
   const [queue, setQueue] = useState<QueueResult | null>(null)
   const [pickerNote, setPickerNote] = useState<string | null>(null)
   const cancelled = useRef(false)
+  const submitting = useRef(false)
+  const [checking, setChecking] = useState(false)
+  const [awaitingWarning, setAwaitingWarning] = useState(false)
+  const formLocked = checking || awaitingWarning
 
   useEffect(() => () => { cancelled.current = true }, [])
 
+  const releasePreflight = useCallback(() => {
+    submitting.current = false
+    if (cancelled.current) return
+    setChecking(false)
+    setAwaitingWarning(false)
+  }, [])
+
   const setRow = (i: number, patch: Partial<Row>) => {
+    if (submitting.current) return
     setErr(null)
     setRows((rs) => rs.map((r, k) => (k === i ? { ...r, ...patch } : r)))
   }
   const addRow = () => {
+    if (submitting.current) return
     setErr(null)
     setRows((rs) => [...rs, newRow()])
   }
   const removeRow = (i: number) => {
+    if (submitting.current) return
     setErr(null)
     setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, k) => k !== i)))
   }
   const chooseOutput = async (i: number) => {
+    if (submitting.current) return
     setPickerNote(null)
     if (!isTauri()) {
       setPickerNote('Open the desktop app to choose an output file.')
       return
     }
     const path = await pickRenderOutput()
-    if (path) setRow(i, { output: path })
+    if (path && !submitting.current) setRow(i, { output: path })
   }
 
   // Map the form rows → render.final arg subsets. 'project' aspect omits the arg (a
@@ -149,13 +166,11 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
   }, [])
 
   const submit = useCallback(async () => {
+    if (submitting.current || phase !== 'form') return
     setErr(null)
-    setProgress(0)
-    setQueue(null)
-    setPhase('running')
     try {
       const duplicate = duplicateOutputPaths(rows)
-      if (duplicate) { setErr('Each queued delivery must use a different output file.'); setPhase('form'); return }
+      if (duplicate) { setErr('Each queued delivery must use a different output file.'); return }
       const outputDirs = [...new Set(rows
         .map((row) => row.output.trim())
         .filter(Boolean)
@@ -165,30 +180,52 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
       const explicitOutputCount = rows.filter((row) => row.output.trim()).length
       if (explicitOutputCount > 0 && explicitOutputCount < rows.length) {
         setErr('Choose output files for every queued render, or use the default exports folder for every row.')
-        setPhase('form')
         return
       }
       if (outputDirs.length > 1) {
         setErr('Choose all queue outputs in one folder, or use the default exports folder for every row.')
-        setPhase('form')
         return
       }
       const jobs = buildJobs()
       const explicitPath = rows.find((row) => row.output.trim())?.output.trim()
-      const r = await withAuthorizedOutputPath(explicitPath, () =>
-        callVerb('render.queue', { jobs, rationale: `batch deliver ${jobs.length} renders` }))
-      if (!r.ok) { setErr(r.error?.message ?? r.error?.code ?? 'render.queue rejected'); setPhase('error'); return }
-      const res = r.result as QueueResult | undefined
-      const qid = res?.queue_id
-      setQueue(res ?? null)
-      if (!qid) { setErr('render.queue returned no queue id'); setPhase('error'); return }
-      setQueueId(qid)
-      await pollQueue(qid)
+      submitting.current = true
+      setChecking(true)
+      const preflightStatus = await onPreflight('rendering queued deliveries', async () => {
+        if (cancelled.current) return
+        setChecking(false)
+        setAwaitingWarning(false)
+        setProgress(0)
+        setQueue(null)
+        setPhase('running')
+        try {
+          const r = await withAuthorizedOutputPath(explicitPath, () =>
+            callVerb('render.queue', { jobs, rationale: `batch deliver ${jobs.length} renders` }))
+          if (!r.ok) { setErr(r.error?.message ?? r.error?.code ?? 'render.queue rejected'); setPhase('error'); return }
+          const res = r.result as QueueResult | undefined
+          const qid = res?.queue_id
+          setQueue(res ?? null)
+          if (!qid) { setErr('render.queue returned no queue id'); setPhase('error'); return }
+          setQueueId(qid)
+          await pollQueue(qid)
+        } catch (e) {
+          setErr(e instanceof Error ? e.message : String(e))
+          setPhase('error')
+        } finally {
+          releasePreflight()
+        }
+      }, releasePreflight, () => !cancelled.current)
+      if (preflightStatus === 'warning') {
+        if (!cancelled.current && submitting.current) { setChecking(false); setAwaitingWarning(true) }
+      } else {
+        releasePreflight()
+        if (preflightStatus === 'blocked') setErr('Install FFmpeg before rendering queued deliveries.')
+      }
     } catch (e) {
+      releasePreflight()
       setErr(e instanceof Error ? e.message : String(e))
       setPhase('error')
     }
-  }, [buildJobs, pollQueue, rows])
+  }, [buildJobs, onPreflight, phase, pollQueue, releasePreflight, rows])
 
   const pct = Math.round(progress * 100)
   const entries = queue?.jobs ?? []
@@ -204,6 +241,10 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
 
         {phase === 'form' && (
           <div className="rq-form" data-cut-render-queue-form>
+            {formLocked && <p className="rq-note" data-cut-render-queue-preflight-status>
+              {checking ? 'Checking export before queueing…' : 'Review the preflight warning to continue or cancel.'}
+            </p>}
+            <fieldset className="rq-fields" disabled={formLocked} data-cut-render-queue-fields>
             <div className="rq-rows">
               {rows.map((r, i) => (
                 <div className="rq-row" data-cut-render-queue-row={i} key={i}>
@@ -271,6 +312,7 @@ export default function RenderQueueModal({ onClose }: RenderQueueModalProps) {
                 Render queue
               </button>
             </div>
+            </fieldset>
           </div>
         )}
 

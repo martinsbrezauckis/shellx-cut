@@ -5,6 +5,7 @@ import { adjacentGapSlot, editorialTransitionAtMs, exactTimelineAudioTarget, isC
 import { isMediaContentClass, laidToEditorialMs, linkedSiblings, planLinkedSplit, shortDur, timecode, type LaidItem, type Seam, type TrackRow } from './layout'
 import { planRippleTrimAtPlayhead, sourceTrimAtTimelinePosition, type RippleTrimSide } from './rippleTrim'
 import { timelineEditFailureMessage } from './editFeedback'
+import { runOrderedTimelineDeletes } from './orderedDelete'
 
 // Per-CLIP mute level: a clip has NO `muted` flag in the model, so the context-menu
 // "mute clip" sets the clip's gain to nearly silence. This is separate from
@@ -41,7 +42,7 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     return true
   }, [showNote])
 
-  const cleanupEmptyTracks = useCallback(async (trackIds: Iterable<string>) => {
+  const cleanupEmptyTracks = useCallback(async (trackIds: Iterable<string>, groupId: string) => {
     const candidates = new Set(trackIds)
     if (!candidates.size) return
     const sr = await callVerb('project.state', {})
@@ -57,7 +58,7 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
       if (!hasContent) {
         await runUserVerb(
           'edit.remove_track',
-          { track: t.id, force: true, rationale: 'auto-clean: removed an emptied overlay track' },
+          { track: t.id, force: true, rationale: 'auto-clean: removed an emptied overlay track', group_id: groupId },
           `Could not remove empty track ${t.id}.`,
         )
       }
@@ -165,23 +166,30 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
         return
       }
       const sib = sibs[0]
-      if (sib && !locked(sib.trackId)) {
+      if (sib && locked(sib.trackId)) {
+        showNote(`Unlock track ${sib.trackId} before deleting linked media.`)
+        return
+      }
+      if (sib) {
         ranges.set(`${sib.trackId}:${sib.editorialStartMs}`, { track: sib.trackId, start: sib.editorialStartMs, dur: sib.durMs, id: sib.id })
       }
     }
-    const delGroup = ranges.size > 1 ? `grp-del-${crypto.randomUUID()}` : undefined
-    const results = await Promise.all([...ranges.values()].map((r) => runUserVerb('edit.ripple_delete', {
-      track: r.track,
-      range_ms: [r.start, r.start + r.dur],
-      ripple,
-      rationale: ripple
-        ? `user ripple-delete: ${r.id} on ${r.track} (gap closes) @ ${timecode(r.start)}`
-        : `user lift-delete: ${r.id} on ${r.track} (gap stays open) @ ${timecode(r.start)}`,
-      ...(delGroup ? { group_id: delGroup } : {}),
-    }, `Could not ${ripple ? 'ripple-delete' : 'lift'} clip ${r.id}.`)))
-    if (results.some((result) => !result?.ok)) return
+    const delGroup = `grp-del-${crypto.randomUUID()}`
+    const completed = await runOrderedTimelineDeletes([...ranges.values()], ripple, async (r) => {
+      const result = await runUserVerb('edit.ripple_delete', {
+        track: r.track,
+        range_ms: [r.start, r.start + r.dur],
+        ripple,
+        rationale: ripple
+          ? `user ripple-delete: ${r.id} on ${r.track} (gap closes) @ ${timecode(r.start)}`
+          : `user lift-delete: ${r.id} on ${r.track} (gap stays open) @ ${timecode(r.start)}`,
+        group_id: delGroup,
+      }, `Could not ${ripple ? 'ripple-delete' : 'lift'} clip ${r.id}.`)
+      return !!result?.ok
+    })
+    if (!completed) return
     c.onSelect([])
-    await cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track)))
+    await cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track)), delGroup)
   }, [cfg, cleanupEmptyTracks, showNote])
 
   /** Context-menu remove/lift of one clip + its exact linked audio
@@ -191,6 +199,11 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
     const c = cfg.current
     const it = c.allItems.find((i) => i.id === itemId)
     if (!it || it.kind === 'gap') return
+    const locked = (trackId: string) => c.rows.some((row) => row.id === trackId && row.locked)
+    if (locked(it.trackId)) {
+      showNote(`Unlock track ${it.trackId} before deleting this clip.`)
+      return
+    }
     const ranges = new Map<string, { track: string; start: number; dur: number; id: string }>()
     ranges.set(`${it.trackId}:${it.editorialStartMs}`, { track: it.trackId, start: it.editorialStartMs, dur: it.durMs, id: it.id })
     if (it.kind === 'video') {
@@ -201,20 +214,24 @@ export function useTimelineClipActions({ cfg, setActiveSeam }: UseTimelineClipAc
       }
       const sib = sibs[0]
       if (sib) {
+        if (locked(sib.trackId)) {
+          showNote(`Unlock track ${sib.trackId} before deleting linked media.`)
+          return
+        }
         ranges.set(`${sib.trackId}:${sib.editorialStartMs}`, { track: sib.trackId, start: sib.editorialStartMs, dur: sib.durMs, id: sib.id })
       }
     }
-    const delGroup = ranges.size > 1 ? `grp-del-${crypto.randomUUID()}` : undefined
+    const delGroup = `grp-del-${crypto.randomUUID()}`
     const results = await Promise.all([...ranges.values()].map((r) => runUserVerb('edit.ripple_delete', {
       track: r.track,
       range_ms: [r.start, r.start + r.dur],
       ripple,
       rationale: `${ripple ? 'remove' : 'lift'} clip ${r.id} on ${r.track} @ ${timecode(r.start)} (context menu)`,
-      ...(delGroup ? { group_id: delGroup } : {}),
+      group_id: delGroup,
     }, `Could not ${ripple ? 'remove' : 'lift'} clip ${r.id}.`)))
     if (results.some((result) => !result?.ok)) return
     c.onSelect([])
-    await cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track)))
+    await cleanupEmptyTracks(new Set([...ranges.values()].map((range) => range.track)), delGroup)
   }, [cfg, cleanupEmptyTracks, showNote])
 
   const removeTrackById = useCallback(async (trackId: string) => {

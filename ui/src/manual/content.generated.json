@@ -69,7 +69,7 @@
       "group": "record",
       "title": "Record workspace",
       "where": "Top bar",
-      "description": "Open Record to choose a display or, on Windows and macOS, an application window; confirm readiness, preview actual source pixels, select Raw MP4 or Polished clip in Edit, and start capture. On Linux, Start opens the system picker for a display. F9 can also start from Edit using the last valid setup after fresh source, device, permission, and project checks.",
+      "description": "Open Record to choose a display or, on Windows and macOS, an application window; confirm readiness, preview actual source pixels, choose Raw MP4 or Polished clip, and start capture. On Linux, Start opens the system picker for a display. F9 can also start from Edit using your current Record choices, or the saved setup when Record has not been opened, after fresh source, device, permission, and project checks.",
       "requirement": "Requires a supported desktop capture backend and FFmpeg. Global F9 scope is reported only after OS callback proof.",
       "api": "ui.open {panel:\"record\"}, screen_record.doctor, screen_record.preview_capability"
     },
@@ -1779,7 +1779,7 @@
       "group": "record",
       "title": "Recording hotkeys",
       "where": "Record transport",
-      "description": "F9 is one Start/Stop action across Cut, including Edit and another focused app when the OS global route has been observed. Start uses the open project when one exists; otherwise Cut creates a new recording project before capture. It revalidates the last valid setup, source, devices, and permissions; invalid setup opens Record with a reason and starts no capture. F12 adds a marker. Record shows a passive global, provisional, or focused-only indicator and the reason for degraded scope.",
+      "description": "F9 is one Start/Stop action across Cut, including Edit and another focused app when the OS global route has been observed. Start uses the open project when one exists; otherwise Cut creates a new recording project before capture. It revalidates your current Record choices, or the saved setup when Record has not been opened; first use without saved settings offers screen-only capture. Invalid setup reports a reason and starts no capture without switching workspaces. F12 adds a marker. Record shows a passive global, provisional, or focused-only indicator and the reason for degraded scope.",
       "requirement": "Windows and macOS attempt registration automatically. GNOME Wayland attempts an owned binding on first launch. Global status requires observed callback proof; general Settings holds an advanced opt-out.",
       "api": "project.create, screen_record.start, screen_record.status, screen_record.stop, screen_record.studio_event"
     },
@@ -1919,7 +1919,7 @@
       "group": "workflow",
       "title": "Record, save, and export",
       "where": "Record workspace and status bar",
-      "description": "Choose a real source, check readiness and native preview, select Raw MP4 or Polished clip in Edit, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip. If no project is open, Start or global F9 creates a new recording project automatically; an open project is used as-is. During capture, the preview uses frames from the exact capture owner. If Stop fails, Cut checks that capture status: Retry Stop is offered only while live, terminal is shown as ended, and uncertain ownership stays unknown. Export or Save a copy chooses optional destinations after Stop.",
+      "description": "In Record, choose a real source, check readiness and native preview, select Raw MP4 or Polished clip, then Start. Both modes save the unchanged MP4 in the default export folder; Polished adds an editable project clip. If no project is open, Start or global F9 creates a new recording project automatically; an open project is used as-is. During capture, the preview uses frames from the exact capture owner. If Stop fails, Cut checks that capture status: Retry Stop is offered only while live, terminal is shown as ended, and uncertain ownership stays unknown. Export or Save a copy chooses optional destinations after Stop.",
       "requirement": "Requires desktop capture permission and FFmpeg; camera and system audio are optional. Global F9, live preview, output, and native badge behavior need installed-host verification.",
       "api": "project.create, screen_record.preview_start, screen_record.live_frame, screen_record.start, screen_record.status, screen_record.stop, screen_record.polish, screen_record.export, screen_record.copy_raw"
     },

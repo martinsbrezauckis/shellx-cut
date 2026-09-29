@@ -6,6 +6,7 @@ interface PreflightWarningProps {
   actionLabel: string
   onCancel: () => void
   onContinue: () => void
+  overModal?: boolean
 }
 
 const severityLabel = (severity: PregateRisk['severity']) => {
@@ -62,7 +63,7 @@ const formatRange = (risk: PregateRisk) => {
   return ` (${start}s-${end}s)`
 }
 
-export default function PreflightWarning({ report, actionLabel, onCancel, onContinue }: PreflightWarningProps) {
+export default function PreflightWarning({ report, actionLabel, onCancel, onContinue, overModal = false }: PreflightWarningProps) {
   const risks = report.risks ?? []
   const uninstrumented = report.uninstrumented_assets ?? []
   const blocked = report.pass === false || risks.some((risk) => risk.severity === 'high')
@@ -75,7 +76,7 @@ export default function PreflightWarning({ report, actionLabel, onCancel, onCont
 
   return (
     <section
-      className={`tb-pregate${blocked ? ' tb-pregate--blocked' : ''}`}
+      className={`tb-pregate${blocked ? ' tb-pregate--blocked' : ''}${overModal ? ' tb-pregate--over-modal' : ''}`}
       data-cut-pregate-warning
       data-cut-pregate-blocked={blocked ? 'true' : 'false'}
       role="dialog"

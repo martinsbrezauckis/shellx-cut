@@ -28,6 +28,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod persistence;
+
 static LIBRARY_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn library_io_lock() -> &'static Mutex<()> {
@@ -378,32 +380,22 @@ pub fn page_bounds(total: usize, offset: usize, limit: usize) -> (usize, usize, 
     (start, end, next)
 }
 
-/// Tolerant migration from a raw JSON value (missing/old/junk → empty library).
-pub fn migrate(raw: serde_json::Value) -> LibraryManifest {
-    serde_json::from_value::<LibraryManifest>(raw).unwrap_or_default()
-}
-
 // ---- I/O + blob store (filesystem) -----------------------------------------
 
-/// Load the manifest (migrating on read). Missing file or no home → empty.
-pub fn load() -> LibraryManifest {
+/// Only a missing manifest is an empty first-run library. Existing unreadable
+/// or malformed state is preserved and reported, never replaced by a mutation.
+pub fn load() -> Result<LibraryManifest, CutError> {
     let Some(p) = userdata::library_manifest_path() else {
-        return LibraryManifest::default();
+        return Ok(LibraryManifest::default());
     };
-    match std::fs::read_to_string(&p) {
-        Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
-            Ok(v) => migrate(v),
-            Err(_) => LibraryManifest::default(),
-        },
-        Err(_) => LibraryManifest::default(),
-    }
+    persistence::load_at(&p)
 }
 
 /// Run a read-only operation against a manifest loaded under the library lock.
-pub fn with_manifest<T>(f: impl FnOnce(&LibraryManifest) -> T) -> T {
+pub fn with_manifest<T>(f: impl FnOnce(&LibraryManifest) -> T) -> Result<T, CutError> {
     let _guard = library_io_lock().lock().expect("library lock");
-    let m = load();
-    f(&m)
+    let m = load()?;
+    Ok(f(&m))
 }
 
 /// Run a load → mutate → save operation under the library lock.
@@ -411,7 +403,7 @@ pub fn mutate_manifest<T>(
     f: impl FnOnce(&mut LibraryManifest) -> Result<T, CutError>,
 ) -> Result<T, CutError> {
     let _guard = library_io_lock().lock().expect("library lock");
-    let mut m = load();
+    let mut m = load()?;
     let out = f(&mut m)?;
     save(&m)?;
     Ok(out)
@@ -427,11 +419,7 @@ pub fn save(m: &LibraryManifest) -> Result<(), CutError> {
                 .to_string(),
         ));
     };
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| io_err("create library dir", e))?;
-    }
-    let json = serde_json::to_string_pretty(m).unwrap_or_else(|_| "{}".into());
-    std::fs::write(&p, json).map_err(|e| io_err("write library manifest", e))
+    persistence::save_at(&p, m)
 }
 
 /// Absolute path of a stored blob (`~/.shellx-cut/library/blobs/<file>`).
@@ -964,18 +952,5 @@ mod tests {
 
         assert!(verified_content_hash(&path, Some(forged)).is_err());
         assert!(verified_content_hash(&path, Some("legacy-hash".into())).is_ok());
-    }
-
-    #[test]
-    fn migrate_tolerates_junk() {
-        assert_eq!(migrate(serde_json::json!(null)).items.len(), 0);
-        assert_eq!(migrate(serde_json::json!({"x": 1})).items.len(), 0);
-        let good = migrate(serde_json::json!({
-            "version": 1, "folders": ["A"],
-            "items": [{"id":"a","type":"video","name":"v.mp4","src_path":"/m/v.mp4","added_ms":1,"source":"user"}]
-        }));
-        assert_eq!(good.items.len(), 1);
-        assert_eq!(good.items[0].kind, "video");
-        assert_eq!(good.folders, vec!["A".to_string()]);
     }
 }

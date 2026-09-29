@@ -18,7 +18,7 @@ import { callVerb, type PregateReport, type Project, type StoryboardResult } fro
 import { envHealthLevel, isFfmpegMissing, type DoctorReport } from '../lib/doctor'
 import type { WorkspaceMode } from '../layout/useLayout'
 import { FPS_PRESETS, RES_PRESETS, resKey } from '../lib/formatPresets'
-import { applyExportOutputDir, folderTail, getStoredOutputDir, setStoredOutputDir, withAuthorizedOutputPath } from '../lib/exportDestination'
+import { applyExportOutputDir, clearStoredOutputDirIfAccepted, folderTail, getStoredOutputDir, setStoredOutputDir, withAuthorizedOutputPath } from '../lib/exportDestination'
 import { activeJobLabel, activeJobProgress } from '../lib/jobPresentation'
 import {
   openVideoToolsGuide,
@@ -34,6 +34,7 @@ import ThemeToggle from '../components/ThemeToggle'
 import UpdateButton from './UpdateButton'
 import StoryboardOverlay from './StoryboardOverlay'
 import PreflightWarning from './PreflightWarning'
+import { runVideoPreflightAction } from './videoPreflight'
 import SequenceSwitcher from './SequenceSwitcher'
 import { useTopbarDismissibleMenu } from './useTopbarDismissibleMenu'
 import { useTopbarJobs } from './useTopbarJobs'
@@ -179,6 +180,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
   const [preflight, setPreflight] = useState<{ report: PregateReport; actionLabel: string } | null>(null)
   const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingPreflight = useRef<(() => Promise<void>) | null>(null)
+  const pendingPreflightCancel = useRef<(() => void) | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const renderRef = useRef<HTMLDivElement>(null)
   const ffmpegMissing = isFfmpegMissing(doctor)
@@ -206,38 +208,35 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
     flash(`Install FFmpeg before ${action}.`)
     return true
   }
-  const openPreflight = (report: PregateReport, actionLabel: string, action: () => Promise<void>) => {
+  const openPreflight = (report: PregateReport, actionLabel: string, action: () => Promise<void>, onCancel?: () => void) => {
     pendingPreflight.current = action
+    pendingPreflightCancel.current = onCancel ?? null
     setPreflight({ report: { ...report, risks: report.risks ?? [] }, actionLabel })
   }
   const clearPreflight = () => {
     pendingPreflight.current = null
+    pendingPreflightCancel.current = null
     setPreflight(null)
+  }
+  const cancelPreflight = () => {
+    const onCancel = pendingPreflightCancel.current
+    clearPreflight()
+    onCancel?.()
   }
   const continuePreflight = async () => {
     const action = pendingPreflight.current
     clearPreflight()
     if (action) await action()
   }
-  const runVideoPreflight = async (actionLabel: string, action: () => Promise<void>) => {
-    if (ffmpegMissing && blockMissingFfmpeg(actionLabel)) return
-    try {
-      const r = await callVerb('verify.pregate', {})
-      if (r.ok && r.result) {
-        const report = r.result
-        const hasRisks = (report.risks ?? []).length > 0
-        const hasUncheckedAssets = (report.uninstrumented_assets ?? []).length > 0
-        if (report.pass === false || hasRisks || hasUncheckedAssets) {
-          openPreflight(report, actionLabel, action)
-          return
-        }
-      } else if (!r.ok) {
-        flash(`preflight unavailable: ${r.error?.message ?? r.error?.code ?? 'continuing'}`)
-      }
-    } catch {
-      flash('preflight unavailable; continuing')
-    }
-    await action()
+  const runVideoPreflight = async (actionLabel: string, action: () => Promise<void>, onCancel?: () => void, isActive?: () => boolean) => {
+    return runVideoPreflightAction(actionLabel, action, {
+      ffmpegMissing,
+      check: () => callVerb('verify.pregate', {}),
+      showWarning: (report, label, pendingAction) => {
+        if (isActive?.() !== false) openPreflight(report, label, pendingAction, onCancel)
+      },
+      note: flash,
+    })
   }
 
   const onRender = async (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -302,9 +301,11 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
   // Revert to the default project/exports folder.
   const clearFolder = async () => {
     setMenuOpen(false)
-    await applyOutputDir(null)
+    if (!await clearStoredOutputDirIfAccepted()) {
+      flash('Could not switch to the project exports folder')
+      return
+    }
     setOutputDir(null)
-    setStoredOutputDir(null)
     flash('Exports → project folder')
   }
 
@@ -1075,7 +1076,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <DirectorModal aspect={aspect} preset={reframePreset} onClose={() => setDirectorOpen(false)} />
       )}
       {/* Batch-delivery queue (render.queue) — opened from the Export menu. */}
-      {queueOpen && <RenderQueueModal onClose={() => setQueueOpen(false)} />}
+      {queueOpen && <RenderQueueModal onClose={() => { cancelPreflight(); setQueueOpen(false) }} onPreflight={runVideoPreflight} />}
       {otioPreview && (
         <OtioImportModal
           preview={otioPreview}
@@ -1089,7 +1090,8 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <PreflightWarning
           report={preflight.report}
           actionLabel={preflight.actionLabel}
-          onCancel={clearPreflight}
+          overModal={queueOpen}
+          onCancel={cancelPreflight}
           onContinue={() => void continuePreflight()}
         />
       )}

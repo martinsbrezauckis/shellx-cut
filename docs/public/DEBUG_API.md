@@ -522,6 +522,13 @@ this verb: they create a uniquely named recording project through
 `expected_project_identity`. Direct Debug API callers still need to create or
 open a project and provide the matching identity themselves.
 
+Record's current setup choices remain active after switching to Edit; app-wide
+F9 revalidates that draft rather than the last successful take. An invalid draft
+refuses capture without changing workspace. The UI's live Pause/Resume
+acknowledgement also survives that navigation. Direct API clients own their
+setup and must inspect the actual Pause/Resume replies themselves;
+`screen_record.status` does not project Pause state.
+
 `screen_record.start` creates a private, project-local checkpoint journal before a
 backend starts. Its output is not an open live MP4: each Linux, Windows, or macOS
 segment must finalize, hash, and fully decode before recovery may use it. On daemon or
@@ -945,10 +952,11 @@ Headless editing supports installed Claude Code, Codex, Grok, and Antigravity CL
 text is informational only; Cut verifies each route's required policy flags before every turn. Claude uses a
 contained capability contract with a disposable cwd and
 sanitized environment, and disables native CLI tools.
-Codex keeps the user's normal configuration, native sandbox, and permissions;
-Cut adds the live project's MCP server and does not copy or rewrite Codex login
-files. Grok receives a disposable config/home with native tools disabled and
-only the live Cut MCP server; its existing auth file remains in place and is
+Codex uses the selected account's configuration, native sandbox, and permissions;
+an enrolled alternate account home reaches only the Codex child through
+`CODEX_HOME`. Cut adds the live project's MCP server and does not copy or rewrite
+Codex login files. Grok receives a disposable config/home with native tools
+disabled and only the live Cut MCP server; its existing auth file remains in place and is
 never copied or rewritten. Antigravity keeps its normal settings and login while
 Cut creates a new disposable sandboxed project containing one Cut-only MCP
 plugin. Its headless approval mode is bounded by that empty workspace and Cut's
@@ -1067,7 +1075,7 @@ replace it with the value shown by `/api/agent` or Settings > Agent control.
 | Client | Register ShellX Cut | Client-side check | Scope behavior |
 |---|---|---|---|
 | Claude Code | `claude mcp add --scope user shellx-cut -- "/absolute/path/to/cutd" mcp` | `claude mcp get shellx-cut` or `claude mcp list` health-checks approved servers | Claude defaults to `local`; the shown `user` scope makes Cut available across projects. `project` is also supported. |
-| Codex | `codex mcp add shellx-cut -- "/absolute/path/to/cutd" mcp` | `codex mcp get shellx-cut --json` or `codex mcp list --json` confirms the stored configuration | Codex stores the entry in `~/.codex/config.toml`; its add command has no scope flag. Configuration presence alone is not a live handshake. |
+| Codex | `codex mcp add shellx-cut -- "/absolute/path/to/cutd" mcp` | `codex mcp get shellx-cut --json` or `codex mcp list --json` confirms the stored configuration | With the default account, Codex stores the entry in `~/.codex/config.toml`; for an enrolled alternate account, run the check in that account's `CODEX_HOME` environment. The add command has no scope flag. Configuration presence alone is not a live handshake. |
 | Grok Build | `grok mcp add --scope user shellx-cut -- "/absolute/path/to/cutd" mcp` | `grok mcp doctor shellx-cut` performs command, handshake, and tool-discovery checks | Grok defaults to `user` and also supports `project`. |
 | Antigravity CLI | `agy mcp add shellx-cut /absolute/path/to/cutd mcp` | `agy mcp list` confirms configuration; open `/mcp` for live status and connection logs | The command writes the user-level `~/.gemini/config/mcp_config.json` entry. Configuration presence alone is not a live handshake. |
 

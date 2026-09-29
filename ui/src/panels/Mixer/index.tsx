@@ -21,8 +21,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TrackAuditionButton } from '../../components/TrackAuditionButton'
 import { callVerb, exportUrl, type Project, type Track } from '../../lib/client'
-import { runUserVerb } from '../../lib/userActionFeedback'
+import { publishUserActionFailure, publishUserActionMessage, runUserVerb } from '../../lib/userActionFeedback'
 import { StripMeter } from './StripMeter'
+import { mixerLoudnessKey, mixerMeasurementKey, mixerProjectScope, mixerSnapshotMatches } from './mixerIdentity'
 import '../drawer.css'
 import './mixer.css'
 
@@ -41,14 +42,11 @@ const LUFS_TARGETS: { value: number; label: string }[] = [
   { value: -23, label: '-23 broadcast' },
 ]
 
-/** The slice of the verify.loudness receipt the Mixer badge reads (the verb
- *  returns more — true peak, LRA, threshold, recommendation — but the badge only
- *  needs measured, the gap, and the in-tolerance verdict). */
+/** The source-only slice of the verify.loudness receipt shown in the Mixer. */
 interface LoudnessReading {
+  asset: string
   integrated_lufs: number
   target_lufs: number
-  gap_lu: number
-  within_tolerance: boolean
 }
 
 export default function MixerDrawer({
@@ -67,6 +65,14 @@ export default function MixerDrawer({
   const tracks = (project?.tracks ?? []).filter(
     (t) => t.kind === 'audio' && t.clips.length > 0,
   )
+  const audioTrackIds = tracks.map((t) => t.id)
+  const [lufsTarget, setLufsTarget] = useState<number>(-14)
+  const measurementKey = mixerMeasurementKey(project, headOpId, audioTrackIds)
+  const loudnessKey = mixerLoudnessKey(measurementKey, lufsTarget)
+  const currentMeasurementKey = useRef(measurementKey)
+  currentMeasurementKey.current = measurementKey
+  const currentLoudnessKey = useRef(loudnessKey)
+  currentLoudnessKey.current = loudnessKey
   // SOLO is server truth now (Track.solo) — multiple tracks can be soloed. anySolo
   // drives the audibility derivation (a non-soloed track is silent while any solo
   // is active), mirroring the engine's Project::audio_track_audible.
@@ -75,21 +81,14 @@ export default function MixerDrawer({
   const [draft, setDraft] = useState<Record<string, number>>({})
   const [trackToggleBusy, setTrackToggleBusy] = useState<Record<string, boolean>>({})
   const trackToggleBusyRef = useRef<Record<string, boolean>>({})
-  // --- Integrated loudness (verify.loudness) ---------------------------------
-  // The peak/RMS meters above show a LIVE level at the playhead; they do NOT show
-  // the INTEGRATED loudness (LUFS) the platform actually targets. The verb measures
-  // a source file; the badge below applies this track's fader and mute/solo state
-  // so the visible verdict matches the current mix strip instead of a raw asset.
+  // --- Source loudness (verify.loudness) -------------------------------------
+  // The peak/RMS meters show the edited stem at the playhead. verify.loudness
+  // measures one whole source asset; its receipt cannot prove edited-track LUFS.
   // One shared target selector drives every measurement (-14 social default).
-  const [lufsTarget, setLufsTarget] = useState<number>(-14)
-  // track id → last measured reading (cleared on an edit, since the mix changed).
-  const [loudness, setLoudness] = useState<Record<string, LoudnessReading>>({})
-  const [loudBusy, setLoudBusy] = useState<string | null>(null)
-
-  // An edit invalidates any prior reading (the asset/mix may have changed).
-  useEffect(() => {
-    setLoudness({})
-  }, [headOpId])
+  // Track id → source reading, scoped to the current project and revision.
+  const [loudness, setLoudness] = useState<{ key: string; readings: Record<string, LoudnessReading> }>({ key: '', readings: {} })
+  const [loudBusy, setLoudBusy] = useState<{ key: string; track: string } | null>(null)
+  const currentLoudness = loudness.key === loudnessKey ? loudness.readings : {}
 
   /** The source asset id a track's loudness measures: the first MEDIA clip's
    *  asset (audio clips carry an `asset`; gaps do not). One asset
@@ -100,37 +99,42 @@ export default function MixerDrawer({
     return null
   }, [])
 
-  /** Measure one track's source loudness against the selected target and stash the
-   *  reading. The render path below applies gain/mute/solo for the badge. */
+  /** Measure one track's first source asset against the selected target. */
   const measureLoudness = useCallback(
     async (t: Track) => {
       const asset = trackAsset(t)
-      if (!asset || loudBusy) return
-      setLoudBusy(t.id)
+      if (!asset || loudBusy?.key === loudnessKey) return
+      const requestKey = loudnessKey
+      setLoudBusy({ key: requestKey, track: t.id })
       try {
-        const r = await runUserVerb('verify.loudness', {
+        const r = await callVerb('verify.loudness', {
           asset,
           target_lufs: lufsTarget,
-        }, `Could not measure loudness for track ${t.id}.`)
-        if (!r?.ok) return
+        })
+        if (currentLoudnessKey.current !== requestKey) return
+        if (!r.ok) {
+          publishUserActionFailure('verify.loudness', r, `Could not measure source loudness for track ${t.id}.`)
+          return
+        }
         const res = r.result as Partial<LoudnessReading> | undefined
         if (res == null || typeof res.integrated_lufs !== 'number') return
         setLoudness((m) => ({
-          ...m,
-          [t.id]: {
+          key: requestKey,
+          readings: { ...(m.key === requestKey ? m.readings : {}), [t.id]: {
+            asset,
             integrated_lufs: res.integrated_lufs as number,
             target_lufs: res.target_lufs ?? lufsTarget,
-            gap_lu: res.gap_lu ?? (res.integrated_lufs as number) - lufsTarget,
-            within_tolerance: res.within_tolerance ?? false,
-          },
+          } },
         }))
       } catch {
-        /* server unreachable / no audio → no reading (button just re-enables) */
+        if (currentLoudnessKey.current === requestKey) {
+          publishUserActionMessage(`Could not measure source loudness for track ${t.id}: the local engine is unreachable.`)
+        }
       } finally {
-        setLoudBusy(null)
+        setLoudBusy((busy) => busy?.key === requestKey ? null : busy)
       }
     },
-    [trackAsset, lufsTarget, loudBusy],
+    [trackAsset, lufsTarget, loudBusy, loudnessKey],
   )
 
   // --- per-track meters (v2b) ------------------------------------------------
@@ -139,13 +143,12 @@ export default function MixerDrawer({
   // edit, then sample it at the dead-reckoned playhead — no extra audio playback, so
   // it adds no sound and is fully headless-verifiable. (Video tracks don't feed the
   // engine audio mix, so they get no live meter.)
-  const audioTrackIds = tracks.map((t) => t.id)
   const ctxRef = useRef<AudioContext | null>(null)
   const [stems, setStems] = useState<Map<string, { channels: Float32Array[]; sampleRate: number }>>(
     new Map(),
   )
   const stemsForOp = useRef<string>('__unset__')
-  const projectKey = project?.name ?? ''
+  const projectKey = mixerProjectScope(project)
 
   // Dead-reckoned timeline clock: the playhead prop updates ~10 Hz; between updates
   // we extrapolate while it is advancing so the meters move smoothly at 60 fps.
@@ -175,14 +178,14 @@ export default function MixerDrawer({
   const trackKey = audioTrackIds.join(',')
   useEffect(() => {
     const op = headOpId || '0'
-    if (stemsForOp.current === `${op}|${trackKey}`) return
+    if (stemsForOp.current === measurementKey) return
     let cancelled = false
     const abort = new AbortController()
     const ids = trackKey ? trackKey.split(',') : []
     const run = async () => {
       if (!ids.length) {
         setStems(new Map())
-        stemsForOp.current = `${op}|${trackKey}`
+        stemsForOp.current = measurementKey
         return
       }
       if (!ctxRef.current) {
@@ -201,32 +204,31 @@ export default function MixerDrawer({
             track: id,
             rationale: 'mixer per-track meter stem',
           })
-          if (cancelled) return
+          if (cancelled || currentMeasurementKey.current !== measurementKey) return
           if (!r.ok) continue
           const res = r.result as { path?: string; duration_ms?: number }
           if (!res?.path || (res.duration_ms ?? 0) > MAX_METER_MS) continue
           const currentProject = await callVerb('project.state', {})
-          const currentName = currentProject.ok
-            ? ((currentProject.result as Project | null)?.name ?? '')
-            : ''
-          if (cancelled || currentName !== projectKey) return
+          const currentSnapshot = currentProject.ok ? (currentProject.result as Project | null) ?? null : null
+          if (cancelled || currentMeasurementKey.current !== measurementKey || !currentProject.ok ||
+              !mixerSnapshotMatches(project, currentSnapshot)) return
           const url = exportUrl(res.path)
           const ab = await fetch(
             `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(op)}`,
             { signal: abort.signal },
           ).then((x) => x.arrayBuffer())
-          if (cancelled) return
+          if (cancelled || currentMeasurementKey.current !== measurementKey) return
           const audio = await ctx.decodeAudioData(ab)
           const channels: Float32Array[] = []
           for (let c = 0; c < audio.numberOfChannels; c++) channels.push(audio.getChannelData(c))
-          if (!cancelled) next.set(id, { channels, sampleRate: audio.sampleRate })
+          if (!cancelled && currentMeasurementKey.current === measurementKey) next.set(id, { channels, sampleRate: audio.sampleRate })
         } catch {
           /* stem unavailable / decode failed → this track simply gets no meter */
         }
       }
-      if (!cancelled) {
+      if (!cancelled && currentMeasurementKey.current === measurementKey) {
         setStems(next)
-        stemsForOp.current = `${op}|${trackKey}`
+        stemsForOp.current = measurementKey
       }
     }
     void run()
@@ -234,7 +236,7 @@ export default function MixerDrawer({
       cancelled = true
       abort.abort()
     }
-  }, [headOpId, projectKey, trackKey])
+  }, [measurementKey, trackKey])
 
   const setGain = useCallback((trackId: string, db: number, why: string) => {
     void runUserVerb('edit.gain', { track: trackId, db, rationale: why }, `Could not change the level of track ${trackId}.`)
@@ -365,8 +367,8 @@ export default function MixerDrawer({
                   </span>
                   {t.kind === 'audio' && (
                     <StripMeter
-                      channels={stems.get(t.id)?.channels ?? null}
-                      sampleRate={stems.get(t.id)?.sampleRate ?? 48000}
+                      channels={stemsForOp.current === measurementKey ? stems.get(t.id)?.channels ?? null : null}
+                      sampleRate={stemsForOp.current === measurementKey ? stems.get(t.id)?.sampleRate ?? 48000 : 48000}
                       getTimeMs={getTimeMs}
                       active={isAudible(t)}
                     />
@@ -456,15 +458,13 @@ export default function MixerDrawer({
                     S
                   </button>
                 </div>
-                {/* Track loudness row: verify.loudness measures the source asset, then
-                    the visible badge applies the strip's fader and mute/solo state. */}
+                {/* verify.loudness measures the first source asset, not the edited stem. */}
                 {(() => {
                   const asset = trackAsset(t)
-                  const reading = loudness[t.id]
-                  const audible = isAudible(t)
-                  const mixLufs = reading && audible ? reading.integrated_lufs + db : null
-                  const mixGap = mixLufs == null || !reading ? null : mixLufs - reading.target_lufs
-                  const mixWithin = mixGap != null && Math.abs(mixGap) <= 1
+                  const reading = currentLoudness[t.id]
+                  const sourceName = asset ? (project?.assets[asset]?.path.split(/[\\/]/).pop() || asset) : null
+                  const sourceGap = reading ? reading.integrated_lufs - reading.target_lufs : null
+                  const sourceWithin = sourceGap != null && Math.abs(sourceGap) <= 1
                   return (
                     <div className="mx-loud" data-cut-mixer-loud={t.id}>
                       <button
@@ -472,35 +472,32 @@ export default function MixerDrawer({
                         className="mx-loud-btn"
                         data-cut-action="verify-loudness"
                         data-cut-mixer-loud-measure={t.id}
-                        disabled={!asset || loudBusy === t.id}
+                        disabled={!asset || (loudBusy?.key === loudnessKey && loudBusy.track === t.id)}
                         title={
                           asset
-                            ? `Measure the source, then apply ${t.id} fader, mute, or solo for this badge`
+                            ? `Measure first source asset ${sourceName} on ${t.id}; edited-track loudness is not measured`
                             : `${t.id} has no source asset to measure`
                         }
                         onClick={() => void measureLoudness(t)}
                       >
-                        {loudBusy === t.id ? 'Measuring…' : 'Measure track LUFS'}
+                        {loudBusy?.key === loudnessKey && loudBusy.track === t.id ? 'Measuring…' : 'Measure source LUFS'}
                       </button>
                       {reading ? (
                         <span
-                          className={`mx-loud-badge${!audible ? ' mx-loud-badge--empty' : mixWithin ? ' mx-loud-badge--ok' : ' mx-loud-badge--off'}`}
+                          className={`mx-loud-badge${sourceWithin ? ' mx-loud-badge--ok' : ' mx-loud-badge--off'}`}
                           data-cut-mixer-loudness-lufs={t.id}
+                          data-cut-loudness-scope="source"
+                          data-cut-loudness-asset={reading.asset}
                           data-cut-loudness-source-lufs={reading.integrated_lufs.toFixed(1)}
-                          data-cut-loudness-lufs={mixLufs == null ? '' : mixLufs.toFixed(1)}
-                          data-cut-loudness-within={audible && mixWithin ? 'true' : 'false'}
-                          data-cut-loudness-mix-state={audible ? 'audible' : 'silent'}
-                          title={
-                            audible && mixLufs != null && mixGap != null
-                              ? `${mixLufs.toFixed(1)} LUFS in mix · source ${reading.integrated_lufs.toFixed(1)} · fader ${db.toFixed(1)} dB · target ${reading.target_lufs} · gap ${mixGap >= 0 ? '+' : ''}${mixGap.toFixed(1)} LU${mixWithin ? ' (within +/-1 LU)' : ' - needs normalize'}`
-                              : `silent in mix · source ${reading.integrated_lufs.toFixed(1)} LUFS · fader ${db.toFixed(1)} dB`
-                          }
+                          data-cut-loudness-lufs={reading.integrated_lufs.toFixed(1)}
+                          data-cut-loudness-source-within={sourceWithin ? 'true' : 'false'}
+                          title={`Source ${sourceName ?? reading.asset} (${reading.asset}) · whole asset, before timeline edits · target ${reading.target_lufs} LUFS`}
                         >
-                          {mixLufs == null ? 'silent in mix' : `${mixLufs.toFixed(1)} LUFS`}
-                          {mixGap != null && (
+                          {sourceName ?? reading.asset}: {reading.integrated_lufs.toFixed(1)} LUFS source
+                          {sourceGap != null && (
                             <span className="mx-loud-gap">
-                              {mixGap >= 0 ? '+' : ''}
-                              {mixGap.toFixed(1)} LU
+                              {sourceGap >= 0 ? '+' : ''}
+                              {sourceGap.toFixed(1)} LU to target
                             </span>
                           )}
                         </span>

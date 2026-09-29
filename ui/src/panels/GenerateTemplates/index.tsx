@@ -17,6 +17,7 @@ import WorkspaceTabs from './WorkspaceTabs'
 import {
   fieldLabel,
   missingRequired,
+  promptTemplateHint,
   seedParams,
   serializeParams,
   templateListResultFrom,
@@ -61,6 +62,9 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
   const [query, setQuery] = useState('')
   const [templates, setTemplates] = useState<GenerateTemplateSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // The Templates tab selects a default card for preview controls. Only a
+  // person's explicit catalog choice should constrain the prompt planner.
+  const [explicitTemplateId, setExplicitTemplateId] = useState<string | null>(null)
   const [manifest, setManifest] = useState<GenerateTemplateManifest | null>(null)
   const [params, setParams] = useState<ParamValues>({})
   const [atMs, setAtMs] = useState(Math.max(0, Math.round(playheadMs)))
@@ -183,6 +187,7 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
 
   const missing = useMemo(() => missingRequired(manifest, params), [manifest, params])
   const selectedTemplate = templates.find((t) => t.id === selectedId) ?? null
+  const promptTemplateId = promptTemplateHint(selectedId, explicitTemplateId)
   // Keep Preview/Insert clickable when required values are missing so the
   // validation path can reveal and focus the first field instead of leaving a
   // disabled command beside an off-screen hint.
@@ -262,7 +267,7 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
         prompt,
         policy: promptPolicy,
         agent: promptAgent,
-        template_id: selectedId ?? undefined,
+        template_id: promptTemplateId ?? undefined,
         at_ms: atMs,
         width: 640,
         height: 360,
@@ -393,7 +398,10 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
           insertResult={insertResult}
           onKind={setKind}
           onQuery={setQuery}
-          onSelected={setSelectedId}
+          onSelected={(id) => {
+            setSelectedId(id)
+            setExplicitTemplateId(id)
+          }}
           onParam={setParam}
           onAtMs={(value) => {
             setAtTouched(true)
@@ -405,7 +413,7 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
       ) : tab === 'prompt' ? (
         <PromptPanel
           projectReady={!!project}
-          selectedId={selectedId}
+          selectedId={promptTemplateId}
           promptText={promptText}
           promptPolicy={promptPolicy}
           promptAgent={promptAgent}
@@ -467,6 +475,7 @@ export default function GenerateTemplatesWorkspace({ project, projectScope, play
           </div>
           <GenerateAssetSurface
             project={project}
+            projectScope={projectScope}
             playheadMs={playheadMs}
             selectedClipId={selectedClipId}
             onGenerated={onInserted}

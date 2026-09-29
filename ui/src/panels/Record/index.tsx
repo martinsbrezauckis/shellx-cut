@@ -2,7 +2,7 @@
 // It defaults to an open-ended F9-stoppable recording; duration choices are caps.
 // Selected monitor/window identities pass through the verb unchanged for native revalidation.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { callVerb, type Project } from '../../lib/client'
 import { shouldIgnoreGlobalShortcut } from '../../lib/dom'
 import { matchesFixedAction } from '../../lib/keymap'
@@ -43,6 +43,7 @@ import {
   type CameraCapability,
 } from './CameraControl'
 import { useAppRecordingSession } from '../../app/RecordingSessionContext'
+import type { RecordingDraftView } from '../../app/useRecordingSession'
 import { doctorAllowsPortalDisplay, normalizeRecordingPresetForStart, type RecordingPreset } from '../../app/recordingPreset'
 import { useRecordingQuality } from './useRecordingQuality'
 import {
@@ -83,7 +84,6 @@ import {
   type RecordingScenePreset,
 } from './recordingScenes'
 import { useRecordingScenes } from './useRecordingScenes'
-import { useRecordingPause } from './useRecordingPause'
 import { useRecordingAudioMeters } from './useRecordingAudioMeters'
 import { useRecordingSourcePreview } from './useRecordingSourcePreview'
 import './record.css'
@@ -124,6 +124,8 @@ function recordingMarkerAcknowledged(value: unknown, expectedLabel: string): boo
 
 export default function Record({ project, onClipAdded, onOpenOutputSettings, onOpenEdit, onWorkspaceAdmissionChange }: RecordProps) {
   const session = useAppRecordingSession()
+  const draftViewRef = useRef<RecordingDraftView | null>(session.draftView)
+  const draftView = draftViewRef.current
   const [cards, setCards] = useState<RecordCard[]>([])
   const [ready, setReady] = useState<boolean | null>(null)
   // `start_allowed` is deliberately narrower than Doctor `ready`: on Linux,
@@ -132,12 +134,12 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   // Monitor PICKER: the doctor's enumerated displays (empty on single-display /
   // Linux), and the chosen 1-based monitor index (null = primary / engine default).
   const [monitors, setMonitors] = useState<MonitorInfo[]>([])
-  const [monitorIdx, setMonitorIdx] = useState<number | null>(null)
-  const [monitorTargetId, setMonitorTargetId] = useState<string | null>(null)
+  const [monitorIdx, setMonitorIdx] = useState<number | null>(draftView?.monitorIdx ?? null)
+  const [monitorTargetId, setMonitorTargetId] = useState<string | null>(draftView?.monitorTargetId ?? null)
   // Source is intentionally first-level: choose Display or Window before its
   // exact target. Region joins that choice only after the private native path
   // receives compiled/native qualification for its one-use exact ticket.
-  const [sourceKind, setSourceKind] = useState<RecordingSourceKind>('display')
+  const [sourceKind, setSourceKind] = useState<RecordingSourceKind>(draftView?.sourceKind ?? 'display')
   const [regionPickerOpen, setRegionPickerOpen] = useState(false)
   const regionPickerCapability = REGION_PICKER_UNAVAILABLE
   // Window picker: the doctor's enumerated app windows and the chosen opaque
@@ -145,9 +147,9 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   // state; it must never silently fall back to Display capture.
   const [windows, setWindows] = useState<WindowInfo[]>([])
   const [windowCaptureSupported, setWindowCaptureSupported] = useState<boolean | null>(null)
-  const [windowTargetId, setWindowTargetId] = useState<string | null>(null)
+  const [windowTargetId, setWindowTargetId] = useState<string | null>(draftView?.windowTargetId ?? null)
   const [cameraCapability, setCameraCapability] = useState<CameraCapability>(NO_CAMERA_CAPABILITY)
-  const [cameraDeviceId, setCameraDeviceId] = useState<string | null>(null)
+  const [cameraDeviceId, setCameraDeviceId] = useState<string | null>(draftView?.cameraDeviceId ?? null)
   const selectedWindowMissing = sourceKind === 'window'
     && windowTargetId !== null
     && !windows.some((window) => window.id === windowTargetId)
@@ -166,29 +168,29 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     setWindowTargetId(null)
   }, [windowCaptureSupported, sourceKind])
   // `capMs === null` = open-ended (the default). Otherwise it is the cap in ms.
-  const [capMs, setCapMs] = useState<number | null>(null)
-  const [fps, setFps] = useState(30)
-  const [customFps, setCustomFps] = useState('')
-  const [audio, setAudio] = useState(true)
+  const [capMs, setCapMs] = useState<number | null>(draftView?.durationMs ?? null)
+  const [fps, setFps] = useState(draftView?.fps ?? 30)
+  const [customFps, setCustomFps] = useState(draftView?.customFps ?? '')
+  const [audio, setAudio] = useState(draftView?.audio ?? true)
   // Capture DESKTOP/SYSTEM audio (game/app sound) as a SEPARATE mixable track.
   // Defaults OFF for safety: desktop audio capture should be an explicit opt-in.
   // Linux uses the PulseAudio-compatible monitor source.
-  const [systemAudio, setSystemAudio] = useState(false)
+  const [systemAudio, setSystemAudio] = useState(draftView?.systemAudio ?? false)
   const [audioProbeRunning, setAudioProbeRunning] = useState(false)
   const [micTestRunning, setMicTestRunning] = useState(false)
-  const [keys, setKeys] = useState(false)
+  const [keys, setKeys] = useState(draftView?.keys ?? false)
   // RAW CAPTURE mode. false = AUTO-EDIT (the flagship: record → autoedit
   // → polish → a clip on the timeline). true = RAW: keep ALL the same capture options
   // (source, fps, mic + system-audio sources) but on stop SKIP autoedit AND polish —
   // the engine just folds the streams into one raw.mp4 (screen_record.stop{mux_raw}).
   // We surface the file and OFFER to add it as-is; nothing is auto-edited or auto-placed.
   // Default AUTO-EDIT so existing behaviour is unchanged; raw is the explicit opt-in.
-  const [rawCapture, setRawCapture] = useState(false)
-  const savedPresetRef = useRef(session.preset)
+  const [rawCapture, setRawCapture] = useState(draftView?.raw ?? false)
+  const savedPresetRef = useRef(session.draft !== undefined ? session.draft : session.preset)
   const savedMonitorAppliedRef = useRef(false)
   useEffect(() => {
     const saved = savedPresetRef.current
-    if (!saved) return
+    if (!saved || draftViewRef.current) return
     setSourceKind(saved.source.kind === 'portal_display' ? 'display' : saved.source.kind)
     if (saved.source.kind === 'window') setWindowTargetId(saved.source.windowId)
     else if (saved.source.kind === 'display') setMonitorTargetId(saved.source.monitorId)
@@ -214,13 +216,13 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   }, [monitorIdx, monitorTargetId, monitors])
   const selectedMonitorCurrent = monitorTargetId !== null
     && monitors.some((monitor) => monitor.index === monitorIdx && monitor.id === monitorTargetId)
-  const [studio, setStudio] = useState<StudioState>(() => defaultStudioState())
+  const [studio, setStudio] = useState<StudioState>(() => draftView?.studio ?? defaultStudioState())
   // React may evaluate a functional state updater more than once in development
   // StrictMode. Keep the current Studio draft explicitly so live controls can
   // calculate their next transform once, update React state, then send exactly
   // one durable event outside React's updater evaluation.
   const studioRef = useRef(studio)
-  const cameraLayoutCustomizedRef = useRef(false)
+  const cameraLayoutCustomizedRef = useRef(draftView?.cameraLayoutCustomized ?? false)
   const selectedSceneRef = useRef<RecordingScenePreset | null>(null)
   const selectSceneRef = useRef<((sceneId: string) => Promise<void>) | null>(null)
   const updateStudio = useCallback((update: (current: StudioState) => StudioState) => {
@@ -241,6 +243,15 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     setCapability: setQualityCapability, setResolution: setQualityResolution,
     clearResolution: clearQualityResolution,
   } = useRecordingQuality()
+  useEffect(() => {
+    if (draftViewRef.current) {
+      setOutputSize(draftViewRef.current.outputSize)
+      setProfile(draftViewRef.current.qualityProfile)
+    } else if (savedPresetRef.current?.quality) {
+      setOutputSize(savedPresetRef.current.quality.output_size)
+      setProfile(savedPresetRef.current.quality.profile)
+    }
+  }, [setOutputSize, setProfile])
   const [lastCapture, setLastCapture] = useState<{ source: string; plan: string } | null>(null)
   const [lastRaw, setLastRaw] = useState<{ path: string; hasMic: boolean; hasSystem: boolean } | null>(null)
   const [exportFmt, setExportFmt] = useState<'mp4' | 'gif'>('mp4')
@@ -297,12 +308,12 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     if (savedSceneAppliedRef.current) return
     savedSceneAppliedRef.current = true
     const saved = savedPresetRef.current
-    if (!saved) return
-    const scene = saved.scenes as { initial_scene_id?: string } | undefined
-    if (scene?.initial_scene_id) void selectScene(scene.initial_scene_id)
-    else if (saved.cameraId && !saved.raw) void selectScene('presenter-corner')
+    const scene = saved?.scenes as { initial_scene_id?: string } | undefined
+    const sceneId = draftViewRef.current?.sceneId ?? scene?.initial_scene_id
+    if (sceneId) void selectScene(sceneId)
+    else if (saved?.cameraId && !saved.raw) void selectScene('presenter-corner')
   }, [selectScene])
-  const recordingPause = useRecordingPause()
+  const recordingPause = session.recordingPause
   const sourcePreview = useRecordingSourcePreview({
     sourceKind,
     monitors: sourceKind === 'display' && monitorTargetId && !selectedMonitorCurrent ? [] : monitors,
@@ -630,11 +641,6 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     })
   }, [sourceKind, windowCaptureSupported, monitorIdx, monitors, cards, startAllowed, monitorTargetId, selectedMonitorCurrent, windowTargetId, fps, capMs, audio, systemAudio, keys, rawCapture, recordingPause.enabled, qualityRequest, studio, cameraDeviceId, sceneStartConfig, session.countdownSeconds])
 
-  useEffect(() => {
-    session.setDraftProvider(buildPreset)
-    return () => session.setDraftProvider(null)
-  }, [buildPreset, session.setDraftProvider])
-
   const preflightStartError = useCallback(() => {
     if (startAdmissionUnknown) return UNKNOWN_START_ADMISSION
     const frameRateError = recordingFrameRateDraftError(customFps, fps)
@@ -664,6 +670,15 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     if (cameraError) return cameraError
     return null
   }, [cameraCapability, cameraDeviceId, cards, customFps, fps, monitorIdx, monitors, rawCapture, recordingPause, regionPickerCapability, selectedMonitorCurrent, selectedScene.layout.kind, selectedWindowMissing, sourceKind, startAdmissionUnknown, startAllowed, studio.camera.enabled, windowCaptureSupported, windowTargetId])
+  useLayoutEffect(() => {
+    session.setDraft(preflightStartError() ? null : buildPreset(), {
+      sourceKind, monitorIdx, monitorTargetId, windowTargetId, fps, customFps,
+      durationMs: capMs, audio, systemAudio, keys, raw: rawCapture,
+      cameraDeviceId, studio, cameraLayoutCustomized: cameraLayoutCustomizedRef.current,
+      sceneId: selectedScene?.id ?? null, pauseEnabled: recordingPause.enabled,
+      outputSize, qualityProfile: profile,
+    })
+  })
   useEffect(() => {
     session.setStartGuard(preflightStartError)
     return () => session.setStartGuard(null)
@@ -1097,7 +1112,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                   )}
                   recoveryControls={null}
                   pauseCapability={recordingPause.capability}
-                  pauseEnabled={recordingPause.enabled}
+                  pauseEnabled={recordingPause.activeEnabled}
                   pauseState={recordingPause.state}
                   pauseMessage={recordingPause.message}
                   markerPending={markerPending}

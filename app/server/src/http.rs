@@ -1828,7 +1828,7 @@ fn build_library_poster(
     use axum::http::StatusCode;
     use cut_media::poster::PosterKind;
     use sha2::{Digest, Sha256};
-    let manifest = crate::library::load();
+    let manifest = crate::library::load().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let item = manifest
         .items
         .iter()

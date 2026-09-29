@@ -460,8 +460,10 @@ route to the same surface registry.
   leaving it empty uses that CLI's configured default. Claude uses
   Cut's contained capability route in a disposable cwd with native CLI tools
   disabled. Provider version text is informational only and each route's required
-  containment flags are verified before each turn. Codex keeps the user's normal configuration, native sandbox, and
-  permissions; Cut neither copies nor rewrites its login files. Grok receives a
+  containment flags are verified before each turn. Codex uses the selected
+  account's configuration, native sandbox, and permissions; an enrolled alternate
+  account home reaches only the Codex child through `CODEX_HOME`. Cut neither
+  copies nor rewrites its login files. Grok receives a
   disposable config/home with native tools disabled and only Cut's filtered MCP
   route, while its existing login file remains in place. Cut grants trust only
   to that newly created empty workspace for the duration of the turn so Grok
@@ -660,7 +662,7 @@ route to the same surface registry.
 - Review Scopes tab: run `verify.scopes` on a timeline frame, read luma,
   saturation, white-balance, broadcast-range, and clipping warnings, and
   optionally generate vectorscope, waveform, and histogram image evidence.
-- Render and video-like export actions run a preflight check before starting
+- Render, render queue, and video-like export actions run a preflight check before starting
   the job. High-risk issues block the export, while lower-risk warnings can be
   reviewed with collapsible details, continued, or opened in the manual at
   `cut.export.preflight`. The default banner names user-facing issues such as
@@ -692,12 +694,14 @@ route to the same surface registry.
   Stop usable. A selected whole display includes Cut when Cut is visible.
   `F9` is one Cut-wide Start/Stop action, including from Edit or while another
   app has focus when the OS has admitted the global shortcut. Start rechecks
-  the last valid setup against the current project, source, devices, and
-  permissions; invalid setup opens Record with a reason and starts no capture.
+  the current Record choices against the current project, source, devices, and
+  permissions. Those choices survive switching to Edit; invalid choices show
+  a reason without changing workspace or starting capture.
   On first use with no saved setup, F9 checks the current primary display (or
   the Linux screen-sharing picker) and starts a screen-only polished take with
   microphone, system audio, camera, and keystrokes off. Later F9 presses use
-  the last validated Record settings.
+  the current Record settings, or the saved setup when Record has not been opened.
+  An active Pause/Resume state also survives switching between Edit and Record.
   When no project is open, Start or F9 creates a new recording project first;
   an already open project is used as-is. The action does not restore a
   minimized Cut window.

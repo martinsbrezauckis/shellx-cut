@@ -53,6 +53,7 @@ mod assets_fetch_transition;
 mod caption_bulk;
 mod caption_track_resolution;
 mod captions_kinetic_regression;
+mod clip_delete_cleanup;
 mod detach_audio;
 mod generate_project_transition;
 mod generation_cli;
@@ -86,7 +87,6 @@ mod smart_bins;
 mod system_tools;
 mod transition_test_support;
 mod ui_command_confirmation;
-
 #[test]
 fn effect_strips_flattened_track_key_from_detail() {
     let e = effect(Some("v1"), json!({"track":"evil","clip":"c1"}));

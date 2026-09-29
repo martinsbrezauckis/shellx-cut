@@ -147,6 +147,7 @@ impl NativeCameraRun {
             last_pts_ns: 0,
             last_duration_ns: 0,
             last_cadence_ns: 0,
+            callback_count: 0,
         };
         let status = unsafe {
             sxc_macos_camera_stop(
@@ -158,6 +159,7 @@ impl NativeCameraRun {
                 &mut timing.last_pts_ns,
                 &mut timing.last_duration_ns,
                 &mut timing.last_cadence_ns,
+                &mut timing.callback_count,
             )
         };
         if status == 0 {
@@ -393,5 +395,6 @@ unsafe extern "C" {
         movie_last_pts_ns: *mut u64,
         movie_last_duration_ns: *mut u64,
         movie_last_cadence_ns: *mut u64,
+        movie_callback_count: *mut u64,
     ) -> i32;
 }

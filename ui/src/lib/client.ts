@@ -579,7 +579,7 @@ export interface VerbArgs {
   'edit.duck': { music_track: string; against_track: string; db: number; attack_ms?: number; rationale?: string }
   // New empty compositing track; ids deterministic (v{N} / a{N}t) unless given.
   'edit.add_track': { kind: 'video' | 'audio'; id?: string; rationale?: string }
-  'edit.remove_track': { track: string; force?: boolean; rationale?: string }
+  'edit.remove_track': { track: string; force?: boolean; rationale?: string; group_id?: string }
   // the two-segment verb-name contract: two-segment names — edit.add_marker / edit.remove_marker.
   'edit.add_marker': { at_ms: number; label: string; note?: string; rationale?: string }
   'edit.remove_marker': { id: string; rationale?: string }

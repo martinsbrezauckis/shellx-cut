@@ -26,6 +26,7 @@ pub(super) struct NativeMovieTiming {
     pub(super) last_pts_ns: u64,
     pub(super) last_duration_ns: u64,
     pub(super) last_cadence_ns: u64,
+    pub(super) callback_count: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -455,6 +456,7 @@ mod tests {
             last_pts_ns: 108_101_400_000,
             last_duration_ns: 16_660_000,
             last_cadence_ns: 16_670_000,
+            callback_count: 0,
         };
         let timing = verify_movie_timing("ffprobe", Path::new(&path), native, 7_134, 429).unwrap();
         assert_eq!(timing.duration_ms, 7_134);
@@ -467,6 +469,7 @@ mod tests {
             last_pts_ns: 34_429_431_540_000,
             last_duration_ns: 0,
             last_cadence_ns: 8_330_000,
+            callback_count: 0,
         }
     }
 
@@ -740,6 +743,7 @@ mod tests {
             last_pts_ns: 34_421_447_440_000 + (frame_count - 1) * 1_000_000,
             last_duration_ns: 1_000_000,
             last_cadence_ns: 1_000_000,
+            callback_count: 0,
         };
         let result = verify_probe(
             &metadata("1000.000000", "1/1000"),

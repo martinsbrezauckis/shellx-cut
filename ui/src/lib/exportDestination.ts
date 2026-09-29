@@ -36,9 +36,21 @@ export async function applyExportOutputDir(dir: string | null): Promise<boolean>
   }
 }
 
-export async function ensureStoredOutputDirApplied(): Promise<string | null> {
+export async function clearStoredOutputDirIfAccepted(
+  apply: () => Promise<boolean> = () => applyExportOutputDir(null),
+): Promise<boolean> {
+  if (!await apply()) return false
+  setStoredOutputDir(null)
+  return true
+}
+
+export async function ensureStoredOutputDirApplied(
+  apply: (dir: string | null) => Promise<boolean> = applyExportOutputDir,
+): Promise<string | null> {
   const dir = getStoredOutputDir()
-  if (dir) await applyExportOutputDir(dir)
+  if (dir && !await apply(dir)) {
+    throw new Error('could not use the selected export folder')
+  }
   return dir
 }
 

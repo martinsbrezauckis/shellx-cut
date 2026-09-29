@@ -20,6 +20,11 @@ export const PROMPT_AGENTS: PromptAgent[] = ['auto', 'claude', 'codex', 'grok']
 export const PROMPT_POLICIES: PromptPolicy[] = ['plan', 'preview', 'insert']
 export const STORYBOARD_MODES: StoryboardMode[] = ['quick_prompt', 'director_brief', 'script', 'existing_media']
 
+/** The catalog's automatic visual default is not a human prompt constraint. */
+export function promptTemplateHint(selectedId: string | null, explicitTemplateId: string | null): string | null {
+  return selectedId && selectedId === explicitTemplateId ? selectedId : null
+}
+
 export function optionValue<T extends string>(options: readonly T[], value: string, fallback: T): T {
   for (const option of options) {
     if (option === value) return option

@@ -3,7 +3,8 @@
 //! Dub and diarize are optional model services. Unlike ffmpeg/perception, they
 //! are not installed by a ShellX Cut setup verb, and they are normally absent on
 //! a plain editing box. "Not reachable" is therefore neutral `Unknown`, never a
-//! red `Missing` for an essential dependency.
+//! red `Missing` for an essential dependency. A reachable service without its
+//! local connector is not usable by Cut and must not read as ready either.
 
 use super::{Card, CardStatus};
 use serde_json::json;
@@ -29,9 +30,9 @@ fn service_reachable(endpoint: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Shared builder for the two optional-service cards. `reachable` -> `Ok`;
-/// unreachable/timeout -> `Unknown`. There is no setup verb for these cards;
-/// configuration is the service endpoint.
+/// Shared builder for the two optional-service cards. Both the remote health
+/// response and local connector are required for `Ok`. There is no setup verb
+/// for these cards; the hint names whichever requirement is missing.
 pub(super) fn service_card(
     id: &str,
     endpoint: String,
@@ -43,8 +44,15 @@ pub(super) fn service_card(
     runner_available: bool,
 ) -> Card {
     let reachable = service_reachable(&endpoint);
-    let (status, hint) = if reachable {
+    let (status, hint) = if reachable && runner_available {
         (CardStatus::Ok, None)
+    } else if reachable {
+        (
+            CardStatus::Unknown,
+            Some(format!(
+                "Optional {human} service is reachable, but the local perception connector for {verb} is missing. Install or repair the ShellX Cut perception sidecar, then Re-scan."
+            )),
+        )
     } else {
         (
             CardStatus::Unknown,

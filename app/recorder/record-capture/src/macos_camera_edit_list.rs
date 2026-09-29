@@ -3,6 +3,7 @@
 //! small number of B-frame dependency packets discard. The two packet views
 //! must identify the same file bytes at one exact presentation offset.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -12,16 +13,26 @@ use std::time::Duration;
 
 use cut_media::ffmpeg::{run_owned_command, OwnedProcessControl};
 use record_core::{error_codes, RecordError, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::macos_camera_movie_timing::{NativeMovieTiming, VerifiedMovieTiming};
 
-#[derive(Debug)]
+const CLOCK_DIAGNOSTIC_PACKET_TAIL: usize = 6;
+
+#[derive(Debug, Clone, Serialize)]
 struct Packet {
     pts: u64,
     duration: u64,
     pos: u64,
+    flags: String,
     discard: bool,
+}
+
+fn remember_packet(tail: &mut VecDeque<Packet>, packet: &Packet) {
+    if tail.len() == CLOCK_DIAGNOSTIC_PACKET_TAIL {
+        tail.pop_front();
+    }
+    tail.push_back(packet.clone());
 }
 
 fn bad(cause: &str) -> RecordError {
@@ -268,6 +279,7 @@ fn next_packet<R: BufRead>(rows: &mut R) -> Result<Option<Packet>> {
         pts,
         duration,
         pos,
+        flags: flags.to_owned(),
         discard: flags.as_bytes()[1] == b'D',
     }))
 }
@@ -302,8 +314,12 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
     let mut skipped_before_first_max_pts = None::<u64>;
     let mut last_visible_pts = 0_u64;
     let mut last_visible_duration = 0_u64;
+    let mut last_visible_packet = None::<Packet>;
     let mut first_visible = None;
+    let mut raw_tail = VecDeque::with_capacity(CLOCK_DIAGNOSTIC_PACKET_TAIL);
+    let mut edited_tail = VecDeque::with_capacity(CLOCK_DIAGNOSTIC_PACKET_TAIL);
     while let Some(edited) = next_packet(&mut edited_rows)? {
+        remember_packet(&mut edited_tail, &edited);
         edited_count += 1;
         if edited_count > raw_decoded_frames {
             return Err(bad("edited packet count exceeds the full movie"));
@@ -335,6 +351,7 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
                 );
             }
             raw_last_pos = Some(source.pos);
+            remember_packet(&mut raw_tail, source);
             raw_count += 1;
             raw = next_packet(&mut raw_rows)?;
         }
@@ -367,10 +384,12 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             if edited.pts > last_visible_pts {
                 last_visible_pts = edited.pts;
                 last_visible_duration = edited.duration;
+                last_visible_packet = Some(edited.clone());
             }
             visible_count += 1;
         }
         raw_last_pos = Some(source.pos);
+        remember_packet(&mut raw_tail, source);
         raw_count += 1;
         raw = next_packet(&mut raw_rows)?;
     }
@@ -386,6 +405,7 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             return Err(bad("a packet inside the edit interval was skipped"));
         }
         raw_last_pos = Some(source.pos);
+        remember_packet(&mut raw_tail, &source);
         raw_count += 1;
         raw = next_packet(&mut raw_rows)?;
     }
@@ -450,9 +470,41 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
         .checked_add(tick_ns)
         .ok_or_else(|| bad("native callback cadence limit overflows"))?;
     if callback_after_edit.abs_diff(edited_last_ns) > callback_limit {
-        return Err(bad(
-            "MovieFileOutput callback disagrees with edited final frame",
-        ));
+        // The staged movie is deleted on failure. Keep only bounded packet and
+        // clock facts in the existing failure cause, which is recorded in
+        // capture/record.log and the terminal failure receipt.
+        let diagnostic = serde_json::json!({
+            "predicate": "abs(callback_after_edit_ns - edited_last_ns) > callback_limit_ns",
+            "native": {
+                "start_pts_ns": native.start_pts_ns,
+                "last_pts_ns": native.last_pts_ns,
+                "last_duration_ns": native.last_duration_ns,
+                "last_cadence_ns": native.last_cadence_ns,
+                "callback_count": native.callback_count,
+                "elapsed_ns": native_elapsed,
+            },
+            "movie": {
+                "time_base_ns_per_tick": tick_ns,
+                "raw_duration_ticks": raw_duration_ticks,
+                "presented_duration_ticks": presented_duration_ticks,
+                "edit_offset_ticks": offset,
+                "raw_decoded_frames": raw_decoded_frames,
+                "raw_packet_count": raw_count,
+                "presented_decoded_frames": presented_decoded_frames,
+                "edited_packet_count": edited_count,
+                "visible_packet_count": visible_count,
+                "edited_last_ns": edited_last_ns,
+                "callback_after_edit_ns": callback_after_edit,
+                "callback_limit_ns": callback_limit,
+                "callback_delta_ns": callback_after_edit.abs_diff(edited_last_ns),
+                "last_visible_packet": last_visible_packet,
+            },
+            "raw_packet_tail": raw_tail,
+            "edited_packet_tail": edited_tail,
+        });
+        return Err(bad(&format!(
+            "MovieFileOutput callback disagrees with edited final frame: {diagnostic}"
+        )));
     }
     let presented_ns = presented_duration_ticks
         .checked_mul(tick_ns)
@@ -479,6 +531,7 @@ mod tests {
             last_pts_ns: 108_101_400_000,
             last_duration_ns: 16_660_000,
             last_cadence_ns: 16_670_000,
+            callback_count: 5,
         }
     }
 
@@ -671,6 +724,44 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.cause.contains("callback disagrees"));
+    }
+
+    #[test]
+    fn rejected_callback_clock_retains_bounded_movie_and_packet_facts() {
+        let raw = b"96786,1666,100,K__\n808669,1666,200,___\n811784,1667,300,___\n815117,1649,400,___\n810135,1651,500,___\n";
+        let edited = b"0,1666,100,K__\n711883,1666,200,___\n714998,1667,300,_D_\n718331,1649,400,_D_\n713349,1651,500,___\n";
+        let mut late = native();
+        late.last_pts_ns += 40_000_000;
+        let error = verify_edit_list(
+            raw.as_slice(),
+            edited.as_slice(),
+            815102,
+            713363,
+            10_000,
+            5,
+            3,
+            late,
+        )
+        .unwrap_err();
+        let detail = error
+            .cause
+            .strip_prefix("MovieFileOutput callback disagrees with edited final frame: ")
+            .expect("the clock mismatch still rejects the movie");
+        let facts: serde_json::Value = serde_json::from_str(detail).unwrap();
+        assert_eq!(facts["native"]["start_pts_ns"], 100_000_000_000_u64);
+        assert_eq!(facts["native"]["last_pts_ns"], late.last_pts_ns);
+        assert_eq!(facts["native"]["callback_count"], 5);
+        assert_eq!(facts["movie"]["time_base_ns_per_tick"], 10_000);
+        assert_eq!(facts["movie"]["edit_offset_ticks"], 96786);
+        assert_eq!(facts["movie"]["raw_packet_count"], 5);
+        assert_eq!(facts["movie"]["presented_decoded_frames"], 3);
+        assert_eq!(facts["movie"]["last_visible_packet"]["pos"], 500);
+        assert_eq!(facts["edited_packet_tail"][2]["flags"], "_D_");
+        assert_eq!(facts["raw_packet_tail"].as_array().unwrap().len(), 5);
+        assert!(
+            facts["movie"]["callback_delta_ns"].as_u64().unwrap()
+                > facts["movie"]["callback_limit_ns"].as_u64().unwrap()
+        );
     }
 
     #[test]

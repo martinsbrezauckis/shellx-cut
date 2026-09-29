@@ -104,7 +104,7 @@ pub(in crate::dispatch) async fn library_add_to_project(
         id: String,
     }
     let a: Args = parse_args(args)?;
-    let path = crate::library::with_manifest(|m| crate::library::item_media_path(m, &a.id))
+    let path = crate::library::with_manifest(|m| crate::library::item_media_path(m, &a.id))?
         .ok_or_else(|| {
             CutError::new(
                 error_codes::NOT_FOUND,

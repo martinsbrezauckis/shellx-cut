@@ -2556,6 +2556,55 @@ mod tests {
         assert_eq!(d.details["runner_available"], json!(true));
     }
 
+    #[test]
+    fn optional_service_needs_both_health_and_local_connector() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test service");
+        let addr = listener.local_addr().expect("test service address");
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept health request");
+                let mut request = [0_u8; 1024];
+                let size = stream.read(&mut request).expect("read health request");
+                assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /health "));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                    )
+                    .expect("write health response");
+            }
+        });
+
+        let card = |runner_available| {
+            service_card(
+                "dub",
+                format!("http://{addr}"),
+                false,
+                "dubbing (OmniVoice TTS)",
+                "audio.dub",
+                "CUT_DUB_ENDPOINT",
+                "OmniVoice TTS",
+                runner_available,
+            )
+        };
+        let missing_connector = card(false);
+        assert_eq!(missing_connector.status, CardStatus::Unknown);
+        assert_eq!(missing_connector.details["reachable"], json!(true));
+        assert_eq!(missing_connector.details["runner_available"], json!(false));
+        assert!(missing_connector
+            .hint
+            .unwrap_or_default()
+            .contains("perception connector"));
+
+        let ready = card(true);
+        assert_eq!(ready.status, CardStatus::Ok);
+        assert_eq!(ready.details["reachable"], json!(true));
+        assert_eq!(ready.details["runner_available"], json!(true));
+        assert!(ready.hint.is_none());
+        server.join().expect("complete health responses");
+    }
+
     /// A stale service proxy can accept TCP and then reset before returning an
     /// HTTP health response. That must not read as "reachable" in Environment.
     #[test]

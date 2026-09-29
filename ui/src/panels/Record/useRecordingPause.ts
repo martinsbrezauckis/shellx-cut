@@ -10,9 +10,10 @@ import {
 } from './recordingPause'
 
 /** Keeps the live button tied to the durable Pause/Resume acknowledgements. */
-export function useRecordingPause() {
+export function useRecordingPause(initialEnabled = false) {
   const [capability, setCapability] = useState<RecordingPauseCapability>(NO_RECORDING_PAUSE_CAPABILITY)
-  const [enabled, setEnabled] = useState(false)
+  const [enabled, setEnabled] = useState(initialEnabled)
+  const [activeEnabled, setActiveEnabled] = useState(false)
   const [state, setState] = useState<RecordingPauseState>('idle')
   const [message, setMessage] = useState('Enable Pause & resume before your next recording.')
   const [captureId, setCaptureId] = useState<string | null>(null)
@@ -28,13 +29,17 @@ export function useRecordingPause() {
     const next = recordingPauseCapability(value)
     setCapability(next)
     if (!next.supported) {
-      controlLifetimeRef.current.clearCapture()
-      setCaptureId(null)
+      if (!activeEnabled) {
+        controlLifetimeRef.current.clearCapture()
+        setCaptureId(null)
+      }
       setEnabled(false)
-      setState('idle')
-      setMessage(next.detail)
+      if (!activeEnabled) {
+        setState('idle')
+        setMessage(next.detail)
+      }
     }
-  }, [])
+  }, [activeEnabled])
 
   const setPauseEnabled = useCallback((next: boolean) => {
     if (!next) {
@@ -51,23 +56,29 @@ export function useRecordingPause() {
   }, [capability])
 
   const acknowledgeStart = useCallback((id: string, value: unknown) => {
+    // Record may remount while the same capture is paused or a transition is
+    // still awaiting its durable acknowledgement. Start is not a new state.
+    if (captureId === id && activeEnabled) return
     const admitted = !!value && typeof value === 'object' && (value as Record<string, unknown>).enabled === true
-    if (!enabled || !admitted) {
+    if (!admitted) {
       controlLifetimeRef.current.clearCapture()
       setCaptureId(null)
+      setActiveEnabled(false)
       setState('idle')
       if (enabled) setMessage('The recorder did not acknowledge Pause & resume admission; live controls stay unavailable.')
       return
     }
     controlLifetimeRef.current.replaceCapture(id)
     setCaptureId(id)
+    setActiveEnabled(true)
     setState('recording')
     setMessage('Recording. Pause only changes state after the recorder seals it.')
-  }, [enabled])
+  }, [enabled, captureId, activeEnabled])
 
   const clearCapture = useCallback(() => {
     controlLifetimeRef.current.clearCapture()
     setCaptureId(null)
+    setActiveEnabled(false)
     setState('idle')
   }, [])
 
@@ -107,6 +118,7 @@ export function useRecordingPause() {
   return {
     capability,
     enabled,
+    activeEnabled,
     state,
     message,
     setDoctorCapability,

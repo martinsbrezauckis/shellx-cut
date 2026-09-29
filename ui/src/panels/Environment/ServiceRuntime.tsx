@@ -122,7 +122,7 @@ export function ServiceRuntimeDetail({
   const svc = serviceInfo(card)
   if (!svc) return null
   const connectorReady = card.details?.runner_available === true
-  const runtimeReady = card.status === 'ok'
+  const runtimeReady = card.details?.reachable === true
   return (
     <div className="env-row-detail env-service" data-cut-env-service={card.id}>
       <div className="env-service-card">
@@ -139,6 +139,7 @@ export function ServiceRuntimeDetail({
       >
         <summary className="env-service-setup-summary" data-cut-env-service-setup-toggle={card.id}>Connection steps</summary>
         <ol className="env-service-setup-list">
+          {!connectorReady && <li data-cut-env-service-setup-step={card.id}>Install or repair the ShellX Cut perception connector, then Re-scan.</li>}
           {svc.setupSteps.map((step) => (
             <li key={step} data-cut-env-service-setup-step={card.id}>{step}</li>
           ))}

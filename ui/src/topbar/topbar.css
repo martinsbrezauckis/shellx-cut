@@ -386,6 +386,7 @@
 .tb-pregate--blocked {
   border-color: color-mix(in srgb, var(--err, #ef4444) 46%, var(--hairline-2));
 }
+.tb-pregate--over-modal { z-index: calc(var(--z-modal) + 1); }
 .tb-pregate-head {
   display: flex;
   align-items: center;

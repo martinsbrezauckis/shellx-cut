@@ -8947,6 +8947,10 @@
             "type": "boolean",
             "description": "Remove the track even if it still has clips (drops them). Default false → a non-empty track is refused."
           },
+          "group_id": {
+            "type": "string",
+            "description": "Optional durable action group shared with the preceding clip delete, so auto-cleaning an emptied track is one Undo step."
+          },
           "rationale": {
             "type": "string"
           },

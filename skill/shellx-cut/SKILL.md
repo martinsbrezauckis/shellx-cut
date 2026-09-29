@@ -42,8 +42,9 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 > - **Agent chat (natural-language editing)** — `agent.chat` launches the user's
 >   installed Claude Code, Codex, Grok, or Antigravity CLI. Claude uses Cut's
 >   version-independent contained capability contract. Provider version text is
->   informational only and each route's required containment flags are verified before every turn. Codex keeps the user's normal configuration, native
->   sandbox, and permissions; Cut adds its filtered MCP server without copying or
+>   informational only and each route's required containment flags are verified before every turn. Codex uses the selected account's configuration, native
+>   sandbox, and permissions; an enrolled alternate account home reaches only the
+>   Codex child through `CODEX_HOME`. Cut adds its filtered MCP server without copying or
 >   rewriting Codex login files. Grok receives a disposable config/home with
 >   native tools disabled and only Cut's MCP route, while retaining its existing
 >   login file in place. Cut trusts only that newly created empty workspace for
@@ -276,14 +277,17 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   Do not infer a native
 >   source, permission, or first frame from a fixture or a visible control.
 >   F9 is one Cut-wide Start/Stop action, including from Edit or while another
->   app has focus when the OS admits a global callback. Reuse only the last
->   validated setup intent. With no saved setup, first-use F9 checks the
+>   app has focus when the OS admits a global callback. Use the current Record
+>   choices even after switching to Edit; use saved setup only before Record
+>   has supplied a draft. Invalid current choices never fall back to an older
+>   take. With no saved setup, first-use F9 checks the
 >   current primary display or Linux portal and starts a screen-only polished
 >   take with audio, camera, and keystrokes off. Start uses the open project when one exists, or
 >   creates a new recording project when none is open; it then rechecks the
 >   exact source, devices, and permissions before capture. Global F9 does not
->   restore a minimized Cut window. If setup is stale, open Record with a
->   reason and do not claim capture. A passive recording indicator follows the
+>   restore a minimized Cut window. If setup is stale, report the visible reason
+>   without changing workspace and do not claim capture. Live Pause/Resume
+>   acknowledgements survive Edit/Record navigation. A passive recording indicator follows the
 >   exact capture state outside Record; native icon/badge presentation needs
 >   installed-host proof.
 >   Read the desktop hotkey capability and its observed callback state before
@@ -569,9 +573,11 @@ Register that same proxy with the exact packaged executable reported by
 - Claude Code: `claude mcp add --scope user shellx-cut -- "/absolute/path/to/cutd" mcp`.
   Claude defaults to local scope; the shown user scope works across projects.
   `claude mcp get shellx-cut` or `claude mcp list` health-checks approved entries.
-- Codex: `codex mcp add shellx-cut -- "/absolute/path/to/cutd" mcp`. Codex stores
-  it in `~/.codex/config.toml`; `codex mcp get shellx-cut --json` confirms the
-  entry but is not by itself a live-handshake claim.
+- Codex: `codex mcp add shellx-cut -- "/absolute/path/to/cutd" mcp`. With the
+  default account, Codex stores it in `~/.codex/config.toml`; for an enrolled alternate
+  account, run the check in that account's `CODEX_HOME` environment.
+  `codex mcp get shellx-cut --json` confirms the entry but is not by itself a
+  live-handshake claim.
 - Grok Build: `grok mcp add --scope user shellx-cut -- "/absolute/path/to/cutd" mcp`.
   Grok defaults to user scope; `grok mcp doctor shellx-cut` checks the command,
   handshake, and tool discovery.
