@@ -58,6 +58,7 @@ the fallback is logged to stderr and visible in words.model provenance.
 
 from __future__ import annotations
 
+from local_media_io import input_args, protect_inputs, video_capture, scene_video
 import argparse
 import hashlib
 import json
@@ -173,7 +174,7 @@ def finite_number(value, default=0.0) -> float:
 def run_ffmpeg(args: list) -> str:
     """Run ffmpeg, return stderr text (where all filter logs go)."""
     proc = subprocess.run(
-        [FFMPEG_BIN, "-nostats", "-hide_banner", *args],
+        [FFMPEG_BIN, "-nostats", "-hide_banner", *protect_inputs(args)],
         capture_output=True,
         text=True,
     )
@@ -187,7 +188,7 @@ def media_duration_ms(path: str) -> int:
     """Container duration via ffprobe (ms)."""
     proc = subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", path],
+         "-of", "default=noprint_wrappers=1:nokey=1", *input_args(path)],
         capture_output=True, text=True,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -204,7 +205,7 @@ def has_video_stream(path: str) -> bool:
     requests them for kind=="audio"; this guard covers direct CLI use."""
     proc = subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "v",
-         "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", *input_args(path)],
         capture_output=True, text=True,
     )
     return proc.returncode == 0 and proc.stdout.strip() != ""
@@ -221,7 +222,7 @@ def has_audio_stream(path: str) -> bool:
     honest) rather than failing the whole job."""
     proc = subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "a",
-         "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", *input_args(path)],
         capture_output=True, text=True,
     )
     return proc.returncode == 0 and proc.stdout.strip() != ""
@@ -238,7 +239,7 @@ def audio_energy_envelope(path: str, step_ms: int = 100) -> list:
     proc = subprocess.run(
         [FFPROBE_BIN, "-v", "error",
          "-f", "lavfi",
-         "-i", f"amovie={path},astats=metadata=1:reset={max(1, step_ms // 10)}",
+         *input_args(f"amovie={path},astats=metadata=1:reset={max(1, step_ms // 10)}"),
          "-show_entries", "frame_tags=lavfi.astats.Overall.RMS_level",
          "-of", "csv=p=0"],
         capture_output=True, text=True, timeout=60,
@@ -256,7 +257,7 @@ def extract_wav16k(path: str, tmpdir: str) -> str:
     """Extract mono 16 kHz WAV — shared input for silero/whisper/beat analysis."""
     wav = str(Path(tmpdir) / "audio16k.wav")
     proc = subprocess.run(
-        [FFMPEG_BIN, "-nostats", "-hide_banner", "-y", "-i", path,
+        [FFMPEG_BIN, "-nostats", "-hide_banner", "-y", *input_args(path),
          "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", wav],
         capture_output=True, text=True,
     )
@@ -971,7 +972,7 @@ def instrument_words(media_path: str, asset_id: str, model_name: str) -> dict:
 def _ffmpeg_silences(media_path: str) -> list:
     """ffmpeg silencedetect spans (ms)."""
     stderr = run_ffmpeg([
-        "-i", media_path, "-vn",
+        *input_args(media_path), "-vn",
         "-af", f"silencedetect=noise={SILENCE_NOISE_DB}dB:d={SILENCE_MIN_S}",
         "-f", "null", "-",
     ])
@@ -1062,7 +1063,7 @@ def probe_video_geometry(path: str):
     proc = subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-show_entries", "format=duration",
-         "-of", "json", path],
+         "-of", "json", *input_args(path)],
         capture_output=True, text=True,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -1109,7 +1110,7 @@ def detect_content_bbox(media_path: str):
     for off in offsets:
         log(f"content_bbox: cropdetect @ {off:.2f}s")
         stderr = run_ffmpeg([
-            "-ss", f"{off:.3f}", "-i", media_path, "-an", "-t", f"{win_s}",
+            "-ss", f"{off:.3f}", *input_args(media_path), "-an", "-t", f"{win_s}",
             "-vf", f"cropdetect=limit={CROPDETECT_LIMIT}:round={CROPDETECT_ROUND}:reset=0",
             "-f", "null", "-",
         ])
@@ -1160,7 +1161,7 @@ def _ffmpeg_scene_cuts(media_path: str) -> list:
     """
     log("scenes: ffmpeg select fallback")
     stderr = run_ffmpeg([
-        "-i", media_path, "-an",
+        *input_args(media_path), "-an",
         "-vf", "select=gt(scene\\,0.30),showinfo",
         "-fps_mode", "vfr", "-f", "null", "-",
     ])
@@ -1178,11 +1179,11 @@ def _ffmpeg_scene_cuts(media_path: str) -> list:
 def instrument_scenes(media_path: str):
     """Returns (scene_cuts, black_spans, frozen_spans)."""
     try:
-        from scenedetect import open_video, SceneManager
+        from scenedetect import SceneManager
         from scenedetect.detectors import ContentDetector
 
         log("scenes: pyscenedetect ContentDetector")
-        video = open_video(media_path)
+        video = scene_video(media_path)
         sm = SceneManager()
         sm.add_detector(ContentDetector())
         sm.detect_scenes(video)
@@ -1198,7 +1199,7 @@ def instrument_scenes(media_path: str):
 
     log("scenes: blackdetect + freezedetect")
     stderr = run_ffmpeg([
-        "-i", media_path, "-an",
+        *input_args(media_path), "-an",
         "-vf", f"blackdetect=d={BLACKDETECT_MIN_S}:pix_th=0.10,"
                f"freezedetect=n=-60dB:d={FREEZEDETECT_MIN_S}",
         "-f", "null", "-",
@@ -1297,7 +1298,7 @@ def instrument_loudness(media_path: str) -> dict:
     """ebur128 integrated LUFS + true peak + ~1s momentary windows."""
     log("loudness: ebur128")
     stderr = run_ffmpeg([
-        "-i", media_path, "-vn",
+        *input_args(media_path), "-vn",
         "-af", "ebur128=peak=true", "-f", "null", "-",
     ])
     # Per-frame lines: "t: 1.00237 ... M: -18.1 S: ... I: -17.9 LUFS ..."
@@ -1744,7 +1745,7 @@ def _audio_energy_envelope(media_path: str, fps: float):
     import numpy as np
     sr = 8000
     proc = subprocess.run(
-        [FFMPEG_BIN, "-v", "error", "-i", media_path,
+        [FFMPEG_BIN, "-v", "error", *input_args(media_path),
          "-vn", "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"],
         capture_output=True,
     )
@@ -1824,7 +1825,7 @@ def instrument_subject(media_path: str, preset: str = "talking_head", director=N
     quality = os.environ.get("SHELLX_CUT_DETECTOR", "fast")
     device, device_label = _resolve_device()
 
-    cap = cv2.VideoCapture(media_path)
+    cap = video_capture(cv2, media_path)
     raw_fps = finite_number(cap.get(cv2.CAP_PROP_FPS), 0.0)
     fps_source = "measured"
     fps_warning = None
@@ -1842,11 +1843,11 @@ def instrument_subject(media_path: str, preset: str = "talking_head", director=N
         die("sidecar", "subject: no decodable video geometry", media_path)
 
     # Scene starts (0-based frame indices) — the render resets the crop at each.
-    from scenedetect import open_video, SceneManager
+    from scenedetect import SceneManager
     from scenedetect.detectors import ContentDetector
     sm = SceneManager()
     sm.add_detector(ContentDetector())
-    sm.detect_scenes(open_video(media_path))
+    sm.detect_scenes(scene_video(media_path))
     # FrameTimecode → 0-based start frame (frame_num in scenedetect 0.7+, get_frames older).
     def _start_frame(tc):
         return tc.frame_num if hasattr(tc, "frame_num") else tc.get_frames()
@@ -2119,7 +2120,7 @@ def build_contact_sheet(media_path: str, preset: str = "talking_head", out_dir=N
     quality = os.environ.get("SHELLX_CUT_DETECTOR", "fast")
     device, device_label = _resolve_device()
 
-    cap = cv2.VideoCapture(media_path)
+    cap = video_capture(cv2, media_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -2129,11 +2130,11 @@ def build_contact_sheet(media_path: str, preset: str = "talking_head", out_dir=N
         die("sidecar", "contact_sheet: no decodable video geometry", media_path)
 
     # Scene spans [start, end) (0-based frame indices).
-    from scenedetect import open_video, SceneManager
+    from scenedetect import SceneManager
     from scenedetect.detectors import ContentDetector
     sm = SceneManager()
     sm.add_detector(ContentDetector())
-    sm.detect_scenes(open_video(media_path))
+    sm.detect_scenes(scene_video(media_path))
 
     def _sf(tc):
         return tc.frame_num if hasattr(tc, "frame_num") else tc.get_frames()
@@ -2264,7 +2265,7 @@ def build_qc_sheet(media_path: str, preset: str = "talking_head", out_dir=None) 
 
     quality = os.environ.get("SHELLX_CUT_DETECTOR", "fast")
     device, device_label = _resolve_device()
-    cap = cv2.VideoCapture(media_path)
+    cap = video_capture(cv2, media_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -2274,11 +2275,11 @@ def build_qc_sheet(media_path: str, preset: str = "talking_head", out_dir=None) 
         die("sidecar", "qc_sheet: no decodable video geometry", media_path)
     person_id = _SUBJECT_CLASS_IDS["person"]
 
-    from scenedetect import open_video, SceneManager
+    from scenedetect import SceneManager
     from scenedetect.detectors import ContentDetector
     sm = SceneManager()
     sm.add_detector(ContentDetector())
-    sm.detect_scenes(open_video(media_path))
+    sm.detect_scenes(scene_video(media_path))
 
     def _sf(tc):
         return tc.frame_num if hasattr(tc, "frame_num") else tc.get_frames()

@@ -37,6 +37,7 @@ Primary caller: server/track.rs (local-CLI transport).
 """
 from __future__ import annotations
 
+from local_media_io import video_capture
 import argparse
 import json
 import sys
@@ -111,7 +112,7 @@ def track(video, seed_frac, start_ms, end_ms, every_ms, engine):
     """Run the tracker over [start_ms, end_ms], updating EVERY frame (CSRT needs
     a continuous stream) but EMITTING a sample at most every `every_ms`. Returns
     (engine_used, fps, w, h, points)."""
-    cap = cv2.VideoCapture(video)
+    cap = video_capture(cv2, video)
     if not cap.isOpened():
         raise SystemExit(f"track_runner: cannot open video: {video}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 0.0

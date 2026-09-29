@@ -69,7 +69,15 @@ pub fn capture_screenshot_png(
     let result = captured.map_err(record_err).and_then(|out| {
         let mut command = std::process::Command::new(cut_media::toolpath::ffmpeg());
         command
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-i",
+            ])
             .arg(&out.source_video)
             .args(["-frames:v", "1", "-update", "1"])
             .arg(out_png);

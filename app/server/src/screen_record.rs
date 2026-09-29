@@ -913,6 +913,8 @@ fn split_mac_system_audio(source_mp4: &Path) {
         .args([
             "-v",
             "error",
+            "-protocol_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
             "-select_streams",
             "a",
             "-show_entries",
@@ -939,7 +941,15 @@ fn split_mac_system_audio(source_mp4: &Path) {
     if !system_wav.is_file() {
         let mut command = Command::new(&ffmpeg);
         command
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-i",
+            ])
             .arg(source_mp4)
             .args(["-map", "0:a:0", "-ac", "2", "-ar", "48000"])
             .arg(&system_wav);
@@ -952,7 +962,15 @@ fn split_mac_system_audio(source_mp4: &Path) {
     let tmp = dir.join("source.video.mp4");
     let mut command = Command::new(&ffmpeg);
     command
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-protocol_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-i",
+        ])
         .arg(source_mp4)
         .args(["-map", "0:v:0", "-c", "copy", "-an"])
         .arg(&tmp);

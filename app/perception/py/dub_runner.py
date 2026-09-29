@@ -53,6 +53,7 @@ Primary caller: server/dub.rs (audio.dub).
 """
 from __future__ import annotations
 
+from local_media_io import input_args
 import json
 import os
 import shutil
@@ -233,7 +234,7 @@ def atempo_fit(pcm: bytes, ratio: float, sr: int) -> bytes:
             f.write(pcm)
         cmd = [
             FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-f", "s16le", "-ar", str(sr), "-ac", "1", "-i", src,
+            "-f", "s16le", "-ar", str(sr), "-ac", "1", *input_args(src),
             "-filter:a", chain,
             "-f", "s16le", "-ar", str(sr), "-ac", "1", dst,
         ]

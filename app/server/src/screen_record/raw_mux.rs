@@ -14,13 +14,25 @@ pub(crate) fn mux_raw_sources(
     align_ffmpeg_env();
     let ffmpeg = cut_media::toolpath::ffmpeg();
     let mut cmd = std::process::Command::new(&ffmpeg);
-    cmd.arg("-y").arg("-i").arg(source);
+    cmd.arg("-y")
+        .args([
+            "-protocol_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-i",
+        ])
+        .arg(source);
     match (mic, system) {
         (None, None) => {
             cmd.args(["-map", "0:v:0", "-c", "copy"]);
         }
         (Some(audio), None) => {
-            cmd.arg("-i").arg(audio).args([
+            cmd.args([
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-i",
+            ])
+            .arg(audio)
+            .args([
                 "-map",
                 "0:v:0",
                 "-map",
@@ -38,7 +50,13 @@ pub(crate) fn mux_raw_sources(
                 cmd.arg("-itsoffset")
                     .arg(format!("{:.3}", offset as f64 / 1_000.0));
             }
-            cmd.arg("-i").arg(system).args([
+            cmd.args([
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-i",
+            ])
+            .arg(system)
+            .args([
                 "-map",
                 "0:v:0",
                 "-map",
@@ -51,13 +69,23 @@ pub(crate) fn mux_raw_sources(
             ]);
         }
         (Some(mic), Some(system)) => {
-            cmd.arg("-i").arg(mic);
+            cmd.args([
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-i",
+            ])
+            .arg(mic);
             let offset = system_offset_ms.unwrap_or(0);
             if offset != 0 {
                 cmd.arg("-itsoffset")
                     .arg(format!("{:.3}", offset as f64 / 1_000.0));
             }
-            cmd.arg("-i").arg(system);
+            cmd.args([
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-i",
+            ])
+            .arg(system);
             cmd.args([
                 "-filter_complex",
                 "[1:a]aresample=48000[m];[2:a]aresample=48000[s];[m][s]amix=inputs=2:duration=longest:normalize=0[a]",

@@ -31,6 +31,8 @@ pub fn clip_envelope(path: &Path) -> Result<Vec<f32>, CutError> {
         "-v",
         "error",
         "-nostdin",
+        "-protocol_whitelist",
+        crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
         "-i",
         &path.to_string_lossy(),
         "-vn",

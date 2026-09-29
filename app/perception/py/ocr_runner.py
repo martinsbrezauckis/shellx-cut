@@ -22,6 +22,7 @@ Dependencies: rapidocr-onnxruntime, opencv-python (cv2), numpy. Caller: server/o
 """
 from __future__ import annotations
 
+from local_media_io import video_capture
 import argparse
 import json
 import sys
@@ -36,7 +37,7 @@ def main() -> int:
     ap.add_argument("--at-ms", type=int, default=0, help="frame timestamp to OCR (ms)")
     a = ap.parse_args()
 
-    cap = cv2.VideoCapture(a.video)
+    cap = video_capture(cv2, a.video)
     if not cap.isOpened():
         raise SystemExit(f"ocr_runner: cannot open video: {a.video}")
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

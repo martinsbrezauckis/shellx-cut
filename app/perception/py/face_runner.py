@@ -30,6 +30,7 @@ server/faces.rs.
 """
 from __future__ import annotations
 
+from local_media_io import video_capture
 import argparse
 import json
 import sys
@@ -47,7 +48,7 @@ def _read_frame(path: str, at_ms: int):
     """Decode ONE frame at `at_ms` (ms) → a BGR numpy array, or raise."""
     import cv2
 
-    cap = cv2.VideoCapture(path)
+    cap = video_capture(cv2, path)
     if not cap.isOpened():
         raise RuntimeError(f"cannot open {path}")
     try:
@@ -87,7 +88,7 @@ def _track_faces(path, seed_at_ms, seeds_px, margin, sample_ms=120):
     if CSRT is unavailable."""
     import cv2
 
-    cap = cv2.VideoCapture(path)
+    cap = video_capture(cv2, path)
     if not cap.isOpened():
         return [[] for _ in seeds_px]
     try:

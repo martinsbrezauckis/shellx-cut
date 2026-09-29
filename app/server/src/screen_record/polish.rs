@@ -468,9 +468,21 @@ pub fn mux_raw_with_control(
     align_ffmpeg_env();
     let ffmpeg = cut_media::toolpath::ffmpeg();
     let mut cmd = std::process::Command::new(&ffmpeg);
-    cmd.arg("-y").arg("-i").arg(source);
+    cmd.arg("-y")
+        .args([
+            "-protocol_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-i",
+        ])
+        .arg(source);
     if let Some(a) = audio {
-        cmd.arg("-i").arg(a).args([
+        cmd.args([
+            "-protocol_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-i",
+        ])
+        .arg(a)
+        .args([
             "-map",
             "0:v:0",
             "-map",

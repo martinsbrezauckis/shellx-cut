@@ -44,6 +44,7 @@ on PATH. Primary caller: server/matte.rs (local-CLI transport, model=matanyone).
 """
 from __future__ import annotations
 
+from local_media_io import input_args
 import argparse
 import json
 import os
@@ -78,7 +79,7 @@ def ffprobe(path: str) -> tuple[float, int, int]:
     out = subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=r_frame_rate,width,height",
-         "-of", "json", path],
+         "-of", "json", *input_args(path)],
         capture_output=True, text=True, check=True,
     )
     st = json.loads(out.stdout)["streams"][0]
@@ -172,7 +173,7 @@ def run(in_path: str, out_path: str, mask_path: str, ckpt: str,
 
     # Decoder: source → CFR rawvideo rgb24 (CFR pins frame↔matte 1:1).
     dec = subprocess.Popen(
-        [FFMPEG_BIN, "-v", "error", "-i", in_path,
+        [FFMPEG_BIN, "-v", "error", *input_args(in_path),
          "-fps_mode", "cfr", "-r", f"{fps}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -180,7 +181,7 @@ def run(in_path: str, out_path: str, mask_path: str, ckpt: str,
     # Encoder: rawvideo gray → LOSSLESS FFV1 .mkv at source res + fps.
     enc = subprocess.Popen(
         [FFMPEG_BIN, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray",
-         "-s", f"{w}x{h}", "-framerate", f"{fps}", "-i", "-",
+         "-s", f"{w}x{h}", "-framerate", f"{fps}", *input_args("-"),
          "-c:v", "ffv1", "-pix_fmt", "gray", out_path],
         stdin=subprocess.PIPE,
         stderr=subprocess.PIPE,

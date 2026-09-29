@@ -46,6 +46,8 @@ pub fn measure(path: &Path) -> Result<Loudness, CutError> {
         "-hide_banner",
         "-nostats",
         "-nostdin",
+        "-protocol_whitelist",
+        crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
         "-i",
         &path.to_string_lossy(),
         "-vn",

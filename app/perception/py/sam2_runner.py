@@ -34,6 +34,7 @@ edit.matte{model:matanyone, seed}).
 """
 from __future__ import annotations
 
+from local_media_io import input_args
 import argparse
 import json
 import os
@@ -63,7 +64,7 @@ def ffprobe_whf(path: str) -> tuple[int, int, float]:
     """(width, height, fps) of the first video stream."""
     out = subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height,r_frame_rate", "-of", "json", path],
+         "-show_entries", "stream=width,height,r_frame_rate", "-of", "json", *input_args(path)],
         capture_output=True, text=True, check=True, timeout=60)
     st = json.loads(out.stdout)["streams"][0]
     num, den = st["r_frame_rate"].split("/")
@@ -73,7 +74,7 @@ def ffprobe_whf(path: str) -> tuple[int, int, float]:
 
 def frame_rgb(path: str, n: int, w: int, h: int) -> np.ndarray:
     out = subprocess.run(
-        [FFMPEG_BIN, "-v", "error", "-i", path, "-vf", f"select=eq(n\\,{n})",
+        [FFMPEG_BIN, "-v", "error", *input_args(path), "-vf", f"select=eq(n\\,{n})",
          "-vframes", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
         capture_output=True, check=True, timeout=120).stdout
     if len(out) < w * h * 3:

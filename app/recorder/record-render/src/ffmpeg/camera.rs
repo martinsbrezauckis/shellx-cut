@@ -169,7 +169,19 @@ pub fn stream_square_with_control(
     let mut command = Command::new(ffmpeg_bin());
     command
         .args([
-            "-v", "error", "-i", src, "-vf", &vf, "-f", "rawvideo", "-pix_fmt", "rgba", "-",
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            super::LOCAL_INPUT_PROTOCOLS,
+            "-i",
+            src,
+            "-vf",
+            &vf,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-",
         ])
         .stderr(Stdio::piped())
         .stdout(Stdio::piped());

@@ -45,6 +45,7 @@ server/diarize.rs (media.diarize).
 """
 from __future__ import annotations
 
+from local_media_io import input_args
 import json
 import os
 import shutil
@@ -91,7 +92,7 @@ def extract_wav16k(media: str, out_wav: str) -> None:
     fails the whole diarize honestly (never faked turns)."""
     cmd = [
         FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", media,
+        *input_args(media),
         "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE),
         "-c:a", "pcm_s16le", "-f", "wav", out_wav,
     ]

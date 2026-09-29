@@ -51,6 +51,8 @@ pub fn waveform(path: &Path, duration_ms: u64, buckets: usize) -> Result<Wavefor
         "-v",
         "error",
         "-nostdin",
+        "-protocol_whitelist",
+        crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
         "-i",
         &path.to_string_lossy(),
         "-vn",

@@ -26,6 +26,7 @@ use process::ManagedChild;
 pub use process::ProcessControl;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const LOCAL_INPUT_PROTOCOLS: &str = "file,pipe,crypto,data";
 
 fn ffmpeg_bin() -> String {
     std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
@@ -134,6 +135,8 @@ pub fn probe_with_control(path: &str, control: &ProcessControl) -> Result<Probe>
         .args([
             "-v",
             "error",
+            "-protocol_whitelist",
+            LOCAL_INPUT_PROTOCOLS,
             "-select_streams",
             "v:0",
             "-show_entries",
@@ -207,6 +210,8 @@ pub fn grab_frame_with_control(
             "error",
             "-ss",
             &t,
+            "-protocol_whitelist",
+            LOCAL_INPUT_PROTOCOLS,
             "-i",
             src,
             "-frames:v",

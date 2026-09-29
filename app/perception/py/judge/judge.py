@@ -32,6 +32,10 @@ Exit codes: 0 = envelope produced (even not_run — that IS the honest result),
 
 from __future__ import annotations
 
+from pathlib import Path as _LocalMediaPath
+import sys as _local_media_sys
+_local_media_sys.path.insert(0, str(_LocalMediaPath(__file__).resolve().parents[1]))
+from local_media_io import input_args
 import argparse
 import base64
 import json
@@ -228,7 +232,7 @@ def probe_duration_s(path: str) -> float:
     cp = run([
         configured_media_tool("ffprobe"), "-v", "error",
         "-show_entries", "format=duration",
-        "-of", "json", path,
+        "-of", "json", *input_args(path),
     ])
     return float(json.loads(cp.stdout)["format"]["duration"])
 
@@ -250,7 +254,7 @@ def extract_frames(render: str, out_dir: str, fps: float,
     cmd = [configured_media_tool("ffmpeg"), "-hide_banner", "-y"]
     if start_ms is not None:
         cmd += ["-ss", f"{start_ms / 1000:.3f}"]
-    cmd += ["-i", render]
+    cmd += input_args(render)
     if start_ms is not None and end_ms is not None:
         cmd += ["-t", f"{(end_ms - start_ms) / 1000:.3f}"]
     cmd += ["-vf", f"fps={fps},scale={width}:-2", "-q:v", "4",

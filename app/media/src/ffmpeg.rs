@@ -34,6 +34,10 @@ pub const DETERMINISM_FLAGS: &[&str] = &[
     "+bitexact",
 ];
 
+/// AVIO protocols needed by local media, generated concat lists and pipes.
+/// Keep network transports out even when a local playlist names one.
+pub const LOCAL_INPUT_PROTOCOLS: &str = "file,pipe,crypto,data";
+
 /// ffmpeg program path. Delegates to [`crate::toolpath::ffmpeg`]: resolves
 /// a CONFIGURED / BUNDLED / app-data ffmpeg before falling back to PATH, so the
 /// cold Windows install finds the downloaded/bundled binary instead of assuming
@@ -102,7 +106,15 @@ fn normalize_ffmpeg_arg(arg: &str) -> String {
 }
 
 fn normalize_ffmpeg_args(args: &[String]) -> Vec<String> {
-    args.iter().map(|arg| normalize_ffmpeg_arg(arg)).collect()
+    let mut restricted = Vec::with_capacity(args.len() + 2);
+    for arg in args {
+        if arg == "-i" {
+            restricted.push("-protocol_whitelist".into());
+            restricted.push(LOCAL_INPUT_PROTOCOLS.into());
+        }
+        restricted.push(normalize_ffmpeg_arg(arg));
+    }
+    restricted
 }
 
 /// Whether the selected vidstab-capable ffmpeg exposes the optional
@@ -576,6 +588,8 @@ pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value, CutError> {
         .args([
             "-v",
             "error",
+            "-protocol_whitelist",
+            LOCAL_INPUT_PROTOCOLS,
             "-print_format",
             "json",
             "-show_format",
@@ -661,6 +675,73 @@ mod tests {
                 r"\\server\share\segment.mp4",
                 "-filter_complex",
             ]
+        );
+    }
+
+    #[test]
+    fn local_media_inputs_reject_embedded_http_and_keep_local_formats() {
+        if Command::new(ffprobe_bin())
+            .arg("-version")
+            .output()
+            .is_err()
+            || Command::new(ffmpeg_bin()).arg("-version").output().is_err()
+        {
+            return;
+        }
+        let sample =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/assets/first-edit-sample.mp4");
+        assert!(
+            ffprobe_json(&sample).is_ok(),
+            "local MP4 must remain readable"
+        );
+        let png = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../branding/shellx-cut-icon.png");
+        assert!(ffprobe_json(&png).is_ok(), "local PNG must remain readable");
+
+        let temp = tempfile::tempdir().unwrap();
+        let playlist = temp.path().join("embedded.m3u8");
+        std::fs::write(&playlist, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1.0,\nhttp://127.0.0.1:9/segment.ts\n#EXT-X-ENDLIST\n").unwrap();
+        let error = ffprobe_json(&playlist).expect_err("nested HTTP must be denied");
+        assert!(
+            error.cause.contains("Protocol 'http' not on whitelist"),
+            "{}",
+            error.cause
+        );
+        let args = vec![
+            "-i".into(),
+            playlist.display().to_string(),
+            "-f".into(),
+            "null".into(),
+            "-".into(),
+        ];
+        let error = run_ffmpeg(&args).expect_err("render must deny nested HTTP");
+        assert!(
+            error.cause.contains("Protocol 'http' not on whitelist"),
+            "{}",
+            error.cause
+        );
+
+        let args = vec![
+            "-f".into(),
+            "concat".into(),
+            "-safe".into(),
+            "0".into(),
+            "-i".into(),
+            temp.path().join("internal.ffcat").display().to_string(),
+            "-c".into(),
+            "copy".into(),
+            temp.path().join("output.mp4").display().to_string(),
+        ];
+        std::fs::write(
+            temp.path().join("internal.ffcat"),
+            format!(
+                "ffconcat version 1.0\n{}\n",
+                concat_demuxer_file_line(&sample)
+            ),
+        )
+        .unwrap();
+        assert!(
+            run_ffmpeg(&args).is_ok(),
+            "generated local concat must remain readable"
         );
     }
 

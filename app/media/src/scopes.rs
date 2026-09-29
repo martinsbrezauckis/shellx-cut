@@ -46,15 +46,24 @@ pub struct Scopes {
 
 fn measure_command(path: &Path) -> Command {
     let mut command = Command::new(ffmpeg_bin());
-    command.args(["-v", "error", "-i"]).arg(path).args([
-        "-vf",
-        "signalstats,metadata=print:file=-",
-        "-frames:v",
-        "1",
-        "-f",
-        "null",
-        "-",
-    ]);
+    command
+        .args([
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-i",
+        ])
+        .arg(path)
+        .args([
+            "-vf",
+            "signalstats,metadata=print:file=-",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ]);
     command
 }
 
@@ -193,7 +202,14 @@ impl ScopeKind {
 pub fn render_scope(frame_path: &Path, kind: ScopeKind, out_path: &Path) -> Result<(), CutError> {
     let mut command = Command::new(ffmpeg_bin());
     command
-        .args(["-y", "-v", "error", "-i"])
+        .args([
+            "-y",
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-i",
+        ])
         .arg(frame_path)
         .args(["-frames:v", "1", "-vf", kind.filter()])
         .arg(out_path);

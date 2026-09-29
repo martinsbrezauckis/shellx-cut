@@ -56,7 +56,13 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
         let mut command = Command::new(&self.ffmpeg);
         command.args(["-v", "error", "-nostdin", "-n"]);
         for snapshot in &snapshots {
-            command.arg("-i").arg(snapshot.path());
+            command
+                .args([
+                    "-protocol_whitelist",
+                    cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                    "-i",
+                ])
+                .arg(snapshot.path());
         }
         let rate = format!(
             "{}/{}",

@@ -46,6 +46,7 @@
       "../../perception/py/requirements.txt": "perception/requirements.txt",
       "../../perception/py/requirements-full.txt": "perception/requirements-full.txt",
       "../../perception/py/safe_numbers.py": "perception/safe_numbers.py",
+      "../../perception/py/local_media_io.py": "perception/local_media_io.py",
       "../../perception/py/native_runtime_models.py": "perception/native_runtime_models.py",
       "../../perception/py/ordinary_speech_models.py": "perception/ordinary_speech_models.py",
       "../../perception/py/translation_models.py": "perception/translation_models.py",

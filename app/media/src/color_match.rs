@@ -41,7 +41,7 @@
 //! paths + a representative source time, samples both, derives the grade, then
 //! commits it via the normal `edit.grade` path).
 
-use crate::ffmpeg::{ffmpeg_bin, run_bounded_command};
+use crate::ffmpeg::{ffmpeg_bin, run_bounded_command, LOCAL_INPUT_PROTOCOLS};
 use cut_core::{error_codes, ClipGrade, CutError};
 use serde::Serialize;
 use std::path::Path;
@@ -163,7 +163,15 @@ fn decode_sample_rgb24(asset_path: &Path, at_s: f64) -> Result<Vec<u8>, CutError
     let at = format!("{:.3}", at_s.max(0.0));
     let mut command = Command::new(ffmpeg_bin());
     command
-        .args(["-v", "error", "-ss", &at, "-i"])
+        .args([
+            "-v",
+            "error",
+            "-ss",
+            &at,
+            "-protocol_whitelist",
+            LOCAL_INPUT_PROTOCOLS,
+            "-i",
+        ])
         .arg(asset_path)
         .args([
             "-frames:v",

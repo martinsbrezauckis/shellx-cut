@@ -159,14 +159,32 @@ impl CaptureExportAudio {
         command.args(["-v", "error", "-y"]);
         let filter = match (&self.mic, &self.system) {
             (None, Some(system)) => {
-                command.arg("-i").arg(system);
+                command
+                    .args([
+                        "-protocol_whitelist",
+                        cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                        "-i",
+                    ])
+                    .arg(system);
                 format!(
                     "[0:a]aresample=48000,adelay={}:all=1[a]",
                     self.system_offset_ms
                 )
             }
             (Some(mic), Some(system)) => {
-                command.arg("-i").arg(mic).arg("-i").arg(system);
+                command
+                    .args([
+                        "-protocol_whitelist",
+                        cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                        "-i",
+                    ])
+                    .arg(mic)
+                    .args([
+                        "-protocol_whitelist",
+                        cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                        "-i",
+                    ])
+                    .arg(system);
                 format!(
                     "[0:a]aresample=48000[m];[1:a]aresample=48000,adelay={}:all=1[s];[m][s]amix=inputs=2:duration=longest:normalize=0[a]",
                     self.system_offset_ms

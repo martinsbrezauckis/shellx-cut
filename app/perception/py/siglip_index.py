@@ -15,6 +15,7 @@
 # a GPU or CPU. In a prepared native context it receives one sealed local model.
 # Ordinary mode passes its explicit ``--model`` source to Transformers, which
 # resolves that source through its normal local-cache/download API.
+from local_media_io import input_args
 import argparse
 import json
 import os
@@ -137,7 +138,7 @@ def ffprobe_dims(path: str) -> tuple[int, int]:
     """(width, height) of the first video stream via ffprobe."""
     out = subprocess.run(
         [FFPROBE_BIN, "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path],
+         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", *input_args(path)],
         capture_output=True, text=True, check=True, timeout=60,
     ).stdout.strip()
     w, h = out.split("x")[:2]
@@ -151,7 +152,7 @@ def iter_frames(path: str, fps: float, size: int):
     from PIL import Image  # noqa: PLC0415 — venv-only dep
 
     proc = subprocess.Popen(
-        [FFMPEG_BIN, "-v", "error", "-i", path,
+        [FFMPEG_BIN, "-v", "error", *input_args(path),
          "-vf", f"fps={fps},scale={size}:{size}:flags=bicubic",
          "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
         stdout=subprocess.PIPE,
