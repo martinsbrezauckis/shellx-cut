@@ -57,10 +57,11 @@ impl MacCameraStage {
         &self.stage_path
     }
 
-    pub(super) fn finalize(
+    pub(super) fn finalize<T>(
         mut self,
         native_timing: NativeMovieTiming,
-    ) -> Result<(CameraMediaSeal, VerifiedMovieTiming)> {
+        validate_presentation: impl FnOnce(VerifiedMovieTiming) -> Result<T>,
+    ) -> Result<(CameraMediaSeal, T)> {
         let before = plain_file(&self.stage_path)?;
         let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
@@ -112,6 +113,9 @@ impl MacCameraStage {
             facts.duration_ms,
             facts.decoded_video_frames,
         )?;
+        // The screen-clock placement must be admitted before the no-replace
+        // publication, including a MovieFileOutput warmup edit.
+        let presentation = validate_presentation(movie_timing)?;
         let mut permissions = before.permissions();
         permissions.set_mode(0o444);
         fs::set_permissions(&self.stage_path, permissions)
@@ -150,7 +154,7 @@ impl MacCameraStage {
             },
             bytes,
         )?;
-        Ok((seal, movie_timing))
+        Ok((seal, presentation))
     }
 }
 

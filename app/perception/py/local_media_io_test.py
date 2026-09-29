@@ -98,6 +98,19 @@ class LocalMediaIoTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("whitelist", result.stderr.lower())
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
+    def test_whitelisted_stdin_encodes_matte_frame(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "alpha.mkv"
+            command = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo",
+                       "-pix_fmt", "gray", "-s", "2x2", "-framerate", "1",
+                       *input_args("pipe:0"), "-frames:v", "1", "-c:v", "ffv1",
+                       str(output)]
+            result = subprocess.run(command, input=b"\0\x7f\xff\x40",
+                                    capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+            self.assertGreater(output.stat().st_size, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

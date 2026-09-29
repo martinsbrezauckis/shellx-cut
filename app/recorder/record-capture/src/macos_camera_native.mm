@@ -146,7 +146,8 @@ static constexpr int kSxcCameraClosed = 2;
             }
         }
         // AVFoundation guarantees that stopRecording called from this
-        // callback includes the current sample and all preceding samples.
+        // callback includes samples before the current sample. The current
+        // sample can remain outside the presented movie edit range.
         // A Stop request arriving from Rust is therefore completed at the
         // file-output frame boundary instead of racing the writer from a
         // different thread and leaving several encoded frames past the last

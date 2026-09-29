@@ -25,7 +25,7 @@ const V1_SCHEMA: &str = "release-runner.provider-runtime/v1";
 const V2_SCHEMA: &str = "release-runner.provider-runtime/v2";
 const MAX_CONTEXT_BYTES: u64 = 64 * 1024;
 pub(crate) const PYTHON_CHILD_LAUNCHES_SCHEMA: &str = "shellx-cut/provider-child-launches/1";
-const ALLOWED_ENVIRONMENT_KEYS: [&str; 9] = [
+const ALLOWED_ENVIRONMENT_KEYS: [&str; 10] = [
     "HOME",
     "USERPROFILE",
     "APPDATA",
@@ -35,6 +35,7 @@ const ALLOWED_ENVIRONMENT_KEYS: [&str; 9] = [
     "XDG_CACHE_HOME",
     "PATH",
     "SystemRoot",
+    "CODEX_HOME",
 ];
 
 /// The admitted command prefix and its curated, provider-child-only environment.
@@ -224,6 +225,7 @@ fn launch_from(
 ) -> Result<ProviderChildLaunch, String> {
     validate_admission(admission)?;
     validate_effective_environment(environment, &admission.enrollment.canonical_environment)?;
+    validate_codex_account_environment(environment, &admission.enrollment)?;
     Ok(ProviderChildLaunch {
         executable: admission.enrollment.executable.path.clone(),
         entrypoint: admission
@@ -270,7 +272,40 @@ fn validate_admission(admission: &Admission) -> Result<(), String> {
             return Err("provider enrollment contains duplicate code paths".into());
         }
     }
-    validate_canonical_environment(&enrollment.canonical_environment)
+    validate_canonical_environment(&enrollment.canonical_environment)?;
+    if let Some(path) = &enrollment.codex_account_home {
+        if enrollment.provider != "codex"
+            || !is_host_absolute_path(path)
+            || !is_plain_text_path(path)
+            || path == &enrollment.canonical_environment.home
+            || !path.starts_with(&enrollment.canonical_environment.home)
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(
+                "Codex account home must be a separate native directory below the user home".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_codex_account_environment(
+    environment: &BTreeMap<String, String>,
+    enrollment: &Enrollment,
+) -> Result<(), String> {
+    match &enrollment.codex_account_home {
+        Some(path) if environment.get("CODEX_HOME").map(String::as_str) == path.to_str() => Ok(()),
+        Some(_) => Err("Codex child environment differs from its admitted account home".into()),
+        None if environment.contains_key("CODEX_HOME") => {
+            Err("provider child environment has an unadmitted Codex account home".into())
+        }
+        None => Ok(()),
+    }
 }
 
 fn validate_runtime_identifier(value: &str) -> Result<(), String> {
@@ -426,6 +461,7 @@ fn validate_effective_environment_for_platform(
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
         "SystemRoot",
+        "CODEX_HOME",
     ] {
         if let Some(value) = environment.get(key) {
             if !is_host_absolute_path(Path::new(value)) || !is_plain_text(value) {
@@ -499,6 +535,8 @@ struct Enrollment {
     #[serde(default)]
     runtime_code: Vec<CodePin>,
     canonical_environment: CanonicalEnvironment,
+    #[serde(default)]
+    codex_account_home: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -786,6 +824,77 @@ mod tests {
             "providers": [entry("claude", "claude"), entry("grok", "claude")]
         });
         assert!(selected_from_context_path(context_file(&duplicate).path(), "claude").is_err());
+    }
+
+    #[test]
+    fn codex_account_home_reaches_only_the_admitted_codex_child() {
+        let mut document = json!({
+            "schema": V2_SCHEMA,
+            "providers": [entry("claude", "claude"), entry("codex-second", "codex")]
+        });
+        let home = PathBuf::from(
+            document["providers"][1]["admission"]["enrollment"]["canonicalEnvironment"]["home"]
+                .as_str()
+                .unwrap(),
+        );
+        let account = home.join(".codex-acct2");
+        document["providers"][1]["admission"]["enrollment"]["codexAccountHome"] = json!(account);
+        document["providers"][1]["effectiveEnvironment"]["CODEX_HOME"] = json!(account);
+
+        let launches = provider_launches_from_context_path(context_file(&document).path()).unwrap();
+        assert!(!launches["claude"].environment.contains_key("CODEX_HOME"));
+        assert_eq!(
+            launches["codex"]
+                .environment
+                .get("CODEX_HOME")
+                .map(String::as_str),
+            account.to_str()
+        );
+        assert_eq!(
+            launches["codex"]
+                .environment
+                .get("HOME")
+                .map(String::as_str),
+            home.to_str()
+        );
+
+        // Studio's native second-account help job emits a v1 context when
+        // only Codex is selected; the same typed field must work there too.
+        let mut single = document["providers"][1].clone();
+        single["schema"] = json!(V1_SCHEMA);
+        assert_eq!(
+            selected_from_context_path(context_file(&single).path(), "codex")
+                .unwrap()
+                .environment
+                .get("CODEX_HOME")
+                .map(String::as_str),
+            account.to_str()
+        );
+
+        let mut wrong_environment = document.clone();
+        wrong_environment["providers"][1]["effectiveEnvironment"]["CODEX_HOME"] = json!(home);
+        assert!(
+            provider_launches_from_context_path(context_file(&wrong_environment).path()).is_err()
+        );
+        let mut leaked_to_claude = document.clone();
+        leaked_to_claude["providers"][0]["effectiveEnvironment"]["CODEX_HOME"] = json!(account);
+        assert!(
+            provider_launches_from_context_path(context_file(&leaked_to_claude).path()).is_err()
+        );
+        let mut outside_home = document.clone();
+        outside_home["providers"][1]["admission"]["enrollment"]["codexAccountHome"] =
+            json!(native_path("foreign-account"));
+        outside_home["providers"][1]["effectiveEnvironment"]["CODEX_HOME"] =
+            json!(native_path("foreign-account"));
+        assert!(provider_launches_from_context_path(context_file(&outside_home).path()).is_err());
+        let mut missing_environment = document;
+        missing_environment["providers"][1]["effectiveEnvironment"]
+            .as_object_mut()
+            .unwrap()
+            .remove("CODEX_HOME");
+        assert!(
+            provider_launches_from_context_path(context_file(&missing_environment).path()).is_err()
+        );
     }
 
     #[test]

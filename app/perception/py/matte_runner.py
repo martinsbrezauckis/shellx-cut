@@ -134,7 +134,7 @@ def run(in_path: str, out_path: str, model: str, dsr: float | None, providers: l
     # Encoder: rawvideo gray → LOSSLESS FFV1 .mkv at the source fps.
     enc = subprocess.Popen(
         [FFMPEG_BIN, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray",
-         "-s", f"{w}x{h}", "-framerate", f"{fps}", *input_args("-"),
+         "-s", f"{w}x{h}", "-framerate", f"{fps}", *input_args("pipe:0"),
          "-c:v", "ffv1", "-pix_fmt", "gray", out_path],
         stdin=subprocess.PIPE,
         stderr=subprocess.PIPE,

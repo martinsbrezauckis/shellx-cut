@@ -584,18 +584,28 @@ pub fn concat_demuxer_file_line(path: &Path) -> String {
 /// (`-show_format -show_streams`). Raw shape; probe.rs normalizes it.
 pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value, CutError> {
     let mut command = Command::new(ffprobe_bin());
-    command
-        .args([
-            "-v",
-            "error",
-            "-protocol_whitelist",
-            LOCAL_INPUT_PROTOCOLS,
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-        ])
-        .arg(path);
+    command.args([
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        LOCAL_INPUT_PROTOCOLS,
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+    ]);
+    // Windows canonicalize() produces \\?\ paths, which ffprobe can misread as
+    // a different image format. Keep the original path for error reporting.
+    #[cfg(windows)]
+    {
+        if let Some(path_str) = path.to_str() {
+            command.arg(normalize_ffmpeg_arg(path_str));
+        } else {
+            command.arg(path);
+        }
+    }
+    #[cfg(not(windows))]
+    command.arg(path);
     let out = run_bounded_command(&mut command, "ffprobe").map_err(|e| {
         CutError::new(
             error_codes::FFMPEG,
@@ -676,6 +686,43 @@ mod tests {
                 "-filter_complex",
             ]
         );
+    }
+
+    #[test]
+    fn ffprobe_reads_jpeg_bytes_named_png_from_canonical_path() {
+        if Command::new(ffprobe_bin())
+            .arg("-version")
+            .output()
+            .is_err()
+            || Command::new(ffmpeg_bin()).arg("-version").output().is_err()
+        {
+            return;
+        }
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/assets/first-edit-sample.mp4");
+        let temp = tempfile::tempdir().unwrap();
+        let jpeg = temp.path().join("frame.jpg");
+        let output = Command::new(ffmpeg_bin())
+            .args(["-v", "error", "-i"])
+            .arg(&source)
+            .args(["-frames:v", "1", "-y"])
+            .arg(&jpeg)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let png_name = temp.path().join("generated.png");
+        std::fs::copy(&jpeg, &png_name).unwrap();
+        let canonical = png_name.canonicalize().unwrap();
+        #[cfg(windows)]
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        let raw = ffprobe_json(&canonical).unwrap();
+        assert_eq!(raw["streams"][0]["codec_name"], "mjpeg");
+        assert!(raw["streams"][0]["width"].as_u64().unwrap() > 0);
+        assert!(raw["streams"][0]["height"].as_u64().unwrap() > 0);
     }
 
     #[test]

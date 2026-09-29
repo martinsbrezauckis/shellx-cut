@@ -319,9 +319,8 @@ export interface ChatAgentState {
   posture: string | null
 }
 
-/** One row for the agent-selection dropdown: the agent name + its chat state
- *  (null when the report has no `judge.<name>` card or no `details.chat` block
- *  yet — rendered as "install", the absent state). */
+/** One row for the agent-selection dropdown: the agent name + its chat state.
+ *  Null means the doctor has not established this provider's state. */
 export interface ChatAgentOption {
   name: ChatAgentName
   state: ChatAgentState | null
@@ -330,7 +329,7 @@ export interface ChatAgentOption {
 /** Extract the chat agents from a doctor report, in
  *  preference order, reading each `judge.<provider>` card's `details.chat`.
  *  Populates the AgentChat selector. A report missing a card or its chat block
- *  yields `state:null` (the agent shows as not installed). */
+ *  yields `state:null` (the agent remains unverified). */
 export function chatAgentsFrom(report: DoctorReport | null): ChatAgentOption[] {
   return CHAT_AGENTS.map((name) => {
     const card = report?.cards.find((c) => c.id === `judge.${name}`)
@@ -341,18 +340,23 @@ export function chatAgentsFrom(report: DoctorReport | null): ChatAgentOption[] {
   })
 }
 
-/** The four-state badge for one agent (drives both the dropdown rows and the
+/** The readiness badge for one agent (drives both the dropdown rows and the
  *  selector trigger). `kind` keys the colour class; `label` is the chip text;
  *  `hint` is the remediation copy (a login command / install note, '' for
  *  ready). Mirrors the containment state returned by system.doctor. */
 export interface ChatAgentBadge {
-  kind: 'ready' | 'login' | 'install' | 'disabled'
+  kind: 'ready' | 'login' | 'install' | 'disabled' | 'unknown'
   label: string
   hint: string
 }
 
-export function chatAgentBadge(name: ChatAgentName, state: ChatAgentState | null): ChatAgentBadge {
-  if (!state || !state.installed) {
+export function chatAgentBadge(name: ChatAgentName, state: ChatAgentState | null, loading = false): ChatAgentBadge {
+  if (!state) {
+    return loading
+      ? { kind: 'unknown', label: 'Checking', hint: `Checking ${name} availability` }
+      : { kind: 'unknown', label: 'Unverified', hint: `Could not verify ${name}; reopen to check again` }
+  }
+  if (!state.installed) {
     return { kind: 'install', label: 'Install', hint: `${name} is not installed on this machine` }
   }
   if (!state.wired || !state.capability_verified) {

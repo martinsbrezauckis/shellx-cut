@@ -112,6 +112,12 @@ assert.equal(environmentCardStatus(codexJudge), 'degraded',
 const codexChat = chatAgentsFrom(unavailableRenderJudgeReport).find((agent) => agent.name === 'codex')
 assert.equal(chatAgentBadge('codex', codexChat?.state ?? null).label, 'Ready',
   'render-judge admission does not disable an independently ready Agent Chat provider')
+assert.equal(chatAgentBadge('codex', null, true).label, 'Checking',
+  'an in-flight Doctor scan does not claim the provider is absent')
+assert.equal(chatAgentBadge('codex', null).label, 'Unverified',
+  'an absent or failed Doctor response does not claim the provider is uninstalled')
+assert.equal(chatAgentBadge('codex', { ...codexChat!.state!, installed: false }).label, 'Install',
+  'only a Doctor-confirmed missing provider receives the Install label')
 assert.equal(
   environmentCardStatus({
     id: 'judge.claude', kind: 'judge', status: 'unknown',

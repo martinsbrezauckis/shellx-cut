@@ -131,7 +131,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
   // --- Agent selection ------------------------------------------------------
   // The chosen backend (persisted; default claude). `options` is the per-agent
   // chat state from the doctor (null state until first load). `agentsLoaded`
-  // gates the trigger badge so it doesn't flash "install" before the scan lands.
+  // gates the trigger badge until the first scan settles.
   const [agent, setAgent] = useState<ChatAgentName>(() => getChatAgent())
   // The parent keeps these project-keyed in memory across right-tab unmounts.
   // An empty value leaves the selected CLI's own default in control.
@@ -151,8 +151,10 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
       setOptions(chatAgentsFrom(report))
       setAgentsLoaded(true)
     } catch {
-      // Doctor unreachable (transport) — keep whatever we had; the reactive
-      // error path on send still surfaces any real failure honestly.
+      // Doctor unreachable: previously cached Ready labels are no longer a
+      // current verification. Sending still surfaces any real failure.
+      setOptions(chatAgentsFrom(null))
+      setAgentsLoaded(true)
     } finally {
       setAgentsBusy(false)
     }
@@ -498,7 +500,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
   // The current agent's row (for the trigger's badge). `agentsLoaded` gates the
   // badge so it stays neutral until the first scan resolves.
   const current = options.find((o) => o.name === agent) ?? { name: agent, state: null }
-  const currentBadge = chatAgentBadge(current.name, current.state)
+  const currentBadge = chatAgentBadge(current.name, current.state, agentsBusy)
 
   return (
     <div className="chat" data-cut-chat data-cut-chat-agent={agent}>
@@ -531,7 +533,7 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
         {menuOpen && (
           <ul className="chat__agentmenu" role="listbox" aria-label="Chat agent" data-cut-chat-agent-menu>
             {options.map((o) => {
-              const badge = chatAgentBadge(o.name, o.state)
+              const badge = chatAgentBadge(o.name, o.state, agentsBusy)
               const posture = chatAgentPosture(o.state)
               return (
                 <li

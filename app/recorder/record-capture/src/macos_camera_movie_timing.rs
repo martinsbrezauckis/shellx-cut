@@ -151,13 +151,37 @@ pub(super) fn verify_movie_timing(
             "packet proof was replaced, linked, or exceeded its frame-count bound",
         ));
     }
-    verify_probe(
+    let ordinary = verify_probe(
         &metadata.stdout,
         BufReader::new(packet_file.as_file()),
         native,
         duration_ms,
         decoded_frames,
-    )
+    );
+    match ordinary {
+        Ok(timing) => Ok(timing),
+        Err(failure)
+            if failure
+                .cause
+                .starts_with("video packet exceeds the container duration")
+                || failure.cause == "video packet count exceeds decoded frame count" =>
+        {
+            let probe: Probe = serde_json::from_slice(&metadata.stdout)
+                .map_err(|_| bad("movie metadata is malformed"))?;
+            let presented_ns = parse_seconds_ns(&probe.format.duration)?;
+            let presented_ns = u64::try_from(presented_ns)
+                .map_err(|_| bad("movie duration overflows nanoseconds"))?;
+            crate::macos_camera_edit_list::verify_movie_edit_list(
+                ffprobe,
+                path,
+                native,
+                presented_ns,
+                decoded_frames,
+                probe_timeout,
+            )
+        }
+        Err(failure) => Err(failure),
+    }
 }
 
 fn probe_timeout(decoded_frames: u64, movie_bytes: u64) -> Result<Duration> {
@@ -420,6 +444,22 @@ fn bad(cause: &str) -> RecordError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_private_movie_uses_strict_edit_proof_after_packet_boundary_refusal() {
+        let Ok(path) = std::env::var("SHELLX_CAMERA_EDIT_LIST_FIXTURE") else {
+            return;
+        };
+        let native = NativeMovieTiming {
+            start_pts_ns: 100_000_000_000,
+            last_pts_ns: 108_101_400_000,
+            last_duration_ns: 16_660_000,
+            last_cadence_ns: 16_670_000,
+        };
+        let timing = verify_movie_timing("ffprobe", Path::new(&path), native, 7_134, 429).unwrap();
+        assert_eq!(timing.duration_ms, 7_134);
+        assert_eq!(timing.start_pts_ns, 100_967_860_000);
+    }
 
     fn native() -> NativeMovieTiming {
         NativeMovieTiming {

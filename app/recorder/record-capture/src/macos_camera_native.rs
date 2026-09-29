@@ -95,35 +95,37 @@ impl NativeCameraRun {
     pub(super) fn stop(mut self) -> Result<StoppedCameraRun> {
         let (device_lost, native_timing) = self.stop_native()?;
         let anchor = self.collector.take_anchor()?;
-        let movie_start = anchor.movie_start(native_timing.start_pts_ns)?;
-        let first_offset = movie_start
-            .checked_duration_since(self.screen_origin)
-            .ok_or_else(|| {
-                error(
-                    "finalize macOS camera",
-                    "movie starts before the screen CaptureClock",
-                )
-            })?;
-        let first_offset_ms = u64::try_from(first_offset.as_millis()).map_err(|_| {
-            error(
-                "finalize macOS camera",
-                "movie CaptureClock offset overflowed",
-            )
-        })?;
-        let (seal, movie_timing) = self
+        // Preserve the pre-publication native clock admission. The sealed
+        // movie may later name a presentation start after its warmup edit.
+        anchor.movie_start(native_timing.start_pts_ns)?;
+        let (seal, observations) = self
             .stage
             .take()
             .ok_or_else(|| error("finalize macOS camera", "camera stage is missing"))?
-            .finalize(native_timing)?;
-        debug_assert_eq!(movie_timing.start_pts_ns, native_timing.start_pts_ns);
-        // MovieFileOutput is the encoded stream. Report its entire verified
-        // first-packet-to-final-packet-end interval as one observation; it is
-        // deliberately not a DataOutput callback or a synthetic last frame.
-        let observations = vec![movie_observation(
-            self.screen_origin,
-            first_offset_ms,
-            movie_timing.duration_ms,
-        )?];
+            .finalize(native_timing, |movie_timing| {
+                let movie_start = anchor.movie_start(movie_timing.start_pts_ns)?;
+                let first_offset = movie_start
+                    .checked_duration_since(self.screen_origin)
+                    .ok_or_else(|| {
+                        error(
+                            "finalize macOS camera",
+                            "movie starts before the screen CaptureClock",
+                        )
+                    })?;
+                let first_offset_ms = u64::try_from(first_offset.as_millis()).map_err(|_| {
+                    error(
+                        "finalize macOS camera",
+                        "movie CaptureClock offset overflowed",
+                    )
+                })?;
+                // MovieFileOutput is the encoded stream. Report its verified
+                // presentation interval, never DataOutput warmup callbacks.
+                Ok(vec![movie_observation(
+                    self.screen_origin,
+                    first_offset_ms,
+                    movie_timing.duration_ms,
+                )?])
+            })?;
         Ok(StoppedCameraRun {
             observations,
             seal,
@@ -249,7 +251,7 @@ struct SampleAnchor {
 }
 
 impl SampleAnchor {
-    fn movie_start(self, start_pts_ns: u64) -> Result<Instant> {
+    fn movie_start(&self, start_pts_ns: u64) -> Result<Instant> {
         let offset_ns = self.first_pts_ns.checked_sub(start_pts_ns).ok_or_else(|| {
             error(
                 "finalize macOS camera",

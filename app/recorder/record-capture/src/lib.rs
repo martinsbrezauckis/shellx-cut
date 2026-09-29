@@ -285,6 +285,8 @@ mod windows_probe;
 mod macos;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_camera;
+#[cfg(all(unix, any(test, all(target_os = "macos", feature = "capture-macos"))))]
+mod macos_camera_edit_list;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_camera_finalization;
 #[cfg(all(unix, any(test, all(target_os = "macos", feature = "capture-macos"))))]
