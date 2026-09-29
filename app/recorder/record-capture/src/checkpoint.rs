@@ -391,7 +391,64 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{trim_extrapolated_wgc_tail, CheckpointConfig, Checkpoints};
-    use crate::windows_wgc_timing::WgcTimingRecorder;
+    use crate::windows_wgc_timing::{retained_windows_594_frame_tail, WgcTimingRecorder};
+
+    #[test]
+    fn retained_windows_partial_gap_tail_clips_verified_mp4_to_independent_stop() {
+        let root = tempdir().unwrap();
+        let staging = root.path().join("source.mp4");
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=32x32:r=30"
+            ])
+            .args([
+                "-frames:v",
+                "594",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p"
+            ])
+            .arg(&staging)
+            .status()
+            .unwrap()
+            .success());
+        let original = record_recovery::verify_media("ffmpeg", "ffprobe", &staging).unwrap();
+        assert_eq!(original.duration_ms, 19_800);
+        assert_eq!(original.decoded_video_frames, 594);
+
+        let origin = Instant::now();
+        let timing = retained_windows_594_frame_tail(origin, &root.path().join("._timing.d/s.mp4"));
+        let corrected = trim_extrapolated_wgc_tail(
+            &staging,
+            &record_recovery::CheckpointFacts {
+                start_ms: 86_407,
+                end_ms: 101_506,
+                event_offset_ms: 86_407,
+                audio_offset_ms: None,
+            },
+            original,
+            &timing,
+            "ffmpeg",
+            "ffprobe",
+        )
+        .unwrap();
+        assert!(corrected.duration_ms.abs_diff(15_099) <= 100);
+        assert!(corrected.decoded_video_frames >= 103);
+        assert!(corrected.decoded_video_frames < 594);
+        let readback = record_recovery::verify_media("ffmpeg", "ffprobe", &staging).unwrap();
+        assert_eq!(readback.duration_ms, corrected.duration_ms);
+        assert_eq!(
+            readback.decoded_video_frames,
+            corrected.decoded_video_frames
+        );
+    }
 
     #[test]
     fn zero_frame_final_wgc_checkpoint_holds_verified_frame_and_stitches_full_span() {
