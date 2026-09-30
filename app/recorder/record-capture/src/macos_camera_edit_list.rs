@@ -480,21 +480,19 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
     {
         return Err(bad("final visible packet exceeds native sample cadence"));
     }
-    let mut native_elapsed = native
+    let native_elapsed = native
         .last_pts_ns
         .checked_sub(native.start_pts_ns)
         .ok_or_else(|| bad("MovieFileOutput callback clock is invalid"))?;
-    // Apple documents the preceding sample as included. Actual no-reorder
-    // output can also include the invoking Stop sample. Prove either named
-    // frozen endpoint exactly; never admit an arbitrary later packet.
-    if native.stop_pts_ns != 0 {
-        if let Some(selected) = native.stop_endpoint_elapsed(
+    // A real writer completion is an independent upper fence for visible
+    // images. The final frame's display duration can extend beyond closure;
+    // its matched source duration and cadence were independently checked above.
+    if native.stop_pts_ns != 0 || native.finish_clock_ns != 0 {
+        native.verify_finish_bound(
             clock.scaled(last_visible_pts)?,
             clock.den,
             tick_scaled + u128::from(clock.den - 1),
-        )? {
-            native_elapsed = selected;
-        }
+        )?;
     }
     let native_elapsed_scaled = clock.ns_scaled(native_elapsed);
     // Apple's didStartRecording startPTS names the first written buffer in
@@ -514,30 +512,21 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
     // CMTime timestamps are truncated independently to ns: the elapsed
     // subtraction differs from its exact value by less than one ns.
     let callback_delta_scaled = native_elapsed_scaled.abs_diff(clock.scaled(last_visible_pts)?);
-    // A sample-accurate Stop supplies the preceding and invoking samples.
-    // One frozen PTS must match the final visible packet within one track
-    // tick plus the independent CMTime→ns truncation remainder. Later
-    // callbacks are deliberately excluded from this coordinate comparison.
-    let endpoint_limit_scaled = if native.stop_pts_ns != 0 {
-        tick_scaled
-    } else {
-        callback_limit_scaled // spontaneous/device-loss finish, without Stop
-    };
-    if callback_delta_scaled
-        > endpoint_limit_scaled
-            .checked_add(u128::from(clock.den - 1))
-            .ok_or_else(|| bad("native callback cadence limit overflows"))?
+    // Stop uses the completion fence above. Retain the original callback
+    // relation for spontaneous/device-loss finishes without a Stop callback.
+    let endpoint_limit_scaled = callback_limit_scaled;
+    if native.stop_pts_ns == 0
+        && callback_delta_scaled
+            > endpoint_limit_scaled
+                .checked_add(u128::from(clock.den - 1))
+                .ok_or_else(|| bad("native callback cadence limit overflows"))?
     {
         // Full failed probe files and movie stay in capture staging; retain
         // bounded facts here for record.log and the terminal failure receipt.
         let diagnostic = serde_json::json!({
-            "predicate": if native.stop_pts_ns != 0 {
-                "no frozen native Stop endpoint matches edited_last_ns within endpoint_limit_ns"
-            } else {
-                "abs(native_last_included_elapsed_ns - edited_last_ns) > endpoint_limit_ns"
-            },
+            "predicate": "abs(native_last_included_elapsed_ns - edited_last_ns) > endpoint_limit_ns",
             "coordinates": "startPTS is native presentation zero; raw edit offset maps packet views only",
-            "endpoint_limit_ns": if native.stop_pts_ns != 0 { tick_ns } else { callback_limit },
+            "endpoint_limit_ns": callback_limit,
             "native": {
                 "start_pts_ns": native.start_pts_ns,
                 "last_pts_ns": native.last_pts_ns,
@@ -547,6 +536,8 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
                 "stop_pts_ns": native.stop_pts_ns,
                 "stop_cadence_ns": native.stop_cadence_ns,
                 "observed_last_pts_ns": native.observed_last_pts_ns,
+                "stop_request_clock_ns": native.stop_request_clock_ns,
+                "finish_clock_ns": native.finish_clock_ns,
                 "elapsed_ns": native_elapsed,
             },
             "movie": {
@@ -792,6 +783,8 @@ fi
             // Arbitrarily later callback is diagnostic, never the endpoint.
             observed_last_pts_ns: 100_150_000_000,
             callback_count: 15,
+            stop_request_clock_ns: 100_060_000_000,
+            finish_clock_ns: 100_120_000_000,
         };
         let verify = |native| {
             verify_edit_list(
@@ -812,7 +805,7 @@ fi
         assert!(verify(timing)
             .unwrap_err()
             .cause
-            .contains("Stop boundary does not follow"));
+            .contains("completion clock precedes"));
         timing.last_pts_ns = 100_050_000_000;
         timing.stop_pts_ns += 33_333_333;
         timing.stop_cadence_ns += 33_333_333;

@@ -34,34 +34,67 @@ pub(super) struct NativeMovieTiming {
     pub(super) stop_cadence_ns: u64,
     /// Latest observed sample, including callbacks after the Stop boundary.
     pub(super) observed_last_pts_ns: u64,
+    /// Independently sampled session clock, before posting the Stop request.
+    pub(super) stop_request_clock_ns: u64,
+    /// Independently sampled session clock in the actual didFinish delegate.
+    pub(super) finish_clock_ns: u64,
 }
 
 impl NativeMovieTiming {
-    /// Match only the two independently frozen callback endpoints. An included
-    /// invoking sample is admitted exactly, never through a cadence tolerance.
-    pub(super) fn stop_endpoint_elapsed(
+    /// A completed writer may flush queued frames beyond the Stop callback.
+    /// Bound images by an independently sampled completion clock, never by
+    /// inventing a frame count or deriving the fence from encoded timestamps.
+    pub(super) fn verify_finish_bound(
         self,
         encoded_pts_scaled: u128,
         ns_scale: u64,
         limit_scaled: u128,
-    ) -> Result<Option<u64>> {
-        self.stop_pts_ns
-            .checked_sub(self.last_pts_ns)
-            .filter(|&gap| gap != 0 && gap == self.stop_cadence_ns)
-            .ok_or_else(|| {
-                bad("MovieFileOutput Stop boundary does not follow the last included sample")
-            })?;
-        for pts in [self.last_pts_ns, self.stop_pts_ns] {
-            let elapsed = pts
-                .checked_sub(self.start_pts_ns)
-                .ok_or_else(|| bad("MovieFileOutput callback clock is invalid"))?;
-            if (u128::from(elapsed) * u128::from(ns_scale)).abs_diff(encoded_pts_scaled)
-                <= limit_scaled
+    ) -> Result<()> {
+        if self.start_pts_ns == 0 || self.finish_clock_ns == 0 {
+            return Err(bad("MovieFileOutput writer-completion clock is missing"));
+        }
+        let elapsed = |pts: u64| {
+            pts.checked_sub(self.start_pts_ns)
+                .ok_or_else(|| bad("MovieFileOutput callback clock is invalid"))
+        };
+        let scale = |ns: u64| u128::from(ns) * u128::from(ns_scale);
+        let preceding = scale(elapsed(self.last_pts_ns)?);
+        let finish = scale(elapsed(self.finish_clock_ns)?);
+        if preceding > finish {
+            return Err(bad("MovieFileOutput completion clock precedes its samples"));
+        }
+        if self.stop_pts_ns != 0 {
+            self.stop_pts_ns
+                .checked_sub(self.last_pts_ns)
+                .filter(|&gap| gap != 0 && gap == self.stop_cadence_ns)
+                .ok_or_else(|| {
+                    bad("MovieFileOutput Stop boundary does not follow the preceding sample")
+                })?;
+            if self.stop_request_clock_ns == 0 {
+                return Err(bad("MovieFileOutput Stop request clock is missing"));
+            }
+            let request = scale(elapsed(self.stop_request_clock_ns)?);
+            let invoking = scale(elapsed(self.stop_pts_ns)?);
+            if request > finish
+                || invoking > finish
+                || preceding.saturating_sub(request) > limit_scaled
             {
-                return Ok(Some(elapsed));
+                return Err(bad(
+                    "MovieFileOutput Stop and completion clocks are inconsistent",
+                ));
+            }
+            if preceding.saturating_sub(encoded_pts_scaled) > limit_scaled {
+                return Err(bad(
+                    "MovieFileOutput finalized movie lost an included sample",
+                ));
             }
         }
-        Ok(None)
+        if encoded_pts_scaled.saturating_sub(finish) > limit_scaled {
+            return Err(bad(
+                "MovieFileOutput visible frame is after writer completion",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -420,37 +453,24 @@ fn verify_probe<R: BufRead>(
             "movie packets do not begin at zero with a final sample",
         ));
     }
-    // One track tick accounts for CMTime->nanosecond truncation and ffprobe's
-    // integer time base. At Stop, the encoded movie can contain one final
-    // packet beyond the last delivered MovieFileOutput sample callback.
-    // Admit that gap only in the encoded-ahead direction and only for one
-    // measured frame interval. For variable frame cadence, the callback may
-    // instead coincide with the actual penultimate packet PTS; that proves
-    // exactly one later encoded packet without inventing a timing tolerance.
-    // Conversely, a final callback at the encoded
-    // packet's end is the first sample outside that half-open movie interval.
-    // A callback beyond the packet end remains an unencoded tail and fails.
+    // Stop uses its actual independently observed completion fence. The
+    // existing callback/packet relation below remains for spontaneous finishes;
+    // duration/cadence and complete packet/decode bounds apply to both routes.
     let tick_ns = to_scaled(1, numerator)?.max(denominator);
-    let mut native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns) * denominator;
-    if native.stop_pts_ns != 0 {
-        let selected = native
-            .stop_endpoint_elapsed(last_pts, clock.den, tick_ns + denominator - 1)?
-            .ok_or_else(|| {
-                bad("MovieFileOutput last included sample disagrees with final encoded packet")
-            })?;
-        native_elapsed = u128::from(selected) * denominator;
-        // The remaining bounds use the endpoint proved by the packet view,
-        // including an invoking Stop sample only when it matches exactly.
+    let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns) * denominator;
+    if native.stop_pts_ns != 0 || native.finish_clock_ns != 0 {
+        native.verify_finish_bound(last_pts, clock.den, tick_ns + denominator - 1)?;
     }
     let encoded_ahead_limit = last_duration
         .checked_add(tick_ns)
         .ok_or_else(|| bad("encoded sample cadence overflows"))?;
     let matches_penultimate =
         penultimate_pts.is_some_and(|pts| native_elapsed.abs_diff(pts) <= tick_ns);
-    if (last_pts >= native_elapsed
-        && last_pts - native_elapsed > encoded_ahead_limit
-        && !matches_penultimate)
-        || (native_elapsed > max_end && native_elapsed - max_end > tick_ns)
+    if native.stop_pts_ns == 0
+        && ((last_pts >= native_elapsed
+            && last_pts - native_elapsed > encoded_ahead_limit
+            && !matches_penultimate)
+            || (native_elapsed > max_end && native_elapsed - max_end > tick_ns))
     {
         let native_elapsed = native_elapsed / denominator;
         let last_pts = last_pts / denominator;
@@ -633,6 +653,8 @@ mod tests {
             stop_pts_ns: 100_100_000_000,
             stop_cadence_ns: 50_000_000,
             observed_last_pts_ns: 100_900_000_000,
+            stop_request_clock_ns: 100_060_000_000,
+            finish_clock_ns: 100_125_000_000,
         };
         let rows = b"0,50\n50,50\n";
         let verify = |native| {
@@ -664,13 +686,14 @@ mod tests {
         )
         .unwrap_err()
         .cause
-        .contains("last included sample disagrees"));
+        .contains("after writer completion"));
         let mut moved = native;
         moved.last_pts_ns = native.observed_last_pts_ns;
         assert!(verify(moved).is_err());
         let mut late = native;
         late.stop_pts_ns += 50_000_000;
         late.stop_cadence_ns += 50_000_000;
+        late.finish_clock_ns += 50_000_000;
         assert!(verify(late).is_ok());
         // A later excluded sample is allowed; changing its observed gap
         // without changing the actual boundary is internally inconsistent.
@@ -679,13 +702,16 @@ mod tests {
             .unwrap_err()
             .cause
             .contains("Stop boundary does not follow"));
-        let mut missing_frame = native;
-        missing_frame.last_pts_ns -= 10_000_000;
-        missing_frame.stop_cadence_ns += 10_000_000;
-        assert!(verify(missing_frame)
-            .unwrap_err()
-            .cause
-            .contains("last included sample disagrees"));
+        assert!(verify_probe(
+            &metadata("0.050000", "1/1000"),
+            b"0,50\n".as_slice(),
+            native,
+            50,
+            1,
+        )
+        .unwrap_err()
+        .cause
+        .contains("lost an included sample"));
     }
 
     fn metadata(duration: &str, time_base: &str) -> Vec<u8> {

@@ -63,6 +63,9 @@ static constexpr int kSxcCameraClosed = 2;
     uint64_t _movieStopPtsNs;
     uint64_t _movieStopCadenceNs;
     uint64_t _movieObservedLastPtsNs;
+    CMClockRef _movieSynchronizationClock;
+    uint64_t _movieStopRequestClockNs;
+    uint64_t _movieFinishClockNs;
     std::atomic_bool _movieStopRequested;
     SxcCameraFrameCallback _callback;
     void *_context;
@@ -87,6 +90,9 @@ static constexpr int kSxcCameraClosed = 2;
         _movieStopPtsNs = 0;
         _movieStopCadenceNs = 0;
         _movieObservedLastPtsNs = 0;
+        _movieSynchronizationClock = nullptr;
+        _movieStopRequestClockNs = 0;
+        _movieFinishClockNs = 0;
         _movieStopRequested.store(false);
         _callback = callback;
         _context = context;
@@ -95,6 +101,10 @@ static constexpr int kSxcCameraClosed = 2;
         _deviceLost.store(false);
     }
     return self;
+}
+
+- (void)dealloc {
+    if (_movieSynchronizationClock) CFRelease(_movieSynchronizationClock);
 }
 
 // Observe the file output's own video samples without changing when it starts
@@ -138,10 +148,9 @@ static constexpr int kSxcCameraClosed = 2;
         @synchronized (self) {
             _movieCallbackCount.fetch_add(1);
             _movieObservedLastPtsNs = MAX(_movieObservedLastPtsNs, pts);
-            // Freeze both the preceding delivery and invoking Stop sample.
-            // Apple documents current-sample exclusion, but retained native
-            // output can include it. The seal proves either frozen endpoint
-            // exactly; later callbacks cannot move either boundary.
+            // Freeze the preceding and invoking Stop samples as chronology
+            // witnesses. The writer can flush queued frames asynchronously;
+            // its actual didFinish clock supplies the completion fence.
             if (_movieStopPtsNs != 0) return;
             const uint64_t previous = _movieLastPtsNs.load();
             stopHere = _movieStopRequested.exchange(false);
@@ -156,9 +165,9 @@ static constexpr int kSxcCameraClosed = 2;
                 _movieLastCadenceNs.store(pts > previous && previous != 0 ? pts - previous : 0);
             }
         }
-        // Apple documents current-sample exclusion here. Native no-reorder
-        // movies can include that sample; preserve its exact PTS as a second
-        // endpoint for independent packet proof, never as extra tolerance.
+        // Apple documents sample-accurate Stop, but native movies can retain
+        // queued frames. didFinish, not this callback's PTS, establishes when
+        // the writer has completed its asynchronous remaining-data flush.
         // https://developer.apple.com/documentation/avfoundation/avcapturefileoutput/stoprecording()
         // A Stop request arriving from Rust is therefore completed at the
         // file-output frame boundary instead of racing the writer from a
@@ -184,6 +193,10 @@ static constexpr int kSxcCameraClosed = 2;
     (void)captureOutput;
     (void)outputFileURL;
     (void)connections;
+    @synchronized (self) {
+        _movieFinishClockNs = _movieSynchronizationClock
+            ? sxc_time_ns(CMClockGetTime(_movieSynchronizationClock)) : 0;
+    }
     if (error && ![error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] boolValue]) {
         _terminalError = error;
     }
@@ -283,6 +296,12 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
                                           char *error,
                                           size_t error_capacity) {
     @autoreleasepool {
+        if (@available(macOS 12.3, *)) {
+            // synchronizationClock is required for a truthful camera seal.
+        } else {
+            sxc_error(error, error_capacity, @"Camera recording requires the capture synchronization clock on macOS 12.3 or later");
+            return nullptr;
+        }
         if (!device_uid || !output_path || !callback || !sxc_authorize(error, error_capacity)) return nullptr;
         NSString *uid = [NSString stringWithUTF8String:device_uid];
         NSString *path = [NSString stringWithUTF8String:output_path];
@@ -327,10 +346,9 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
         [handle.session addOutput:handle.movie];
         [handle.session addOutput:handle.samples];
         [handle.session commitConfiguration];
-        // Stop is sealed against the preceding FileOutput callback's PTS.
-        // The default camera encoder can retain B-frame dependencies whose
-        // final edit list still exposes frames past that boundary. Encode
-        // without frame reordering instead of relaxing the independent seal.
+        // Keep the existing H.264/no-reordering encoder configuration. Stop
+        // completeness is proved against actual writer completion below;
+        // codec buffering is not inferred from a callback sample count.
         AVCaptureConnection *movieVideo = [handle.movie connectionWithMediaType:AVMediaTypeVideo];
         if (!movieVideo) {
             sxc_error(error, error_capacity, @"The selected camera cannot encode a sample-accurate H.264 recording");
@@ -363,6 +381,15 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
             sxc_error(error, error_capacity, @"AVFoundation did not start the selected camera");
             return nullptr;
         }
+        CMClockRef movieClock = nullptr;
+        if (@available(macOS 12.3, *)) movieClock = handle.session.synchronizationClock;
+        if (!movieClock || sxc_time_ns(CMClockGetTime(movieClock)) == 0) {
+            [handle.session stopRunning];
+            [[NSNotificationCenter defaultCenter] removeObserver:handle.delegate];
+            sxc_error(error, error_capacity, @"The selected camera did not provide a valid capture synchronization clock");
+            return nullptr;
+        }
+        handle.delegate->_movieSynchronizationClock = (CMClockRef)CFRetain(movieClock);
         NSURL *url = [NSURL fileURLWithPath:path];
         [handle.movie startRecordingToOutputFileURL:url recordingDelegate:handle.delegate];
         // didStartRecording admits samples only after the asynchronous movie
@@ -392,7 +419,9 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
                                             uint64_t *movie_callback_count,
                                             uint64_t *movie_stop_pts_ns,
                                             uint64_t *movie_stop_cadence_ns,
-                                            uint64_t *movie_observed_last_pts_ns) {
+                                            uint64_t *movie_observed_last_pts_ns,
+                                            uint64_t *movie_stop_request_clock_ns,
+                                            uint64_t *movie_finish_clock_ns) {
     @autoreleasepool {
         if (device_lost) *device_lost = 0;
         if (movie_start_pts_ns) *movie_start_pts_ns = 0;
@@ -403,6 +432,8 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
         if (movie_stop_pts_ns) *movie_stop_pts_ns = 0;
         if (movie_stop_cadence_ns) *movie_stop_cadence_ns = 0;
         if (movie_observed_last_pts_ns) *movie_observed_last_pts_ns = 0;
+        if (movie_stop_request_clock_ns) *movie_stop_request_clock_ns = 0;
+        if (movie_finish_clock_ns) *movie_finish_clock_ns = 0;
         if (!opaque) {
             sxc_error(error, error_capacity, @"Camera owner is missing");
             return -1;
@@ -410,10 +441,14 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
         SxcCameraHandle *handle = (__bridge_transfer SxcCameraHandle *)opaque;
         const bool movie_was_recording = handle.movie.isRecording;
         if (movie_was_recording) {
-            // The file-output callback consumes this request before recording
-            // the current sample. This is the documented sample-accurate
-            // Stop route for AVCaptureFileOutputDelegate.
-            handle.delegate->_movieStopRequested.store(true);
+            // Independently observe request time before the callback can
+            // consume the bit. FileOutput completes its remaining-data flush
+            // asynchronously; didFinish observes the matching upper fence.
+            @synchronized (handle.delegate) {
+                handle.delegate->_movieStopRequestClockNs = handle.delegate->_movieSynchronizationClock
+                    ? sxc_time_ns(CMClockGetTime(handle.delegate->_movieSynchronizationClock)) : 0;
+                handle.delegate->_movieStopRequested.store(true);
+            }
         }
         sxc_quiesce_samples(handle);
         // didFinish is required for every recording request, including one
@@ -448,6 +483,8 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
             if (movie_stop_pts_ns) *movie_stop_pts_ns = handle.delegate->_movieStopPtsNs;
             if (movie_stop_cadence_ns) *movie_stop_cadence_ns = handle.delegate->_movieStopCadenceNs;
             if (movie_observed_last_pts_ns) *movie_observed_last_pts_ns = handle.delegate->_movieObservedLastPtsNs;
+            if (movie_stop_request_clock_ns) *movie_stop_request_clock_ns = handle.delegate->_movieStopRequestClockNs;
+            if (movie_finish_clock_ns) *movie_finish_clock_ns = handle.delegate->_movieFinishClockNs;
         }
         return 0;
     }

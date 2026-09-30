@@ -1,168 +1,161 @@
-//! Retained native packet regression for the camera Stop seal.
+//! Existing native movies are unqualified without an independently measured
+//! writer-completion clock. Never retrofit a clock from their packet endpoint.
 
 use super::*;
 
 #[test]
-fn retained_mac_camera_reordered_stop_tail_stays_rejected() {
-    // Unmodified packet probes from the bd4 native failed Camera Stop.
-    // Do not infer a larger native endpoint from the codec's buffered tail.
-    let raw = include_bytes!("fixtures/mac_camera_stop_reordered/raw.csv");
-    let edited = include_bytes!("fixtures/mac_camera_stop_reordered/edited.csv");
-    let timing = NativeMovieTiming {
-        start_pts_ns: 390_347_033_510_000,
-        last_pts_ns: 390_352_483_930_000,
-        last_duration_ns: 15_520_000,
-        last_cadence_ns: 16_940_001,
-        callback_count: 380,
-        stop_pts_ns: 390_352_499_870_000,
-        stop_cadence_ns: 15_940_000,
-        observed_last_pts_ns: 390_352_549_869_999,
-    };
-    let verify = |edited: &[u8], duration, frames, native| {
-        verify_edit_list(
-            raw.as_slice(),
-            edited,
+fn retained_movies_without_writer_completion_clocks_remain_unqualified() {
+    let views = [
+        (
+            include_bytes!("fixtures/mac_camera_stop_reordered/raw.csv").as_slice(),
+            include_bytes!("fixtures/mac_camera_stop_reordered/edited.csv").as_slice(),
             648399,
-            duration,
-            TimeBase {
-                num: 1,
-                den: 100_000,
-            },
+            548301,
+            100_000,
             375,
+            318,
+            NativeMovieTiming {
+                start_pts_ns: 390_347_033_510_000,
+                last_pts_ns: 390_352_483_930_000,
+                last_duration_ns: 15_520_000,
+                last_cadence_ns: 16_940_001,
+                callback_count: 380,
+                stop_pts_ns: 390_352_499_870_000,
+                stop_cadence_ns: 15_940_000,
+                observed_last_pts_ns: 390_352_549_869_999,
+                ..NativeMovieTiming::default()
+            },
+        ),
+        (
+            include_bytes!("fixtures/mac_camera_stop_no_reordering/raw.csv").as_slice(),
+            include_bytes!("fixtures/mac_camera_stop_no_reordering/edited.csv").as_slice(),
+            1904950,
+            1604451,
+            300_000,
+            381,
+            321,
+            no_reordering_native_timing(),
+        ),
+    ];
+    for (raw, edited, raw_duration, presented_duration, den, raw_frames, frames, native) in views {
+        let failure = verify_edit_list(
+            raw,
+            edited,
+            raw_duration,
+            presented_duration,
+            TimeBase { num: 1, den },
+            raw_frames,
+            frames,
+            native,
+        )
+        .unwrap_err();
+        assert!(failure.cause.contains("writer-completion clock is missing"));
+    }
+}
+
+#[test]
+fn queued_frames_are_bounded_by_independent_completion_not_stop_sample_count() {
+    // Synthetic independent event observations: Stop requested at 30ms,
+    // consumed by the 40ms sample, writer completed at 70ms. The 60ms queued
+    // frame is visible; its actual 20ms display interval extends beyond finish.
+    let raw = b"0,20,50,K__\n1000,20,100,K__\n1020,20,200,___\n1040,20,300,___\n1060,20,400,___\n1080,20,500,___\n";
+    let edited = "0,20,100,K__\n20,20,200,___\n40,20,300,___\n60,20,400,___\n80,20,500,_D_\n";
+    let native = NativeMovieTiming {
+        start_pts_ns: 100_000_000_000,
+        last_pts_ns: 100_020_000_000,
+        last_duration_ns: 20_000_000,
+        last_cadence_ns: 20_000_000,
+        stop_pts_ns: 100_040_000_000,
+        stop_cadence_ns: 20_000_000,
+        stop_request_clock_ns: 100_030_000_000,
+        finish_clock_ns: 100_070_000_000,
+        ..NativeMovieTiming::default()
+    };
+    let verify = |raw: &[u8], edited: &str, duration, frames, native| {
+        verify_edit_list(
+            raw,
+            edited.as_bytes(),
+            1100,
+            duration,
+            TimeBase { num: 1, den: 1000 },
+            6,
             frames,
             native,
         )
     };
-    let failure = verify(edited.as_slice(), 548301, 318, timing).unwrap_err();
-    assert!(failure.cause.contains("callback disagrees"));
-    assert!(failure.cause.contains("\"callback_delta_ns\":32580000"));
-    assert!(failure.cause.contains("\"endpoint_limit_ns\":10000"));
-
-    // A counterfactual edit view that discards both post-Stop frames
-    // satisfies the unchanged seal. All original raw samples remain
-    // accounted for; only their presentation eligibility changes.
-    let bounded = std::str::from_utf8(edited)
-        .unwrap()
-        .replace("546636,1834,2606796,___", "546636,1834,2606796,_D_")
-        .replace("548300,1664,2644535,___", "548300,1664,2644535,_D_");
-    let result = verify(bounded.as_bytes(), 545043, 316, timing).unwrap();
-    assert_eq!(result.start_pts_ns, timing.start_pts_ns);
-    assert_eq!(result.duration_ms, 5450);
-
-    // Moving the callback endpoint to the movie's greatest PTS cannot
-    // repair the evidence: it would cross the excluded native sample.
-    let mut fabricated = timing;
-    fabricated.last_pts_ns = timing.start_pts_ns + 5_483_000_000;
-    assert!(verify(edited.as_slice(), 548301, 318, fabricated)
+    let result = verify(raw.as_slice(), edited, 80, 4, native).unwrap();
+    assert_eq!(result.duration_ms, 80);
+    assert_eq!(result.start_pts_ns, native.start_pts_ns);
+    let future = edited.replace("80,20,500,_D_", "80,20,500,___");
+    assert!(verify(raw.as_slice(), &future, 81, 5, native)
         .unwrap_err()
         .cause
-        .contains("Stop boundary does not follow"));
-    let missing = bounded.replace("545042,1664,2625629,___\n", "");
-    assert!(verify(missing.as_bytes(), 545043, 315, timing).is_err());
-}
-
-#[test]
-fn retained_no_reordering_movie_proves_invoking_stop_sample_and_source_durations() {
-    let raw = include_bytes!("fixtures/mac_camera_stop_no_reordering/raw.csv");
-    let edited = include_bytes!("fixtures/mac_camera_stop_no_reordering/edited.csv");
-    let timing = no_reordering_native_timing();
-    let verify = |raw: &[u8], edited: &[u8], duration, frames| {
-        verify_edit_list(
-            raw,
-            edited,
-            1904950,
-            duration,
-            TimeBase {
-                num: 1,
-                den: 300_000,
-            },
-            381,
-            frames,
-            timing,
-        )
+        .contains("after writer completion"));
+    let lost = "0,20,100,K__\n20,20,200,___\n40,20,300,_D_\n60,20,400,_D_\n80,20,500,_D_\n";
+    let lost_native = NativeMovieTiming {
+        last_pts_ns: 100_040_000_000,
+        stop_pts_ns: 100_060_000_000,
+        stop_request_clock_ns: 100_050_000_000,
+        ..native
     };
-    let result = verify(raw.as_slice(), edited.as_slice(), 1604451, 321).unwrap();
-    assert_eq!(result.duration_ms, 5348);
-    assert_eq!(result.start_pts_ns, timing.start_pts_ns);
-
-    // The final visible packet matches the invoking callback, not a guessed
-    // greatest timestamp. The next encoded sample must stay discarded.
-    let edited_text = std::str::from_utf8(edited).unwrap();
-    let later = edited_text.replace("1604469,5004,1253208,_D_", "1604469,5004,1253208,___");
-    assert!(verify(raw.as_slice(), later.as_bytes(), 1604470, 322)
+    assert!(verify(raw.as_slice(), lost, 40, 2, lost_native)
         .unwrap_err()
         .cause
-        .contains("callback disagrees"));
-    let missing = edited_text.replace("1599459,4791,1251647,___\n", "");
-    assert!(verify(raw.as_slice(), missing.as_bytes(), 1604451, 320)
+        .contains("lost an included sample"));
+    for invalid in [
+        NativeMovieTiming {
+            finish_clock_ns: 0,
+            ..native
+        },
+        NativeMovieTiming {
+            stop_request_clock_ns: 0,
+            ..native
+        },
+        NativeMovieTiming {
+            finish_clock_ns: 100_010_000_000,
+            ..native
+        },
+        NativeMovieTiming {
+            stop_request_clock_ns: 100_080_000_000,
+            ..native
+        },
+        NativeMovieTiming {
+            stop_request_clock_ns: 100_010_000_000,
+            ..native
+        },
+        NativeMovieTiming {
+            stop_cadence_ns: 19_000_000,
+            ..native
+        },
+    ] {
+        assert!(verify(raw.as_slice(), edited, 80, 4, invalid).is_err());
+    }
+    assert!(verify(raw.as_slice(), edited, 80, 3, native)
+        .unwrap_err()
+        .cause
+        .contains("presented decode"));
+    let missing = edited.replace("20,20,200,___\n", "");
+    assert!(verify(raw.as_slice(), &missing, 80, 3, native)
         .unwrap_err()
         .cause
         .contains("inside the edit interval was skipped"));
-    let wrong_offset = edited_text.replace("4245,4992,196608,___", "4246,4992,196608,___");
-    assert!(
-        verify(raw.as_slice(), wrong_offset.as_bytes(), 1604451, 321)
-            .unwrap_err()
-            .cause
-            .contains("one media-time offset")
-    );
-    let wrong_identity = edited_text.replace("0,4777,166495,K__", "0,4777,166495,___");
-    assert!(
-        verify(raw.as_slice(), wrong_identity.as_bytes(), 1604451, 321)
-            .unwrap_err()
-            .cause
-            .contains("identity differs")
-    );
-    let corrupted = edited_text.replace("0,4777,166495,K__", "0,4777,166495,K_C");
-    assert!(verify(raw.as_slice(), corrupted.as_bytes(), 1604451, 321)
+    let wrong_offset = edited.replace("40,20,300,___", "41,20,300,___");
+    assert!(verify(raw.as_slice(), &wrong_offset, 80, 4, native)
+        .unwrap_err()
+        .cause
+        .contains("one media-time offset"));
+    let corrupted = edited.replace("40,20,300,___", "40,20,300,__C");
+    assert!(verify(raw.as_slice(), &corrupted, 80, 4, native)
         .unwrap_err()
         .cause
         .contains("identity differs"));
-    let raw_text = std::str::from_utf8(raw).unwrap();
-    let too_short = raw_text.replace("1894930,5010,1251647,___", "1894930,1,1251647,___");
-    assert!(
-        verify(too_short.as_bytes(), edited.as_slice(), 1604451, 321)
-            .unwrap_err()
-            .cause
-            .contains("presentation bounds")
-    );
-    let too_long = raw_text.replace("1894930,5010,1251647,___", "1894930,500000,1251647,___");
-    assert!(verify(too_long.as_bytes(), edited.as_slice(), 1604451, 321)
+    let long_source = std::str::from_utf8(raw)
+        .unwrap()
+        .replace("1060,20,400,___", "1060,1000,400,___");
+    assert!(verify(long_source.as_bytes(), edited, 80, 4, native)
         .unwrap_err()
         .cause
         .contains("exceeds native sample cadence"));
-}
-
-#[test]
-fn frozen_stop_endpoint_rejects_invalid_clocks_and_more_than_one_track_tick() {
-    let timing = no_reordering_native_timing();
-    let scale = 300_000;
-    let exact = 1_599_459_u128 * 1_000_000_000;
-    let limit = 1_000_000_000 + u128::from(scale - 1);
-    assert_eq!(
-        timing.stop_endpoint_elapsed(exact, scale, limit).unwrap(),
-        Some(timing.stop_pts_ns - timing.start_pts_ns)
-    );
-    assert_eq!(
-        timing
-            .stop_endpoint_elapsed(exact + 2_000_000_000, scale, limit)
-            .unwrap(),
-        None
-    );
-    let mut inconsistent = timing;
-    inconsistent.stop_cadence_ns += 1;
-    assert!(inconsistent
-        .stop_endpoint_elapsed(exact, scale, limit)
-        .is_err());
-    let mut invalid_origin = timing;
-    invalid_origin.start_pts_ns = timing.stop_pts_ns + 1;
-    assert!(invalid_origin
-        .stop_endpoint_elapsed(exact, scale, limit)
-        .is_err());
-    let mut empty_boundary = timing;
-    empty_boundary.stop_pts_ns = timing.last_pts_ns;
-    assert!(empty_boundary
-        .stop_endpoint_elapsed(exact, scale, limit)
-        .is_err());
 }
 
 fn no_reordering_native_timing() -> NativeMovieTiming {
@@ -175,25 +168,24 @@ fn no_reordering_native_timing() -> NativeMovieTiming {
         stop_pts_ns: 393_920_682_150_000,
         stop_cadence_ns: 16_640_000,
         observed_last_pts_ns: 393_920_682_150_000,
+        ..NativeMovieTiming::default()
     }
 }
 
 #[test]
 #[ignore = "requires retained native movie via SHELLX_CAMERA_STOP_NO_REORDERING_FIXTURE"]
-fn retained_no_reordering_movie_runs_owned_full_probe_pipeline() {
+fn retained_movie_full_probe_does_not_invent_missing_completion_clock() {
     let fixture = std::env::var("SHELLX_CAMERA_STOP_NO_REORDERING_FIXTURE").unwrap();
-    let timing = no_reordering_native_timing();
-    let result = verify_movie_edit_list(
+    let failure = verify_movie_edit_list(
         "ffprobe",
         Path::new(&fixture),
-        timing,
+        no_reordering_native_timing(),
         "1/300000",
         1604451,
         "5.348170",
         321,
         Duration::from_secs(30),
     )
-    .unwrap();
-    assert_eq!(result.duration_ms, 5348);
-    assert_eq!(result.start_pts_ns, timing.start_pts_ns);
+    .unwrap_err();
+    assert!(failure.cause.contains("writer-completion clock is missing"));
 }

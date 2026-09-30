@@ -167,9 +167,17 @@ impl NativeCameraRun {
                 &mut timing.stop_pts_ns,
                 &mut timing.stop_cadence_ns,
                 &mut timing.observed_last_pts_ns,
+                &mut timing.stop_request_clock_ns,
+                &mut timing.finish_clock_ns,
             )
         };
         if status == 0 {
+            if timing.finish_clock_ns == 0 {
+                return Err(error(
+                    "stop macOS camera",
+                    "MovieFileOutput did not provide its writer-completion synchronization clock",
+                ));
+            }
             if device_lost == 0 && timing.stop_pts_ns == 0 {
                 return Err(error(
                     "stop macOS camera",
@@ -415,5 +423,7 @@ unsafe extern "C" {
         movie_stop_pts_ns: *mut u64,
         movie_stop_cadence_ns: *mut u64,
         movie_observed_last_pts_ns: *mut u64,
+        movie_stop_request_clock_ns: *mut u64,
+        movie_finish_clock_ns: *mut u64,
     ) -> i32;
 }
