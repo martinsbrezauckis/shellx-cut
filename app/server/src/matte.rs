@@ -148,12 +148,10 @@ pub fn ensure_baked(
                 None => bake_http(asset_path, staged_alpha, m),
             },
             // The resolver selects exactly the requested model before returning.
-            _ => {
-                return Err(io_err(
-                    "select prepared matte runtime",
-                    "model selection mismatch",
-                ))
-            }
+            _ => Err(io_err(
+                "select prepared matte runtime",
+                "model selection mismatch",
+            )),
         },
     )
 }

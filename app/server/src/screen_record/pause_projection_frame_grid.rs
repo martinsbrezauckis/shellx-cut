@@ -111,10 +111,10 @@ fn validate_fragment_evidence(
             })?;
         if fragment.facts.avg_frame_rate.is_none()
             || fragment.facts.r_frame_rate.is_none()
-            || !fragment
+            || fragment
                 .facts
                 .decoded_video_frames
-                .is_some_and(|frames| frames > 0)
+                .is_none_or(|frames| frames == 0)
         {
             return Err(invalid(
                 "sealed screen fragment lacks independently verified source cadence or frames",

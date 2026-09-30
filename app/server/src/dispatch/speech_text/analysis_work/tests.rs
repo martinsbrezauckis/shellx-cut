@@ -262,9 +262,7 @@ async fn later_asset_budget_failure_preserves_timeline_and_durable_log() {
         RetakeWork::new(0),
     )
     .await;
-    let error = result
-        .err()
-        .expect("second asset must exhaust analysis work");
+    let error = result.expect_err("second asset must exhaust analysis work");
     assert_eq!(error.code, error_codes::GUARDRAIL);
     assert_eq!(
         serde_json::to_vec(&state.project.read().await.as_ref().unwrap().project).unwrap(),

@@ -580,27 +580,10 @@ mod tests {
     #[test]
     fn probe_pipeline_keeps_exact_ticks_and_early_numeric_failure_facts() {
         let dir = tempfile::tempdir().unwrap();
-        let probe = dir.path().join("ffprobe-fixture");
-        // Exercise the owned probe route, including both bounded private files.
-        fs::write(&probe, r#"#!/bin/sh
-output=''
-ignore=''
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o) output="$2"; shift ;;
-    -ignore_editlist) ignore="$2"; shift ;;
-  esac
-  shift
-done
-if [ -z "$output" ]; then
-  printf '%s\n' '{"streams":[{"time_base":"1/600","duration_ts":5,"nb_read_frames":"5","nb_read_packets":"5"}],"format":{"duration":"0.008333"}}'
-elif [ "$ignore" = '1' ]; then
-  printf '0,1,50,K__\n1,1,100,K__\n2,1,200,___\n3,1,300,___\n4,1,400,___\n' > "$output"
-else
-  printf '0,1,100,K__\n1,1,200,___\n2,1,300,___\n3,1,400,_D_\n' > "$output"
-fi
-"#).unwrap();
-        fs::set_permissions(&probe, fs::Permissions::from_mode(0o700)).unwrap();
+        // Execute a checked-in immutable fixture: a concurrently spawned test
+        // child must never inherit a writable handle to this executable inode.
+        let probe =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fixtures/mac_camera_exact_probe.sh");
         let mut timing = native();
         timing.last_pts_ns = timing.start_pts_ns + 5_000_000;
         timing.last_cadence_ns = 1_666_667;
@@ -641,7 +624,7 @@ fi
         assert_eq!(facts["presented_duration_ticks"], 3);
         assert_eq!(facts["native"]["callback_count"], 5);
         assert!(json.len() < 2_048);
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         // A complete packet proof rejected at the native endpoint must remain
         // available in the same owned staging directory, with the movie.
         fs::write(&movie, b"owned synthetic rejected movie").unwrap();
@@ -663,7 +646,7 @@ fi
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect();
-        assert_eq!(files.len(), 5); // probe executable, movie, raw/edited rows, raw metadata
+        assert_eq!(files.len(), 4); // movie, raw/edited rows, raw metadata
         for (prefix, expected) in [
             (
                 "camera-raw-packets-",

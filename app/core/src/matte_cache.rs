@@ -143,7 +143,7 @@ pub fn legacy_alpha_path(dir: &Path, hash: &str, matte: &crate::ClipMatte) -> Op
             return None;
         }
         let portable = matte.cache_filename(hash);
-        return Some(dir.join(portable.replacen(&format!("{prefix}={digest}"), hash, 1)));
+        Some(dir.join(portable.replacen(&format!("{prefix}={digest}"), hash, 1)))
     }
     #[cfg(not(unix))]
     {
