@@ -352,15 +352,7 @@ pub(crate) fn cursor_sample_at(
 
 /// Output settings derived from an `EditPlan` (the polished output is the source
 /// resolution by default; an explicit reframe aspect changes it).
-pub fn output_size(plan: &EditPlan) -> (u32, u32) {
-    match plan.reframe {
-        record_core::Reframe::Aspect { w, h } => {
-            // Fit the requested aspect to the source height, even dims.
-            let target_aspect = w as f32 / h as f32;
-            let oh = plan.source_h;
-            let ow = ((oh as f32 * target_aspect).round() as u32) & !1;
-            (ow.max(2), oh & !1)
-        }
-        record_core::Reframe::None => (plan.source_w & !1, plan.source_h & !1),
-    }
+/// Invalid source or derived dimensions return `invalid_args` before allocation.
+pub fn output_size(plan: &EditPlan) -> record_core::Result<(u32, u32)> {
+    plan.checked_output_size()
 }

@@ -18,6 +18,7 @@ pub(crate) enum WindowsPauseSessionError {
     InitialStarted,
     Owner(#[allow(dead_code)] PauseSessionOwnerError),
     Lifecycle,
+    Join(#[allow(dead_code)] record_capture::windows_pause_pilot::WindowsPausePilotChannelError),
     #[cfg(any(windows, target_os = "macos"))]
     Setup,
 }

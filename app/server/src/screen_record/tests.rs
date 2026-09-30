@@ -30,7 +30,9 @@ fn capture_runtime_paths_strip_verbatim_prefix() {
 fn autoedit_config_overrides_engine_plan() {
     let dir = tempfile::tempdir().unwrap();
     let track = dir.path().join("events.json");
-    let plan = dir.path().join("plan.json");
+    let plan = screen_record_cache_dir(dir.path())
+        .unwrap()
+        .join("plan.json");
     std::fs::write(
         &track,
         serde_json::to_vec(&json!({

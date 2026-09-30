@@ -939,7 +939,7 @@
       "group": "left",
       "title": "Import media",
       "where": "Assets tab",
-      "description": "Bring video, audio, and image files into the current project. The first import can become the starting timeline.",
+      "description": "Bring video, audio, and image files into the current project. The first import can become the starting timeline. Use self-contained local media; playlist files are unsupported.",
       "requirement": "Requires readable local media and FFmpeg for probe/proxy work.",
       "api": "media.import, media.probe"
     },

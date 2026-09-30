@@ -1,6 +1,7 @@
 import { useMemo, type MouseEvent } from 'react'
 import type { WordSpan } from '../../lib/client'
 import type { CutSpan } from '../Review/shared'
+import { cutWordsByIndex } from './cutWordProjection'
 
 interface AssetWordsProps {
   assetId: string
@@ -43,11 +44,7 @@ export default function AssetWords({
   onWordActivate,
   onRestore,
 }: AssetWordsProps) {
-  const cutAt = useMemo(() => {
-    const m = new Map<number, CutSpan>()
-    for (const c of cuts) for (let i = c.wordRange[0]; i <= c.wordRange[1]; i++) if (!m.has(i)) m.set(i, c)
-    return m
-  }, [cuts])
+  const cutAt = useMemo(() => cutWordsByIndex(words, cuts), [words, cuts])
 
   const groups = useMemo(() => {
     const out: Array<{ op: CutSpan | null; words: WordSpan[] }> = []

@@ -56,6 +56,10 @@ pub(crate) fn verify_checkpoint_media(
         .args([
             "-v",
             "error",
+            "-protocol_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
             "-count_frames",
             "-show_entries",
             "format=duration:stream=codec_type,codec_name,width,height,nb_read_frames,avg_frame_rate,r_frame_rate",
@@ -77,7 +81,15 @@ pub(crate) fn verify_checkpoint_media(
     let has_audio = media.has_audio;
     let mut decode = Command::new(ffmpeg);
     decode
-        .args(["-v", "error", "-i"])
+        .args([
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
+            "-i",
+        ])
         .arg(path)
         .args(["-map", "0:v:0", "-f", "null", "-"]);
     if !bounded_status(&mut decode, "decode checkpoint video")?.success() {
@@ -86,7 +98,15 @@ pub(crate) fn verify_checkpoint_media(
     if has_audio {
         let mut audio = Command::new(ffmpeg);
         audio
-            .args(["-v", "error", "-i"])
+            .args([
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
+                "-i",
+            ])
             .arg(path)
             .args(["-map", "0:a:0", "-f", "null", "-"]);
         if !bounded_status(&mut audio, "decode checkpoint audio")?.success() {

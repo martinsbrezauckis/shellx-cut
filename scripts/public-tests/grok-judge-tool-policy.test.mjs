@@ -45,99 +45,75 @@ def result(stdout="", stderr="", returncode=0):
     return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-# The version/help admission does not open auth/config or contact a model. It
-# accepts the exact release whose embedded reference documents allow-then-remove
-# and the MCPTool denial rule.
+# Version is informational: opaque, old, failing, and unavailable version
+# probes all retain admission when the actual relied-on flags are advertised.
 observed_probes = []
 def supported_probe(command, **kwargs):
     observed_probes.append(command)
     expect(kwargs.get("encoding") == "utf-8", repr(kwargs))
     if command == ["/fixture/grok", "--version"]:
-        return result("grok 1.0.21 (fixture)\\n")
+        return result("fixture opaque release")
     if command == ["/fixture/grok", "--help"]:
-        return result("\\n".join(grok_tool_policy.REQUIRED_FLAGS))
+        return result("\n".join(grok_tool_policy.JUDGE_REQUIRED_FLAGS + ("--model",)))
     raise AssertionError(f"unexpected capability probe: {command!r}")
 
 with (
     mock.patch.object(grok_tool_policy.shutil, "which", return_value="/fixture/grok"),
     mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=supported_probe),
 ):
-    cli, reason = grok_tool_policy.resolve_grok_tool_policy("grok")
+    cli, reason = grok_tool_policy.resolve_grok_tool_policy(
+        "grok", required_flags=grok_tool_policy.JUDGE_REQUIRED_FLAGS)
 expect(reason is None and cli is not None, repr(reason))
 expect(observed_probes == [["/fixture/grok", "--version"], ["/fixture/grok", "--help"]],
        repr(observed_probes))
-expect(cli["version_tuple"] == (1, 0, 21), repr(cli))
+expect(cli["version"] == "fixture opaque release" and "version_tuple" not in cli, repr(cli))
+expect("minimum_version" not in grok_tool_policy.policy_metadata(cli), repr(cli))
 
-# An old or flag-incomplete wrapper is refused before prompt creation/model run.
-def old_probe(command, **_kwargs):
-    expect(command == ["/fixture/grok", "--version"], repr(command))
-    return result("grok 1.0.20 (fixture)\\n")
-with (
-    mock.patch.object(grok_tool_policy.shutil, "which", return_value="/fixture/grok"),
-    mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=old_probe),
-):
-    old_cli, old_reason = grok_tool_policy.resolve_grok_tool_policy("grok")
-expect(old_cli is None and "requires >= 1.0.21" in (old_reason or ""), repr(old_reason))
-
-# Every failed capability probe is terminal. These branches must neither accept
-# an opaque wrapper nor advance to --help/model execution after version failure.
-for label, failed_result, expected in (
-    ("version error", result(stderr="fixture version error", returncode=7), "exit 7"),
-    ("unknown version", result("fixture release unknown\\n"), "not parseable"),
+for version_result in (
+    result("grok 0.0.1"), result(stderr="version unavailable", returncode=7),
+    subprocess.TimeoutExpired(["/fixture/grok", "--version"], 15), OSError("no version"),
 ):
     observed = []
-    def failed_version(command, **_kwargs):
+    def version_optional(command, **kwargs):
         observed.append(command)
-        return failed_result
+        if command[-1] == "--version":
+            if isinstance(version_result, BaseException):
+                raise version_result
+            return version_result
+        return result("\n".join(grok_tool_policy.JUDGE_REQUIRED_FLAGS))
     with (
         mock.patch.object(grok_tool_policy.shutil, "which", return_value="/fixture/grok"),
-        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=failed_version),
+        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=version_optional),
     ):
-        failed_cli, failed_reason = grok_tool_policy.resolve_grok_tool_policy("grok")
-    expect(failed_cli is None and expected in (failed_reason or ""),
-           f"{label}: {failed_reason!r}")
-    expect(observed == [["/fixture/grok", "--version"]],
-           f"{label} advanced after version failure: {observed!r}")
+        admitted, reason = grok_tool_policy.resolve_grok_tool_policy(
+            "grok", required_flags=grok_tool_policy.JUDGE_REQUIRED_FLAGS)
+    expect(admitted is not None and reason is None, repr(reason))
+    expect(len(observed) == 2 and observed[-1][-1] == "--help", repr(observed))
 
-for label, failed_exception in (
-    ("version timeout", subprocess.TimeoutExpired(["/fixture/grok", "--version"], 15)),
-    ("version OSError", OSError("fixture version unavailable")),
+for failed_help in (
+    result(stderr="fixture help error", returncode=9),
+    subprocess.TimeoutExpired(["/fixture/grok", "--help"], 15), OSError("help unavailable"),
+    result("--tools --deny"),
+    result(" ".join(flag + "-other" for flag in grok_tool_policy.REQUIRED_FLAGS)),
 ):
     with (
         mock.patch.object(grok_tool_policy.shutil, "which", return_value="/fixture/grok"),
-        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=failed_exception),
+        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=[result("opaque"), failed_help]),
     ):
-        failed_cli, failed_reason = grok_tool_policy.resolve_grok_tool_policy("grok")
-    expect(failed_cli is None and "could not verify Grok no-tool policy version" in (failed_reason or ""),
-           f"{label}: {failed_reason!r}")
+        failed_cli, reason = grok_tool_policy.resolve_grok_tool_policy("grok")
+    expect(failed_cli is None and reason, repr(reason))
 
-for label, failed_help in (
-    ("help error", result(stderr="fixture help error", returncode=9)),
-    ("help timeout", subprocess.TimeoutExpired(["/fixture/grok", "--help"], 15)),
-    ("help OSError", OSError("fixture help unavailable")),
-):
+# Judge-specific flags are capabilities too, including its retained --no-memory.
+for absent in grok_tool_policy.JUDGE_REQUIRED_FLAGS + ("--model",):
+    flags = [flag for flag in grok_tool_policy.JUDGE_REQUIRED_FLAGS + ("--model",) if flag != absent]
     with (
         mock.patch.object(grok_tool_policy.shutil, "which", return_value="/fixture/grok"),
-        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=[
-            result("grok 1.0.21 (fixture)\\n"), failed_help,
-        ]),
+        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=[result("opaque"), result(" ".join(flags))]),
+        mock.patch.object(grok_judge, "build_content_blocks") as no_blocks,
     ):
-        failed_cli, failed_reason = grok_tool_policy.resolve_grok_tool_policy("grok")
-    expected = ("could not verify Grok no-tool policy flags"
-                if isinstance(failed_help, BaseException)
-                else "complete no-tool judge policy")
-    expect(failed_cli is None and expected in (failed_reason or ""),
-           f"{label}: {failed_reason!r}")
-
-with (
-    mock.patch.object(grok_tool_policy.shutil, "which", return_value="/fixture/grok"),
-    mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=[
-        result("grok 1.0.21 (fixture)\\n"), result("--tools\\n--deny\\n"),
-    ]),
-):
-    missing_cli, missing_reason = grok_tool_policy.resolve_grok_tool_policy("grok")
-expect(missing_cli is None and "complete no-tool judge policy" in (missing_reason or ""),
-       repr(missing_reason))
+        review, meta, reason = grok_judge.invoke_grok(
+            "grok", "system", "user", "selected-model", ["/unused.jpg"], "/fixture", 10)
+    expect(review is None and absent in reason and not no_blocks.called, repr((absent, reason)))
 
 # detect preserves canonical auth ownership: it has no ~/.grok directory probe.
 with (
@@ -181,24 +157,22 @@ with (
 expect(review is None and meta["available"] is False and error == "policy missing", repr((meta, error)))
 expect(not no_blocks.called and not no_model.called, "unsupported policy reached prompt/model path")
 
-# Exercise the real old-version resolver through invoke_grok. It must stop at
-# the version probe, create no prompt-file, and make no model-shaped command.
+# Missing policy stops before prompt-file creation or model execution.
 with tempfile.TemporaryDirectory() as unsupported_workspace:
-    old_probe_calls = []
-    def old_invoke_probe(command, **_kwargs):
-        old_probe_calls.append(command)
-        return result("grok 1.0.20 (fixture)\\n")
+    calls = []
+    def missing_policy(command, **kwargs):
+        calls.append(command)
+        return result("opaque" if command[-1] == "--version" else "--output-format")
     with (
         mock.patch.object(grok_tool_policy.shutil, "which", return_value="/fixture/grok"),
-        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=old_invoke_probe),
+        mock.patch.object(grok_tool_policy.subprocess, "run", side_effect=missing_policy),
     ):
         review, meta, error = grok_judge.invoke_grok(
             "grok", "system", "user", "", ["/unused.jpg"], unsupported_workspace, 10)
-    expect(review is None and meta["available"] is False and "requires >= 1.0.21" in (error or ""),
-           repr((meta, error)))
-    expect(old_probe_calls == [["/fixture/grok", "--version"]], repr(old_probe_calls))
+    expect(review is None and meta["available"] is False and error, repr((meta, error)))
+    expect([command[-1] for command in calls] == ["--version", "--help"], repr(calls))
     expect(not os.path.exists(os.path.join(unsupported_workspace, "_grok_prompt.json")),
-           "unsupported version created a prompt-file")
+           "unsupported capabilities created a prompt-file")
 
 # Mock protocol completion verifies the production argv and keeps the image as
 # an inline ACP block; no live provider, auth, or configured MCP is contacted.
@@ -245,7 +219,7 @@ with tempfile.TemporaryDirectory() as workspace:
         review, meta, error = grok_judge.invoke_grok(
             "grok", "system", "user", "grok-build", [frame], workspace, 10)
     expect(error is None and review is not None and review["verdict"] == "pass", repr((review, error)))
-    expect(meta["tool_policy"]["version"].startswith("grok 1.0.21 (fixture)"), repr(meta))
+    expect(meta["tool_policy"]["version"] == "fixture opaque release", repr(meta))
     expect(meta["tool_policy"]["mcp_tool_invocations"] == "denied", repr(meta))
     expect(observed_command.count("--deny") == 1, repr(observed_command))
 

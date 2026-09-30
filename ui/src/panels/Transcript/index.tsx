@@ -27,6 +27,7 @@ import { callVerb, type OpRecord, type Project, type Transcript as TranscriptDat
 import { events } from '../../lib/events'
 import { fetchDoctor, setupPerception, type DoctorCard } from '../../lib/doctor'
 import AssetWords from './AssetWords'
+import { cutSpansByAsset } from './cutWordProjection'
 import ChapterNavigation from './ChapterNavigation'
 import ReelTray from './ReelTray'
 import TranscriptPhraseList from './TranscriptPhraseList'
@@ -34,7 +35,7 @@ import TranscriptSetupCard from './TranscriptSetupCard'
 import type { TimelineWord } from '../../lib/client'
 import { chaptersOf, isObject, numberField, reelSnippet, searchResultFrom, selRange, timelineEntriesFrom, type Aggressiveness, type ReelSpan, type Sel } from './model'
 import { TRANSCRIPT_CHAPTER_REQUEST_LIMIT, type ChapterAssetAvailability, type TranscriptChapter } from './chapterNavigationModel'
-import { activeCutSpans, dispatchVerb, fmtDur, fmtTc, seekPlayhead, type CutSpan } from '../Review/shared'
+import { activeCutSpans, dispatchVerb, fmtDur, fmtTc, seekPlayhead } from '../Review/shared'
 import { sourceAtPlayhead } from '../Timeline/layout'
 import { Icon } from '../../icons'
 import { runUserVerb } from '../../lib/userActionFeedback'
@@ -303,11 +304,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
   )
 
   // op-id → removed word ranges, per asset (Review/shared owns the rules).
-  const cutsByAsset = useMemo(() => {
-    const map: Record<string, CutSpan[]> = {}
-    for (const span of activeCutSpans(ops)) (map[span.asset] ??= []).push(span)
-    return map
-  }, [ops])
+  const cutsByAsset = useMemo(() => cutSpansByAsset(activeCutSpans(ops)), [ops])
 
   // --- playhead → active word (+ auto-scroll) -------------------------------
   // Map the timeline playhead back to the asset's source milliseconds by walking the
@@ -1111,7 +1108,7 @@ export default function Transcript({ project, ops, playheadMs, selectedClipId, t
             key={assetId}
             assetId={assetId}
             words={all[assetId].words}
-            cuts={cutsByAsset[assetId] ?? []}
+            cuts={cutsByAsset.get(assetId) ?? []}
             muted={mutedByAsset.get(assetId) ?? []}
             ignored={ignoredByAsset.get(assetId) ?? []}
             activeIdx={active?.asset === assetId ? active.idx : -1}

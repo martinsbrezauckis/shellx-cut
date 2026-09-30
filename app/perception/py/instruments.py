@@ -58,7 +58,7 @@ the fallback is logged to stderr and visible in words.model provenance.
 
 from __future__ import annotations
 
-from local_media_io import input_args, protect_inputs, video_capture, scene_video
+from local_media_io import input_args, protect_inputs, video_capture, scene_video, movie_format_options
 import argparse
 import hashlib
 import json
@@ -239,7 +239,7 @@ def audio_energy_envelope(path: str, step_ms: int = 100) -> list:
     proc = subprocess.run(
         [FFPROBE_BIN, "-v", "error",
          "-f", "lavfi",
-         *input_args(f"amovie={path},astats=metadata=1:reset={max(1, step_ms // 10)}"),
+         *input_args(f"amovie={path}:{movie_format_options()},astats=metadata=1:reset={max(1, step_ms // 10)}"),
          "-show_entries", "frame_tags=lavfi.astats.Overall.RMS_level",
          "-of", "csv=p=0"],
         capture_output=True, text=True, timeout=60,

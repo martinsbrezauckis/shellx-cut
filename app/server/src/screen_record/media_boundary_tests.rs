@@ -1,0 +1,206 @@
+//! Real software FFmpeg checks of the recorder's local-input boundaries.
+use record_render::ffmpeg::{self, ProcessControl};
+use std::net::TcpListener;
+use std::path::Path;
+use std::time::Duration;
+
+fn video(path: &Path, color: &str) {
+    assert!(std::process::Command::new(cut_media::toolpath::ffmpeg())
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("color=c={color}:size=160x90:rate=25:duration=0.4"),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p"
+        ])
+        .arg(path)
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
+fn recorder_local_formats_block_playlists_in_probe_grab_camera_raw_and_gif() {
+    super::align_ffmpeg_env();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/private.ts", listener.local_addr().unwrap());
+    let hostile = dir.path().join("disguised.mp4");
+    std::fs::write(
+        &hostile,
+        format!("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n{url}\n#EXT-X-ENDLIST\n"),
+    )
+    .unwrap();
+    let control = ProcessControl::bounded(Duration::from_secs(10), || false);
+    let source = hostile.to_str().unwrap();
+    assert!(ffmpeg::probe_with_control(source, &control).is_err());
+    assert!(ffmpeg::grab_frame_with_control(source, 0, &control).is_err());
+    let mut camera = ffmpeg::stream_square_with_control(source, 32, 25.0, &control).unwrap();
+    assert!(camera.at(0).is_err());
+    drop(camera);
+    assert!(
+        super::mux_raw_with_control(&hostile, None, &dir.path().join("raw.mp4"), &control).is_err()
+    );
+    assert!(
+        super::gif_with_control(&hostile, &dir.path().join("out.gif"), 10, 160, &control).is_err()
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "hostile media must create zero loopback connections"
+    );
+
+    // Local concat is dangerous too: protocol fencing alone permits this file
+    // reference. The format policy must refuse it before decoding that media.
+    let outside = tempfile::tempdir().unwrap();
+    let referenced = outside.path().join("outside.mp4");
+    video(&referenced, "red");
+    std::fs::write(
+        &hostile,
+        format!("ffconcat version 1.0\nfile '{}'\n", referenced.display()),
+    )
+    .unwrap();
+    assert!(ffmpeg::probe_with_control(source, &control).is_err());
+    assert!(ffmpeg::grab_frame_with_control(source, 0, &control).is_err());
+    let mut camera = ffmpeg::stream_square_with_control(source, 32, 25.0, &control).unwrap();
+    assert!(camera.at(0).is_err());
+    assert!(
+        super::mux_raw_with_control(&hostile, None, &dir.path().join("concat.mp4"), &control)
+            .is_err()
+    );
+}
+
+#[test]
+fn admitted_captured_and_registered_cameras_render_real_frames_and_cache_normally() {
+    super::align_ffmpeg_env();
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.mp4");
+    let local_camera = dir.path().join("camera.mp4");
+    let external_camera = outside.path().join("registered.mp4");
+    video(&source, "blue");
+    video(&local_camera, "red");
+    video(&external_camera, "green");
+    let mut project = cut_core::Project::new("camera", Default::default());
+    project.assets.insert(
+        "registered".into(),
+        cut_core::Asset {
+            path: external_camera.to_string_lossy().into_owned(),
+            hash: "synthetic".into(),
+            probe: None,
+            transcript: None,
+            perception: None,
+            proxy: None,
+            filmstrip: None,
+        },
+    );
+    let cache = super::screen_record_cache_dir(dir.path()).unwrap();
+    let control = ProcessControl::bounded(Duration::from_secs(30), || false);
+    for (name, camera) in [("captured", local_camera), ("registered", external_camera)] {
+        let mut plan = super::plan_inputs::tests::camera_plan(&camera);
+        plan.duration_ms = 400;
+        plan.frame.enabled = false;
+        super::plan_inputs::admit(dir.path(), &project, &mut plan).unwrap();
+        let output = cache.join(format!("{name}.mp4"));
+        let mut rendered_frames = 0;
+        super::cache_output::bake_seed(&output, |stage| {
+            rendered_frames = super::render_with_control(&source, &plan, stage, None, &control)?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(rendered_frames, 10);
+        super::cache_output::bake_seed(&output, |_| panic!("warm bake rerendered")).unwrap();
+        let facts = ffmpeg::probe_with_control(output.to_str().unwrap(), &control).unwrap();
+        assert_eq!((facts.w, facts.h), (160, 90));
+        let (width, height, frame) =
+            ffmpeg::grab_frame_with_control(output.to_str().unwrap(), 0, &control).unwrap();
+        assert_eq!((width, height), (160, 90));
+        // The overlay must actually deliver pixels different from the blue main
+        // capture; admission alone does not certify camera decoder continuity.
+        assert!(frame
+            .chunks_exact(4)
+            .any(|pixel| pixel[0] > pixel[2] || pixel[1] > pixel[2]));
+    }
+    let raw = cache.join("raw.mp4");
+    super::cache_output::bake_seed(&raw, |stage| {
+        super::mux_raw_with_control(&source, None, stage, &control)
+    })
+    .unwrap();
+    let gif = dir.path().join("export.gif");
+    super::gif_with_control(&raw, &gif, 10, 160, &control).unwrap();
+    assert!(std::fs::metadata(gif).unwrap().len() > 0);
+}
+
+#[test]
+fn recorder_raw_and_audio_mix_file_inputs_refuse_local_concat_playlists() {
+    super::align_ffmpeg_env();
+    let dir = tempfile::tempdir().unwrap();
+    let capture = super::screen_record_cache_dir(dir.path())
+        .unwrap()
+        .join("capture");
+    std::fs::create_dir(&capture).unwrap();
+    let source = capture.join("source.mp4");
+    video(&source, "blue");
+    let outside = tempfile::tempdir().unwrap();
+    let audio = outside.path().join("outside.wav");
+    assert!(std::process::Command::new(cut_media::toolpath::ffmpeg())
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=0.4",
+            "-c:a",
+            "pcm_s16le"
+        ])
+        .arg(&audio)
+        .status()
+        .unwrap()
+        .success());
+    let original = std::fs::read(&audio).unwrap();
+    let playlist = format!("ffconcat version 1.0\nfile '{}'\n", audio.display());
+    let mic = capture.join("mic.wav");
+    let system = capture.join("system.wav");
+    std::fs::write(
+        capture.join("system-audio.json"),
+        br#"{"schema":"shellx-cut/system-audio-timing/1","first_packet_offset_ms":1}"#,
+    )
+    .unwrap();
+    let control = ProcessControl::bounded(Duration::from_secs(10), || false);
+    let output = dir.path().join("raw.mp4");
+    for (mic_bytes, system_bytes) in [
+        (None, playlist.as_bytes()),
+        (Some(original.as_slice()), playlist.as_bytes()),
+        (Some(playlist.as_bytes()), original.as_slice()),
+    ] {
+        if let Some(bytes) = mic_bytes {
+            std::fs::write(&mic, bytes).unwrap();
+        }
+        std::fs::write(&system, system_bytes).unwrap();
+        let prepared = super::export_audio_for_source(dir.path(), &source).unwrap();
+        assert!(prepared.prepare(dir.path(), &control).is_err());
+        assert!(super::mux_raw_sources(
+            &source,
+            mic_bytes.map(|_| mic.as_path()),
+            Some(&system),
+            Some(1),
+            &output
+        )
+        .is_err());
+    }
+    assert_eq!(std::fs::read(&audio).unwrap(), original);
+    assert!(!std::fs::read_dir(dir.path()).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".cut-recorder-export-audio-")));
+}

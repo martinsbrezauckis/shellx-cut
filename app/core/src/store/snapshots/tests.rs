@@ -46,6 +46,44 @@ fn journal(ops: &[OpRecord]) -> crate::ops::JournalView {
 }
 
 #[test]
+fn checksum_valid_snapshot_with_unsupported_ramp_counts_falls_back_to_journal() {
+    let temp = tempfile::tempdir().unwrap();
+    let ops = marker_log(1);
+    let expected = rebuild_from_log(&ops).unwrap();
+    let journal = journal(&ops);
+    for field in ["segments", "preferred_segments"] {
+        for count in [121, usize::MAX] {
+            let mut forged = expected.clone();
+            let mut clip = crate::edit::make_media_clip("c1", "a1", 0, 1000);
+            clip.speed_ramp = Some(crate::types::SpeedRamp {
+                points: vec![
+                    crate::types::SpeedRampPoint {
+                        at_ms: 0,
+                        factor: 1.0,
+                    },
+                    crate::types::SpeedRampPoint {
+                        at_ms: 1000,
+                        factor: 1.0,
+                    },
+                ],
+                segments: if field == "segments" { count } else { 2 },
+                preferred_segments: (field == "preferred_segments").then_some(count),
+                timebase_fps: None,
+                timebase_audio_rate: None,
+            });
+            forged.track_mut("v1").unwrap().clips = vec![crate::types::Clip::Media(clip)];
+            // write computes matching project and journal-prefix hashes: the
+            // semantic guard must reject even a checksum-consistent import.
+            write(temp.path(), &journal, &forged).unwrap();
+            let (rebuilt, stats) = rebuild(temp.path(), &journal, ops.len()).unwrap();
+            assert_eq!(rebuilt, expected);
+            assert_eq!(stats.snapshot_prefix, 0);
+            assert!(stats.rejected_snapshot);
+        }
+    }
+}
+
+#[test]
 fn nearest_verified_snapshot_replays_only_the_suffix_with_cold_parity() {
     let temp = tempfile::tempdir().unwrap();
     let ops = marker_log(6);

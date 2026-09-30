@@ -163,6 +163,8 @@ impl CaptureExportAudio {
                     .args([
                         "-protocol_whitelist",
                         cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                        "-format_whitelist",
+                        cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                         "-i",
                     ])
                     .arg(system);
@@ -176,12 +178,16 @@ impl CaptureExportAudio {
                     .args([
                         "-protocol_whitelist",
                         cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                        "-format_whitelist",
+                        cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                         "-i",
                     ])
                     .arg(mic)
                     .args([
                         "-protocol_whitelist",
                         cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                        "-format_whitelist",
+                        cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                         "-i",
                     ])
                     .arg(system);

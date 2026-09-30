@@ -361,6 +361,51 @@ pub struct EditPlan {
 }
 
 impl EditPlan {
+    /// Bound source and derived output geometry before any renderer allocation.
+    /// Keep the renderer's historical f32 ratio rounding and even sizing.
+    pub fn checked_output_size(&self) -> crate::error::Result<(u32, u32)> {
+        use crate::error::{error_codes, RecordError};
+        const MAX_DIM: u32 = 8192;
+        const MAX_PIXELS: usize = MAX_DIM as usize * MAX_DIM as usize;
+        const MAX_RGBA_BYTES: usize = MAX_PIXELS * 4;
+        let bad = |cause| RecordError::new(error_codes::INVALID_ARGS, "invalid edit plan", cause);
+        if self.source_w == 0 || self.source_h == 0 {
+            return Err(bad("source dimensions must be non-zero"));
+        }
+        if self.source_w > MAX_DIM || self.source_h > MAX_DIM {
+            return Err(bad("source dimensions exceed the 8192px limit"));
+        }
+        let (width, height) = match self.reframe {
+            Reframe::None => (self.source_w & !1, self.source_h & !1),
+            Reframe::Aspect { w, h } => {
+                if w == 0 || h == 0 {
+                    return Err(bad("reframe aspect width/height must be non-zero"));
+                }
+                let rounded_width = (self.source_h as f32 * (w as f32 / h as f32)).round();
+                // Check before the float-to-integer cast can saturate. Values
+                // below 8194 can still round down to the accepted even 8192.
+                if !rounded_width.is_finite() || rounded_width >= (MAX_DIM + 2) as f32 {
+                    return Err(bad("derived output dimensions exceed the 8192px limit"));
+                }
+                (((rounded_width as u32) & !1).max(2), self.source_h & !1)
+            }
+        };
+        if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
+            return Err(bad(
+                "derived output dimensions must be non-zero and at most 8192px",
+            ));
+        }
+        let pixels = (width as usize)
+            .checked_mul(height as usize)
+            .filter(|&pixels| pixels <= MAX_PIXELS)
+            .ok_or_else(|| bad("derived output exceeds the pixel limit"))?;
+        pixels
+            .checked_mul(4)
+            .filter(|&bytes| bytes <= MAX_RGBA_BYTES)
+            .ok_or_else(|| bad("derived output exceeds the RGBA byte limit"))?;
+        Ok((width, height))
+    }
+
     /// A no-effects plan sized to a source — the engine starts here and fills it.
     pub fn empty(source_w: u32, source_h: u32, duration_ms: u64, fps: f32) -> Self {
         Self {
@@ -387,7 +432,6 @@ impl EditPlan {
     /// Bounds are generous for a standalone tool; a daemon should tighten them.
     pub fn validate(&self) -> crate::error::Result<()> {
         use crate::error::{error_codes, RecordError};
-        const MAX_DIM: u32 = 8192;
         const MAX_FPS: f32 = 240.0;
         const MAX_EFFECTS: usize = 200_000;
         let bad = |m: &str| {
@@ -398,19 +442,9 @@ impl EditPlan {
             )
         };
 
-        if self.source_w == 0 || self.source_h == 0 {
-            return Err(bad("source dimensions must be non-zero"));
-        }
-        if self.source_w > MAX_DIM || self.source_h > MAX_DIM {
-            return Err(bad("source dimensions exceed the 8192px limit"));
-        }
+        self.checked_output_size()?;
         if !(self.fps.is_finite() && self.fps > 0.0 && self.fps <= MAX_FPS) {
             return Err(bad("fps must be finite and in (0, 240]"));
-        }
-        if let Reframe::Aspect { w, h } = self.reframe {
-            if w == 0 || h == 0 {
-                return Err(bad("reframe aspect width/height must be non-zero"));
-            }
         }
         if self.zoom.keys.len() > MAX_EFFECTS
             || self.clicks.len() > MAX_EFFECTS
@@ -494,6 +528,73 @@ impl EditPlan {
 
 #[cfg(test)]
 mod validate_tests {
+    #[test]
+    fn output_geometry_preserves_even_rounding_and_large_equivalent_ratios() {
+        let mut plan = super::EditPlan::empty(1921, 1081, 1000, 30.0);
+        assert_eq!(plan.checked_output_size().unwrap(), (1920, 1080));
+        for (w, h, expected) in [
+            (9, 16, 608),
+            (1, 1, 1080),
+            (16, 9, 1922),
+            (4_000_000_000, 4_000_000_000, 1080),
+            (1, u32::MAX, 2),
+        ] {
+            plan.reframe = super::Reframe::Aspect { w, h };
+            assert_eq!(plan.checked_output_size().unwrap(), (expected, 1080));
+            plan.validate().unwrap();
+        }
+        plan.source_h = 1080;
+        for (w, h, expected) in [
+            (9, 16, 608),
+            (1, 1, 1080),
+            (16, 9, 1920),
+            (3_200_000_000, 1_800_000_000, 1920),
+        ] {
+            plan.reframe = super::Reframe::Aspect { w, h };
+            assert_eq!(plan.checked_output_size().unwrap(), (expected, 1080));
+        }
+    }
+
+    #[test]
+    fn output_geometry_rejects_extreme_zero_and_saturating_inputs() {
+        for (sw, sh, aspect) in [
+            (1920, 1080, Some((10_000, 1))),
+            (1920, 1080, Some((u32::MAX, 1))),
+            (1920, 1080, Some((0, 1))),
+            (1920, 1080, Some((1, 0))),
+            (0, 1080, None),
+            (8193, 1080, None),
+            (1, 1080, None),
+            (1920, 1, None),
+            (1920, 1, Some((1, 1))),
+        ] {
+            let mut plan = super::EditPlan::empty(sw, sh, 1000, 30.0);
+            if let Some((w, h)) = aspect {
+                plan.reframe = super::Reframe::Aspect { w, h };
+            }
+            assert_eq!(
+                plan.checked_output_size().unwrap_err().code,
+                crate::error_codes::INVALID_ARGS
+            );
+            assert_eq!(
+                plan.validate().unwrap_err().code,
+                crate::error_codes::INVALID_ARGS
+            );
+        }
+    }
+
+    #[test]
+    fn output_geometry_accepts_source_ceiling_and_even_boundary() {
+        let mut plan = super::EditPlan::empty(8192, 8192, 1000, 30.0);
+        assert_eq!(plan.checked_output_size().unwrap(), (8192, 8192));
+        plan.validate().unwrap();
+        plan.source_h = 2;
+        plan.reframe = super::Reframe::Aspect { w: 8193, h: 2 };
+        assert_eq!(plan.checked_output_size().unwrap(), (8192, 2));
+        plan.reframe = super::Reframe::Aspect { w: 8194, h: 2 };
+        assert!(plan.checked_output_size().is_err());
+    }
+
     use super::*;
 
     #[test]

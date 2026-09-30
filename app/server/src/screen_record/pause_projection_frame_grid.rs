@@ -1,9 +1,10 @@
-//! Strict, private frame-grid qualification for a future pause source writer.
+//! Private source qualification and exact output frame-grid planning.
 //!
 //! Legacy v1 projection remains intentionally available for journals without
 //! cadence/probe evidence. This companion plan is opt-in and fail-closed: it
-//! turns the backend request into an output policy only after every sealed
-//! screen fragment proves the same exact frame rate and frame count.
+//! keeps independently probed source cadence separate from the requested CFR
+//! output. The writer validates source presentation timestamps and normalizes
+//! each source before applying explicitly journaled encoder-gap padding.
 
 use cut_core::{error_codes, CutError};
 use record_core::{CaptureCadence, FrameRate, Settings};
@@ -15,7 +16,7 @@ use super::pause_projection::{
     plan_legacy_root_projection, LegacyRootProjectionPlan, SealedLegacyProjectionRun,
 };
 
-/// An expected CFR source policy paired with the legacy output plan. It is not
+/// An expected CFR output policy paired with the legacy output plan. It is not
 /// media verification: a future writer must still prove output frame count/rate
 /// before publishing any artifact.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,12 +109,15 @@ fn validate_fragment_evidence(
             .ok_or_else(|| {
                 invalid("frame-grid source span is not backed by a sealed screen fragment")
             })?;
-        if fragment.facts.avg_frame_rate != Some(source_grid.output_frame_rate)
-            || fragment.facts.r_frame_rate != Some(source_grid.output_frame_rate)
-            || fragment.facts.decoded_video_frames != Some(grid_span.frame_count())
+        if fragment.facts.avg_frame_rate.is_none()
+            || fragment.facts.r_frame_rate.is_none()
+            || !fragment
+                .facts
+                .decoded_video_frames
+                .is_some_and(|frames| frames > 0)
         {
             return Err(invalid(
-                "sealed screen fragment probe cadence or decoded frame count drifts from frame-grid policy",
+                "sealed screen fragment lacks independently verified source cadence or frames",
             ));
         }
     }
@@ -131,7 +135,7 @@ fn invalid(detail: impl Into<String>) -> CutError {
         detail.into(),
     )
     .with_suggested_action(
-        "retain sealed fragments and require matching verified cadence before source assembly",
+        "retain sealed fragments and require independently verified source timing before source assembly",
     )
 }
 

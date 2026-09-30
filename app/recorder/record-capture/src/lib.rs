@@ -253,7 +253,15 @@ mod windows_region_capture;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_runtime;
 #[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_encoder;
+#[cfg(all(windows, feature = "capture-windows"))]
 mod windows_wgc_handler;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod windows_wgc_sample_clock;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod windows_wgc_sample_queue;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_surface;
 
 // REC-CAMERA-01c is a private Media Foundation Capture Engine adapter. It has
 // no server verb, UI registration, Doctor card, or public device identity.
@@ -285,6 +293,8 @@ mod windows_probe;
 mod macos;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_camera;
+#[cfg(all(unix, any(test, all(target_os = "macos", feature = "capture-macos"))))]
+mod macos_camera_clock;
 #[cfg(all(unix, any(test, all(target_os = "macos", feature = "capture-macos"))))]
 mod macos_camera_edit_list;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]

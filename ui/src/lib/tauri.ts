@@ -651,14 +651,14 @@ export function onFileDrop(handlers: {
  * app is focused, which is essential for a screen recorder (the Cut window is
  * backgrounded the whole time it records other apps, so a focused-window
  * keydown can never reliably STOP a capture). The Rust handler emits the
- * `cut:record-hotkey` Tauri event; this helper delivers it to the Record panel,
- * which toggles start⇄stop.
+ * `cut:record-hotkey` Tauri event; the app-level recording session subscribes
+ * here and toggles start⇄stop in either Edit or Record.
  *
  * Same `window.__TAURI__.event.listen` path as onFileDrop (withGlobalTauri ⇒ no
  * @tauri-apps/api bundle needed; the engine-served remote origin is granted
  * core:event:allow-listen). Returns an unsubscribe fn; a NO-OP outside Tauri
  * (the plain web/dev build has no shell, so there is no global hotkey there —
- * the Record panel keeps its in-page F9 keydown fallback for that case).
+ * the app-level session keeps its focused-window F9 fallback for that case).
  */
 export function onRecordHotkey(cb: () => void): () => void {
   const t = tauri()

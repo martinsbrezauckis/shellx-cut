@@ -18,6 +18,8 @@ pub(crate) fn mux_raw_sources(
         .args([
             "-protocol_whitelist",
             cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
             "-i",
         ])
         .arg(source);
@@ -29,6 +31,8 @@ pub(crate) fn mux_raw_sources(
             cmd.args([
                 "-protocol_whitelist",
                 cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                 "-i",
             ])
             .arg(audio)
@@ -53,6 +57,8 @@ pub(crate) fn mux_raw_sources(
             cmd.args([
                 "-protocol_whitelist",
                 cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                 "-i",
             ])
             .arg(system)
@@ -72,6 +78,8 @@ pub(crate) fn mux_raw_sources(
             cmd.args([
                 "-protocol_whitelist",
                 cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                 "-i",
             ])
             .arg(mic);
@@ -83,6 +91,8 @@ pub(crate) fn mux_raw_sources(
             cmd.args([
                 "-protocol_whitelist",
                 cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                 "-i",
             ])
             .arg(system);

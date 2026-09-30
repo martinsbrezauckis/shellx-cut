@@ -69,6 +69,103 @@ fn reopen_from_journal(dir: &std::path::Path) -> ProjectStore {
 }
 
 #[test]
+fn invalid_project_cache_ramp_counts_rebuild_from_supported_journal() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = ProjectStore::create(temp.path(), "cache", Some(settings(30.0))).unwrap();
+    add_media_and_clip(&mut store);
+    store
+        .apply("edit.speed_ramp", ramp_args(None), Actor::system(), None)
+        .unwrap();
+    let before = store.project.clone();
+    let dir = store.dir.clone();
+    drop(store);
+    for field in ["segments", "preferred_segments"] {
+        for count in [121, usize::MAX] {
+            let mut cache = serde_json::to_value(&before).unwrap();
+            cache["tracks"][0]["clips"][0]["speed_ramp"][field] = json!(count);
+            std::fs::write(
+                dir.join("project.json"),
+                serde_json::to_vec(&cache).unwrap(),
+            )
+            .unwrap();
+            let reopened = ProjectStore::open(&dir).unwrap();
+            assert_eq!(reopened.project, before);
+        }
+    }
+}
+
+#[test]
+fn imported_ramp_counts_are_rejected_without_mutating_restore_state() {
+    for field in ["segments", "preferred_segments"] {
+        for count in [121, usize::MAX] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut store =
+                ProjectStore::create(temp.path(), "counts", Some(settings(30.0))).unwrap();
+            add_media_and_clip(&mut store);
+            let before = store.project.clone();
+            let prior = store.log.read_all().unwrap();
+            let mut snapshot = timeline_snapshot(&before).args;
+            let mut bad_ramp = json!({
+                "segments": 2,
+                "points": [{"at_ms":0,"factor":1.0},{"at_ms":5000,"factor":1.0}]
+            });
+            bad_ramp[field] = json!(count);
+            snapshot["tracks"][0]["clips"][0]["speed_ramp"] = bad_ramp;
+            for detail_key in ["restored_timeline", "rebase_new_timeline"] {
+                let mut detail = serde_json::Map::new();
+                detail.insert(detail_key.into(), snapshot.clone());
+                let record = OpRecord {
+                    op_id: store.log.next_id().unwrap(),
+                    ts: OpRecord::now_ts(),
+                    actor: Actor::system(),
+                    verb: "edit.restore".into(),
+                    args: json!({}),
+                    rationale: None,
+                    effects: vec![crate::ops::OpEffect {
+                        track: None,
+                        detail,
+                    }],
+                    inverse: None,
+                    status: OpStatus::Applied,
+                };
+                let mut candidate = before.clone();
+                assert!(apply_record(&mut candidate, &record, &prior).is_err());
+                assert_eq!(candidate, before);
+            }
+            let mut original = prior.last().unwrap().clone();
+            original.inverse = Some(crate::ops::InverseOp {
+                verb: "edit._set_timeline".into(),
+                args: snapshot.clone(),
+            });
+            let legacy_restore = OpRecord {
+                op_id: store.log.next_id().unwrap(),
+                ts: OpRecord::now_ts(),
+                actor: Actor::system(),
+                verb: "edit.restore".into(),
+                args: json!({"op_id": original.op_id}),
+                rationale: None,
+                effects: vec![],
+                inverse: None,
+                status: OpStatus::Applied,
+            };
+            let mut candidate = before.clone();
+            assert!(apply_record(&mut candidate, &legacy_restore, &[original]).is_err());
+            assert_eq!(candidate, before);
+
+            let imported = OpRecord {
+                effects: vec![edit::fx(None, json!({"restored_timeline": snapshot}))],
+                ..legacy_restore
+            };
+            store.log.append(&imported).unwrap();
+            let dir = store.dir.clone();
+            drop(store);
+            let error = ProjectStore::open(&dir).unwrap_err();
+            assert_eq!(error.code, codes::INVALID_ARGS, "{error}");
+        }
+    }
+}
+
+#[test]
 fn historic_ramp_op_reopens_with_millisecond_semantics() {
     let temp = tempfile::tempdir().unwrap();
     let (dir, journal, legacy_duration) = {

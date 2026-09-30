@@ -5,6 +5,12 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
+mod media_paths;
+use media_paths::media_path;
+
+#[cfg(test)]
+mod boundary_tests;
+
 const MAX_OTIO_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OTIO_TRACKS: usize = 128;
 const MAX_OTIO_ITEMS: usize = 50_000;
@@ -340,87 +346,6 @@ fn load_file(requested: &str) -> Result<LoadedOtio, CutError> {
         tracks,
         source_format,
     })
-}
-
-fn media_path(url: &str) -> Result<PathBuf, CutError> {
-    let mut encoded = if let Some(rest) = url.strip_prefix("file://") {
-        if let Some(local) = rest.strip_prefix("localhost/") {
-            format!("/{local}")
-        } else if rest.starts_with('/') {
-            rest.to_string()
-        } else {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                "OTIO media URI has a remote file authority",
-                url.to_string(),
-            ));
-        }
-    } else if url.contains("://") {
-        return Err(CutError::new(
-            error_codes::INVALID_ARGS,
-            "OTIO media reference uses an unsupported URI scheme",
-            url.to_string(),
-        ));
-    } else {
-        url.to_string()
-    };
-    let bytes = encoded.as_bytes();
-    let mut decoded = Vec::new();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if bytes[index] != b'%' {
-            decoded.push(bytes[index]);
-            index += 1;
-            continue;
-        }
-        if index + 2 >= bytes.len() {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                "OTIO media URI has an incomplete percent escape",
-                url.to_string(),
-            ));
-        }
-        let high = (bytes[index + 1] as char).to_digit(16);
-        let low = (bytes[index + 2] as char).to_digit(16);
-        let (Some(high), Some(low)) = (high, low) else {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                "OTIO media URI has an invalid percent escape",
-                url.to_string(),
-            ));
-        };
-        decoded.push((high * 16 + low) as u8);
-        index += 3;
-    }
-    encoded = String::from_utf8(decoded).map_err(|error| {
-        CutError::new(
-            error_codes::INVALID_ARGS,
-            "OTIO media URI is not valid UTF-8",
-            error.to_string(),
-        )
-    })?;
-    encoded = if let Some(rest) = encoded.strip_prefix(r"/\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = encoded.strip_prefix(r"/\\?\") {
-        rest.to_string()
-    } else if let Some(rest) = encoded.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = encoded.strip_prefix(r"\\?\") {
-        rest.to_string()
-    } else {
-        encoded
-    };
-    #[cfg(windows)]
-    if encoded.starts_with('/')
-        && encoded.as_bytes().get(2) == Some(&b':')
-        && encoded
-            .as_bytes()
-            .get(1)
-            .is_some_and(u8::is_ascii_alphabetic)
-    {
-        encoded.remove(0);
-    }
-    Ok(PathBuf::from(encoded))
 }
 
 fn targets(

@@ -9,6 +9,7 @@
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
+pub(crate) use cut_media::ffmpeg::{LOCAL_INPUT_FORMATS, LOCAL_INPUT_PROTOCOLS};
 use record_core::{error_codes, RecordError, Result};
 
 mod camera;
@@ -26,7 +27,6 @@ use process::ManagedChild;
 pub use process::ProcessControl;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-pub(crate) const LOCAL_INPUT_PROTOCOLS: &str = "file,pipe,crypto,data";
 
 fn ffmpeg_bin() -> String {
     std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
@@ -137,6 +137,8 @@ pub fn probe_with_control(path: &str, control: &ProcessControl) -> Result<Probe>
             "error",
             "-protocol_whitelist",
             LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            LOCAL_INPUT_FORMATS,
             "-select_streams",
             "v:0",
             "-show_entries",
@@ -212,6 +214,8 @@ pub fn grab_frame_with_control(
             &t,
             "-protocol_whitelist",
             LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            LOCAL_INPUT_FORMATS,
             "-i",
             src,
             "-frames:v",

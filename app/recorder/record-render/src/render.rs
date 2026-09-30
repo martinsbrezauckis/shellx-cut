@@ -58,7 +58,7 @@ pub fn render_video_audio_with_control_progress(
     mut on_frame: impl FnMut(u64, u64),
 ) -> Result<u64> {
     plan.validate()?;
-    let (out_w, out_h) = output_size(plan);
+    let (out_w, out_h) = output_size(plan)?;
     let fps = plan.fps as f64;
     let expected_frames = ((plan.duration_ms as f64 * fps / 1000.0).ceil() as u64).max(1);
     let p = ffmpeg::probe_with_control(source_path, control)?;
@@ -83,7 +83,7 @@ pub fn render_video_audio_with_control_progress(
         }
     } else {
         crate::Compositor::new(plan)
-    };
+    }?;
 
     // Stream the webcam alongside output frames. Keeping its entire raw track
     // would both truncate at the diagnostic pipe cap and grow with take length.
@@ -193,9 +193,9 @@ pub fn render_frame_png(
     })?;
     // For BlurScreen, blur this frame into the backdrop (consistent with render_video).
     let out = if matches!(plan.background, record_core::Background::BlurScreen { .. }) {
-        crate::Compositor::with_bg(plan, Some(&src)).frame(&src, t_ms)
+        crate::Compositor::with_bg(plan, Some(&src))?.frame(&src, t_ms)
     } else {
-        compose_frame(&src, plan, t_ms)
+        compose_frame(&src, plan, t_ms)?
     };
     out.save_png(png_path)
         .map_err(|e| RecordError::new(error_codes::IO, "save png", e.to_string()))?;
@@ -204,6 +204,42 @@ pub fn render_frame_png(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unsafe_output_is_rejected_before_composition_or_media_access() {
+        let source = tiny_skia::Pixmap::new(2, 2).unwrap();
+        for (sw, sh, aspect) in [
+            (1920, 1080, Some((10_000, 1))),
+            (1920, 1080, Some((u32::MAX, 1))),
+            (1920, 1080, Some((0, 1))),
+            (1, 1080, None),
+            (8193, 1080, None),
+            (1920, 1, Some((1, 1))),
+        ] {
+            let mut plan = record_core::EditPlan::empty(sw, sh, 1000, 30.0);
+            if let Some((w, h)) = aspect {
+                plan.reframe = record_core::Reframe::Aspect { w, h };
+            }
+            assert!(crate::Compositor::new(&plan).is_err());
+            assert!(crate::Compositor::with_bg(&plan, Some(&source)).is_err());
+            assert_eq!(
+                crate::compose_frame(&source, &plan, 0).unwrap_err().code,
+                record_core::error_codes::INVALID_ARGS
+            );
+            assert_eq!(
+                super::render_video("missing-source", &plan, "missing-output")
+                    .unwrap_err()
+                    .code,
+                record_core::error_codes::INVALID_ARGS
+            );
+            assert_eq!(
+                super::render_frame_png("missing-source", &plan, 0, "missing-output")
+                    .unwrap_err()
+                    .code,
+                record_core::error_codes::INVALID_ARGS
+            );
+        }
+    }
+
     use record_core::{
         fixtures, Anchor, CameraClockRange, Ease, EditPlan, WebcamOverlay, WebcamShape, ZoomKey,
     };

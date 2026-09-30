@@ -33,6 +33,8 @@ use crate::types::{
 };
 use serde_json::json;
 
+mod timeline_snapshot;
+
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
@@ -4873,7 +4875,7 @@ pub(crate) fn apply_set_timeline(
         transcript_ignores: Option<Vec<crate::types::TranscriptIgnore>>,
     }
     let s: Snapshot = serde_json::from_value(args.clone())?;
-    validate_timeline_media_ranges(&s.tracks)?;
+    timeline_snapshot::validate_tracks(&s.tracks)?;
     project.tracks = s.tracks;
     project.markers = s.markers;
     if let Some(styles) = s.caption_styles {
@@ -4887,28 +4889,6 @@ pub(crate) fn apply_set_timeline(
     }
     if let Some(transcript_ignores) = s.transcript_ignores {
         project.transcript_ignores = transcript_ignores;
-    }
-    Ok(())
-}
-
-fn validate_timeline_media_ranges(tracks: &[Track]) -> Result<(), CutError> {
-    for track in tracks {
-        for clip in &track.clips {
-            if let Clip::Media(c) = clip {
-                if c.src_in_ms > c.src_out_ms {
-                    return Err(CutError::new(
-                        codes::INVALID_ARGS,
-                        "malformed timeline: media clip source range is inverted",
-                        format!(
-                            "clip '{}' on track '{}' has src_in_ms {} > src_out_ms {}",
-                            c.id, track.id, c.src_in_ms, c.src_out_ms
-                        ),
-                    )
-                    .with_clip(&c.id)
-                    .with_suggested_action("repair the timeline snapshot before replaying it"));
-                }
-            }
-        }
     }
     Ok(())
 }

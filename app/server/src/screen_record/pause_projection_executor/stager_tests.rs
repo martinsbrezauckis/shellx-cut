@@ -189,7 +189,7 @@ fn assembles_only_compact_grid_frames_from_private_snapshots() {
     make_source(&second, "blue");
     let sources = vec![source(first, 0, 0), source(second, 1, 1)];
 
-    FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg")
+    FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg", "ffprobe")
         .stage_frame_grid(root.path(), &sources, &grid(), &output)
         .unwrap();
 
@@ -226,12 +226,12 @@ fn assigns_an_in_run_gap_once_and_keeps_later_source_frames() {
 
     let filter = filter_graph(&sources, &plan).unwrap();
     assert!(filter
-        .contains("[0:v]setpts=PTS-STARTPTS,tpad=start_mode=clone:start=0:stop_mode=clone:stop=3"));
+        .contains("[0:v]setpts=PTS-STARTPTS,fps=fps=30/1:round=near,tpad=stop_mode=clone:stop=-1,trim=end_frame=3,setpts=N/(30/1*TB),tpad=start_mode=clone:start=0:stop_mode=clone:stop=3"));
     assert!(filter
-        .contains("[1:v]setpts=PTS-STARTPTS,tpad=start_mode=clone:start=0:stop_mode=clone:stop=0"));
+        .contains("[1:v]setpts=PTS-STARTPTS,fps=fps=30/1:round=near,tpad=stop_mode=clone:stop=-1,trim=end_frame=3,setpts=N/(30/1*TB),tpad=start_mode=clone:start=0:stop_mode=clone:stop=0"));
     assert!(filter.contains("[s0][s1]concat=n=2:v=1:a=0"));
 
-    FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg")
+    FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg", "ffprobe")
         .stage_frame_grid(root.path(), &sources, &plan, &output)
         .unwrap();
     let facts = FfmpegPauseProjectionArtifactVerifier::new("ffmpeg", "ffprobe")
@@ -278,9 +278,11 @@ fn rejects_hash_drift_before_ffmpeg_can_receive_the_source() {
     let sources = vec![source(first.clone(), 0, 0), source(second, 1, 1)];
     fs::write(first, b"not the sealed source").unwrap();
 
-    assert!(FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg")
-        .stage_frame_grid(root.path(), &sources, &grid(), &output)
-        .is_err());
+    assert!(
+        FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg", "ffprobe")
+            .stage_frame_grid(root.path(), &sources, &grid(), &output)
+            .is_err()
+    );
     assert!(!output.exists());
 }
 
@@ -292,11 +294,11 @@ fn rejects_frame_or_cadence_drift_without_constructing_an_ffmpeg_stage() {
     fs::write(&first, b"first").unwrap();
     fs::write(&second, b"second").unwrap();
     let mut sources = vec![source(first, 0, 0), source(second, 1, 1)];
-    sources[1].decoded_video_frames = 2;
+    sources[1].decoded_video_frames = 0;
     assert!(filter_graph(&sources, &grid()).is_err());
 
     sources[1].decoded_video_frames = 3;
-    sources[1].avg_frame_rate = Some(FrameRate::new(25, 1).unwrap());
+    sources[1].avg_frame_rate = None;
     assert!(filter_graph(&sources, &grid()).is_err());
 }
 
@@ -318,8 +320,77 @@ fn rejects_a_path_replaced_with_a_link_before_snapshotting() {
     fs::remove_file(&first).unwrap();
     symlink(target, first).unwrap();
 
-    assert!(FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg")
-        .stage_frame_grid(root.path(), &sources, &grid(), &output)
-        .is_err());
+    assert!(
+        FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg", "ffprobe")
+            .stage_frame_grid(root.path(), &sources, &grid(), &output)
+            .is_err()
+    );
     assert!(!output.exists());
+}
+
+#[test]
+fn normalizes_vfr_before_five_explicit_padding_frames() {
+    let root = tempdir().unwrap();
+    let input = root.path().join("vfr.mp4");
+    if let Some(retained) = std::env::var_os("CUT_PAUSE_RETAINED_VFR_SOURCE") {
+        fs::copy(retained, &input).unwrap();
+    } else {
+        assert!(Command::new("ffmpeg").args([
+            "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=16x16:r=24",
+            "-frames:v", "5", "-vf",
+            r"settb=1/600,setpts=if(eq(N\,0)\,0\,if(eq(N\,1)\,30\,if(eq(N\,2)\,50\,if(eq(N\,3)\,80\,110))))",
+            "-fps_mode", "vfr", "-enc_time_base", "1/600", "-c:v", "libx264", "-video_track_timescale", "600",
+        ]).arg(&input).status().unwrap().success());
+    }
+    let verifier = FfmpegPauseProjectionArtifactVerifier::new("ffmpeg", "ffprobe");
+    let facts = verifier.verify(&input).unwrap();
+    assert_eq!(facts.decoded_video_frames, 5);
+    let mut source = source(input, 0, 0);
+    source.duration_ms = facts.duration_ms;
+    source.decoded_video_frames = facts.decoded_video_frames;
+    source.avg_frame_rate = facts.avg_frame_rate;
+    source.r_frame_rate = facts.r_frame_rate;
+    let rate = FrameRate::new(24, 1).unwrap();
+    assert!(source.avg_frame_rate != Some(rate) || source.r_frame_rate != Some(rate));
+    let plan = FrameGridStitchPlan {
+        output_frame_rate: rate,
+        output_frame_count: 10,
+        expected_duration_ms: ExactFrameGridDuration {
+            numerator: 1250,
+            denominator: 3,
+        },
+        spans: vec![
+            FrameGridStitchSpan {
+                span: RunAwareStitchSpan::Source {
+                    run_sequence: 0,
+                    checkpoint_sequence: 0,
+                    artifact: "vfr.mp4".into(),
+                    sha256: source.sha256.clone(),
+                    logical_offset_ms: 0,
+                    source_duration_ms: 200,
+                },
+                start_frame: 0,
+                end_frame: 5,
+            },
+            FrameGridStitchSpan {
+                span: RunAwareStitchSpan::EncoderGapPadding {
+                    run_sequence: 0,
+                    logical_start_ms: 200,
+                    logical_end_ms: 425,
+                },
+                start_frame: 5,
+                end_frame: 10,
+            },
+        ],
+    };
+    let output = root.path().join("source.mp4");
+    FfmpegFrameGridPauseProjectionSourceStager::new("ffmpeg", "ffprobe")
+        .stage_frame_grid(root.path(), &[source], &plan, &output)
+        .unwrap();
+    let actual = verifier.verify(&output).unwrap();
+    assert_eq!(actual.decoded_video_frames, 10);
+    assert_eq!(actual.duration_ms, 417);
+    assert_eq!(actual.avg_frame_rate, Some(rate));
+    assert_eq!(actual.r_frame_rate, Some(rate));
+    super::super::artifacts::validate_frame_grid_staged_source(&output, actual, &plan).unwrap();
 }

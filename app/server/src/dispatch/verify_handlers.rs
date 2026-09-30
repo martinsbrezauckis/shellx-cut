@@ -5,6 +5,7 @@ use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 #[path = "verify_handlers/adapter_result.rs"]
 mod adapter_result;
 mod rerun;
+mod scope_outputs;
 pub(super) use rerun::{retry_verify_rerun, verify_rerun};
 
 /// Resolve `receipts/<render_id>.json` — the explicit id, or the LATEST
@@ -409,6 +410,7 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
         None => None,
     };
     let (project, edl, dir, _at) = snapshot(state).await?;
+    let scope_outputs = scope_outputs::image_paths(&dir, at_ms, want_images, &kinds)?;
     // The frame the scopes describe is written here (kept as evidence); scope images
     // land beside it. `fence_output_path` creates the literal project-relative
     // parent after rejecting links/reparse points, so do not pre-create through
@@ -455,12 +457,9 @@ pub(super) async fn verify_scopes(state: &AppState, args: Value) -> Result<VerbR
         let scopes = cut_media::scopes::measure(&frame_path)?;
         // 3. Optionally render the scope IMAGES.
         let mut images: Vec<(String, String)> = Vec::new();
-        if want_images {
-            for kind in &kinds {
-                let out = frame_path.with_file_name(format!("scope_{at_ms}ms_{}.png", kind.key()));
-                cut_media::scopes::render_scope(&frame_path, *kind, &out)?;
-                images.push((kind.key().to_string(), out.to_string_lossy().into_owned()));
-            }
+        for (kind, out) in scope_outputs {
+            cut_media::scopes::render_scope(&frame_path, kind, &out)?;
+            images.push((kind.key().to_string(), out.to_string_lossy().into_owned()));
         }
         Ok::<_, CutError>((scopes, images))
     })

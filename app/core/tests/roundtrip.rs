@@ -234,6 +234,102 @@ fn restore_roundtrip() {
     assert_eq!(rebuilt, s.project);
 }
 
+fn forged_restore_record(records: &[OpRecord], snapshot: serde_json::Value) -> OpRecord {
+    let mut forged = records.last().unwrap().clone();
+    forged.op_id = format!("op_{:06}", records.len() + 1);
+    forged.verb = "edit.restore".into();
+    forged.args = json!({"op_id": records.last().unwrap().op_id});
+    forged.effects = vec![cut_core::OpEffect {
+        track: None,
+        detail: json!({"restored_timeline": snapshot})
+            .as_object()
+            .unwrap()
+            .clone(),
+    }];
+    forged.inverse = None;
+    forged
+}
+
+fn write_restore_journal(dir: &std::path::Path, records: &[OpRecord]) {
+    let journal = records
+        .iter()
+        .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+        .collect::<String>();
+    std::fs::write(dir.join("ops.jsonl"), journal).unwrap();
+}
+
+#[test]
+fn opening_crafted_restore_journal_rejects_blend_filtergraph_injection() {
+    let root = tempfile::tempdir().unwrap();
+    let store = build_session(root.path());
+    let mut records = store.log.read_all().unwrap();
+    let mut project = store.project.clone();
+    project.track_mut("v1").unwrap().blend_mode = Some("multiply;movie=other.mp4".into());
+    records.push(forged_restore_record(
+        &records,
+        timeline_snapshot(&project).args,
+    ));
+    write_restore_journal(&store.dir, &records);
+    let err = match ProjectStore::open(&store.dir) {
+        Ok(_) => panic!("crafted restore must fail open"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code, "invalid_args");
+    assert!(err.message.contains("blend mode"));
+
+    project.track_mut("v1").unwrap().blend_mode = Some("multiply".into());
+    records.last_mut().unwrap().effects[0].detail["restored_timeline"] =
+        timeline_snapshot(&project).args;
+    write_restore_journal(&store.dir, &records);
+    assert_eq!(
+        ProjectStore::open(&store.dir)
+            .unwrap()
+            .project
+            .track("v1")
+            .unwrap()
+            .blend_mode
+            .as_deref(),
+        Some("multiply")
+    );
+}
+
+#[test]
+fn opening_crafted_restore_journal_rejects_xfade_filtergraph_injection() {
+    use cut_core::Clip;
+    let root = tempfile::tempdir().unwrap();
+    let store = build_session(root.path());
+    let mut records = store.log.read_all().unwrap();
+    let mut project = store.project.clone();
+    if let Clip::Media(clip) = &mut project.track_mut("v1").unwrap().clips[0] {
+        clip.xfade_kind = Some("wipeleft;movie=other.mp4".into());
+    } else {
+        panic!("session video clip must be media");
+    }
+    records.push(forged_restore_record(
+        &records,
+        timeline_snapshot(&project).args,
+    ));
+    write_restore_journal(&store.dir, &records);
+    let err = match ProjectStore::open(&store.dir) {
+        Ok(_) => panic!("crafted restore must fail open"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code, "invalid_args");
+    assert!(err.message.contains("transition"));
+
+    if let Clip::Media(clip) = &mut project.track_mut("v1").unwrap().clips[0] {
+        clip.xfade_kind = Some("wipeleft".into());
+    }
+    records.last_mut().unwrap().effects[0].detail["restored_timeline"] =
+        timeline_snapshot(&project).args;
+    write_restore_journal(&store.dir, &records);
+    let reopened = ProjectStore::open(&store.dir).unwrap();
+    let Clip::Media(clip) = &reopened.project.track("v1").unwrap().clips[0] else {
+        panic!("video clip must be media");
+    };
+    assert_eq!(clip.xfade_kind.as_deref(), Some("wipeleft"));
+}
+
 /// selective-undo guardrail: recomputing a NON-TIP op's prefix would silently
 /// discard every later edit. edit.restore must
 /// refuse (code "guardrail", later-op count + project.revert pointer in the

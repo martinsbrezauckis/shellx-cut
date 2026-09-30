@@ -18,7 +18,7 @@ use crate::{
 /// derived from a validated [`CaptureRoot`] and capture-id, never accepted from
 /// a caller as a path.
 pub const RECORDING_SESSION_JOURNAL_FILE: &str = "recording-session.journal.jsonl";
-const MAX_SESSION_JOURNAL_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_SESSION_JOURNAL_BYTES: u64 = 8 * 1024 * 1024;
 
 /// A durable writer plus its fully replayed recording-session state.
 ///

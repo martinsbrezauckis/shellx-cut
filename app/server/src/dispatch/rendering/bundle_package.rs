@@ -1,6 +1,32 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
+#[cfg(test)]
+#[path = "thumbnail_output_tests.rs"]
+mod thumbnail_output_tests;
+
+/// The platform directory is already admitted by the bundle output fence.
+/// Reject imported linked leaves before FFmpeg's direct overwrite operation.
+pub(super) fn write_thumbnail(
+    media: &std::path::Path,
+    thumbnail: &std::path::Path,
+    duration_ms: u64,
+) -> Result<(), cut_core::CutError> {
+    cut_core::matte_cache::plain_file_exists(thumbnail)?;
+    let mid_s = (duration_ms as f64 / 2000.0).max(0.0);
+    cut_media::ffmpeg::run_ffmpeg(&[
+        "-ss".into(),
+        format!("{mid_s:.3}"),
+        "-i".into(),
+        media.display().to_string(),
+        "-frames:v".into(),
+        "1".into(),
+        "-q:v".into(),
+        "3".into(),
+        thumbnail.display().to_string(),
+    ])
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct PublishPackageIssue {
     pub(super) code: String,

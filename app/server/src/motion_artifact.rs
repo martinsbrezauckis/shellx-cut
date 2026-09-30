@@ -1057,6 +1057,8 @@ async fn probe_media_bounded(path: &Path, media_type: &str) -> Result<(), CutErr
             "error",
             "-protocol_whitelist",
             cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
             "-show_entries",
             "format=format_name,duration,size:stream=index,codec_type,codec_name,width,height",
             "-of",

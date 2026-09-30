@@ -26,7 +26,7 @@
 //! Dependencies: ffmpeg.rs (run_ffmpeg), cut-core (Project/Edl). Primary
 //! caller: server render.preview{draft:true} (dispatch.rs).
 
-use crate::ffmpeg::{concat_demuxer_file_line, DETERMINISM_FLAGS};
+use crate::ffmpeg::{owned_concat_file_lines, DETERMINISM_FLAGS};
 use crate::render::RenderPreset;
 use cut_core::{error_codes, CutError, Edl, Project};
 use serde::Serialize;
@@ -308,7 +308,7 @@ pub fn render_preview_incremental(
     let mut list = String::new();
     for p in &plans {
         // concat demuxer needs absolute paths, single-quoted.
-        writeln!(list, "{}", concat_demuxer_file_line(&p.cache_path)).unwrap();
+        writeln!(list, "{}", owned_concat_file_lines(&p.cache_path)).unwrap();
     }
     crate::render::plain_internal_file_exists(&list_path)?;
     std::fs::write(&list_path, &list)?;
@@ -326,7 +326,7 @@ pub fn render_preview_incremental(
     ];
     args.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     args.push(out.display().to_string());
-    crate::ffmpeg::run_ffmpeg_atomic_output(&args, &out)?;
+    crate::ffmpeg::run_owned_concat_atomic_output(&args, &out)?;
 
     Ok(PreviewResult {
         path: out,

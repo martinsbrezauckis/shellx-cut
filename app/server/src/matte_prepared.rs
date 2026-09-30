@@ -10,6 +10,9 @@ use crate::matte::premium_runtime::PreparedMatanyoneRuntime;
 use cut_core::{error_codes, ClipMatte, CutError, MatteQuality, MatteSeed};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+#[path = "matte_prepared_output_tests.rs"]
+mod output_tests;
 
 pub(super) fn bake_matanyone(
     cache_dir: &Path,
@@ -122,30 +125,32 @@ fn sam2_seed_mask(
     seed: &MatteSeed,
     runtime: &PreparedMatanyoneRuntime,
 ) -> Result<PathBuf, CutError> {
+    cut_core::matte_cache::validate_asset_hash(asset_hash)?;
     let out = prepared_seed_path(
         cache_dir,
         asset_hash,
         &format!("sam2-{}", seed.short_hash()),
         runtime,
     );
-    if out.exists() {
-        return Ok(out);
-    }
-    let mut command = sam2_seed_command(runtime, asset_path, &out, seed)?;
-    let output =
-        crate::dispatch::run_bounded_foreground_command(&mut command, "prepared SAM2 seed runner")
-            .map_err(|error| io_err("prepared SAM2 seed: spawn runner", error))?;
-    if !output.status.success() {
-        return Err(CutError::new(
-            error_codes::IO,
-            format!(
-                "prepared SAM2 seed generation failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-            "the declared native SAM2 runtime could not produce the subject mask",
-        ));
-    }
-    Ok(out)
+    super::output::bake_seed(&out, |staged| {
+        let mut command = sam2_seed_command(runtime, asset_path, staged, seed)?;
+        let output = crate::dispatch::run_bounded_foreground_command(
+            &mut command,
+            "prepared SAM2 seed runner",
+        )
+        .map_err(|error| io_err("prepared SAM2 seed: spawn runner", error))?;
+        if !output.status.success() {
+            return Err(CutError::new(
+                error_codes::IO,
+                format!(
+                    "prepared SAM2 seed generation failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                "the declared native SAM2 runtime could not produce the subject mask",
+            ));
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn sam2_seed_command(
@@ -191,29 +196,31 @@ fn rvm_seed_mask(
     asset_hash: &str,
     runtime: &PreparedMatanyoneRuntime,
 ) -> Result<PathBuf, CutError> {
+    cut_core::matte_cache::validate_asset_hash(asset_hash)?;
     let seed = prepared_seed_path(cache_dir, asset_hash, "rvm", runtime);
-    if seed.exists() {
-        return Ok(seed);
-    }
-    let mut command = matte_runner_command(&runtime.python, &runtime.rvm_script, true);
-    command
-        .arg(asset_path)
-        .arg("--first-frame-mask")
-        .arg(&seed)
-        .arg("--model")
-        .arg(&runtime.rvm_model);
-    let output =
-        crate::dispatch::run_bounded_foreground_command(&mut command, "prepared RVM seed runner")
-            .map_err(|error| io_err("prepared RVM seed: spawn runner", error))?;
-    if !output.status.success() {
-        return Err(CutError::new(
-            error_codes::IO,
-            format!(
-                "prepared RVM seed generation failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-            "the declared native RVM runtime could not produce the first-frame mask",
-        ));
-    }
-    Ok(seed)
+    super::output::bake_seed(&seed, |staged| {
+        let mut command = matte_runner_command(&runtime.python, &runtime.rvm_script, true);
+        command
+            .arg(asset_path)
+            .arg("--first-frame-mask")
+            .arg(staged)
+            .arg("--model")
+            .arg(&runtime.rvm_model);
+        let output = crate::dispatch::run_bounded_foreground_command(
+            &mut command,
+            "prepared RVM seed runner",
+        )
+        .map_err(|error| io_err("prepared RVM seed: spawn runner", error))?;
+        if !output.status.success() {
+            return Err(CutError::new(
+                error_codes::IO,
+                format!(
+                    "prepared RVM seed generation failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+                "the declared native RVM runtime could not produce the first-frame mask",
+            ));
+        }
+        Ok(())
+    })
 }

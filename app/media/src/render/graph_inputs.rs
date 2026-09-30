@@ -31,11 +31,8 @@ pub(super) fn matte_alpha_path(
     project_dir: &Path,
     asset_hash: &str,
     m: &cut_core::ClipMatte,
-) -> PathBuf {
-    project_dir
-        .join("cache")
-        .join("matte")
-        .join(m.cache_filename(asset_hash))
+) -> Result<PathBuf, CutError> {
+    cut_core::matte_cache::alpha_path(project_dir, asset_hash, m)
 }
 
 /// Graph-input map key for a matte alpha file (distinct from asset-id keys so a
@@ -331,7 +328,7 @@ pub(super) fn collect_graph_inputs(
                     "EDL references an asset id missing from project.assets",
                 )
             })?;
-            let alpha_path = matte_alpha_path(project_dir, &asset.hash, m);
+            let alpha_path = matte_alpha_path(project_dir, &asset.hash, m)?;
             let key = matte_input_key(&alpha_path);
             if input_idx.contains_key(&key) {
                 continue;

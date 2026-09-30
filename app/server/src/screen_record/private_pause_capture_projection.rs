@@ -136,7 +136,10 @@ impl PauseSessionProjectionExecutor for PrivateFrameGridProjection {
             ffmpeg.to_string_lossy(),
             ffprobe.to_string_lossy(),
         );
-        let mut stager = FfmpegFrameGridPauseProjectionSourceStager::new(ffmpeg.to_string_lossy());
+        let mut stager = FfmpegFrameGridPauseProjectionSourceStager::new(
+            ffmpeg.to_string_lossy(),
+            ffprobe.to_string_lossy(),
+        );
         execute_frame_grid_pause_projection(
             &self.root,
             &self.capture_id,
@@ -146,7 +149,12 @@ impl PauseSessionProjectionExecutor for PrivateFrameGridProjection {
             &mut stager,
         )
         .map(|_| ())
-        .map_err(|_| PauseSessionWorkerError::new("private native pause projection failed"))
+        .map_err(|error| {
+            PauseSessionWorkerError::new(format!(
+                "private native pause projection failed: {}",
+                error.cause.chars().take(512).collect::<String>()
+            ))
+        })
     }
 }
 

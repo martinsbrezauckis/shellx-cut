@@ -40,7 +40,11 @@ async fn failed_recorder_export(state: &AppState, project_dir: &Path) -> String 
         b"not a media fixture; retry only needs its exact fingerprint",
     )
     .unwrap();
-    std::fs::write(&plan, b"{\"schema\":\"shellx-edit-plan/1\"}").unwrap();
+    std::fs::write(
+        &plan,
+        serde_json::to_vec(&record_core::EditPlan::empty(160, 90, 1000, 25.0)).unwrap(),
+    )
+    .unwrap();
     let revision = {
         let guard = state.project.read().await;
         guard

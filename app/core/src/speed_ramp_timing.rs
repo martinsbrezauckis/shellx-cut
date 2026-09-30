@@ -7,6 +7,12 @@
 
 use crate::types::{Clip, Project, RampSeg, SpeedRamp};
 
+mod counts;
+pub(crate) use counts::{deserialize_preferred_segments, deserialize_segments};
+
+#[cfg(test)]
+mod count_tests;
+
 fn usable_fps(fps: Option<f64>) -> Option<f64> {
     fps.filter(|value| value.is_finite() && *value > 0.0)
 }
@@ -95,6 +101,15 @@ pub(crate) fn regrid_timebased_speed_ramps(project: &mut Project, fps: f64, audi
 }
 
 fn raw_slices(src_in: u64, src_out: u64, ramp: &SpeedRamp) -> Vec<(u64, u64, f64)> {
+    // The infallible expansion API returns no slices for invalid in-memory state.
+    // Persisted state is rejected by SpeedRamp deserialization before admission.
+    if !counts::supported_segments(ramp.segments)
+        || ramp
+            .preferred_segments
+            .is_some_and(|count| !counts::supported_segments(count))
+    {
+        return Vec::new();
+    }
     let src_dur = src_out.saturating_sub(src_in);
     if src_dur == 0 {
         return Vec::new();

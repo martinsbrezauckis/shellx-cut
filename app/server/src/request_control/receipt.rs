@@ -96,7 +96,10 @@ pub(super) fn write(
         return Ok(());
     }
     let dir = path.parent().expect("receipt path has a parent");
-    std::fs::create_dir_all(dir)?;
+    crate::output_paths::ensure_plain_project_relative_dir(
+        &store.dir,
+        Path::new("request-receipts"),
+    )?;
     let receipt = DurableRequestReceipt {
         schema: SCHEMA.into(),
         verb: verb.into(),
@@ -116,6 +119,10 @@ pub(super) fn write(
         let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
+        crate::output_paths::existing_plain_project_relative_dir(
+            &store.dir,
+            Path::new("request-receipts"),
+        )?;
         std::fs::rename(&tmp, &path)?;
         sync_dir(dir);
         Ok(())
@@ -155,7 +162,10 @@ pub(super) fn write_without_ops(
         return Ok(());
     }
     let dir = path.parent().expect("receipt path has a parent");
-    std::fs::create_dir_all(dir)?;
+    crate::output_paths::ensure_plain_project_relative_dir(
+        &store.dir,
+        Path::new("request-receipts"),
+    )?;
     let receipt = DurableRequestReceipt {
         schema: SCHEMA.into(),
         verb: verb.into(),
@@ -175,6 +185,10 @@ pub(super) fn write_without_ops(
         let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
+        crate::output_paths::existing_plain_project_relative_dir(
+            &store.dir,
+            Path::new("request-receipts"),
+        )?;
         std::fs::rename(&tmp, &path)?;
         sync_dir(dir);
         Ok(())
@@ -194,10 +208,33 @@ fn path(store: &ProjectStore, actor: &Actor) -> Result<PathBuf, CutError> {
         )
     })?;
     let key = serde_json::to_vec(&(request.caller.as_str(), request.request_id.as_str()))?;
-    Ok(store
+    crate::output_paths::existing_plain_project_relative_dir(&store.dir, Path::new(""))?;
+    cut_core::store::validate_request_receipt_output_root(&store.dir)?;
+    let path = store
         .dir
         .join("request-receipts")
-        .join(format!("{:x}.json", Sha256::digest(key))))
+        .join(format!("{:x}.json", Sha256::digest(key)));
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+        Ok(_) => {
+            let plain = record_recovery::is_plain_regular_file(&path).map_err(|error| {
+                CutError::new(
+                    error_codes::IO,
+                    "could not inspect mutation response receipt",
+                    error.to_string(),
+                )
+            })?;
+            if !plain {
+                return Err(CutError::new(
+                    error_codes::INVALID_ARGS,
+                    "mutation response receipt is not a plain file",
+                    "request receipt leaves cannot be links, reparse points, or non-regular files",
+                ));
+            }
+        }
+    }
+    Ok(path)
 }
 
 fn read(path: &Path) -> Result<DurableRequestReceipt, CutError> {

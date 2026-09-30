@@ -19,7 +19,9 @@ const EXPORT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const EXPORT_MAX_RUNNING: usize = 1;
 const EXPORT_LIMIT_KEY: &str = "screen_record.export";
 
+mod render;
 mod retry;
+use render::render_export;
 mod retry_staging;
 pub(crate) use retry::retry_screen_record_export;
 
@@ -31,7 +33,7 @@ enum ExportFormat {
 
 struct PreparedExport {
     source: PathBuf,
-    plan: PathBuf,
+    plan: record_core::EditPlan,
     capture_audio: crate::screen_record::CaptureExportAudio,
     out: crate::output_paths::OutputPath,
     format: ExportFormat,
@@ -70,8 +72,9 @@ pub(crate) async fn screen_record_export(
 
     let args: Args = parse_args(args)?;
     let format = export_format(args.format.as_deref(), args.gif_fps, args.gif_width)?;
-    let (_project, _edl, dir, revision) = snapshot(state).await?;
-    let (source, plan, capture_audio) = resolve_export_inputs(&dir, &args.source, &args.plan)?;
+    let (project, _edl, dir, revision) = snapshot(state).await?;
+    let (source, plan_path, capture_audio, plan) =
+        resolve_export_inputs(&dir, &project, &args.source, &args.plan)?;
     let retry = if args.path.is_some() {
         crate::jobs::JobRetry::ineligible(
             "explicit Save As destinations cannot be retried automatically",
@@ -81,8 +84,9 @@ pub(crate) async fn screen_record_export(
             &dir,
             revision,
             &source,
-            &plan,
+            &plan_path,
             &capture_audio,
+            &plan,
             &format,
         )?)
     };
@@ -131,9 +135,18 @@ fn export_format(
 
 fn resolve_export_inputs(
     dir: &Path,
+    project: &cut_core::Project,
     source_arg: &str,
     plan_arg: &str,
-) -> Result<(PathBuf, PathBuf, crate::screen_record::CaptureExportAudio), CutError> {
+) -> Result<
+    (
+        PathBuf,
+        PathBuf,
+        crate::screen_record::CaptureExportAudio,
+        record_core::EditPlan,
+    ),
+    CutError,
+> {
     let source = crate::screen_record::plain_existing_file_under_project(
         dir,
         source_arg,
@@ -147,13 +160,14 @@ fn resolve_export_inputs(
         "run screen_record.autoedit first and pass the returned plan path",
     )?;
     let capture_audio = crate::screen_record::export_audio_for_source(dir, &source)?;
-    Ok((source, plan, capture_audio))
+    let admitted = crate::screen_record::plan_inputs::load(dir, project, &plan)?;
+    Ok((source, plan, capture_audio, admitted))
 }
 
 fn allocate_export(
     dir: &Path,
     source: PathBuf,
-    plan: PathBuf,
+    plan: record_core::EditPlan,
     capture_audio: crate::screen_record::CaptureExportAudio,
     format: ExportFormat,
     requested_path: Option<&str>,
@@ -240,73 +254,6 @@ fn spawn_export_job(state: &AppState, job_id: &str, prepared: PreparedExport) {
         });
 }
 
-async fn render_export(
-    source: std::path::PathBuf,
-    plan: std::path::PathBuf,
-    capture_audio: crate::screen_record::CaptureExportAudio,
-    out: crate::output_paths::OutputPath,
-    format: ExportFormat,
-    jobs: &crate::jobs::JobManager,
-    job_id: &str,
-    progress: ExportProgressReporter,
-) -> Result<u64, CutError> {
-    let work = run_blocking_cancellable("screen_record.export", move |cancellation| {
-        let child_cancellation = cancellation.clone();
-        let control = record_render::ffmpeg::ProcessControl::bounded(EXPORT_TIMEOUT, move || {
-            child_cancellation.is_cancelled()
-        });
-        match format {
-            ExportFormat::Mp4 => {
-                progress.preparing_audio();
-                let audio = capture_audio.prepare(
-                    out.parent().unwrap_or_else(|| std::path::Path::new(".")),
-                    &control,
-                )?;
-                progress.rendering_started();
-                crate::screen_record::render_with_control_progress(
-                    &source,
-                    &plan,
-                    &out,
-                    audio.path(),
-                    &control,
-                    |frames, expected_frames| progress.rendering(frames, expected_frames),
-                )
-            }
-            ExportFormat::Gif { fps, width } => {
-                let tmp = tempfile::Builder::new()
-                    .prefix(".cut-recorder-export-")
-                    .suffix(".mp4")
-                    .tempfile_in(out.parent().unwrap_or_else(|| std::path::Path::new(".")))
-                    .map_err(|error| {
-                        CutError::new(
-                            error_codes::IO,
-                            format!("could not create a secure GIF intermediate: {error}"),
-                            "creating the recorder export intermediate failed",
-                        )
-                    })?
-                    .into_temp_path();
-                progress.preparing_audio();
-                progress.rendering_started();
-                let frames = crate::screen_record::render_with_control_progress(
-                    &source,
-                    &plan,
-                    tmp.as_ref(),
-                    None,
-                    &control,
-                    |frames, expected_frames| progress.rendering(frames, expected_frames),
-                )?;
-                progress.finalizing();
-                control
-                    .check("convert recording export to GIF")
-                    .map_err(crate::screen_record::record_err)?;
-                crate::screen_record::gif_with_control(tmp.as_ref(), &out, fps, width, &control)?;
-                Ok(frames)
-            }
-        }
-    });
-    await_bounded_export_work(EXPORT_TIMEOUT, jobs, job_id, work).await
-}
-
 /// On timeout, keep the job active while the signalled blocking worker exits.
 /// This is the point that makes it safe to report a terminal timeout: its output
 /// lease is dropped only after the worker has reaped every ffmpeg child.
@@ -348,3 +295,7 @@ mod tests;
 #[cfg(test)]
 #[path = "export_job/retry_staging_tests.rs"]
 mod retry_staging_tests;
+
+#[cfg(test)]
+#[path = "export_job/boundary_tests.rs"]
+mod boundary_tests;

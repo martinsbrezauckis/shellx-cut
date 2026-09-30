@@ -20,6 +20,7 @@ pub mod edit;
 pub mod edl;
 pub mod error;
 mod journal;
+pub mod matte_cache;
 pub mod multicam;
 mod mutation_request;
 pub mod ops;

@@ -363,6 +363,8 @@ children. There is no new verb, REST endpoint, MCP tool, or plugin permission fo
 process ownership: existing `jobs.status`/`jobs.cancel` and their terminal outcome
 fields are its only API and MCP projection.
 
+Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.
+
 `media.import` attaches media to the current project's Assets and intentionally
 does not populate the global cross-project Library. Automation that is importing
 user media for later reuse should explicitly follow a successful import with

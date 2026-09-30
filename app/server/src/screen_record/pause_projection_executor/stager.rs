@@ -33,12 +33,14 @@ pub(crate) trait FrameGridPauseProjectionSourceStager {
 /// FFmpeg implementation of the private frame-grid source stager.
 pub(crate) struct FfmpegFrameGridPauseProjectionSourceStager {
     ffmpeg: String,
+    ffprobe: String,
 }
 
 impl FfmpegFrameGridPauseProjectionSourceStager {
-    pub(crate) fn new(ffmpeg: impl Into<String>) -> Self {
+    pub(crate) fn new(ffmpeg: impl Into<String>, ffprobe: impl Into<String>) -> Self {
         Self {
             ffmpeg: ffmpeg.into(),
+            ffprobe: ffprobe.into(),
         }
     }
 }
@@ -51,7 +53,11 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
         grid: &FrameGridStitchPlan,
         output: &Path,
     ) -> Result<(), CutError> {
+        let control = OwnedProcessControl::bounded(STAGE_TIMEOUT, || false);
         let snapshots = snapshot_sources(capture_dir, sources)?;
+        for (snapshot, source) in snapshots.iter().zip(sources) {
+            super::timestamps::verify(&self.ffprobe, snapshot.path(), source, &control)?;
+        }
         let filter = filter_graph(sources, grid)?;
         let mut command = Command::new(&self.ffmpeg);
         command.args(["-v", "error", "-nostdin", "-n"]);
@@ -60,6 +66,8 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
                 .args([
                     "-protocol_whitelist",
                     cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                    "-format_whitelist",
+                    cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
                     "-i",
                 ])
                 .arg(snapshot.path());
@@ -73,7 +81,6 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
             .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
             .args(["-r", &rate, "-map_metadata", "-1"])
             .arg(output);
-        let control = OwnedProcessControl::bounded(STAGE_TIMEOUT, || false);
         let result = run_owned_command(
             &mut command,
             &control,
@@ -81,9 +88,13 @@ impl FrameGridPauseProjectionSourceStager for FfmpegFrameGridPauseProjectionSour
         )
         .map_err(stage_error)?;
         if !result.status.success() {
-            return Err(invalid(
-                "FFmpeg could not assemble the exact pause-session source",
-            ));
+            return Err(invalid(format!(
+                "FFmpeg could not assemble the exact pause-session source: {}",
+                String::from_utf8_lossy(&result.stderr)
+                    .chars()
+                    .take(512)
+                    .collect::<String>()
+            )));
         }
         Ok(())
     }
@@ -117,9 +128,9 @@ fn filter_graph(
             .ok_or_else(|| invalid("frame-grid plan has more source spans than verified inputs"))?;
         if source.run_sequence() != *run_sequence
             || source.checkpoint_sequence() != *checkpoint_sequence
-            || source.decoded_video_frames() != grid_span.frame_count()
-            || source.avg_frame_rate() != Some(grid.output_frame_rate)
-            || source.r_frame_rate() != Some(grid.output_frame_rate)
+            || source.decoded_video_frames() == 0
+            || source.avg_frame_rate().is_none()
+            || source.r_frame_rate().is_none()
         {
             return Err(invalid(
                 "verified source identity or media facts drift from the frame-grid plan",
@@ -138,8 +149,17 @@ fn filter_graph(
         assembled_frames = assembled_frames
             .checked_add(total)
             .ok_or_else(|| invalid("frame-grid source staging frame count overflowed"))?;
+        let rate = format!(
+            "{}/{}",
+            grid.output_frame_rate.num, grid.output_frame_rate.den
+        );
+        let source_frames = grid_span.frame_count();
+        // Resample the verified presentation clock first. Hold its final frame
+        // only to the quantized source endpoint; journal-declared encoder gaps
+        // then add their separate, exact frame counts. Reset PTS to the output
+        // grid so an input's nominal rate cannot retime explicit padding.
         filters.push(format!(
-            "[{source_index}:v]setpts=PTS-STARTPTS,tpad=start_mode=clone:start={leading}:stop_mode=clone:stop={trailing},trim=end_frame={total},setpts=PTS-STARTPTS[s{source_index}]"
+            "[{source_index}:v]setpts=PTS-STARTPTS,fps=fps={rate}:round=near,tpad=stop_mode=clone:stop=-1,trim=end_frame={source_frames},setpts=N/({rate}*TB),tpad=start_mode=clone:start={leading}:stop_mode=clone:stop={trailing},trim=end_frame={total},setpts=N/({rate}*TB)[s{source_index}]"
         ));
         source_index += 1;
     }

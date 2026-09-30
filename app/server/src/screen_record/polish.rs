@@ -135,9 +135,9 @@ pub(crate) async fn screen_record_autoedit(
             receipt,
             scene_camera.as_ref(),
         )?;
-        std::fs::write(
+        super::cache_output::write(
             &out,
-            serde_json::to_vec_pretty(&plan).map_err(|e| {
+            &serde_json::to_vec_pretty(&plan).map_err(|e| {
                 CutError::new(
                     error_codes::IO,
                     format!("could not serialize the Recording Scenes EditPlan: {e}"),
@@ -171,9 +171,9 @@ pub(crate) async fn screen_record_autoedit(
             camera_clock,
             &log,
         )?;
-        std::fs::write(
+        super::cache_output::write(
             &out,
-            serde_json::to_vec_pretty(&plan).map_err(|e| {
+            &serde_json::to_vec_pretty(&plan).map_err(|e| {
                 CutError::new(
                     error_codes::IO,
                     format!("could not serialize the Studio-patched EditPlan: {e}"),
@@ -328,7 +328,7 @@ pub(crate) fn plan_cache_tag(plan_path: &Path) -> Result<String, CutError> {
 }
 
 /// Read + deserialize an `EditPlan` JSON (shared by render/export).
-fn load_plan(plan_path: &Path) -> Result<record_core::EditPlan, CutError> {
+pub(super) fn load_plan(plan_path: &Path) -> Result<record_core::EditPlan, CutError> {
     let bytes = read_bounded_json(
         plan_path,
         "EditPlan",
@@ -379,7 +379,7 @@ pub fn autoedit(
             "EditPlan serialization failed",
         )
     })?;
-    std::fs::write(out_plan, json).map_err(|e| {
+    super::cache_output::write(out_plan, &json).map_err(|e| {
         CutError::new(
             error_codes::IO,
             format!(
@@ -401,12 +401,12 @@ pub fn autoedit(
 /// the job's deadline/cancellation probe all the way down to ffmpeg children.
 pub fn render_with_control(
     source: &Path,
-    plan_path: &Path,
+    plan: &record_core::EditPlan,
     out: &Path,
     audio: Option<&Path>,
     control: &record_render::ffmpeg::ProcessControl,
 ) -> Result<u64, CutError> {
-    render_with_control_progress(source, plan_path, out, audio, control, |_, _| {})
+    render_with_control_progress(source, plan, out, audio, control, |_, _| {})
 }
 
 /// Like [`render_with_control`], while reporting confirmed compositor frame flow
@@ -415,18 +415,17 @@ pub fn render_with_control(
 /// no-op observer above.
 pub fn render_with_control_progress(
     source: &Path,
-    plan_path: &Path,
+    plan: &record_core::EditPlan,
     out: &Path,
     audio: Option<&Path>,
     control: &record_render::ffmpeg::ProcessControl,
     on_frame: impl FnMut(u64, u64),
 ) -> Result<u64, CutError> {
     align_ffmpeg_env();
-    let plan = load_plan(plan_path)?;
     let audio_s = audio.map(|p| p.to_string_lossy().into_owned());
     record_render::render_video_audio_with_control_progress(
         &source.to_string_lossy(),
-        &plan,
+        plan,
         &out.to_string_lossy(),
         audio_s.as_deref(),
         control,
@@ -472,6 +471,8 @@ pub fn mux_raw_with_control(
         .args([
             "-protocol_whitelist",
             cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
             "-i",
         ])
         .arg(source);
@@ -479,6 +480,8 @@ pub fn mux_raw_with_control(
         cmd.args([
             "-protocol_whitelist",
             cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            cut_media::ffmpeg::LOCAL_INPUT_FORMATS,
             "-i",
         ])
         .arg(a)

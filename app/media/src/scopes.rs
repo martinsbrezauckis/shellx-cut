@@ -52,6 +52,8 @@ fn measure_command(path: &Path) -> Command {
             "error",
             "-protocol_whitelist",
             crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            crate::ffmpeg::LOCAL_INPUT_FORMATS,
             "-i",
         ])
         .arg(path)
@@ -208,6 +210,8 @@ pub fn render_scope(frame_path: &Path, kind: ScopeKind, out_path: &Path) -> Resu
             "error",
             "-protocol_whitelist",
             crate::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            crate::ffmpeg::LOCAL_INPUT_FORMATS,
             "-i",
         ])
         .arg(frame_path)

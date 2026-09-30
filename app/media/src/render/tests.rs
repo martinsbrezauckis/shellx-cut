@@ -175,7 +175,7 @@ fn fold_video_emits_chosen_transition() {
         },
     ];
     let mut f = String::new();
-    let total = fold_video(&mut f, &styled, "vout", 30.0);
+    let total = fold_video(&mut f, &styled, "vout", 30.0).unwrap();
     assert!(
         f.contains("xfade=transition=wipeleft:duration=0.400"),
         "fold_video must emit the chosen transition; got:\n{f}"
@@ -198,11 +198,33 @@ fn fold_video_emits_chosen_transition() {
         },
     ];
     let mut f2 = String::new();
-    fold_video(&mut f2, &plain, "vout", 30.0);
+    fold_video(&mut f2, &plain, "vout", 30.0).unwrap();
     assert!(
         f2.contains("xfade=transition=fade:"),
         "an unset transition stays the classic dissolve; got:\n{f2}"
     );
+}
+
+#[test]
+fn fold_video_rejects_crafted_transition_before_filtergraph_use() {
+    let segs = vec![
+        SegStream {
+            label: "s0".into(),
+            dur_ms: 2000,
+            xfade_in_ms: 0,
+            xfade_kind: None,
+        },
+        SegStream {
+            label: "s1".into(),
+            dur_ms: 2000,
+            xfade_in_ms: 400,
+            xfade_kind: Some("fade;movie=other.mp4".into()),
+        },
+    ];
+    let mut graph = String::new();
+    let err = fold_video(&mut graph, &segs, "vout", 30.0).unwrap_err();
+    assert_eq!(err.code, error_codes::INVALID_ARGS);
+    assert!(!graph.contains("movie="));
 }
 
 /// Effects (edit.effect): effect_filter emits each effect's ffmpeg filter in
@@ -1673,7 +1695,7 @@ fn fold_video_xfade_offsets_and_duration() {
         seg("v2", 2000, 1000),
     ];
     let mut f = String::new();
-    let total = fold_video(&mut f, &segs, "vout", 60.0);
+    let total = fold_video(&mut f, &segs, "vout", 60.0).unwrap();
     // Hard cut first → pairwise concat; crossfade second → xfade.
     assert!(
         f.contains("[v0][v1]concat=n=2:v=1:a=0"),
@@ -2113,6 +2135,35 @@ fn hidden_base_video_preserves_overlay_layer_over_black() {
         "visible overlay must remain an overlay over the black base:\n{}",
         g.filter
     );
+
+    p.track_mut("v2").unwrap().blend_mode = Some("multiply".into());
+    let valid = build_graph(
+        &p,
+        &edl,
+        tmp.path(),
+        false,
+        false,
+        true,
+        RenderOptions::default(),
+        None,
+    )
+    .unwrap();
+    assert!(valid.filter.contains("blend=all_mode=multiply:"));
+
+    p.track_mut("v2").unwrap().blend_mode = Some("multiply;movie=other.mp4".into());
+    let err = build_graph(
+        &p,
+        &edl,
+        tmp.path(),
+        false,
+        false,
+        true,
+        RenderOptions::default(),
+        None,
+    )
+    .err()
+    .expect("crafted blend mode must be refused");
+    assert_eq!(err.code, error_codes::INVALID_ARGS);
 }
 
 /// Mute/solo regression for the audio mix (`edit.mute` / `edit.solo`). A

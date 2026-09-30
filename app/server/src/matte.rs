@@ -21,12 +21,19 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "matte_cache_bake.rs"]
+mod cache_bake;
 #[path = "matte_native_runtime.rs"]
 pub(crate) mod native_runtime;
+#[path = "matte_output.rs"]
+mod output;
 #[path = "matte_premium_runtime.rs"]
 pub(crate) mod premium_runtime;
 #[path = "matte_prepared.rs"]
 pub(crate) mod prepared;
+#[cfg(test)]
+#[path = "matte_seed_output_tests.rs"]
+mod seed_output_tests;
 
 use cut_core::{error_codes, ClipMatte, CutError, MatteModel, MatteQuality, MatteSeed};
 use native_runtime::{
@@ -95,27 +102,9 @@ pub fn ensure_baked(
     asset_hash: &str,
     m: &ClipMatte,
 ) -> Result<MatteStats, CutError> {
+    cut_core::matte_cache::validate_asset_hash(asset_hash)?;
     let prepared_runtime = prepared_matte_runtime(&m.model)?;
     let expected_runtime = prepared_runtime.as_ref().map(PreparedMatteRuntime::binding);
-    let dir = project_dir.join("cache").join("matte");
-    let alpha = dir.join(m.cache_filename(asset_hash));
-    let stats_path = alpha.with_extension("json");
-
-    // A prepared cache must name the exact runner receipt, inventory and model
-    // group. This prevents an ordinary or older prepared bake from being
-    // accepted as proof for the current immutable runtime.
-    if alpha.exists() && stats_path.exists() {
-        if let Ok(txt) = std::fs::read_to_string(&stats_path) {
-            if let Ok(mut s) = serde_json::from_str::<MatteStats>(&txt) {
-                if cache_matches_prepared_runtime(&s, expected_runtime.as_ref()) {
-                    s.cached = true;
-                    return Ok(s);
-                }
-            }
-        }
-    }
-
-    std::fs::create_dir_all(&dir).map_err(|e| io_err("create cache dir", e))?;
 
     // Transport, by model:
     //  - `matanyone` (PREMIUM, opt-in): the local torch runtime; the bake first
@@ -125,43 +114,48 @@ pub fn ensure_baked(
     //    managed, invisible) when installed; else the HTTP sidecar
     //    (CUT_MATTE_ENDPOINT — dev / a remote GPU box). The doctor detects + reports
     //    each runtime (the ffmpeg pattern: autodetect → setup_matte fetch / browse).
-    let mut stats = match (m.model, prepared_runtime) {
-        (MatteModel::Matanyone, Some(PreparedMatteRuntime::Matanyone(runtime))) => {
-            prepared::bake_matanyone(&dir, asset_path, asset_hash, &alpha, m, &runtime)?
-        }
-        (MatteModel::Matanyone, None) => bake_matanyone(&dir, asset_path, asset_hash, &alpha, m)?,
-        (MatteModel::Rvm, Some(PreparedMatteRuntime::Rvm(runtime))) => bake_local(
-            &runtime.python,
-            &runtime.script,
-            &runtime.model,
-            asset_path,
-            &alpha,
-            m,
-            true,
-        )?,
-        (MatteModel::Rvm, None) => match runtime() {
-            Some(rt) => bake_local(
-                &rt.python, &rt.script, &rt.model, asset_path, &alpha, m, false,
-            )?,
-            None => bake_http(asset_path, &alpha, m)?,
+    cache_bake::ensure(
+        project_dir,
+        asset_hash,
+        m,
+        expected_runtime,
+        |dir, staged_alpha| match (m.model, prepared_runtime) {
+            (MatteModel::Matanyone, Some(PreparedMatteRuntime::Matanyone(runtime))) => {
+                prepared::bake_matanyone(dir, asset_path, asset_hash, staged_alpha, m, &runtime)
+            }
+            (MatteModel::Matanyone, None) => {
+                bake_matanyone(dir, asset_path, asset_hash, staged_alpha, m)
+            }
+            (MatteModel::Rvm, Some(PreparedMatteRuntime::Rvm(runtime))) => bake_local(
+                &runtime.python,
+                &runtime.script,
+                &runtime.model,
+                asset_path,
+                staged_alpha,
+                m,
+                true,
+            ),
+            (MatteModel::Rvm, None) => match runtime() {
+                Some(rt) => bake_local(
+                    &rt.python,
+                    &rt.script,
+                    &rt.model,
+                    asset_path,
+                    staged_alpha,
+                    m,
+                    false,
+                ),
+                None => bake_http(asset_path, staged_alpha, m),
+            },
+            // The resolver selects exactly the requested model before returning.
+            _ => {
+                return Err(io_err(
+                    "select prepared matte runtime",
+                    "model selection mismatch",
+                ))
+            }
         },
-        // The resolver selects exactly the requested model before returning.
-        _ => {
-            return Err(io_err(
-                "select prepared matte runtime",
-                "model selection mismatch",
-            ))
-        }
-    };
-    stats.native_runtime = expected_runtime;
-
-    // Persist the receipt next to the alpha so a cache hit can return it.
-    let _ = std::fs::write(
-        &stats_path,
-        serde_json::to_string(&stats).unwrap_or_default(),
-    );
-    stats.cached = false;
-    Ok(stats)
+    )
 }
 
 /// Bake via the LOCAL one-shot CLI (`matte_runner.py`): cutd spawns it per bake
@@ -305,17 +299,28 @@ fn bake_http(asset_path: &Path, alpha: &Path, m: &ClipMatte) -> Result<MatteStat
         })?;
     // Stream the alpha (ureq's read_to_vec caps at 10 MB; a long clip's alpha
     // can exceed that).
-    let mut body = Vec::new();
-    std::io::Read::read_to_end(&mut resp.into_body().into_reader(), &mut body)
-        .map_err(|e| io_err("read alpha body", e))?;
-    std::fs::write(alpha, &body).map_err(|e| io_err("write alpha", e))?;
-    serde_json::from_str(&stats_hdr).map_err(|e| {
+    receive_http_alpha(alpha, &mut resp.into_body().into_reader(), &stats_hdr)
+}
+
+fn receive_http_alpha(
+    alpha: &Path,
+    body: &mut impl std::io::Read,
+    stats_header: &str,
+) -> Result<MatteStats, CutError> {
+    let stats = serde_json::from_str(stats_header).map_err(|e| {
         CutError::new(
             error_codes::IO,
             format!("matte stats header is not valid JSON: {e}"),
             "the sidecar returned a malformed X-Matte-Stats header",
         )
-    })
+    })?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(alpha)?;
+    std::io::copy(body, &mut file).map_err(|e| io_err("read/write alpha body", e))?;
+    file.sync_all()?;
+    Ok(stats)
 }
 
 // ---------------------------------------------------------------------------
@@ -635,57 +640,58 @@ fn sam2_seed_mask(
     seed: &MatteSeed,
     rt: &MatanyoneRuntime,
 ) -> Result<PathBuf, CutError> {
-    let out = cache_dir.join(format!("{asset_hash}.{}.seed.png", seed.short_hash()));
-    if out.exists() {
-        return Ok(out);
-    }
-    let script = sam2_runner_script();
-    if !script.exists() {
-        return Err(CutError::new(
+    cut_core::matte_cache::validate_asset_hash(asset_hash)?;
+    let key = cut_core::matte_cache::portable_asset_key(asset_hash);
+    let out = cache_dir.join(format!("{key}.{}.seed.png", seed.short_hash()));
+    output::bake_seed(&out, |staged| {
+        let script = sam2_runner_script();
+        if !script.exists() {
+            return Err(CutError::new(
             error_codes::SIDECAR,
             "the SAM2 click-to-pick-subject runner is not installed",
             "re-run system.setup_matte{model:\"matanyone\", accept_noncommercial:true} (it installs SAM2)",
         ));
-    }
-    let mut cmd = std::process::Command::new(&rt.python);
-    cmd.arg(&script)
-        .arg(asset_path)
-        .arg(&out)
-        .arg("--at-ms")
-        .arg(seed.at_ms.to_string());
-    if let Some(hf) = matanyone_hf_dir() {
-        cmd.arg("--hf-home")
-            .arg(hf)
-            .arg("--hf-revision")
-            .arg(SAM2_HF_REVISION);
-    }
-    match (seed.point, seed.bbox) {
-        (Some(p), _) => {
-            cmd.arg("--point").arg(format!("{},{}", p[0], p[1]));
         }
-        (None, Some(b)) => {
-            cmd.arg("--box")
-                .arg(format!("{},{},{},{}", b[0], b[1], b[2], b[3]));
+        let mut cmd = std::process::Command::new(&rt.python);
+        cmd.arg(&script)
+            .arg(asset_path)
+            .arg(staged)
+            .arg("--at-ms")
+            .arg(seed.at_ms.to_string());
+        if let Some(hf) = matanyone_hf_dir() {
+            cmd.arg("--hf-home")
+                .arg(hf)
+                .arg("--hf-revision")
+                .arg(SAM2_HF_REVISION);
         }
-        (None, None) => {
+        match (seed.point, seed.bbox) {
+            (Some(p), _) => {
+                cmd.arg("--point").arg(format!("{},{}", p[0], p[1]));
+            }
+            (None, Some(b)) => {
+                cmd.arg("--box")
+                    .arg(format!("{},{},{},{}", b[0], b[1], b[2], b[3]));
+            }
+            (None, None) => {
+                return Err(CutError::new(
+                    error_codes::INVALID_ARGS,
+                    "matte seed needs a point [x,y] or a box [x,y,w,h]",
+                    "pass seed.point or seed.bbox to pick the subject",
+                ));
+            }
+        }
+        let o = crate::dispatch::run_bounded_foreground_command(&mut cmd, "SAM2 seed runner")
+            .map_err(|e| io_err("sam2 seed: spawn runner", e))?;
+        if !o.status.success() {
+            let err = String::from_utf8_lossy(&o.stderr);
             return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                "matte seed needs a point [x,y] or a box [x,y,w,h]",
-                "pass seed.point or seed.bbox to pick the subject",
+                error_codes::IO,
+                format!("SAM2 seed generation failed: {}", err.trim()),
+                "SAM2 could not produce the subject mask from the click/box",
             ));
         }
-    }
-    let o = crate::dispatch::run_bounded_foreground_command(&mut cmd, "SAM2 seed runner")
-        .map_err(|e| io_err("sam2 seed: spawn runner", e))?;
-    if !o.status.success() {
-        let err = String::from_utf8_lossy(&o.stderr);
-        return Err(CutError::new(
-            error_codes::IO,
-            format!("SAM2 seed generation failed: {}", err.trim()),
-            "SAM2 could not produce the subject mask from the click/box",
-        ));
-    }
-    Ok(out)
+        Ok(())
+    })
 }
 
 /// Seed MatAnyone2's first-frame subject mask by running RVM on frame 0 (the
@@ -696,36 +702,37 @@ fn rvm_seed_mask(
     asset_path: &Path,
     asset_hash: &str,
 ) -> Result<PathBuf, CutError> {
-    let seed = cache_dir.join(format!("{asset_hash}.seed.png"));
-    if seed.exists() {
-        return Ok(seed);
-    }
-    let rvm = runtime().ok_or_else(|| {
+    cut_core::matte_cache::validate_asset_hash(asset_hash)?;
+    let key = cut_core::matte_cache::portable_asset_key(asset_hash);
+    let seed = cache_dir.join(format!("{key}.seed.png"));
+    output::bake_seed(&seed, |staged| {
+        let rvm = runtime().ok_or_else(|| {
         CutError::new(
             error_codes::SIDECAR,
             "MatAnyone2 needs the RVM model to seed its first-frame subject mask, but RVM is not installed",
             "run system.setup_matte to install the default RVM model — the premium tier seeds its mask from it",
         )
     })?;
-    let mut command = std::process::Command::new(&rvm.python);
-    command
-        .arg(&rvm.script)
-        .arg(asset_path)
-        .arg("--first-frame-mask")
-        .arg(&seed)
-        .arg("--model")
-        .arg(&rvm.model);
-    let out = crate::dispatch::run_bounded_foreground_command(&mut command, "RVM seed runner")
-        .map_err(|e| io_err("seed mask: spawn RVM runner", e))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(CutError::new(
-            error_codes::IO,
-            format!("seed mask generation failed: {}", err.trim()),
-            "RVM could not produce the first-frame mask for the premium matte",
-        ));
-    }
-    Ok(seed)
+        let mut command = std::process::Command::new(&rvm.python);
+        command
+            .arg(&rvm.script)
+            .arg(asset_path)
+            .arg("--first-frame-mask")
+            .arg(staged)
+            .arg("--model")
+            .arg(&rvm.model);
+        let out = crate::dispatch::run_bounded_foreground_command(&mut command, "RVM seed runner")
+            .map_err(|e| io_err("seed mask: spawn RVM runner", e))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(CutError::new(
+                error_codes::IO,
+                format!("seed mask generation failed: {}", err.trim()),
+                "RVM could not produce the first-frame mask for the premium matte",
+            ));
+        }
+        Ok(())
+    })
 }
 
 /// Bake via the premium MatAnyone2 runtime: seed the first-frame mask (RVM), then

@@ -317,14 +317,18 @@ fn overlaps_scope(cue: [u64; 2], scope: Option<[u64; 2]>) -> bool {
 }
 
 fn match_ranges_utf16(matcher: &Regex, text: &str) -> Vec<[usize; 2]> {
+    let mut byte_cursor = 0;
+    let mut utf16_cursor = 0;
     matcher
         .find_iter(text)
         .map(|found| {
-            let start = text[..found.start()].encode_utf16().count();
-            [
-                start,
-                start + text[found.start()..found.end()].encode_utf16().count(),
-            ]
+            // Ordered, nonoverlapping matches let each gap and match contribute
+            // once, rather than recounting the whole prefix for every match.
+            utf16_cursor += text[byte_cursor..found.start()].encode_utf16().count();
+            let start = utf16_cursor;
+            utf16_cursor += text[found.start()..found.end()].encode_utf16().count();
+            byte_cursor = found.end();
+            [start, utf16_cursor]
         })
         .collect()
 }
@@ -347,4 +351,62 @@ fn normalized_words(text: &str) -> String {
 
 fn preview_unavailable() -> CutError {
     CutError::new(error_codes::CONFLICT, "caption replacement preview is unavailable", "the preview was consumed, superseded, or belongs to a previous server run; no cues were changed").with_suggested_action("run captions.bulk_preview again before replacing captions")
+}
+
+#[cfg(test)]
+mod utf16_tests {
+    use super::*;
+
+    fn matcher(find: &str, mode: MatchMode, case_sensitive: bool) -> Regex {
+        matcher_for(&PreviewArgs {
+            track: "cap1".into(),
+            find: find.into(),
+            replace_with: "$1".into(),
+            match_mode: mode,
+            case_sensitive,
+            range_ms: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn offsets_preserve_unicode_literal_case_and_word_semantics() {
+        let contains = MatchMode::Contains;
+        assert_eq!(
+            match_ranges_utf16(&matcher("😀", contains.clone(), true), "a😀😀z"),
+            vec![[1, 3], [3, 5]]
+        );
+        assert_eq!(
+            match_ranges_utf16(&matcher("k", contains.clone(), false), "😀KkK"),
+            vec![[2, 3], [3, 4], [4, 5]]
+        );
+        assert_eq!(
+            match_ranges_utf16(&matcher("k", contains.clone(), true), "😀KkK"),
+            vec![[3, 4]]
+        );
+        assert_eq!(
+            match_ranges_utf16(&matcher("a", MatchMode::WholeWord, true), "a aa éa a"),
+            vec![[0, 1], [8, 9]]
+        );
+        assert_eq!(
+            match_ranges_utf16(&matcher(".*", contains.clone(), true), "😀.*.*"),
+            vec![[2, 4], [4, 6]]
+        );
+        assert_eq!(
+            match_ranges_utf16(&matcher("aa", contains.clone(), true), "aaa"),
+            vec![[0, 2]]
+        );
+        assert!(match_ranges_utf16(&matcher("z", contains, true), "😀").is_empty());
+    }
+
+    #[test]
+    fn dense_megabyte_cue_preserves_all_offsets() {
+        let text = "a".repeat(1024 * 1024);
+        let ranges = match_ranges_utf16(&matcher("a", MatchMode::Contains, true), &text);
+        assert_eq!(ranges.len(), text.len());
+        assert!(ranges
+            .iter()
+            .enumerate()
+            .all(|(index, range)| *range == [index, index + 1]));
+    }
 }

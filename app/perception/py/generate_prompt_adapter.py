@@ -29,7 +29,7 @@ fabricates a plan. Stdlib-only on purpose: it must run under the bundled
 perception venv OR any system Python >= 3.8 (CUTD_ADAPTER_PYTHON).
 
 Security posture: claude runs with --tools "" (no tool use), codex runs in the
-read-only sandbox with --ephemeral, grok runs single-turn -p. The planning
+read-only sandbox with --ephemeral, grok runs single-turn -p with a capability-verified no-tool policy. The planning
 call is pure text -> JSON; the agent gets no filesystem or shell authority
 from us beyond what the CLI itself grants a plain prompt.
 """
@@ -39,9 +39,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import suppress
 
 import provider_child_launch
+from judge.adapters import grok_tool_policy
 
 SCHEMA = "shellx-cut/generate-plan/1"
 AUTO_ORDER = ["claude", "codex", "grok"]
@@ -246,7 +248,7 @@ def extract_json(text):
     return None
 
 
-def spawn_cli(name, path, prompt, timeout_s):
+def spawn_cli(name, path, prompt, timeout_s, grok_policy=None):
     """Run the CLI; return (answer_text, model_hint, error_reason)."""
     launch = path if isinstance(path, dict) else None
     child_env = provider_child_launch.environment(launch) if launch else None
@@ -306,11 +308,22 @@ def spawn_cli(name, path, prompt, timeout_s):
                 with suppress(FileNotFoundError):
                     os.unlink(last_path)
         if name == "grok":
+            if grok_policy is None:
+                deadline = time.monotonic() + timeout_s
+                grok_policy, reason = grok_tool_policy.resolve_grok_tool_policy(
+                    path if launch is None else launch["executable"], launch,
+                    required_flags=grok_tool_policy.PLANNER_REQUIRED_FLAGS, timeout_s=timeout_s)
+                if grok_policy is None:
+                    return None, None, reason
+                timeout_s = deadline - time.monotonic()
+                if timeout_s <= 0:
+                    return None, None, "no time remains after Grok capability admission"
             if len(prompt) > GROK_ARGV_PROMPT_LIMIT:
                 # Shrink the catalog rather than overflow argv on Windows.
                 return None, None, "prompt too large for grok argv transport"
             proc = subprocess.run(
-                command(["-p", prompt, "--output-format", "json"]),
+                command(["-p", prompt, "--output-format", "json"]
+                        + grok_tool_policy.no_tool_arguments()),
                 capture_output=True,
                 timeout=timeout_s,
                 env=child_env,
@@ -386,16 +399,39 @@ def main():
     # Each CANDIDATE gets an equal slice; each slice funds one attempt + one
     # validation-feedback retry.
     slice_s = max(10.0, total_s / len(candidates))
+    deadline = time.monotonic() + total_s
 
     warnings = []
     backend = None
     fails = []
+    unavailable = []
     for name, path in candidates:
         backend = {"provider": name, "model": None}
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            fails.append(f"{name}: no time remains in the planning request")
+            continue
+        provider_deadline = now + min(slice_s, remaining)
+        grok_policy = None
+        if name == "grok":
+            launch = path if isinstance(path, dict) else None
+            grok_policy, reason = grok_tool_policy.resolve_grok_tool_policy(
+                path if launch is None else launch["executable"], launch,
+                required_flags=grok_tool_policy.PLANNER_REQUIRED_FLAGS,
+                timeout_s=provider_deadline - time.monotonic())
+            if grok_policy is None:
+                unavailable.append(f"{name}: {reason}")
+                warnings.append(f"agent {name} unavailable, trying next: {reason}"[:200])
+                continue
         errors = None
         for attempt, share in ((1, 0.6), (2, 0.4)):
+            attempt_budget = min(slice_s * share, provider_deadline - time.monotonic())
+            if attempt_budget <= 0:
+                fails.append(f"{name}: no time remains in its planning share")
+                break
             prompt = build_prompt(req, errors=errors)
-            answer, model, fail = spawn_cli(name, path, prompt, slice_s * share)
+            answer, model, fail = spawn_cli(name, path, prompt, attempt_budget, grok_policy)
             if fail:
                 # HARD failure (spawn/auth/exit/timeout): fall through to the
                 # next installed CLI instead of dying on the first.
@@ -420,9 +456,9 @@ def main():
                 reason="agent plan failed validation after retry: " + "; ".join(errors or []),
             )
     emit(
-        "error",
+        "error" if fails else "not_run",
         backend=backend,
-        reason="every available CLI agent failed: " + " | ".join(fails),
+        reason="no CLI agent completed planning: " + " | ".join(fails + unavailable),
     )
 
 

@@ -170,6 +170,8 @@ fn decode_sample_rgb24(asset_path: &Path, at_s: f64) -> Result<Vec<u8>, CutError
             &at,
             "-protocol_whitelist",
             LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            crate::ffmpeg::LOCAL_INPUT_FORMATS,
             "-i",
         ])
         .arg(asset_path)

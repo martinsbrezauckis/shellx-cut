@@ -11,7 +11,7 @@
 //! Primary callers: server render.* verbs + render jobs.
 
 use crate::ffmpeg::{
-    concat_demuxer_file_line, escape_filter_path, run_ffmpeg, run_ffmpeg_with_progress,
+    escape_filter_path, owned_concat_file_lines, run_ffmpeg, run_ffmpeg_with_progress,
     run_ffmpeg_with_progress_atomic_output as run_progress_atomic, DETERMINISM_FLAGS,
 };
 use crate::paths::PathFence;
@@ -1615,7 +1615,12 @@ struct SegStream {
 /// chain `[leg]settb=AVTB,fps=..[legN]`), so the timebase is identical on both
 /// sides regardless of project fps. Applied only on the xfade path — the hard-
 /// cut `concat` branch is byte-identical to the older graph (replay invariant).
-fn fold_video(f: &mut String, segs: &[SegStream], out_label: &str, fps: f64) -> u64 {
+fn fold_video(
+    f: &mut String,
+    segs: &[SegStream],
+    out_label: &str,
+    fps: f64,
+) -> Result<u64, CutError> {
     debug_assert!(!segs.is_empty());
     let mut acc = segs[0].label.clone();
     let mut acc_dur = segs[0].dur_ms;
@@ -1639,6 +1644,13 @@ fn fold_video(f: &mut String, segs: &[SegStream], out_label: &str, fps: f64) -> 
             // xfade name, or "fade" (classic dissolve) when unset — byte-identical
             // to the pre-transitions graph for every existing crossfade.
             let kind = s.xfade_kind.as_deref().unwrap_or("fade");
+            if !cut_core::is_valid_transition(kind) {
+                return Err(CutError::new(
+                    error_codes::INVALID_ARGS,
+                    "invalid render transition",
+                    format!("unsupported xfade transition '{kind}'"),
+                ));
+            }
             writeln!(
                 f,
                 "[{acc_n}][{seg_n}]xfade=transition={kind}:duration={d}:offset={o}[{next}];",
@@ -1659,7 +1671,7 @@ fn fold_video(f: &mut String, segs: &[SegStream], out_label: &str, fps: f64) -> 
     if acc != out_label {
         writeln!(f, "[{acc}]null[{out_label}];").unwrap();
     }
-    acc_dur
+    Ok(acc_dur)
 }
 
 /// Audio analog of `fold_video`: dissolve seams with `acrossfade`, hard-
@@ -1948,7 +1960,7 @@ fn build_graph(
                                         project_dir,
                                         hash,
                                         matte,
-                                    )))
+                                    )?))
                                     .copied()
                                     .ok_or_else(|| {
                                         CutError::new(
@@ -2187,7 +2199,7 @@ fn build_graph(
         // Seam fold: dissolve (xfade) flagged cuts, hard-cut (pairwise concat)
         // the rest. `s.fps` (raw f64) drives the per-leg fps normalisation the
         // xfade timebase fix (the crossfade-timebase contract) needs.
-        fold_video(&mut f, &vsegs, "vcat", s.fps);
+        fold_video(&mut f, &vsegs, "vcat", s.fps)?;
         "vcat".to_string()
     } else {
         // Unchanged hard-cut path: one N-way concat (byte-identical replay).
@@ -2365,16 +2377,21 @@ fn build_graph(
             // The matte is a PARALLEL gray input trimmed/conformed IDENTICALLY to
             // the clip (so it stays frame-aligned); the alpha skips color stages but
             // keeps every GEOMETRY stage. Software path only (GPU excludes matte).
-            let matte_alpha_idx = seg.matte.as_ref().and_then(|m| {
-                let hash = project
-                    .assets
-                    .get(asset.as_str())
-                    .map(|a| a.hash.as_str())
-                    .unwrap_or("");
-                input_idx
-                    .get(&matte_input_key(&matte_alpha_path(project_dir, hash, m)))
-                    .copied()
-            });
+            let matte_alpha_idx = seg
+                .matte
+                .as_ref()
+                .map(|m| -> Result<_, CutError> {
+                    let hash = project
+                        .assets
+                        .get(asset.as_str())
+                        .map(|a| a.hash.as_str())
+                        .unwrap_or("");
+                    Ok(input_idx
+                        .get(&matte_input_key(&matte_alpha_path(project_dir, hash, m)?))
+                        .copied())
+                })
+                .transpose()?
+                .flatten();
             let matte_replace = matte::replacement_background(seg.matte.as_ref())?;
             if let (Some(am), Some(background)) = (matte_alpha_idx, matte_replace) {
                 let fgpre = format!("ofp{ti}_{}", olabels.len());
@@ -2544,6 +2561,13 @@ fn build_graph(
             .filter(|m| !m.is_empty() && *m != "normal")
         {
             Some(mode) => {
+                if !cut_core::types::is_valid_blend_mode(mode) {
+                    return Err(CutError::new(
+                        error_codes::INVALID_ARGS,
+                        "invalid render blend mode",
+                        format!("unsupported track blend mode '{mode}'"),
+                    ));
+                }
                 let (vca, vcb) = (format!("bvc{ti}a"), format!("bvc{ti}b"));
                 let (osa, osb, osc) = (
                     format!("bos{ti}a"),
@@ -4040,7 +4064,7 @@ pub fn render_segmented(
     let list_path = work.join("concat.txt");
     let mut list = String::new();
     for p in &seg_files {
-        writeln!(list, "{}", concat_demuxer_file_line(p)).unwrap();
+        writeln!(list, "{}", owned_concat_file_lines(p)).unwrap();
     }
     plain_internal_file_exists(&list_path)?;
     std::fs::write(&list_path, &list)?;
@@ -4058,7 +4082,7 @@ pub fn render_segmented(
     ];
     cargs.extend(DETERMINISM_FLAGS.iter().map(|s| s.to_string()));
     cargs.push(video_only.display().to_string());
-    crate::ffmpeg::run_ffmpeg_atomic_output(&cargs, &video_only)?;
+    crate::ffmpeg::run_owned_concat_atomic_output(&cargs, &video_only)?;
 
     // --- 3. audio single-pass over the FULL EDL + mux ----------------------
     // Build the audio-only graph (no overlay cost). If the timeline has audio,

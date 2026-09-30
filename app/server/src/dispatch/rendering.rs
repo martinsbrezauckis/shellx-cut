@@ -3209,19 +3209,9 @@ pub(super) async fn render_bundle(
             let (vtt_hash, vtt_hash_error) = optional_artifact_hash(vtt_path.as_deref());
             // Thumbnail at the clip midpoint, extracted from the rendered mp4.
             let thumb_path = plat_dir.join("thumb.jpg");
-            let mid_s = (output.duration_ms as f64 / 2000.0).max(0.0);
-            let thumb_ok = cut_media::ffmpeg::run_ffmpeg(&[
-                "-ss".into(),
-                format!("{mid_s:.3}"),
-                "-i".into(),
-                output.path.display().to_string(),
-                "-frames:v".into(),
-                "1".into(),
-                "-q:v".into(),
-                "3".into(),
-                thumb_path.display().to_string(),
-            ])
-            .is_ok();
+            let thumb_ok =
+                bundle_package::write_thumbnail(&output.path, &thumb_path, output.duration_ms)
+                    .is_ok();
             let thumb = thumb_ok.then(|| thumb_path.display().to_string());
             let (thumb_hash, thumb_hash_error) = optional_artifact_hash(thumb.as_deref());
             let artifact_hash_failed = [caption_hash_error, vtt_hash_error, thumb_hash_error]

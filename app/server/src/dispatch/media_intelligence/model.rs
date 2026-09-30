@@ -101,6 +101,8 @@ pub(super) fn index_path(project_dir: &Path) -> PathBuf {
 }
 
 pub(super) fn load_index(project_dir: &Path) -> Option<MediaEvidenceIndex> {
+    crate::output_paths::existing_plain_project_relative_dir(project_dir, Path::new("indexes"))
+        .ok()?;
     let bytes =
         crate::vissearch::read_bounded_file(&index_path(project_dir), MAX_EVIDENCE_INDEX_BYTES)
             .ok()?;

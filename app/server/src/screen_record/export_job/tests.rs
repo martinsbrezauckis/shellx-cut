@@ -102,6 +102,7 @@ fn retry_descriptor_detects_changed_export_input_bytes() {
         &source,
         &plan,
         &audio,
+        &record_core::EditPlan::empty(160, 90, 1000, 25.0),
         &ExportFormat::Mp4,
     )
     .unwrap();
@@ -113,6 +114,7 @@ fn retry_descriptor_detects_changed_export_input_bytes() {
         &source,
         &plan,
         &audio,
+        &record_core::EditPlan::empty(160, 90, 1000, 25.0),
         &ExportFormat::Mp4,
     )
     .unwrap();

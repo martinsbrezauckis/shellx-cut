@@ -6,6 +6,7 @@
 
 mod cleanup;
 mod lineage;
+mod paths;
 mod retry;
 
 use super::{outcome::restart_interrupted, JobRecord};
@@ -41,8 +42,9 @@ pub(super) struct RecoveredJobs {
 /// `.json` record is retained under `jobs/quarantine/` and reported to callers
 /// through `jobs.list`; a failed quarantine aborts attach rather than hiding it.
 pub(super) fn recover(project_dir: &Path) -> Result<RecoveredJobs, CutError> {
+    cut_core::store::validate_job_output_roots(project_dir)?;
     let dir = project_dir.join("jobs");
-    std::fs::create_dir_all(&dir)?;
+    paths::prepare_jobs_dir(&dir)?;
     let mut records = Vec::new();
     let mut record_ids = HashSet::new();
     let mut next_seq = 0;
@@ -182,8 +184,7 @@ fn quarantine(
     filename: &str,
     reason: &str,
 ) -> Result<JobPersistenceNotice, CutError> {
-    let quarantine_dir = jobs_dir.join("quarantine");
-    std::fs::create_dir_all(&quarantine_dir)?;
+    let quarantine_dir = paths::prepare_quarantine_dir(jobs_dir)?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -193,6 +194,7 @@ fn quarantine(
         std::process::id(),
         nonce
     ));
+    paths::validate_jobs_dir(jobs_dir)?;
     std::fs::rename(source, &destination).map_err(|error| {
         CutError::new(
             cut_core::error::codes::IO,
@@ -218,5 +220,7 @@ fn quarantine(
 mod cleanup_tests;
 #[cfg(test)]
 mod lineage_tests;
+#[cfg(test)]
+mod paths_tests;
 #[cfg(test)]
 mod tests;

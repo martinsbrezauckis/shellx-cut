@@ -139,7 +139,7 @@ if (process.platform !== "win32") {
         `#!${process.execPath}\n`
           + `const args = process.argv.slice(2);\n`
           + `if (args.includes("--version")) { console.log("grok 1.0.21 (fixture)"); process.exit(0); }\n`
-          + `if (args.includes("--help")) { console.log(["--tools","--disallowed-tools","--deny","--no-subagents","--disable-web-search","--sandbox","--permission-mode"].join("\\n")); process.exit(0); }\n`
+          + `if (args.includes("--help")) { console.log(["--tools","--disallowed-tools","--deny","--no-subagents","--disable-web-search","--sandbox","--permission-mode","--prompt-file","--output-format","--no-memory","--cwd","--model"].join("\\n")); process.exit(0); }\n`
           + `console.log(JSON.stringify({text:JSON.stringify({verdict:"pass",issues:[],cannot_assess:[],confidence:0.93,summary:"fixture reviewed sampled frames"}),stopReason:"end_turn",sessionId:"fixture",requestId:"fixture-request"}));\n`,
       );
       chmodSync(fakeGrok, 0o755);

@@ -43,14 +43,15 @@ pub struct Compositor<'a> {
 
 impl<'a> Compositor<'a> {
     /// Build the compositor, precomputing background + shadow + mask.
-    pub fn new(plan: &'a EditPlan) -> Self {
+    /// Reject unsafe plan-derived geometry before allocating any output layers.
+    pub fn new(plan: &'a EditPlan) -> record_core::Result<Self> {
         Self::with_bg(plan, None)
     }
 
     /// Like `new`, but a `BlurScreen` background can blur the given representative
     /// source `bg_frame` into the backdrop (else BlurScreen falls back to a gradient).
-    pub fn with_bg(plan: &'a EditPlan, bg_frame: Option<&Pixmap>) -> Self {
-        let (out_w, out_h) = output_size(plan);
+    pub fn with_bg(plan: &'a EditPlan, bg_frame: Option<&Pixmap>) -> record_core::Result<Self> {
+        let (out_w, out_h) = output_size(plan)?;
 
         // Reframe (9:16 / 1:1) uses COVER fit: the source fills the output and is
         // cropped around the zoom focus (the "action"), full-bleed, no frame. The
@@ -83,7 +84,13 @@ impl<'a> Compositor<'a> {
             (c, r)
         };
 
-        let mut base = Pixmap::new(out_w, out_h).expect("allocate base pixmap");
+        let mut base = Pixmap::new(out_w, out_h).ok_or_else(|| {
+            record_core::RecordError::new(
+                record_core::error_codes::INVALID_ARGS,
+                "invalid edit plan",
+                "unable to allocate derived output pixmap",
+            )
+        })?;
         match (&plan.background, bg_frame) {
             (record_core::Background::BlurScreen { .. }, Some(frame)) => {
                 crate::fill_blur_bg(&mut base, frame)
@@ -106,7 +113,7 @@ impl<'a> Compositor<'a> {
             None => Vec::new(),
         };
 
-        Self {
+        Ok(Self {
             plan,
             out_w,
             out_h,
@@ -114,7 +121,7 @@ impl<'a> Compositor<'a> {
             base,
             mask,
             caption_lines,
-        }
+        })
     }
 
     /// Compose a frame that also overlays a webcam bubble (a square `webcam` frame
@@ -332,8 +339,8 @@ fn webcam_outline(
 }
 
 /// Compose a SINGLE frame (builds a transient `Compositor`) — for one-offs/tests.
-pub fn compose_frame(source: &Pixmap, plan: &EditPlan, t_ms: u64) -> Pixmap {
-    Compositor::new(plan).frame(source, t_ms)
+pub fn compose_frame(source: &Pixmap, plan: &EditPlan, t_ms: u64) -> record_core::Result<Pixmap> {
+    Ok(Compositor::new(plan)?.frame(source, t_ms))
 }
 
 #[cfg(test)]
@@ -424,8 +431,8 @@ mod tests {
             cy: 0.5,
             ease: Ease::EaseInOut,
         });
-        let out = compose_frame(&src, &plan, 0);
-        assert_eq!((out.width(), out.height()), output_size(&plan));
+        let out = compose_frame(&src, &plan, 0).unwrap();
+        assert_eq!((out.width(), out.height()), output_size(&plan).unwrap());
         assert!(channel_spread(&out) > 30, "output looks blank");
     }
 
@@ -433,8 +440,8 @@ mod tests {
     fn compose_is_deterministic() {
         let src = quad_source(160, 90);
         let plan = EditPlan::empty(160, 90, 1000, 30.0);
-        let a = compose_frame(&src, &plan, 500);
-        let b = compose_frame(&src, &plan, 500);
+        let a = compose_frame(&src, &plan, 500).unwrap();
+        let b = compose_frame(&src, &plan, 500).unwrap();
         assert_eq!(a.data(), b.data(), "same inputs must give identical pixels");
     }
 
@@ -444,7 +451,7 @@ mod tests {
         let mut plan = EditPlan::empty(320, 180, 1_000, 30.0);
         plan.background = record_core::Background::Transparent;
         plan.frame.enabled = false;
-        let out = compose_frame(&src, &plan, 0);
+        let out = compose_frame(&src, &plan, 0).unwrap();
         assert_eq!(pixel_rgba(&out, 0, 0), [40, 80, 180, 255]);
         assert_eq!(pixel_rgba(&out, 319, 179), [40, 80, 180, 255]);
     }
@@ -467,10 +474,10 @@ mod tests {
             cy: 0.3,
             ease: Ease::EaseInOut,
         });
-        let comp = Compositor::new(&plan);
+        let comp = Compositor::new(&plan).unwrap();
         for t in [0u64, 750, 1500, 2999] {
             let reused = comp.frame(&src, t);
-            let oneshot = compose_frame(&src, &plan, t);
+            let oneshot = compose_frame(&src, &plan, t).unwrap();
             assert_eq!(
                 reused.data(),
                 oneshot.data(),
@@ -484,9 +491,9 @@ mod tests {
         let src = quad_source(320, 180);
         let mut plan = EditPlan::empty(320, 180, 1000, 30.0);
         plan.reframe = record_core::Reframe::Aspect { w: 9, h: 16 };
-        let (ow, oh) = output_size(&plan);
+        let (ow, oh) = output_size(&plan).unwrap();
         assert!(ow < oh, "9:16 should be portrait, got {ow}x{oh}");
-        let out = compose_frame(&src, &plan, 0);
+        let out = compose_frame(&src, &plan, 0).unwrap();
         assert_eq!((out.width(), out.height()), (ow, oh));
     }
 
@@ -512,7 +519,7 @@ mod tests {
             }],
         });
 
-        let comp = Compositor::new(&plan);
+        let comp = Compositor::new(&plan).unwrap();
         let before = comp.frame_webcam(&src, Some(&cam), 0);
         assert!(
             !is_red(pixel_rgba(&before, 59, 63)),
@@ -550,7 +557,9 @@ mod tests {
                 shape: Some(WebcamShape::Circle),
             }],
         });
-        let out = Compositor::new(&plan).frame_webcam(&src, Some(&cam), 3_916);
+        let out = Compositor::new(&plan)
+            .unwrap()
+            .frame_webcam(&src, Some(&cam), 3_916);
         assert_eq!((out.width(), out.height()), (1040, 504));
         assert!(
             is_red(pixel_rgba(&out, 964, 428)),
@@ -594,7 +603,7 @@ mod tests {
             ],
         });
 
-        let comp = Compositor::new(&plan);
+        let comp = Compositor::new(&plan).unwrap();
         let visible = comp.frame_webcam(&src, Some(&cam), 500);
         assert!(is_red(pixel_rgba(&visible, 59, 63)));
 
@@ -658,7 +667,10 @@ mod tests {
                 );
                 let center_x = ((placement.x * 320.0) + 27.0) as u32;
                 let center_y = ((placement.y * 180.0) + 27.0) as u32;
-                let frame = Compositor::new(&plan).frame_webcam(&source, Some(&camera), 500);
+                let frame =
+                    Compositor::new(&plan)
+                        .unwrap()
+                        .frame_webcam(&source, Some(&camera), 500);
                 assert!(is_red(pixel_rgba(&frame, center_x, center_y)), "{corner:?}");
                 assert_eq!(
                     placement.x < 0.5,
@@ -718,9 +730,9 @@ mod tests {
             },
         });
 
-        let at_half_second = compose_frame(&src, &plan, 500);
-        let at_one_and_half_seconds = compose_frame(&src, &plan, 1_500);
-        let repeat_half_second = compose_frame(&src, &plan, 500);
+        let at_half_second = compose_frame(&src, &plan, 500).unwrap();
+        let at_one_and_half_seconds = compose_frame(&src, &plan, 1_500).unwrap();
+        let repeat_half_second = compose_frame(&src, &plan, 500).unwrap();
 
         assert_ne!(at_half_second.data(), at_one_and_half_seconds.data());
         assert_eq!(at_half_second.data(), repeat_half_second.data());

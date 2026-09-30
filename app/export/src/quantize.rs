@@ -358,6 +358,13 @@ fn speed_ramp_duration_ms(
     ramp: &ExportSpeedRamp,
     clip_id: &str,
 ) -> Result<u64, ExportError> {
+    // Match cut-core's persisted 2..=120 contract at this independent JSON boundary.
+    if !(2..=120).contains(&ramp.segments) {
+        return Err(ExportError::BadClip {
+            clip_id: clip_id.to_string(),
+            cause: "speed_ramp segment count must be between 2 and 120".to_string(),
+        });
+    }
     if ramp.points.len() < 2 || ramp.segments < 2 {
         return Err(ExportError::BadClip {
             clip_id: clip_id.to_string(),
@@ -421,6 +428,42 @@ mod tests {
     use super::*;
     use crate::model::parse_timeline;
     use serde_json::json;
+
+    #[test]
+    fn speed_ramp_counts_are_bounded_at_the_export_json_boundary() {
+        for segments in [0, 1, 2, 120, 121, usize::MAX] {
+            let timeline = json!({
+                "settings": {"fps": 30},
+                "assets": {"a1": {"path": "/m/clip.mp4"}},
+                "tracks": [{"kind": "video", "clips": [{
+                    "id": "ramp", "asset": "a1", "src_in_ms": 0, "src_out_ms": 1200,
+                    "speed_ramp": {"segments": segments, "points": [
+                        {"at_ms": 100, "factor": 1.0}, {"at_ms": 200, "factor": 1.0}
+                    ]}
+                }]}]
+            });
+            if (2..=120).contains(&segments) {
+                assert!(crate::export_edl(&timeline, "ramp").is_ok());
+                assert!(crate::otio::export_otio(&timeline, "ramp").is_ok());
+                for format in [
+                    crate::XmlFormat::Fcpxml,
+                    crate::XmlFormat::Resolve,
+                    crate::XmlFormat::Premiere,
+                    crate::XmlFormat::Mlt,
+                ] {
+                    assert!(crate::export_xml(&timeline, format).is_ok());
+                }
+            } else {
+                assert!(matches!(
+                    quantize(&parse_timeline(&timeline).unwrap()),
+                    Err(ExportError::BadClip { .. })
+                ));
+                assert!(crate::export_edl(&timeline, "ramp").is_err());
+                assert!(crate::otio::export_otio(&timeline, "ramp").is_err());
+                assert!(crate::export_xml(&timeline, crate::XmlFormat::Premiere).is_err());
+            }
+        }
+    }
 
     /// Build a minimal timeline with the given fps and (in,out) ms clip pairs.
     fn tl(fps: f64, clips: &[(u64, u64)]) -> ExportTimeline {

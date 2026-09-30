@@ -316,8 +316,29 @@ fn valid_streams(streams: &SelectedCaptureStreams) -> bool {
     *streams == SelectedCaptureStreams::new(microphone, system_audio, false, false)
 }
 
-fn session_error(_: super::windows_pause_session::WindowsPauseSessionError) -> RecordError {
-    capture_error("run private macOS pause session")
+fn session_error(error: super::windows_pause_session::WindowsPauseSessionError) -> RecordError {
+    use super::pause_session_owner::PauseSessionOwnerError;
+    use super::windows_pause_session::WindowsPauseSessionError;
+    let detail = match error {
+        WindowsPauseSessionError::Owner(PauseSessionOwnerError::Projection(error)) => {
+            error.detail().chars().take(512).collect::<String>()
+        }
+        WindowsPauseSessionError::Join(error) => {
+            format!("private pause worker join failed: {error:?}")
+                .chars()
+                .take(512)
+                .collect()
+        }
+        other => format!("private pause session failed: {other:?}")
+            .chars()
+            .take(512)
+            .collect(),
+    };
+    RecordError::new(
+        record_error_codes::CAPTURE,
+        "run private macOS pause session",
+        detail,
+    )
 }
 
 fn capture_error(message: &str) -> RecordError {

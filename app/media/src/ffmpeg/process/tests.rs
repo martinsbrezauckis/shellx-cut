@@ -265,3 +265,43 @@ fn suspended_job_claim_contains_an_immediate_render_grandchild() {
     assert!(output.status.success());
     assert_windows_process_gone(wait_for_windows_pid(&pid_file));
 }
+
+#[cfg(unix)]
+#[test]
+fn owned_stdout_observes_all_rows_beyond_retained_diagnostics() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let count = Arc::new(AtomicU64::new(0));
+    let seen = count.clone();
+    let mut command = Command::new("sh");
+    command.args(["-c", "awk 'BEGIN { for (i=0; i<100000; i++) print \"frame|best_effort_timestamp=\" i; printf \"stream|time_base=1/24\" }'"]);
+    let output = run_owned_command_with_stdout_lines(
+        &mut command,
+        &OwnedProcessControl::bounded(Duration::from_secs(5), || false),
+        "test streamed stdout",
+        Arc::new(move |line| {
+            assert!(line.starts_with("frame|") || line == "stream|time_base=1/24");
+            seen.fetch_add(1, Ordering::Relaxed);
+        }),
+    )
+    .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout.len(), OUTPUT_CAP_BYTES);
+    assert_eq!(count.load(Ordering::Relaxed), 100001);
+}
+
+#[cfg(unix)]
+#[test]
+fn stdout_observation_preserves_deadline_and_owned_tree_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("stdout-grandchild.pid");
+    let mut command = tree_command(&pid_file);
+    let error = run_owned_command_with_stdout_lines(
+        &mut command,
+        &OwnedProcessControl::bounded(Duration::from_millis(80), || false),
+        "test streamed stdout deadline",
+        Arc::new(|_| {}),
+    )
+    .unwrap_err();
+    assert_eq!(error.message, "operation timed out");
+    assert_gone(wait_for_pid(&pid_file));
+}

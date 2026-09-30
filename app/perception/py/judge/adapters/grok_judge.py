@@ -35,7 +35,7 @@ _ADAPTERS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ADAPTERS_DIR)
 import cli_judge  # noqa: E402
 import codex_judge  # noqa: E402  (_extract_json — one shared implementation)
-import grok_tool_policy  # noqa: E402  (version-gated no-tool invocation)
+import grok_tool_policy  # noqa: E402  (capability-verified no-tool invocation)
 
 ADAPTER_NAME = "cli"                 # same adapter CLASS as claude/codex/agy (CLI judge)
 DEFAULT_PROVIDER = "grok"
@@ -115,7 +115,8 @@ def detect(launch: dict | None = None) -> dict:
     available.
     """
     path = launch["executable"] if launch else shutil.which("grok")
-    cli, reason = grok_tool_policy.resolve_grok_tool_policy("grok", launch)
+    cli, reason = grok_tool_policy.resolve_grok_tool_policy(
+        "grok", launch, required_flags=grok_tool_policy.JUDGE_REQUIRED_FLAGS)
     entry: dict = {
         "provider": "grok",
         "binary": "grok",
@@ -251,7 +252,9 @@ def invoke_grok(grok_bin: str, sys_p: str, user_p: str, model: str,
     codex/agy/gemini, the system rules are PREPENDED to the user prompt (clearly
     delimited) inside the text content block, so all rungs share one prompt path.
     """
-    cli, policy_reason = grok_tool_policy.resolve_grok_tool_policy(grok_bin, launch)
+    cli, policy_reason = grok_tool_policy.resolve_grok_tool_policy(
+        grok_bin, launch, required_flags=grok_tool_policy.JUDGE_REQUIRED_FLAGS
+        + (("--model",) if model else ()))
     if cli is None:
         return None, {
             "available": False,

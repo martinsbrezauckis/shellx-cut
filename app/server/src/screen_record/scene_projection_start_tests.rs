@@ -193,8 +193,8 @@ fn reopened_receipt_persists_a_timeline_consumed_by_normal_composition() {
     assert!(reopened_plan.scene_timeline.is_some());
 
     let source = record_render::draw_desktop(&fixture.project.events);
-    let at_zero = record_render::compose_frame(&source, &reopened_plan, 0);
-    let at_one_second = record_render::compose_frame(&source, &reopened_plan, 1_000);
+    let at_zero = record_render::compose_frame(&source, &reopened_plan, 0).unwrap();
+    let at_one_second = record_render::compose_frame(&source, &reopened_plan, 1_000).unwrap();
     assert_ne!(at_zero.data(), at_one_second.data());
 }
 

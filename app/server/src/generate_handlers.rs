@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 
 use crate::project_materialization::{ProjectMaterialization, ProjectMaterializationPin};
 
+mod preview_output;
+
 fn parse_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, CutError> {
     serde_json::from_value(args).map_err(|e| {
         CutError::new(
@@ -382,27 +384,24 @@ pub(crate) async fn generate_preview(
     let frame_idx = ((frame_ms as f64 / 1_000.0) * fps).round().max(0.0) as u32;
     let preview_id = generate_preview_id(&template.id, &lowering_args, width, height, frame_ms);
     let file_name = format!("{preview_id}.png");
-    let (out_dir, url) = if let Some((project_dir, _, _, _)) = project_info {
+    let (path, url) = if let Some((project_dir, _, _, _)) = project_info {
         (
-            project_dir.join("frames"),
+            preview_output::project_preview_path(&project_dir, &file_name)?,
             Some(format!("/frames/{file_name}")),
         )
     } else {
-        (
-            std::env::temp_dir()
-                .join("shellx-cut")
-                .join("generate-preview"),
-            None,
-        )
+        let out_dir = std::env::temp_dir()
+            .join("shellx-cut")
+            .join("generate-preview");
+        std::fs::create_dir_all(&out_dir).map_err(|e| {
+            CutError::new(
+                error_codes::IO,
+                "create generate preview output dir",
+                e.to_string(),
+            )
+        })?;
+        (out_dir.join(&file_name), None)
     };
-    std::fs::create_dir_all(&out_dir).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            "create generate preview output dir",
-            e.to_string(),
-        )
-    })?;
-    let path = out_dir.join(&file_name);
     let spec_for_render = spec.clone();
     let path_for_render = path.clone();
     tokio::task::spawn_blocking(move || {
@@ -518,24 +517,8 @@ async fn generate_motion_preview(
         })?;
     let file_name = format!("{preview_id}.png");
     let (path, url) = if let Some(project_dir) = project_dir {
-        let frames_dir = project_dir.join("frames");
-        std::fs::create_dir_all(&frames_dir).map_err(|e| {
-            CutError::new(
-                error_codes::IO,
-                "create Motion generate preview frames dir",
-                e.to_string(),
-            )
-        })?;
-        let target = frames_dir.join(&file_name);
-        if Path::new(source_path) != target {
-            std::fs::copy(source_path, &target).map_err(|e| {
-                CutError::new(
-                    error_codes::IO,
-                    "copy Motion preview into served frames dir",
-                    e.to_string(),
-                )
-            })?;
-        }
+        let target =
+            preview_output::copy_motion_preview(project_dir, Path::new(source_path), &file_name)?;
         (target, Some(format!("/frames/{file_name}")))
     } else {
         (PathBuf::from(source_path), None)

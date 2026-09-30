@@ -9,6 +9,8 @@ use crate::dispatch::generated_assets::{
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 #[path = "assets_plugins/fetch.rs"]
 mod fetch;
+#[path = "assets_plugins/generation_workspace.rs"]
+mod generation_workspace;
 #[path = "assets_plugins/provider_chat.rs"]
 mod provider_chat;
 
@@ -2305,11 +2307,7 @@ async fn assets_generate_run(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let ws = dir
-        .join("cache/gen/runs")
-        .join(format!("{generation_id}-{run_nonce}"));
-    std::fs::create_dir_all(&ws)
-        .map_err(|e| CutError::new(error_codes::IO, "create gen workspace", e.to_string()))?;
+    let ws = generation_workspace::create(&dir, &format!("{generation_id}-{run_nonce}"))?;
     let _scratch = GenerationScratch(ws.clone());
     let output = ws.join(crate::gen::output_filename(&kind));
     let out_str = output.to_string_lossy().into_owned();

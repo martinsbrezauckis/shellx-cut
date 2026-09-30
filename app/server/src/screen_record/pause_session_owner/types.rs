@@ -60,8 +60,9 @@ impl PauseSessionStopRequest {
 
 /// The opaque dispatch failure from a platform worker adapter.
 ///
-/// It contains no filesystem path, target title, credential, or provider
-/// detail. A later native adapter may preserve a bounded diagnostic code here.
+/// Command adapters supply no target title, credential, or provider detail.
+/// Completed projection adapters retain a bounded media-verification cause
+/// so terminal capture errors identify the failed admission or assembly step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PauseSessionWorkerError(String);
 

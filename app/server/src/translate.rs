@@ -12,7 +12,8 @@
 //!   translation is the best-quality path (idioms, names, gendered pronouns,
 //!   reading-time fit); pyVideoTrans validated LLM translation as superior to
 //!   pure MT. We do NOT wire the cutd MCP server (translation is pure text in →
-//!   text out, no editing tools); we just prompt the CLI with the numbered cues
+//!   text out). Claude forbids tools; Grok admits a no-tool policy; Codex
+//!   keeps native capabilities in its read-only sandbox. We prompt numbered cues
 //!   and parse the per-cue translations back. claude is still the default
 //!   preference; codex and grok are also routed through explicit command shapes
 //!   and parsed tolerantly, with provenance recorded in the receipt.
@@ -29,6 +30,9 @@
 //!   (CC-BY-NC, non-commercial).
 //! - Selection: `backend:"auto"` (default) = CLI if available, else local;
 //!   `"cli"` / `"local"` force one.
+
+#[path = "translate/grok_policy.rs"]
+mod grok_policy;
 
 use crate::jobs::{run_owned, ProcessControl, ProcessTermination};
 use cut_core::{error_codes, CutError};
@@ -282,8 +286,9 @@ pub(crate) struct TranslateOutcome {
 
 /// Resolve the backend (auto/cli/local) given what is installed, then translate
 /// `segments` (cues or sentence-ish transcript segments). The PRIMARY path is
-/// the user's subscription CLI (claude/codex/grok) — pure text in → text out, NO
-/// MCP/tools (unlike agent.chat); the FALLBACK is the local Opus-MT/MADLAD
+/// the user's subscription CLI (claude/codex/grok) — text in → text out, with no
+/// Cut MCP added. Claude/Grok forbid tools; Codex retains read-only native
+/// capabilities. The FALLBACK is the local Opus-MT/MADLAD
 /// sidecar. Spawns are bounded by `timeout_ms`. `source_lang` may be None for
 /// the CLI (the LLM auto-detects); auto selects the LOCAL path only when no CLI
 /// agent is available up front. Once a CLI agent launches, auth/quota/runtime
@@ -579,6 +584,17 @@ async fn run_translation_cli_agent(
             "install the selected CLI or choose the local translation backend",
         ));
     }
+    let timeout = if agent == "grok" {
+        match grok_policy::admit(&provider_child, &ws, timeout).await {
+            Ok(remaining) => remaining,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&ws);
+                return Err(error);
+            }
+        }
+    } else {
+        timeout
+    };
     let mut command = provider_child.tokio_command(&resolved_args).map_err(|e| {
         let _ = std::fs::remove_dir_all(&ws);
         CutError::new(
@@ -683,9 +699,10 @@ pub struct CliCommand {
     pub via_stdin: bool,
 }
 
-/// Build the translation-CLI invocation. NO MCP / NO tools — translation is pure
-/// text in → text out (unlike `agent.chat`, which wires the cutd verbs). claude
-/// is the proven path; codex/grok are best-effort. Returns `None` for an unknown
+/// Build a text translation invocation without adding Cut MCP. Claude disables
+/// tools; Grok requires a capability-admitted no-tool policy; Codex retains its
+/// native capabilities in a read-only sandbox. Claude is the proven translation
+/// path; Codex/Grok are best-effort. Returns `None` for an unknown
 /// agent.
 pub fn build_cli_command(agent: &str, model: Option<&str>) -> Option<CliCommand> {
     match agent {
@@ -734,13 +751,11 @@ pub fn build_cli_command(agent: &str, model: Option<&str>) -> Option<CliCommand>
                 "__PROMPT_FILE__".into(),
                 "--output-format".into(),
                 "json".into(),
-                "--permission-mode".into(),
-                "bypassPermissions".into(),
-                "--disable-web-search".into(),
                 "--no-memory".into(),
                 "--max-turns".into(),
                 "1".into(),
             ];
+            args.extend(grok_policy::arguments());
             args.push("--model".into());
             args.push(
                 model

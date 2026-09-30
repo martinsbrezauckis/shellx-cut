@@ -8,6 +8,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 mod receipt;
+#[cfg(test)]
+mod receipt_tests;
 
 pub(crate) struct PreparedRequest {
     pub args: Value,

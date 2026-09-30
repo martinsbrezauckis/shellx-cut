@@ -29,6 +29,8 @@ mod torn_repair;
 #[cfg(test)]
 mod manifest_tests;
 #[cfg(test)]
+mod media_input_tests;
+#[cfg(test)]
 mod publication_tests;
 #[cfg(test)]
 mod receipt_tests;
@@ -69,7 +71,9 @@ pub use session_contract::{
     RECORDING_PROJECT_ID_SCHEMA, RECORDING_SESSION_JOURNAL_SCHEMA,
 };
 pub use session_journal::RecordingSessionJournal;
-pub use session_journal_io::{RecordingSessionJournalFile, RECORDING_SESSION_JOURNAL_FILE};
+pub use session_journal_io::{
+    RecordingSessionJournalFile, MAX_SESSION_JOURNAL_BYTES, RECORDING_SESSION_JOURNAL_FILE,
+};
 pub use staging::{
     create_staging_file, windows_wgc_path_budget, PrivateStaging, WindowsWgcPathBudget,
 };

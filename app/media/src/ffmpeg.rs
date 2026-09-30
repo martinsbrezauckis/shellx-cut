@@ -12,13 +12,15 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
+#[cfg(test)]
+mod input_policy_tests;
 mod process;
 pub(crate) use process::current_render_process_control;
 pub(crate) use process::scoped_render_process_control;
 pub use process::{
     run_bounded_command, run_owned_command, run_owned_command_with_input,
-    with_render_process_control, OwnedProcessControl, ProcessStderrLineObserver,
-    RenderProcessControl,
+    run_owned_command_with_stdout_lines, with_render_process_control, OwnedProcessControl,
+    ProcessStderrLineObserver, ProcessStdoutLineObserver, RenderProcessControl,
 };
 
 /// Flags applied to EVERY encode for determinism (media-engine contract): no wall-clock
@@ -37,6 +39,12 @@ pub const DETERMINISM_FLAGS: &[&str] = &[
 /// AVIO protocols needed by local media, generated concat lists and pipes.
 /// Keep network transports out even when a local playlist names one.
 pub const LOCAL_INPUT_PROTOCOLS: &str = "file,pipe,crypto,data";
+
+/// Self-contained editing media only. FFmpeg checks this before opening a
+/// demuxer, so an HLS/concat manifest cannot open its referenced local files.
+/// Names are demuxer identities, not filename extensions. Unknown names in a
+/// build do not enable additional formats; unsupported inputs fail closed.
+pub const LOCAL_INPUT_FORMATS: &str = "mov,matroska,webm,avi,asf,mpeg,mpegts,mpegtsraw,mxf,flv,ogg,flac,wav,aiff,mp3,aac,ac3,eac3,dts,amr,au,caf,wv,ape,tta,mpc,mpc8,loas,png_pipe,jpeg_pipe,jpegls_pipe,bmp_pipe,webp_pipe,tiff_pipe,jpegxl_pipe,exr_pipe,dpx_pipe,ppm_pipe,pgm_pipe,pbm_pipe,pam_pipe,pcx_pipe,tga_pipe,image2,gif,apng,ico,rawvideo,s16le,lavfi";
 
 /// ffmpeg program path. Delegates to [`crate::toolpath::ffmpeg`]: resolves
 /// a CONFIGURED / BUNDLED / app-data ffmpeg before falling back to PATH, so the
@@ -106,11 +114,21 @@ fn normalize_ffmpeg_arg(arg: &str) -> String {
 }
 
 fn normalize_ffmpeg_args(args: &[String]) -> Vec<String> {
+    normalize_input_args(args, false)
+}
+
+fn normalize_input_args(args: &[String], owned_concat: bool) -> Vec<String> {
     let mut restricted = Vec::with_capacity(args.len() + 2);
     for arg in args {
         if arg == "-i" {
             restricted.push("-protocol_whitelist".into());
             restricted.push(LOCAL_INPUT_PROTOCOLS.into());
+            restricted.push("-format_whitelist".into());
+            restricted.push(if owned_concat {
+                format!("{LOCAL_INPUT_FORMATS},concat")
+            } else {
+                LOCAL_INPUT_FORMATS.into()
+            });
         }
         restricted.push(normalize_ffmpeg_arg(arg));
     }
@@ -411,10 +429,22 @@ fn render_command_governed(
 /// ~2KB) — that is where ffmpeg puts the actual reason.
 pub fn run_ffmpeg(args: &[String]) -> Result<(), CutError> {
     let normalized_args = normalize_ffmpeg_args(args);
-    let mut command = Command::new(ffmpeg_bin_for_args(&normalized_args));
+    run_normalized_ffmpeg(&normalized_args)
+}
+
+/// Only generated lists of Cut-owned, rendered segments use this route.
+/// Imported files never receive concat admission, including renamed manifests.
+pub(crate) fn run_owned_concat_atomic_output(args: &[String], out: &Path) -> Result<(), CutError> {
+    crate::atomic_output::run_with_atomic_output(args, out, |args| {
+        run_normalized_ffmpeg(&normalize_input_args(args, true))
+    })
+}
+
+fn run_normalized_ffmpeg(normalized_args: &[String]) -> Result<(), CutError> {
+    let mut command = Command::new(ffmpeg_bin_for_args(normalized_args));
     command
         .args(["-hide_banner", "-nostdin", "-y"])
-        .args(&normalized_args);
+        .args(normalized_args);
     let out = process::command_output_with_current_control(&mut command, "ffmpeg")?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -580,6 +610,16 @@ pub fn concat_demuxer_file_line(path: &Path) -> String {
     format!("file '{escaped}'")
 }
 
+/// A generated list may open its entries only as ordinary media. Cached segment
+/// names alone do not prove their bytes are MP4; never inherit root concat
+/// admission into a child that may have been replaced by an imported project.
+pub(crate) fn owned_concat_file_lines(path: &Path) -> String {
+    format!(
+        "{}\noption format_whitelist {LOCAL_INPUT_FORMATS}",
+        concat_demuxer_file_line(path)
+    )
+}
+
 /// Run ffprobe in JSON mode against `path` → parsed `serde_json::Value`
 /// (`-show_format -show_streams`). Raw shape; probe.rs normalizes it.
 pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value, CutError> {
@@ -589,6 +629,8 @@ pub fn ffprobe_json(path: &Path) -> Result<serde_json::Value, CutError> {
         "error",
         "-protocol_whitelist",
         LOCAL_INPUT_PROTOCOLS,
+        "-format_whitelist",
+        LOCAL_INPUT_FORMATS,
         "-print_format",
         "json",
         "-show_format",
@@ -749,7 +791,8 @@ mod tests {
         std::fs::write(&playlist, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1.0,\nhttp://127.0.0.1:9/segment.ts\n#EXT-X-ENDLIST\n").unwrap();
         let error = ffprobe_json(&playlist).expect_err("nested HTTP must be denied");
         assert!(
-            error.cause.contains("Protocol 'http' not on whitelist"),
+            error.cause.to_ascii_lowercase().contains("format")
+                && error.cause.contains("not on whitelist"),
             "{}",
             error.cause
         );
@@ -762,7 +805,8 @@ mod tests {
         ];
         let error = run_ffmpeg(&args).expect_err("render must deny nested HTTP");
         assert!(
-            error.cause.contains("Protocol 'http' not on whitelist"),
+            error.cause.to_ascii_lowercase().contains("format")
+                && error.cause.contains("not on whitelist"),
             "{}",
             error.cause
         );
@@ -782,12 +826,12 @@ mod tests {
             temp.path().join("internal.ffcat"),
             format!(
                 "ffconcat version 1.0\n{}\n",
-                concat_demuxer_file_line(&sample)
+                owned_concat_file_lines(&sample)
             ),
         )
         .unwrap();
         assert!(
-            run_ffmpeg(&args).is_ok(),
+            run_owned_concat_atomic_output(&args, &temp.path().join("output.mp4")).is_ok(),
             "generated local concat must remain readable"
         );
     }

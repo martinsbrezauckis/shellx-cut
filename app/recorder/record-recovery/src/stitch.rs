@@ -124,7 +124,11 @@ pub fn stitch_complete_with_media(
         );
         let status = bounded_status(
             Command::new(ffmpeg)
-                .args(["-v", "error", "-y", "-i"])
+                .args([
+                    "-v", "error", "-y",
+                    "-protocol_whitelist", cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                    "-format_whitelist", "mov", "-f", "mov", "-i",
+                ])
                 .arg(&source)
                 .args([
                     "-vf",
@@ -158,14 +162,27 @@ pub fn stitch_complete_with_media(
         expected_frames = expected_frames.saturating_add(media.decoded_video_frames);
         rows.push_str("file '");
         rows.push_str(&transcode.to_string_lossy().replace('\'', "'\\\\''"));
-        rows.push_str("'\n");
+        rows.push_str("'\noption format_whitelist mov\n");
         transcodes.push(transcode);
     }
     let list = workspace.write("concat.txt", rows.as_bytes())?;
     let part = workspace.reserve("output.part.mp4")?;
     let status = bounded_status(
         Command::new(ffmpeg)
-            .args(["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-protocol_whitelist",
+                cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
+                "-format_whitelist",
+                "concat,mov",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+            ])
             .arg(&list)
             .args(["-c", "copy"])
             .arg(&part),

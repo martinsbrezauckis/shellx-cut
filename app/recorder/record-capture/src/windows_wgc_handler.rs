@@ -11,7 +11,6 @@ use std::time::Instant;
 use record_core::Result;
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
-    encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder},
     frame::Frame,
     graphics_capture_api::InternalCaptureControl,
 };
@@ -56,7 +55,7 @@ pub(crate) struct EncFlags {
 /// `windows-capture` handler: frames enter the encoder and a closed exact
 /// window can conclude source loss before the outer wait loop exits.
 pub(crate) struct Handler {
-    encoder: Option<VideoEncoder>,
+    encoder: Option<crate::windows_wgc_encoder::WgcVideoEncoder>,
     crop: Option<NativePixelCrop>,
     crop_surface: Option<crate::windows_gpu_crop::GpuCropSurface>,
     readiness: Option<CaptureReadiness>,
@@ -73,11 +72,11 @@ impl GraphicsCaptureApiHandler for Handler {
 
     fn new(ctx: Context<Self::Flags>) -> std::result::Result<Self, Self::Error> {
         let flags = ctx.flags;
-        let encoder = VideoEncoder::new(
-            VideoSettingsBuilder::new(flags.w, flags.h).frame_rate(flags.fps),
-            AudioSettingsBuilder::default().disabled(true),
-            ContainerSettingsBuilder::default(),
-            &flags.path,
+        let encoder = crate::windows_wgc_encoder::WgcVideoEncoder::new(
+            flags.w,
+            flags.h,
+            flags.fps,
+            std::path::Path::new(&flags.path),
         )?;
         Ok(Self {
             encoder: Some(encoder),

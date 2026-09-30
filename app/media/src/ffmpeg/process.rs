@@ -45,6 +45,8 @@ pub type OwnedProcessControl = RenderProcessControl;
 /// Callback for a bounded child stderr protocol line (for example sidecar
 /// progress). The owner still drains and caps retained output itself.
 pub type ProcessStderrLineObserver = LineObserver;
+/// Bounded stdout protocol lines, observed even after retained output is capped.
+pub type ProcessStdoutLineObserver = LineObserver;
 
 impl RenderProcessControl {
     pub fn bounded(
@@ -137,12 +139,25 @@ pub(crate) fn command_output_with_control(
     control: &RenderProcessControl,
     context: &str,
 ) -> Result<Output, CutError> {
+    command_output_with_stdout_lines(command, control, context, None)
+}
+
+fn command_output_with_stdout_lines(
+    command: &mut Command,
+    control: &RenderProcessControl,
+    context: &str,
+    stdout_line: Option<ProcessStdoutLineObserver>,
+) -> Result<Output, CutError> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = ManagedChild::spawn(command, control.clone(), context)?;
-    let stdout = read_capped(child.take_stdout(context)?, control.output_cap_bytes);
+    let stdout = read_capped_lines(
+        child.take_stdout(context)?,
+        control.output_cap_bytes,
+        stdout_line,
+    );
     let stderr = read_capped(child.take_stderr(context)?, control.output_cap_bytes);
     let status = child.wait(context);
     let stdout = finish_reader(stdout, &mut child, context);
@@ -167,6 +182,19 @@ pub fn run_owned_command(
     context: &str,
 ) -> Result<Output, CutError> {
     command_output_with_control(command, control, context)
+}
+
+/// Observe stdout protocol lines using the existing owned pipe worker. Retained
+/// diagnostics remain capped, while every line is observed through EOF before
+/// returning. Lines are capped at 16 KiB; strict protocol consumers must reject
+/// oversized records. Observers must be quick and retain bounded state.
+pub fn run_owned_command_with_stdout_lines(
+    command: &mut Command,
+    control: &OwnedProcessControl,
+    context: &str,
+    stdout_line: ProcessStdoutLineObserver,
+) -> Result<Output, CutError> {
+    command_output_with_stdout_lines(command, control, context, Some(stdout_line))
 }
 
 /// Own a finite command that consumes one bounded stdin request. The request

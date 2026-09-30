@@ -6,7 +6,7 @@
 //! Policy, exactly per the output-fencing contract:
 //!   1. canonicalize (resolves `.`/`..`/symlinked ancestors against the fs);
 //!   2. refuse path traversal (`..` components) BEFORE touching the fs;
-//!   3. refuse symlinked targets (an existing out-file that is a symlink);
+//!   3. refuse symlink, reparse and hardlink targets before direct writes;
 //!   4. refuse writes outside the project dir / configured outputs dirs;
 //!   5. refuse overwriting an EXISTING file whose suffix is not one of the
 //!      media/sidecar suffixes ShellX Cut writes through export/render paths.
@@ -151,19 +151,21 @@ impl PathFence {
         })?;
         let canonical = canonical_parent.join(&file_name);
 
-        // (3) Refuse symlinked targets: writing "through" a link is how an
-        // in-fence name overwrites an out-of-fence file.
-        if canonical
-            .symlink_metadata()
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            return Err(CutError::new(
-                error_codes::INVALID_ARGS,
-                format!("output path {} is a symlink", canonical.display()),
-                "symlinked targets are refused by the public output-fencing contract",
-            ));
-        }
+        // (3) Static imported links can redirect direct encoder writes even
+        // when the parent is fenced. Admit only missing or single-link files.
+        cut_core::matte_cache::plain_file_exists(&canonical).map_err(|error| {
+            CutError::new(
+                &error.code,
+                format!(
+                    "output path {} is not a plain file (symlink/reparse/hardlink refused)",
+                    canonical.display()
+                ),
+                format!(
+                    "symlink, reparse and hardlink targets are refused: {}",
+                    error.cause
+                ),
+            )
+        })?;
 
         // (4) Must be inside the project dir or an explicit outputs root.
         let in_fence = std::iter::once(&self.project_dir)

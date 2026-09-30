@@ -31,6 +31,8 @@ use cut_core::{error_codes, Actor, CutError, InverseOp, VerbResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod output;
+
 /// The TTS service endpoint (loopback). Override with `CUT_DUB_ENDPOINT`.
 pub fn endpoint() -> String {
     std::env::var("CUT_DUB_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:9001".to_string())
@@ -198,6 +200,8 @@ pub(crate) async fn audio_dub(
         (id, store.dir.clone())
     };
 
+    let outputs = output::Outputs::new(&dir, &asset_id, &target_lang)?;
+
     // The synth bridge must be wired BEFORE we spend time translating.
     let rt = runtime()?.ok_or_else(|| {
         CutError::new(
@@ -238,9 +242,7 @@ pub(crate) async fn audio_dub(
     // Translate + synthesize behind the shared analysis slot. This is a synchronous
     // verb, so it does not create a JobRecord, but it still spawns CLI/Python/ffmpeg
     // work and must not overlap with transcribe/perception/diarize jobs.
-    let out_wav = dir
-        .join("dub")
-        .join(format!("{asset_id}.{target_lang}.wav"));
+    let out_wav = outputs.wav();
     let synth_timeout = std::time::Duration::from_millis(
         (segments.len() as u64 * 30_000).clamp(120_000, 1_800_000),
     );
@@ -271,18 +273,21 @@ pub(crate) async fn audio_dub(
 
             let endpoint = endpoint();
             let secret = secret();
-            let receipt = synthesize_track(
+            let stage = outputs.stage_wav()?;
+            let mut receipt = synthesize_track(
                 &rt,
                 &endpoint,
                 &voice,
                 Some(&target_lang),
                 secret.as_deref(),
                 24_000,
-                &out_wav,
+                stage.path(),
                 &dub_segments,
                 synth_timeout,
             )
             .await?;
+            stage.publish()?;
+            receipt.out_wav = out_wav.display().to_string();
             Ok::<_, CutError>((outcome, receipt))
         })
         .await?;
@@ -394,16 +399,6 @@ pub(crate) async fn audio_dub(
         "segments": receipt.segments,
     });
     let rel = format!("receipts/{asset_id}.{target_lang}.dub.json");
-    let receipt_path = dir.join(&rel);
-    if let Some(parent) = receipt_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            CutError::new(
-                error_codes::IO,
-                "could not create dubbing receipt dir",
-                format!("{}: {e}", parent.display()),
-            )
-        })?;
-    }
     let receipt_bytes = serde_json::to_vec_pretty(&receipt_json).map_err(|e| {
         CutError::new(
             error_codes::IO,
@@ -411,13 +406,7 @@ pub(crate) async fn audio_dub(
             e.to_string(),
         )
     })?;
-    std::fs::write(&receipt_path, receipt_bytes).map_err(|e| {
-        CutError::new(
-            error_codes::IO,
-            "could not persist dubbing receipt",
-            format!("{}: {e}", receipt_path.display()),
-        )
-    })?;
+    outputs.write_receipt(&receipt_bytes)?;
 
     // Commit the placement as ONE audio.dub op (the import was its own op).
     let rationale = args

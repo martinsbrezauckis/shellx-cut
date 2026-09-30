@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import type { Project } from '../../lib/client'
 import type { ChatAgentName } from '../../lib/doctor'
 import { emptyAgentChatSession, type AgentChatSession } from './session'
@@ -92,6 +92,14 @@ export function useAgentChatSession(project: Project | null, projectSession: num
   const [sessions, setSessions] = useState<Map<string, AgentChatSession>>(() => new Map())
   const [hydratedKey, setHydratedKey] = useState<string | null>(null)
   const [historyStatus, setHistoryStatus] = useState<AgentChatHistoryStatus>('memory')
+  const historyStatusRef = useRef<AgentChatHistoryStatus>('memory')
+  const updateHistoryStatus = useCallback((status: AgentChatHistoryStatus) => {
+    // Even an unchanged state dispatch can leave a lane pending during rapid
+    // discrete input. Do not enqueue one for every persisted draft character.
+    if (historyStatusRef.current === status) return
+    historyStatusRef.current = status
+    setHistoryStatus(status)
+  }, [])
   const session = useMemo(
     () => key ? sessions.get(key) ?? emptyAgentChatSession() : emptyAgentChatSession(),
     [key, sessions],
@@ -99,23 +107,25 @@ export function useAgentChatSession(project: Project | null, projectSession: num
   useEffect(() => {
     if (!key || !identity) {
       setHydratedKey(null)
-      setHistoryStatus('memory')
+      updateHistoryStatus('memory')
       return
     }
-    if (!restored) return
+    // Identity objects can be refreshed without changing the project. Hydrate
+    // once for this key rather than restoring its old status on every render.
+    if (!restored || hydratedKey === key) return
     setSessions((current) => {
       if (current.has(key)) return current
       const next = new Map(current)
       next.set(key, restored.session)
       return next
     })
-    setHistoryStatus(restored.status)
+    updateHistoryStatus(restored.status)
     setHydratedKey(key)
-  }, [identity, identityKey, key, restored])
+  }, [hydratedKey, identity, identityKey, key, restored, updateHistoryStatus])
   useEffect(() => {
     if (!key || !identity || hydratedKey !== key) return
-    setHistoryStatus(saveAgentChatHistory(identity, session))
-  }, [hydratedKey, identity, identityKey, key, session])
+    updateHistoryStatus(saveAgentChatHistory(identity, session))
+  }, [hydratedKey, identity, identityKey, key, session, updateHistoryStatus])
   const updateSession = useCallback((update: (current: AgentChatSession) => AgentChatSession) => {
     if (!key) return
     setSessions((current) => updateAgentChatSessions(current, key, update, restored?.session))

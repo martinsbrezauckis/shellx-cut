@@ -512,3 +512,6 @@ fn recovery_refuses_a_selected_wav_replaced_by_a_link() {
 
 #[path = "windows_pause_input_sidecar_tests/binding.rs"]
 mod binding;
+
+#[path = "windows_pause_input_sidecar_tests/bounds.rs"]
+mod bounds;

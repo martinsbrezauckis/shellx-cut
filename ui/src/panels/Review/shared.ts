@@ -9,6 +9,7 @@
 import { API_BASE, type OpRecord, type VerbResult } from '../../lib/client'
 import { VERB_BEHAVIOR } from '../../lib/generatedVerbBehavior'
 import { mutatesTimeline } from '../../lib/ops'
+import { wordIndexRangeFrom } from './wordIndexRange'
 
 // ---------------------------------------------------------------------------
 // Formatting: mono = fact; effects line style `v1 −1.7s @ 01:03.2`.
@@ -168,17 +169,20 @@ export function activeCutSpans(ops: OpRecord[]): CutSpan[] {
     const args = objectFrom(op.args)
     if (args) {
       const asset = stringField(args, 'asset')
-      const wordRange = wordRangeFrom(Reflect.get(args, 'word_range'))
+      const wordRange = wordIndexRangeFrom(Reflect.get(args, 'word_range'))
       if (asset && wordRange) {
         spans.push({ opId: op.op_id, asset, wordRange, rationale: op.rationale })
         continue
       }
     }
     // remove_fillers / remove_silences: per-span ops carry the range on effects.
-    for (const eff of op.effects ?? []) {
-      const wordRange = wordRangeFrom(eff.word_range)
-      if (typeof eff.asset === 'string' && wordRange) {
-        spans.push({ opId: op.op_id, asset: eff.asset, wordRange, rationale: op.rationale })
+    for (const effect of Array.isArray(op.effects) ? op.effects : []) {
+      const eff = objectFrom(effect)
+      if (!eff) continue
+      const asset = stringField(eff, 'asset')
+      const wordRange = wordIndexRangeFrom(Reflect.get(eff, 'word_range'))
+      if (typeof asset === 'string' && wordRange) {
+        spans.push({ opId: op.op_id, asset, wordRange, rationale: op.rationale })
       }
     }
   }

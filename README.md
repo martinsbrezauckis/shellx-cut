@@ -55,6 +55,12 @@ Draft, Accept, or editor approval stage.
 
 ## Quickstart
 
+Import self-contained video, audio, and image files: common formats include
+MP4/MOV, MKV/WebM, AVI, MPEG/TS, MXF, WAV, FLAC, MP3, AAC, OGG,
+PNG, JPEG, WebP, and TIFF, subject to your installed FFmpeg's codec support.
+Imported HLS and concat playlists are rejected because they can reference
+other files. Cut's internally generated render segment lists remain supported.
+
 > **Installing:** v0.6.113 is the current published installer/package from the
 > GitHub release. Users already on 0.6.107 can use the
 > in-app update when it is offered. Versions older than 0.6.107 must install

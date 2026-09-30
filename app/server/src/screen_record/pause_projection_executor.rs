@@ -7,6 +7,7 @@ mod artifacts;
 mod audio;
 mod output;
 mod stager;
+mod timestamps;
 mod types;
 
 use cut_core::{error_codes, CutError};

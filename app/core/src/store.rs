@@ -58,6 +58,9 @@ mod name_policy;
 mod open_health;
 #[cfg(test)]
 mod open_health_tests;
+mod output_roots;
+#[cfg(test)]
+mod output_roots_tests;
 mod overwrite;
 mod portable;
 mod relink;
@@ -70,6 +73,8 @@ pub use atomic_media_insert_request::{AtomicMediaInsert, AtomicMediaInsertTrack}
 pub use group::{AtomicGroupPreview, AtomicGroupRejectStatus};
 use name_policy::{validate_logged_project_name, validate_project_name};
 pub use open_health::{ProjectCacheHealth, ProjectOpenHealth, ProjectSnapshotHealth};
+use output_roots::validate_internal_output_roots;
+pub use output_roots::{validate_job_output_roots, validate_request_receipt_output_root};
 pub use portable::PORTABLE_SNAPSHOT_SCHEMA;
 pub use relink::{current_relink_receipt, is_exact_sha256, RelinkGroupChange, RelinkGroupCommit};
 
@@ -202,57 +207,6 @@ fn validate_asset_id(id: &str) -> Result<(), CutError> {
 fn validate_replayed_asset_ids(project: &Project) -> Result<(), CutError> {
     for id in project.assets.keys() {
         validate_asset_id(id)?;
-    }
-    Ok(())
-}
-
-fn validate_internal_output_roots(dir: &Path) -> Result<(), CutError> {
-    // These names belong to Cut's generated project state, not the user's
-    // selected media source paths. Check parents too, before create_dir_all can
-    // follow a linked parent while opening an untrusted project.
-    const ROOTS: &[&str] = &[
-        "receipts",
-        "proxies",
-        "proxies/preview-cache",
-        "filmstrip",
-        "frames",
-        "embeddings",
-        "previews",
-        ".cache",
-        ".cache/segrender",
-        "cache",
-        "cache/matte",
-        "cache/mask",
-        "cache/gwindow",
-        "stab",
-        "assets",
-        "assets/generated",
-        "assets/placeholders",
-    ];
-    for relative in ROOTS {
-        let path = dir.join(relative);
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        #[cfg(windows)]
-        let reparse = {
-            use std::os::windows::fs::MetadataExt;
-            metadata.file_attributes() & 0x400 != 0
-        };
-        #[cfg(not(windows))]
-        let reparse = false;
-        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() || reparse {
-            return Err(CutError::new(
-                codes::INVALID_ARGS,
-                "project output directory is not a plain directory",
-                format!(
-                    "refusing linked or non-directory project output {}",
-                    path.display()
-                ),
-            ));
-        }
     }
     Ok(())
 }

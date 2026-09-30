@@ -67,6 +67,7 @@ pub fn make_gif(
     width: u32,
     dither: &str,
 ) -> Result<(), CutError> {
+    cut_core::matte_cache::plain_file_exists(out)?;
     if !input.exists() {
         return Err(CutError::new(
             error_codes::FFMPEG,

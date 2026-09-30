@@ -15,6 +15,7 @@ use cut_media::ffmpeg::{run_owned_command, OwnedProcessControl};
 use record_core::{error_codes, RecordError, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::macos_camera_clock::{DecimalDuration, TimeBase};
 use crate::macos_camera_movie_timing::{NativeMovieTiming, VerifiedMovieTiming};
 
 const CLOCK_DIAGNOSTIC_PACKET_TAIL: usize = 6;
@@ -52,6 +53,7 @@ struct RawProbe {
 #[derive(Deserialize)]
 struct RawStream {
     time_base: String,
+    duration_ts: u64,
     nb_read_frames: String,
     nb_read_packets: String,
 }
@@ -61,11 +63,17 @@ struct RawFormat {
     duration: String,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "independent native, exact presented clock, decode and bounded probe inputs"
+)]
 pub(super) fn verify_movie_edit_list(
     ffprobe: &str,
     path: &Path,
     native: NativeMovieTiming,
-    presented_duration_ns: u64,
+    presented_time_base: &str,
+    presented_duration_ticks: u64,
+    presented_duration: &str,
     presented_decoded_frames: u64,
     timeout: Duration,
 ) -> Result<VerifiedMovieTiming> {
@@ -81,7 +89,7 @@ pub(super) fn verify_movie_edit_list(
             "-count_frames",
             "-count_packets",
             "-show_entries",
-            "stream=time_base,nb_read_frames,nb_read_packets:format=duration",
+            "stream=time_base,duration_ts,nb_read_frames,nb_read_packets:format=duration",
             "-of",
             "json",
         ])
@@ -103,79 +111,72 @@ pub(super) fn verify_movie_edit_list(
         .streams
         .first()
         .ok_or_else(|| bad("unedited video stream is missing"))?;
-    let (num, den) = stream
-        .time_base
-        .split_once('/')
-        .ok_or_else(|| bad("unedited time base is invalid"))?;
-    let num: u64 = num
-        .parse()
-        .map_err(|_| bad("unedited time base is invalid"))?;
-    let den: u64 = den
-        .parse()
-        .map_err(|_| bad("unedited time base is invalid"))?;
-    if num == 0
-        || den == 0
-        || (1_000_000_000_u64
-            .checked_mul(num)
-            .ok_or_else(|| bad("unedited time base overflowed"))?
-            % den)
-            != 0
+    let early = |failure: RecordError| {
+        let parsed_clock = TimeBase::parse(&stream.time_base).ok();
+        let diagnostic = serde_json::json!({
+            "time_base_num": parsed_clock.map(|c| c.num),
+            "time_base_den": parsed_clock.map(|c| c.den),
+            "raw_time_base": stream.time_base.chars().take(80).collect::<String>(),
+            "presented_time_base": presented_time_base.chars().take(80).collect::<String>(),
+            "raw_duration_ticks": stream.duration_ts,
+            "presented_duration_ticks": presented_duration_ticks,
+            "raw_duration": probe.format.duration.chars().take(40).collect::<String>(),
+            "presented_duration": presented_duration.chars().take(40).collect::<String>(),
+            "raw_frames": stream.nb_read_frames.chars().take(24).collect::<String>(),
+            "raw_packets": stream.nb_read_packets.chars().take(24).collect::<String>(),
+            "raw_frame_count": stream.nb_read_frames.parse::<u64>().ok(),
+            "raw_packet_count": stream.nb_read_packets.parse::<u64>().ok(),
+            "presented_decoded_frames": presented_decoded_frames,
+            "native": native,
+        });
+        bad(&format!("{}: {diagnostic}", failure.cause))
+    };
+    let clock = TimeBase::parse(&stream.time_base).map_err(&early)?;
+    let presented_clock = TimeBase::parse(presented_time_base).map_err(&early)?;
+    if u128::from(clock.num) * u128::from(presented_clock.den)
+        != u128::from(presented_clock.num) * u128::from(clock.den)
     {
-        return Err(bad("unedited time base has a fractional nanosecond tick"));
+        return Err(early(bad("unedited and presented time bases disagree")));
     }
-    let tick_ns = 1_000_000_000_u64 * num / den;
-    let raw_duration_ns = parse_seconds_ns(&probe.format.duration)?;
-    if !raw_duration_ns.is_multiple_of(tick_ns) || !presented_duration_ns.is_multiple_of(tick_ns) {
-        return Err(bad("movie edit duration is not aligned to video ticks"));
+    if !DecimalDuration::parse(&probe.format.duration)
+        .map_err(&early)?
+        .matches(clock, stream.duration_ts)
+        .map_err(&early)?
+        || !DecimalDuration::parse(presented_duration)
+            .map_err(&early)?
+            .matches(clock, presented_duration_ticks)
+            .map_err(&early)?
+    {
+        return Err(early(bad(
+            "movie decimal duration disagrees with exact video ticks",
+        )));
     }
     let raw_frames: u64 = stream
         .nb_read_frames
         .parse()
-        .map_err(|_| bad("unedited frame count is invalid"))?;
+        .map_err(|_| early(bad("unedited frame count is invalid")))?;
     let raw_packets: u64 = stream
         .nb_read_packets
         .parse()
-        .map_err(|_| bad("unedited packet count is invalid"))?;
+        .map_err(|_| early(bad("unedited packet count is invalid")))?;
     if raw_frames == 0 || raw_frames != raw_packets || raw_frames <= presented_decoded_frames {
-        return Err(bad("unedited movie decode and packet counts disagree"));
+        return Err(early(bad(
+            "unedited movie decode and packet counts disagree",
+        )));
     }
     let raw_file = packet_proof(ffprobe, path, true, raw_frames, timeout)?;
     let edited_file = packet_proof(ffprobe, path, false, raw_frames, timeout)?;
     verify_edit_list(
         BufReader::new(raw_file.as_file()),
         BufReader::new(edited_file.as_file()),
-        raw_duration_ns / tick_ns,
-        presented_duration_ns / tick_ns,
-        tick_ns,
+        stream.duration_ts,
+        presented_duration_ticks,
+        clock,
         raw_frames,
         presented_decoded_frames,
         native,
     )
-}
-
-fn parse_seconds_ns(value: &str) -> Result<u64> {
-    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
-    if fraction.len() > 9
-        || !whole.bytes().all(|b| b.is_ascii_digit())
-        || !fraction.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(bad("unedited duration is invalid"));
-    }
-    let seconds: u64 = whole
-        .parse()
-        .map_err(|_| bad("unedited duration is invalid"))?;
-    let sub: u64 = if fraction.is_empty() {
-        0
-    } else {
-        fraction
-            .parse::<u64>()
-            .map_err(|_| bad("unedited duration is invalid"))?
-            * 10_u64.pow((9 - fraction.len()) as u32)
-    };
-    seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|n| n.checked_add(sub))
-        .ok_or_else(|| bad("unedited duration overflows"))
+    .map_err(early)
 }
 
 fn packet_proof(
@@ -293,14 +294,15 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
     mut edited_rows: E,
     raw_duration_ticks: u64,
     presented_duration_ticks: u64,
-    tick_ns: u64,
+    clock: TimeBase,
     raw_decoded_frames: u64,
     presented_decoded_frames: u64,
     native: NativeMovieTiming,
 ) -> Result<VerifiedMovieTiming> {
     if raw_duration_ticks <= presented_duration_ticks
         || raw_decoded_frames <= presented_decoded_frames
-        || tick_ns == 0
+        || clock.num == 0
+        || clock.den == 0
     {
         return Err(bad("MovieFileOutput edit bounds are absent or invalid"));
     }
@@ -428,33 +430,36 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             "edit-list presentation bounds disagree with movie packets",
         ));
     }
-    let offset_ns = offset
-        .checked_mul(tick_ns)
-        .ok_or_else(|| bad("edit-list offset overflows nanoseconds"))?;
-    let edited_last_ns = last_visible_pts
-        .checked_mul(tick_ns)
-        .ok_or_else(|| bad("last visible packet overflows nanoseconds"))?;
+    let offset_ns = clock.floor_ns(offset)?;
+    let edited_last_ns = clock.floor_ns(last_visible_pts)?;
+    let tick_scaled = clock.scaled(1)?;
+    let tick_ns = clock.floor_ns(1)?;
     if native.start_pts_ns == 0 || native.last_cadence_ns == 0 {
         return Err(bad(
             "MovieFileOutput start or final sample timing is missing",
         ));
     }
-    let visible_duration_ns = last_visible_duration
-        .checked_mul(tick_ns)
-        .ok_or_else(|| bad("last visible packet duration overflows nanoseconds"))?;
+    let visible_duration_ns = clock.floor_ns(last_visible_duration)?;
     let final_duration_limit = native
         .last_cadence_ns
         .checked_mul(2)
-        .and_then(|value| value.checked_add(tick_ns))
         .ok_or_else(|| bad("native cadence limit overflows"))?;
-    if visible_duration_ns > final_duration_limit
+    let final_duration_limit_scaled = clock
+        .ns_scaled(final_duration_limit)
+        .checked_add(tick_scaled)
+        .ok_or_else(|| bad("native cadence limit overflows"))?;
+    let native_duration_limit_scaled = clock
+        .ns_scaled(
+            native
+                .last_duration_ns
+                .checked_mul(2)
+                .ok_or_else(|| bad("native sample duration limit overflows"))?,
+        )
+        .checked_add(tick_scaled)
+        .ok_or_else(|| bad("native sample duration limit overflows"))?;
+    if clock.scaled(last_visible_duration)? > final_duration_limit_scaled
         || (native.last_duration_ns != 0
-            && visible_duration_ns
-                > native
-                    .last_duration_ns
-                    .checked_mul(2)
-                    .and_then(|value| value.checked_add(tick_ns))
-                    .ok_or_else(|| bad("native sample duration limit overflows"))?)
+            && clock.scaled(last_visible_duration)? > native_duration_limit_scaled)
     {
         return Err(bad("final visible packet exceeds native sample cadence"));
     }
@@ -462,14 +467,35 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
         .last_pts_ns
         .checked_sub(native.start_pts_ns)
         .ok_or_else(|| bad("MovieFileOutput callback clock is invalid"))?;
-    let callback_after_edit = native_elapsed
-        .checked_sub(offset_ns)
-        .ok_or_else(|| bad("MovieFileOutput callback precedes edit start"))?;
-    let cadence = native.last_cadence_ns;
-    let callback_limit = cadence
+    let native_elapsed_scaled = clock.ns_scaled(native_elapsed);
+    let offset_scaled = clock.scaled(offset)?;
+    // Sub-ns ticks can round a callback less than one ns before edit start.
+    if native_elapsed_scaled + u128::from(clock.den - 1) < offset_scaled {
+        return Err(bad("MovieFileOutput callback precedes edit start"));
+    }
+    let callback_after_edit_scaled = native_elapsed_scaled.saturating_sub(offset_scaled);
+    let callback_after_edit = u64::try_from(callback_after_edit_scaled / u128::from(clock.den))
+        .map_err(|_| bad("callback clock overflows nanoseconds"))?;
+    let callback_limit_scaled = clock
+        .ns_scaled(native.last_cadence_ns)
+        .checked_add(tick_scaled)
+        .ok_or_else(|| bad("native callback cadence limit overflows"))?;
+    let callback_limit = native
+        .last_cadence_ns
         .checked_add(tick_ns)
         .ok_or_else(|| bad("native callback cadence limit overflows"))?;
-    if callback_after_edit.abs_diff(edited_last_ns) > callback_limit {
+    // CMTime timestamps are truncated independently to ns: the elapsed
+    // subtraction differs from its exact value by less than one ns.
+    let callback_delta_scaled = native_elapsed_scaled.abs_diff(
+        offset_scaled
+            .checked_add(clock.scaled(last_visible_pts)?)
+            .ok_or_else(|| bad("edited final packet clock overflows"))?,
+    );
+    if callback_delta_scaled
+        > callback_limit_scaled
+            .checked_add(u128::from(clock.den - 1))
+            .ok_or_else(|| bad("native callback cadence limit overflows"))?
+    {
         // The staged movie is deleted on failure. Keep only bounded packet and
         // clock facts in the existing failure cause, which is recorded in
         // capture/record.log and the terminal failure receipt.
@@ -485,6 +511,9 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             },
             "movie": {
                 "time_base_ns_per_tick": tick_ns,
+                "time_base_num": clock.num,
+                "time_base_den": clock.den,
+                "last_visible_duration_ns": visible_duration_ns,
                 "raw_duration_ticks": raw_duration_ticks,
                 "presented_duration_ticks": presented_duration_ticks,
                 "edit_offset_ticks": offset,
@@ -506,14 +535,8 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             "MovieFileOutput callback disagrees with edited final frame: {diagnostic}"
         )));
     }
-    let presented_ns = presented_duration_ticks
-        .checked_mul(tick_ns)
-        .ok_or_else(|| bad("edit duration overflows nanoseconds"))?;
     Ok(VerifiedMovieTiming {
-        duration_ms: presented_ns
-            .checked_add(500_000)
-            .ok_or_else(|| bad("edit duration rounding overflows"))?
-            / 1_000_000,
+        duration_ms: clock.rounded_ms(presented_duration_ticks)?,
         start_pts_ns: native
             .start_pts_ns
             .checked_add(offset_ns)
@@ -524,6 +547,121 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_pipeline_keeps_exact_ticks_and_early_numeric_failure_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("ffprobe-fixture");
+        // Exercise the owned probe route, including both bounded private files.
+        fs::write(&probe, r#"#!/bin/sh
+output=''
+ignore=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) output="$2"; shift ;;
+    -ignore_editlist) ignore="$2"; shift ;;
+  esac
+  shift
+done
+if [ -z "$output" ]; then
+  printf '%s\n' '{"streams":[{"time_base":"1/600","duration_ts":5,"nb_read_frames":"5","nb_read_packets":"5"}],"format":{"duration":"0.008333"}}'
+elif [ "$ignore" = '1' ]; then
+  printf '0,1,50,K__\n1,1,100,K__\n2,1,200,___\n3,1,300,___\n4,1,400,___\n' > "$output"
+else
+  printf '0,1,100,K__\n1,1,200,___\n2,1,300,___\n3,1,400,_D_\n' > "$output"
+fi
+"#).unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut timing = native();
+        timing.last_pts_ns = timing.start_pts_ns + 5_000_000;
+        timing.last_cadence_ns = 1_666_667;
+        timing.last_duration_ns = 1_666_667;
+        let movie = dir.path().join("camera.mp4");
+        let result = verify_movie_edit_list(
+            probe.to_str().unwrap(),
+            &movie,
+            timing,
+            "1/600",
+            3,
+            "0.005000",
+            3,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(result.duration_ms, 5);
+        assert_eq!(result.start_pts_ns, timing.start_pts_ns + 1_666_666);
+        let failure = verify_movie_edit_list(
+            probe.to_str().unwrap(),
+            &movie,
+            timing,
+            "1/600",
+            3,
+            "0.005001",
+            3,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        let json = failure
+            .cause
+            .strip_prefix("movie decimal duration disagrees with exact video ticks: ")
+            .unwrap();
+        let facts: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(facts["time_base_num"], 1);
+        assert_eq!(facts["time_base_den"], 600);
+        assert_eq!(facts["raw_duration_ticks"], 5);
+        assert_eq!(facts["presented_duration_ticks"], 3);
+        assert_eq!(facts["native"]["callback_count"], 5);
+        assert!(json.len() < 2_048);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn fractional_nanosecond_ticks_preserve_exact_edit_and_packet_identity() {
+        // Synthetic clocks, not the unretained native e126 time base.
+        for den in [600, 24, 3_000_000_000] {
+            let clock = TimeBase { num: 1, den };
+            let raw = "0,1,50,K__\n1,1,100,K__\n2,1,200,___\n3,1,300,___\n";
+            let edited = "0,1,100,K__\n1,1,200,___\n2,1,300,_D_\n";
+            let mut timing = native();
+            timing.last_pts_ns = timing.start_pts_ns + clock.floor_ns(2).unwrap();
+            timing.last_cadence_ns = clock.floor_ns(1).unwrap().max(1);
+            timing.last_duration_ns = timing.last_cadence_ns;
+            let result =
+                verify_edit_list(raw.as_bytes(), edited.as_bytes(), 4, 2, clock, 4, 2, timing)
+                    .unwrap();
+            assert_eq!(
+                result.start_pts_ns,
+                timing.start_pts_ns + clock.floor_ns(1).unwrap()
+            );
+            assert_eq!(result.duration_ms, clock.rounded_ms(2).unwrap());
+            for (raw_rows, edited_rows, raw_count, visible_count) in [
+                (raw.to_owned(), edited.replace("1,1,200", "0,1,200"), 4, 2),
+                (raw.to_owned(), edited.replace("1,1,200", "1,1,201"), 4, 2),
+                (raw.to_owned(), edited.to_owned(), 5, 2),
+                (raw.to_owned(), edited.to_owned(), 4, 3),
+                (raw.replace("2,1,200", "2,1,99"), edited.to_owned(), 4, 2),
+            ] {
+                assert!(verify_edit_list(
+                    raw_rows.as_bytes(),
+                    edited_rows.as_bytes(),
+                    4,
+                    2,
+                    clock,
+                    raw_count,
+                    visible_count,
+                    timing
+                )
+                .is_err());
+            }
+            timing.last_pts_ns += timing.last_cadence_ns * 3 + 2;
+            assert!(
+                verify_edit_list(raw.as_bytes(), edited.as_bytes(), 4, 2, clock, 4, 2, timing)
+                    .unwrap_err()
+                    .cause
+                    .contains("callback disagrees")
+            );
+        }
+    }
 
     fn native() -> NativeMovieTiming {
         NativeMovieTiming {
@@ -544,7 +682,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             5,
             3,
             native(),
@@ -566,7 +707,10 @@ mod tests {
             edited.as_bytes(),
             820000,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             raw_frames,
             presented_frames,
             timing,
@@ -640,7 +784,10 @@ mod tests {
             edited.as_slice(),
             1666,
             1666,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000
+            },
             1,
             1,
             native(),
@@ -653,7 +800,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             2,
             native(),
@@ -671,7 +821,10 @@ mod tests {
             wrong_offset.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             2,
             native(),
@@ -685,7 +838,10 @@ mod tests {
             extra_visible.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             1,
             native(),
@@ -703,7 +859,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             4,
             2,
             native(),
@@ -717,7 +876,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             2,
             late,
@@ -737,7 +899,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             5,
             3,
             late,
@@ -773,7 +938,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             4,
             2,
             native(),
@@ -787,7 +955,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             4,
             2,
             native(),
@@ -807,7 +978,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             2,
             zero_start,
@@ -825,7 +999,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             2,
             short_cadence,
@@ -840,7 +1017,10 @@ mod tests {
             edited.as_slice(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             2,
             overflow_cadence,
@@ -858,7 +1038,10 @@ mod tests {
             large_duration.as_bytes(),
             815102,
             713363,
-            10_000,
+            TimeBase {
+                num: 1,
+                den: 100_000,
+            },
             3,
             2,
             native(),
@@ -878,7 +1061,9 @@ mod tests {
             "ffprobe",
             Path::new(&path),
             native(),
-            7_133_630_000,
+            "1/100000",
+            713363,
+            "7.133630",
             429,
             Duration::from_secs(60),
         )

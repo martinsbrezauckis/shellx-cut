@@ -125,8 +125,9 @@ export default function AgentChat({ project, prefill, session, onSessionChange, 
 
   useEffect(() => {
     const registered = new Set(attachmentOptions.map((option) => option.id))
+    if (attachments.every((id) => registered.has(id))) return
     setAttachments((selected) => selected.filter((id) => registered.has(id)))
-  }, [attachmentOptions, setAttachments])
+  }, [attachmentOptions, attachments, setAttachments])
 
   // --- Agent selection ------------------------------------------------------
   // The chosen backend (persisted; default claude). `options` is the per-agent

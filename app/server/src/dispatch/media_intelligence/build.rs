@@ -314,12 +314,6 @@ pub(super) fn publish_index_with_limit(
         ));
     }
     let path = index_path(&snapshot.dir);
-    std::fs::create_dir_all(path.parent().unwrap_or(&snapshot.dir)).map_err(|error| {
-        CutError::new(
-            error_codes::IO,
-            "create media intelligence index folder",
-            error.to_string(),
-        )
-    })?;
+    crate::output_paths::ensure_plain_project_relative_dir(&snapshot.dir, Path::new("indexes"))?;
     write_output_atomic(&path, payload)
 }

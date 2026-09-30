@@ -9,6 +9,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod speed_ramp;
+pub use speed_ramp::SpeedRamp;
+
 /// Current project schema tag. Bump only with a migration path.
 pub const PROJECT_SCHEMA: &str = "shellx-cut/1";
 
@@ -759,6 +762,7 @@ impl ClipMatte {
     /// are composite-time choices that REUSE the same alpha, so they are
     /// deliberately excluded from the key.
     pub fn cache_tag(&self, asset_hash: &str) -> String {
+        let asset_hash = crate::matte_cache::portable_asset_key(asset_hash);
         let base = format!(
             "{asset_hash}.{}.{}",
             self.model.as_str(),
@@ -2116,43 +2120,6 @@ pub struct SpeedRampPoint {
     pub at_ms: u64,
     /// Playback speed factor at this point (0.25–4.0, enforced at verb time).
     pub factor: f64,
-}
-
-/// Variable-speed time remap (the `edit.speed_ramp` verb's storage). A piecewise-
-/// LINEAR speed curve over the clip's source window, realized at EDL-derivation
-/// time as `segments` contiguous CONSTANT-speed sub-segments (each a midpoint
-/// sample of the curve over an equal slice of the source). More segments = a
-/// smoother ramp at the cost of more filtergraph nodes. The points carry the
-/// curve; `segments` the current grid-safe sampling granularity. New frame-aware
-/// ramps also retain their bounded requested granularity so a temporary lower-FPS
-/// format can reduce the effective filtergraph without permanently coarsening the
-/// curve. Historic ramps have no retained preference and keep millisecond replay.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpeedRamp {
-    /// Control points, sorted strictly ascending by `at_ms` (≥ 2, enforced at verb
-    /// time). The speed between points is linearly interpolated; before the first /
-    /// after the last point the nearest factor is held.
-    pub points: Vec<SpeedRampPoint>,
-    /// Number of constant-speed sub-segments the curve is sampled into at render
-    /// (2–120, after the active output grid's frame-safety cap).
-    pub segments: usize,
-    /// Original bounded `segments` request for a frame-aware ramp. The effective
-    /// [`Self::segments`] is recomputed from this preference on each project-format
-    /// regrid, so lowering and then restoring the FPS restores the requested curve
-    /// detail where the safety cap allows it. Absent on historic ramps and older
-    /// frame-aware project caches; their existing effective value is used as the
-    /// backward-compatible preference.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preferred_segments: Option<usize>,
-    /// Project frame rate resolved when the ramp is committed. New ramps use
-    /// this frame grid for one authoritative duration; absent ramps preserve
-    /// the historic millisecond interpretation on replay.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timebase_fps: Option<f64>,
-    /// Project audio rate resolved with `timebase_fps`; keeps each ramp slice
-    /// on the same sample budget as its frame budget.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timebase_audio_rate: Option<u32>,
 }
 
 /// One constant-speed sub-segment of an expanded speed ramp: the source span

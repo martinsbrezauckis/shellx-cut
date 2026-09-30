@@ -193,15 +193,11 @@ fn strict_grid_carries_output_policy_frame_count_and_exact_duration() {
 }
 
 #[test]
-fn strict_grid_rejects_missing_or_disagreeing_fragment_probe_cadence() {
+fn strict_grid_rejects_missing_fragment_probe_cadence() {
     let cadence = Some(CaptureCadence::from_server_fps(30.0).unwrap());
     let cases = [
         ((None, None), (Some(rate()), Some(rate()))),
         ((Some(rate()), None), (Some(rate()), Some(rate()))),
-        (
-            (Some(FrameRate::new(25, 1).unwrap()), Some(rate())),
-            (Some(rate()), Some(rate())),
-        ),
     ];
     for (first_rate, second_rate) in cases {
         let journal = fixture(cadence.clone(), first_rate, second_rate, 3, 3);
@@ -210,19 +206,19 @@ fn strict_grid_rejects_missing_or_disagreeing_fragment_probe_cadence() {
 }
 
 #[test]
-fn strict_grid_rejects_missing_cadence_frame_count_and_settings_drift() {
+fn strict_grid_requires_policy_and_accepts_independent_source_count() {
     let matching = (Some(rate()), Some(rate()));
     let no_cadence = fixture(None, matching, matching, 3, 3);
     assert!(plan_frame_grid_legacy_root_projection(&no_cadence, &inputs(30.0)).is_err());
 
-    let bad_frames = fixture(
+    let independent_frames = fixture(
         Some(CaptureCadence::from_server_fps(30.0).unwrap()),
         matching,
         matching,
         2,
         3,
     );
-    assert!(plan_frame_grid_legacy_root_projection(&bad_frames, &inputs(30.0)).is_err());
+    assert!(plan_frame_grid_legacy_root_projection(&independent_frames, &inputs(30.0)).is_ok());
 
     let policy_drift = fixture(
         Some(CaptureCadence::from_server_fps(30.0).unwrap()),
@@ -232,4 +228,65 @@ fn strict_grid_rejects_missing_cadence_frame_count_and_settings_drift() {
         3,
     );
     assert!(plan_frame_grid_legacy_root_projection(&policy_drift, &inputs(25.0)).is_err());
+}
+
+#[test]
+fn native_vfr_run_gets_five_source_and_five_explicit_gap_frames() {
+    let intent = RecordingSessionIntent::new(
+        "native-vfr-fixture",
+        1,
+        15000,
+        24.0,
+        None,
+        false,
+        "opaque-target",
+        vec![RecordingStream::ScreenVideo],
+    )
+    .with_capture_cadence(CaptureCadence::from_server_fps(24.0).unwrap());
+    let mut journal = RecordingSessionJournal::new(intent).unwrap();
+    journal
+        .append_transition(transition(0, RecordingSessionState::Started, 0, 1))
+        .unwrap();
+    // Native source facts; synthetic events do not recover original UI evidence.
+    let mut sealed = run(
+        0,
+        0,
+        0,
+        Some(FrameRate::new(150, 7).unwrap()),
+        Some(FrameRate::new(60, 1).unwrap()),
+        5,
+    );
+    sealed.observed_start_ms = 0;
+    sealed.observed_end_ms = 715;
+    sealed.logical_end_ms = 425;
+    sealed.fragments[0].facts.end_offset_ms = 425;
+    sealed.fragments[0].facts.media_duration_ms = 200;
+    journal.seal_run(sealed).unwrap();
+    journal
+        .append_transition(transition(1, RecordingSessionState::Paused, 425, 716))
+        .unwrap();
+    journal
+        .append_transition(transition(2, RecordingSessionState::Stopping, 425, 861))
+        .unwrap();
+    journal
+        .seal_terminal(SessionTerminal {
+            disposition: TerminalDisposition::Completed,
+            logical_end_ms: 425,
+            observed_unix_ms: 862,
+        })
+        .unwrap();
+    let input = SealedLegacyProjectionRun::new(0, 0, 425, settings(24.0), events(425));
+    let qualified = plan_frame_grid_legacy_root_projection(&journal, &[input]).unwrap();
+    assert_eq!(
+        qualified.source_grid().output_frame_rate,
+        FrameRate::new(24, 1).unwrap()
+    );
+    assert_eq!(qualified.source_grid().output_frame_count, 10);
+    assert_eq!(qualified.source_grid().spans.len(), 2);
+    assert_eq!(qualified.source_grid().spans[0].frame_count(), 5);
+    assert_eq!(qualified.source_grid().spans[1].frame_count(), 5);
+    assert!(matches!(
+        qualified.source_grid().spans[1].span,
+        record_recovery::RunAwareStitchSpan::EncoderGapPadding { .. }
+    ));
 }

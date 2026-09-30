@@ -7,9 +7,10 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::macos_camera_clock::{DecimalDuration, TimeBase};
 use cut_media::ffmpeg::{run_owned_command, OwnedProcessControl};
 use record_core::{error_codes, RecordError, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MAX_METADATA_BYTES: usize = 64 * 1024;
@@ -20,7 +21,7 @@ const PROBE_SECONDS_PER_FRAME_STEP: u64 = 5;
 const PROBE_BYTES_PER_STEP: u64 = 128 * 1024 * 1024;
 const PROBE_SECONDS_PER_BYTE_STEP: u64 = 2;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct NativeMovieTiming {
     pub(super) start_pts_ns: u64,
     pub(super) last_pts_ns: u64,
@@ -44,6 +45,7 @@ struct Probe {
 #[derive(Deserialize)]
 struct Stream {
     time_base: String,
+    duration_ts: u64,
 }
 
 #[derive(Deserialize)]
@@ -77,7 +79,7 @@ pub(super) fn verify_movie_timing(
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=time_base:format=duration",
+            "stream=time_base,duration_ts:format=duration",
             "-of",
             "json",
         ])
@@ -169,14 +171,17 @@ pub(super) fn verify_movie_timing(
         {
             let probe: Probe = serde_json::from_slice(&metadata.stdout)
                 .map_err(|_| bad("movie metadata is malformed"))?;
-            let presented_ns = parse_seconds_ns(&probe.format.duration)?;
-            let presented_ns = u64::try_from(presented_ns)
-                .map_err(|_| bad("movie duration overflows nanoseconds"))?;
             crate::macos_camera_edit_list::verify_movie_edit_list(
                 ffprobe,
                 path,
                 native,
-                presented_ns,
+                &probe
+                    .streams
+                    .first()
+                    .ok_or_else(|| bad("video time base is missing"))?
+                    .time_base,
+                probe.streams[0].duration_ts,
+                &probe.format.duration,
                 decoded_frames,
                 probe_timeout,
             )
@@ -226,10 +231,13 @@ fn verify_probe<R: BufRead>(
         .streams
         .first()
         .ok_or_else(|| bad("video time base is missing"))?;
-    let (numerator, denominator) = parse_time_base(&stream.time_base)?;
-    let container_ns = parse_seconds_ns(&probe.format.duration)?;
+    let clock = TimeBase::parse(&stream.time_base)?;
+    let (numerator, denominator) = (u128::from(clock.num), u128::from(clock.den));
+    let decimal = DecimalDuration::parse(&probe.format.duration)?;
+    let container_ns = u128::from(decimal.ns) * denominator;
+    let printed_half_unit = u128::from(decimal.precision_ns) * denominator / 2;
     let measured_ms = u64::try_from(
-        container_ns
+        (container_ns / denominator)
             .checked_add(500_000)
             .ok_or_else(|| bad("container duration overflowed"))?
             / 1_000_000,
@@ -286,12 +294,17 @@ fn verify_probe<R: BufRead>(
         if pts < 0 || duration <= 0 {
             return Err(bad("video packet has negative PTS or no duration"));
         }
-        let pts = to_ns(pts as u128, numerator, denominator)?;
-        let duration = to_ns(duration as u128, numerator, denominator)?;
+        let pts = to_scaled(pts as u128, numerator)?;
+        let duration = to_scaled(duration as u128, numerator)?;
         let end = pts
             .checked_add(duration)
             .ok_or_else(|| bad("packet end overflowed"))?;
-        if duration == 0 || end > container_ns {
+        if duration == 0
+            || end
+                > container_ns
+                    .checked_add(printed_half_unit)
+                    .ok_or_else(|| bad("container duration overflowed"))?
+        {
             return Err(bad("video packet exceeds the container duration"));
         }
         first_pts = first_pts.min(pts);
@@ -325,9 +338,11 @@ fn verify_probe<R: BufRead>(
     // Conversely, a final callback at the encoded
     // packet's end is the first sample outside that half-open movie interval.
     // A callback beyond the packet end remains an unencoded tail and fails.
-    let tick_ns = to_ns(1, numerator, denominator)?.max(1);
-    let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns);
-    let encoded_ahead_limit = last_duration.saturating_add(tick_ns);
+    let tick_ns = to_scaled(1, numerator)?.max(denominator);
+    let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns) * denominator;
+    let encoded_ahead_limit = last_duration
+        .checked_add(tick_ns)
+        .ok_or_else(|| bad("encoded sample cadence overflows"))?;
     let matches_penultimate =
         penultimate_pts.is_some_and(|pts| native_elapsed.abs_diff(pts) <= tick_ns);
     if (last_pts >= native_elapsed
@@ -335,6 +350,13 @@ fn verify_probe<R: BufRead>(
         && !matches_penultimate)
         || (native_elapsed > max_end && native_elapsed - max_end > tick_ns)
     {
+        let native_elapsed = native_elapsed / denominator;
+        let last_pts = last_pts / denominator;
+        let last_duration = last_duration / denominator;
+        let max_end = max_end / denominator;
+        let container_ns = container_ns / denominator;
+        let tick_ns = tick_ns / denominator;
+        let penultimate_pts = penultimate_pts.map(|v| v / denominator);
         let penultimate = penultimate_pts.map_or_else(|| "null".to_owned(), |pts| pts.to_string());
         let penultimate_delta = penultimate_pts.map_or_else(
             || "null".to_owned(),
@@ -345,17 +367,23 @@ fn verify_probe<R: BufRead>(
             native.start_pts_ns, native.last_pts_ns, native.last_duration_ns, native.last_cadence_ns,
         )));
     }
-    let cadence = u128::from(native.last_cadence_ns);
-    if last_duration > cadence.saturating_mul(2).saturating_add(tick_ns) {
+    let cadence = u128::from(native.last_cadence_ns) * denominator;
+    if last_duration
+        > cadence
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(tick_ns))
+            .ok_or_else(|| bad("native sample cadence overflows"))?
+    {
         return Err(bad(
             "final packet duration exceeds native movie sample cadence",
         ));
     }
     if native.last_duration_ns != 0
         && last_duration
-            > u128::from(native.last_duration_ns)
-                .saturating_mul(2)
-                .saturating_add(tick_ns)
+            > (u128::from(native.last_duration_ns) * denominator)
+                .checked_mul(2)
+                .and_then(|v| v.checked_add(tick_ns))
+                .ok_or_else(|| bad("native sample duration overflows"))?
     {
         return Err(bad(
             "final packet duration exceeds native movie sample duration",
@@ -364,16 +392,25 @@ fn verify_probe<R: BufRead>(
     // The container may end after the final packet because AVFoundation writes
     // a movie time range. Bound that tail by one measured encoded packet; a
     // truncated or extended file cannot pass just by changing its duration.
-    if container_ns < max_end || container_ns - max_end > last_duration.saturating_add(tick_ns) {
+    if max_end
+        > container_ns
+            .checked_add(printed_half_unit)
+            .ok_or_else(|| bad("container duration overflows"))?
+        || container_ns.saturating_sub(max_end)
+            > last_duration
+                .checked_add(tick_ns)
+                .and_then(|v| v.checked_add(printed_half_unit))
+                .ok_or_else(|| bad("container end bound overflows"))?
+    {
         return Err(bad(
             "movie container end is not bounded by its final packet",
         ));
     }
     let packet_duration_ms = u64::try_from(
         max_end
-            .checked_add(500_000)
+            .checked_add(500_000 * denominator)
             .ok_or_else(|| bad("encoded movie interval overflowed"))?
-            / 1_000_000,
+            / (1_000_000 * denominator),
     )
     .map_err(|_| bad("encoded movie interval overflows milliseconds"))?;
     if packet_duration_ms == 0 {
@@ -385,52 +422,10 @@ fn verify_probe<R: BufRead>(
     })
 }
 
-fn parse_time_base(value: &str) -> Result<(u128, u128)> {
-    let (num, den) = value
-        .split_once('/')
-        .ok_or_else(|| bad("invalid video time base"))?;
-    let num = num
-        .parse::<u128>()
-        .map_err(|_| bad("invalid video time base"))?;
-    let den = den
-        .parse::<u128>()
-        .map_err(|_| bad("invalid video time base"))?;
-    if num == 0 || den == 0 {
-        return Err(bad("invalid video time base"));
-    }
-    Ok((num, den))
-}
-
-fn parse_seconds_ns(value: &str) -> Result<u128> {
-    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
-    if fraction.len() > 9
-        || !whole.bytes().all(|b| b.is_ascii_digit())
-        || !fraction.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(bad("invalid container duration"));
-    }
-    let whole = whole
-        .parse::<u128>()
-        .map_err(|_| bad("invalid container duration"))?;
-    let fraction = if fraction.is_empty() {
-        0
-    } else {
-        fraction
-            .parse::<u128>()
-            .map_err(|_| bad("invalid container duration"))?
-            * 10_u128.pow((9 - fraction.len()) as u32)
-    };
-    whole
-        .checked_mul(1_000_000_000)
-        .and_then(|v| v.checked_add(fraction))
-        .ok_or_else(|| bad("container duration overflowed"))
-}
-
-fn to_ns(ticks: u128, numerator: u128, denominator: u128) -> Result<u128> {
+fn to_scaled(ticks: u128, numerator: u128) -> Result<u128> {
     ticks
         .checked_mul(numerator)
         .and_then(|v| v.checked_mul(1_000_000_000))
-        .map(|v| v / denominator)
         .ok_or_else(|| bad("movie time base overflowed"))
 }
 
@@ -445,6 +440,56 @@ fn bad(cause: &str) -> RecordError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_tick_packet_end_accepts_only_printed_decimal_rounding() {
+        let mut timing = native();
+        timing.last_pts_ns = timing.start_pts_ns + 1_666_666;
+        timing.last_cadence_ns = 1_666_667;
+        timing.last_duration_ns = 1_666_667;
+        let rows = b"0,1\n1,1\n";
+        assert!(verify_probe(
+            &metadata("0.003333", "1/600"),
+            rows.as_slice(),
+            timing,
+            3,
+            2
+        )
+        .is_ok());
+        assert!(verify_probe(
+            &metadata("0.003332", "1/600"),
+            rows.as_slice(),
+            timing,
+            3,
+            2
+        )
+        .is_err());
+        assert!(verify_probe(
+            &metadata("0.003333000", "1/600"),
+            rows.as_slice(),
+            timing,
+            3,
+            2
+        )
+        .is_err());
+        assert!(verify_probe(
+            &metadata("0.003333", "1/600"),
+            rows.as_slice(),
+            timing,
+            3,
+            3
+        )
+        .is_err());
+        timing.last_pts_ns += 10_000_000;
+        assert!(verify_probe(
+            &metadata("0.003333", "1/600"),
+            rows.as_slice(),
+            timing,
+            3,
+            2
+        )
+        .is_err());
+    }
 
     #[test]
     fn retained_private_movie_uses_strict_edit_proof_after_packet_boundary_refusal() {
@@ -475,7 +520,7 @@ mod tests {
 
     fn metadata(duration: &str, time_base: &str) -> Vec<u8> {
         format!(
-            r#"{{"streams":[{{"time_base":"{time_base}"}}],"format":{{"duration":"{duration}"}}}}"#
+            r#"{{"streams":[{{"time_base":"{time_base}","duration_ts":0}}],"format":{{"duration":"{duration}"}}}}"#
         )
         .into_bytes()
     }
@@ -491,7 +536,7 @@ mod tests {
             &metadata(duration, "1/100000"),
             rows.as_bytes(),
             native(),
-            parse_seconds_ns(duration)? as u64 / 1_000_000,
+            DecimalDuration::parse(duration)?.ns / 1_000_000,
             frames,
         )
     }
@@ -686,8 +731,11 @@ mod tests {
         // A second missing frame is not a valid one-packet Stop boundary.
         native.last_pts_ns -= 16_670_000;
         assert!(verify_probe(&metadata, &rows[..], native, 6_868, 2).is_err());
-        // A native callback after the encoded end is still a lost movie tail.
+        // A callback beyond the one-tick encoded-end boundary is a lost tail.
         native.last_pts_ns = native.start_pts_ns + 6_868_040_000;
+        // Exact packet end plus one rational tick is the existing boundary.
+        assert!(verify_probe(&metadata, &rows[..], native, 6_868, 2).is_ok());
+        native.last_pts_ns += 1;
         assert!(verify_probe(&metadata, &rows[..], native, 6_868, 2).is_err());
     }
 

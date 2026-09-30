@@ -99,9 +99,14 @@ pub(crate) fn initialize_private_foreground_region_bridge(allow_foreground_bridg
 // a pause-safe owner for the portal-selected screen or per-run audio sidecars.
 // Keep its private admission fail-closed until those native boundaries can be
 // sealed and projected without re-entering portal consent.
+pub(crate) mod cache_output;
 #[allow(dead_code)]
 mod linux_pause_private_admission;
 pub(crate) mod live_controls;
+#[cfg(test)]
+#[path = "screen_record/media_boundary_tests.rs"]
+mod media_boundary_tests;
+pub(crate) mod plan_inputs;
 mod polish;
 // REC-PAUSE-01 is a pure internal projection contract. It intentionally has no
 // verb, filesystem writer, or live-worker caller until the pause-aware capture

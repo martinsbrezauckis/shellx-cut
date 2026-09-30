@@ -7,6 +7,7 @@ description = "ShellX Record — tiny-skia compositor + ffmpeg decode/encode (Ed
 
 [dependencies]
 record-core = { workspace = true }
+cut-media = { path = "../../media" }
 tiny-skia.workspace = true
 swash = "0.2"
 serde.workspace = true

@@ -7,6 +7,9 @@
 
 use super::*;
 
+mod analysis_work;
+use analysis_work::{cohesion_depths, retake_matches, RetakeWork};
+
 pub(super) mod assemble_apply;
 use assemble_apply::{
     apply_planned_ranges, aspect_label, aspect_parts, bind_plan, binding_value,
@@ -1581,28 +1584,14 @@ fn chapter_gaps(words: &[cut_perception::WordSpan], window: usize) -> Vec<Chapte
     let coh: Vec<f64> = (0..wins.len() - 1)
         .map(|k| chapter_cosine(&vecs[k], &vecs[k + 1]))
         .collect();
-    // Depth score per gap: rise from the valley up to the nearest peak on each
-    // side (classic TextTiling). ≈0 at a cohesion peak, large at a deep valley.
-    let mut gaps = Vec::new();
-    for (k, &ck) in coh.iter().enumerate() {
-        let mut lpeak = ck;
-        let mut i = k;
-        while i > 0 && coh[i - 1] >= lpeak {
-            lpeak = coh[i - 1];
-            i -= 1;
-        }
-        let mut rpeak = ck;
-        let mut j = k;
-        while j + 1 < coh.len() && coh[j + 1] >= rpeak {
-            rpeak = coh[j + 1];
-            j += 1;
-        }
-        gaps.push(ChapterGap {
+    cohesion_depths(&coh)
+        .into_iter()
+        .enumerate()
+        .map(|(k, depth)| ChapterGap {
             boundary_word: wins[k + 1].0,
-            depth: (lpeak - ck) + (rpeak - ck),
-        });
-    }
-    gaps
+            depth,
+        })
+        .collect()
 }
 
 /// Select chapter-boundary word indices from the gap depths: keep the DEEPEST
@@ -3250,43 +3239,6 @@ fn retake_tokens(words: &[cut_perception::WordSpan], lo: usize, hi: usize) -> Ve
         .collect()
 }
 
-/// Levenshtein edit distance between two token SEQUENCES (Wagner–Fischer, O(a·b)
-/// time, O(b) space). Sequence-aware so a partial restart ("the key thing is—" →
-/// "the key thing is that…") scores as a near-match (a few insertions), unlike a
-/// bag-of-words Jaccard which would also reward an unrelated reshuffle.
-fn token_levenshtein(a: &[String], b: &[String]) -> usize {
-    if a.is_empty() {
-        return b.len();
-    }
-    if b.is_empty() {
-        return a.len();
-    }
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0usize; b.len() + 1];
-    for (i, ta) in a.iter().enumerate() {
-        cur[0] = i + 1;
-        for (j, tb) in b.iter().enumerate() {
-            let cost = usize::from(ta != tb);
-            cur[j + 1] = (prev[j + 1] + 1) // deletion
-                .min(cur[j] + 1) // insertion
-                .min(prev[j] + cost); // substitution/match
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[b.len()]
-}
-
-/// Normalized token-sequence similarity in [0,1]: `1 − levenshtein / max(len)`.
-/// 1.0 = identical token sequences, 0.0 = no shared structure. Two empty
-/// sequences are trivially identical (1.0). This is the retake-detection metric.
-fn retake_similarity(a: &[String], b: &[String]) -> f64 {
-    let maxlen = a.len().max(b.len());
-    if maxlen == 0 {
-        return 1.0;
-    }
-    1.0 - token_levenshtein(a, b) as f64 / maxlen as f64
-}
-
 /// Split a word transcript into UTTERANCES — inclusive `[lo, hi]` slice-index
 /// ranges. A boundary falls after a word that ends a sentence (`.?!`) OR before
 /// a word that follows a pause gap > `pause_ms` (the typical "…flubbed line.
@@ -3341,7 +3293,8 @@ fn detect_retakes(
     similarity: f64,
     keep: RetakeKeep,
     min_words: usize,
-) -> Vec<RetakeCluster> {
+    work: &mut RetakeWork,
+) -> Result<Vec<RetakeCluster>, CutError> {
     // (slice range, content tokens) for utterances long enough to be a "line".
     let eligible: Vec<([usize; 2], Vec<String>)> = retake_utterances(words, pause_ms)
         .into_iter()
@@ -3358,7 +3311,7 @@ fn detect_retakes(
     let mut cur: Vec<usize> = Vec::new();
     for k in 0..eligible.len() {
         if let Some(&prev) = cur.last() {
-            if retake_similarity(&eligible[prev].1, &eligible[k].1) >= similarity {
+            if retake_matches(&eligible[prev].1, &eligible[k].1, similarity, work)? {
                 cur.push(k);
                 continue;
             }
@@ -3373,7 +3326,8 @@ fn detect_retakes(
         runs.push(cur);
     }
 
-    runs.into_iter()
+    Ok(runs
+        .into_iter()
         .map(|members| {
             // Position WITHIN the run of the take to keep.
             let keep_pos = match keep {
@@ -3402,7 +3356,7 @@ fn detect_retakes(
             removed.sort_unstable();
             RetakeCluster { kept, removed }
         })
-        .collect()
+        .collect())
 }
 
 /// transcript.remove_retakes{asset?, track?, similarity?, pause_ms?, keep?,
@@ -3416,6 +3370,15 @@ pub(super) async fn transcript_remove_retakes(
     state: &AppState,
     args: Value,
     actor: Actor,
+) -> Result<VerbResult, CutError> {
+    transcript_remove_retakes_with_work(state, args, actor, RetakeWork::default()).await
+}
+
+async fn transcript_remove_retakes_with_work(
+    state: &AppState,
+    args: Value,
+    actor: Actor,
+    mut work: RetakeWork,
 ) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
@@ -3464,7 +3427,7 @@ pub(super) async fn transcript_remove_retakes(
             continue;
         };
         any_transcript = true;
-        let clusters = detect_retakes(&t.words, pause_ms, similarity, keep, min_words);
+        let clusters = detect_retakes(&t.words, pause_ms, similarity, keep, min_words, &mut work)?;
         if clusters.is_empty() {
             continue;
         }
@@ -3622,7 +3585,15 @@ mod retakes_tests {
             "hello world this is take two",
             "completely different sentence here",
         ]);
-        let clusters = detect_retakes(&words, 600, 0.6, RetakeKeep::Last, 3);
+        let clusters = detect_retakes(
+            &words,
+            600,
+            0.6,
+            RetakeKeep::Last,
+            3,
+            &mut RetakeWork::default(),
+        )
+        .unwrap();
         assert_eq!(clusters.len(), 1, "exactly one retake cluster");
         // First "hello world…" is words 0..=5, second is 6..=11.
         assert_eq!(clusters[0].kept, [6, 11], "second attempt kept");
@@ -3641,7 +3612,15 @@ mod retakes_tests {
             "i went to the market",
             "rockets launch into deep orbit",
         ]);
-        let clusters = detect_retakes(&words, 600, 0.6, RetakeKeep::Last, 3);
+        let clusters = detect_retakes(
+            &words,
+            600,
+            0.6,
+            RetakeKeep::Last,
+            3,
+            &mut RetakeWork::default(),
+        )
+        .unwrap();
         assert!(clusters.is_empty(), "no similar lines ⇒ no retakes");
     }
 
@@ -3654,9 +3633,33 @@ mod retakes_tests {
             "let me introduce the topic today carefully",
             "let me introduce the topic today",
         ]);
-        let first = detect_retakes(&words, 600, 0.6, RetakeKeep::First, 3);
-        let last = detect_retakes(&words, 600, 0.6, RetakeKeep::Last, 3);
-        let longest = detect_retakes(&words, 600, 0.6, RetakeKeep::Longest, 3);
+        let first = detect_retakes(
+            &words,
+            600,
+            0.6,
+            RetakeKeep::First,
+            3,
+            &mut RetakeWork::default(),
+        )
+        .unwrap();
+        let last = detect_retakes(
+            &words,
+            600,
+            0.6,
+            RetakeKeep::Last,
+            3,
+            &mut RetakeWork::default(),
+        )
+        .unwrap();
+        let longest = detect_retakes(
+            &words,
+            600,
+            0.6,
+            RetakeKeep::Longest,
+            3,
+            &mut RetakeWork::default(),
+        )
+        .unwrap();
         assert_eq!(first.len(), 1);
         // A = words 0..=6, B = words 7..=12.
         assert_eq!(first[0].kept, [0, 6], "keep=first ⇒ first attempt");
@@ -3681,7 +3684,15 @@ mod retakes_tests {
             "so photosynthesis converts sunlight into energy",
             "so photosynthesis converts sunlight into glucose",
         ]);
-        let clusters = detect_retakes(&words, 600, 0.6, RetakeKeep::Last, 3);
+        let clusters = detect_retakes(
+            &words,
+            600,
+            0.6,
+            RetakeKeep::Last,
+            3,
+            &mut RetakeWork::default(),
+        )
+        .unwrap();
         assert_eq!(clusters.len(), 1, "all three attempts in one cluster");
         assert_eq!(clusters[0].kept, [12, 17], "third attempt kept");
         assert_eq!(
@@ -3700,7 +3711,15 @@ mod retakes_tests {
             "no wait",
             "welcome back to the channel folks",
         ]);
-        let clusters = detect_retakes(&words, 600, 0.6, RetakeKeep::Last, 3);
+        let clusters = detect_retakes(
+            &words,
+            600,
+            0.6,
+            RetakeKeep::Last,
+            3,
+            &mut RetakeWork::default(),
+        )
+        .unwrap();
         assert_eq!(clusters.len(), 1, "aside skipped, two attempts still chain");
         // Attempt 1 = 0..=5, aside = 6..=7 (ignored), attempt 2 = 8..=13.
         assert_eq!(clusters[0].kept, [8, 13]);

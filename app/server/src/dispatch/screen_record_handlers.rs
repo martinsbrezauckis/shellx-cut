@@ -3,6 +3,7 @@ use std::io::Read;
 
 mod camera_foundation;
 mod stop_files;
+mod stop_log;
 
 use stop_files::{
     capture_marker_duration, capture_started_unix_ms, local_regular_file_nonempty, unix_ms_now,
@@ -134,21 +135,7 @@ pub(super) async fn screen_record_stop(
         // in-process capture's error to <dir>/record.log, so a stuck capture (e.g. blocked
         // on a ScreenCast consent dialog) or a crash leaves a trail there. Append the
         // tail so the agent sees WHY without a second round-trip.
-        let log_tail = {
-            let log = out_dir.join("record.log");
-            std::fs::read_to_string(&log)
-                .ok()
-                .map(|s| {
-                    let t = s.trim();
-                    if t.is_empty() {
-                        "record.log is empty — the capture likely blocked before any output (most often an unanswered ScreenCast consent dialog)".to_string()
-                    } else {
-                        let tail: String = t.chars().rev().take(600).collect::<String>().chars().rev().collect();
-                        format!("record.log tail: …{tail}")
-                    }
-                })
-                .unwrap_or_else(|| format!("no record.log at {}", log.display()))
-        };
+        let log_tail = stop_log::diagnostic(&out_dir);
         return Err(CutError::new(
             error_codes::SIDECAR,
             format!(
@@ -510,7 +497,7 @@ pub(super) async fn screen_record_polish(
         raw: Option<bool>,
     }
     let a: Args = parse_args(args)?;
-    let (_project, _edl, dir, _at) = snapshot(state).await?;
+    let (project, _edl, dir, _at) = snapshot(state).await?;
 
     let source = crate::screen_record::plain_existing_file_under_project(
         &dir,
@@ -571,6 +558,13 @@ pub(super) async fn screen_record_polish(
     // raw:true → fast stream-copy (no re-render). Separate cache tag so a raw
     // bake is never served where a polished one was asked for, and vice-versa.
     let raw = a.raw.unwrap_or(false);
+    let admitted_plan = if raw {
+        None
+    } else {
+        Some(crate::screen_record::plan_inputs::load(
+            &dir, &project, &plan_path,
+        )?)
+    };
     let av_tag = match (raw, audio.is_some()) {
         (true, true) => "raw_av",
         (true, false) => "raw_v",
@@ -580,13 +574,13 @@ pub(super) async fn screen_record_polish(
     let key = format!("{}_{plan_tag}_{av_tag}", src_hash.replace(':', "_"));
     let baked = cache.join(format!("{key}.mp4"));
     let baked_s = baked.display().to_string();
-    let cached = baked.exists();
+    let cached = crate::screen_record::cache_output::cache_hit(&baked)?;
     if !cached {
         // Rendering is CPU/ffmpeg work. Keep the verb's established synchronous
         // result shape, but never occupy an async worker while it runs. It shares
         // the export limiter so an auto-polish cannot saturate the recorder path.
         let render_source = source.clone();
-        let render_plan = plan_path.clone();
+        let render_plan = admitted_plan;
         let render_baked = baked.clone();
         let render_audio = audio.map(std::path::Path::to_path_buf);
         state
@@ -600,23 +594,28 @@ pub(super) async fn screen_record_polish(
                         std::time::Duration::from_secs(30 * 60),
                         move || child_cancellation.is_cancelled(),
                     );
-                    if raw {
-                        crate::screen_record::mux_raw_with_control(
-                            &render_source,
-                            render_audio.as_deref(),
-                            &render_baked,
-                            &control,
-                        )
-                    } else {
-                        crate::screen_record::render_with_control(
-                            &render_source,
-                            &render_plan,
-                            &render_baked,
-                            render_audio.as_deref(),
-                            &control,
-                        )
-                        .map(|_| ())
-                    }
+                    crate::screen_record::cache_output::bake_seed(&render_baked, |staged| {
+                        if raw {
+                            crate::screen_record::mux_raw_with_control(
+                                &render_source,
+                                render_audio.as_deref(),
+                                staged,
+                                &control,
+                            )
+                        } else {
+                            crate::screen_record::render_with_control(
+                                &render_source,
+                                render_plan
+                                    .as_ref()
+                                    .expect("normal polish has admitted plan"),
+                                staged,
+                                render_audio.as_deref(),
+                                &control,
+                            )
+                            .map(|_| ())
+                        }
+                    })
+                    .map(|_| ())
                 }),
             )
             .await?;

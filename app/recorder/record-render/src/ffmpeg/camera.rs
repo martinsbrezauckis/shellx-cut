@@ -173,6 +173,8 @@ pub fn stream_square_with_control(
             "error",
             "-protocol_whitelist",
             super::LOCAL_INPUT_PROTOCOLS,
+            "-format_whitelist",
+            super::LOCAL_INPUT_FORMATS,
             "-i",
             src,
             "-vf",

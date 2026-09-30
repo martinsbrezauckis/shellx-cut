@@ -36,7 +36,7 @@ retry carrying the errors, then status:error. NEVER a fabricated storyboard.
 Stdlib-only: runs under the bundled perception venv or any Python >= 3.8.
 
 Security posture: claude runs with --tools "" (no tool use), codex runs in the
-read-only sandbox with --ephemeral, grok runs single-turn -p.
+read-only sandbox with --ephemeral, grok runs single-turn -p with a capability-verified no-tool policy.
 """
 
 import json
@@ -48,6 +48,7 @@ import time
 from contextlib import suppress
 
 import provider_child_launch
+from judge.adapters import grok_tool_policy
 
 SCHEMA = "shellx-cut/generate-storyboard-result/1"
 STORYBOARD_SCHEMA = "shellx-cut/generate-storyboard/1"
@@ -293,7 +294,7 @@ def extract_json(text):
     return None
 
 
-def spawn_cli(name, path, prompt, timeout_s):
+def spawn_cli(name, path, prompt, timeout_s, grok_policy=None):
     """Run the CLI; return (answer_text, model_hint, error_reason)."""
     launch = path if isinstance(path, dict) else None
     child_env = provider_child_launch.environment(launch) if launch else None
@@ -353,10 +354,21 @@ def spawn_cli(name, path, prompt, timeout_s):
                 with suppress(FileNotFoundError):
                     os.unlink(last_path)
         if name == "grok":
+            if grok_policy is None:
+                deadline = time.monotonic() + timeout_s
+                grok_policy, reason = grok_tool_policy.resolve_grok_tool_policy(
+                    path if launch is None else launch["executable"], launch,
+                    required_flags=grok_tool_policy.PLANNER_REQUIRED_FLAGS, timeout_s=timeout_s)
+                if grok_policy is None:
+                    return None, None, reason
+                timeout_s = deadline - time.monotonic()
+                if timeout_s <= 0:
+                    return None, None, "no time remains after Grok capability admission"
             if len(prompt) > GROK_ARGV_PROMPT_LIMIT:
                 return None, None, "prompt too large for grok argv transport"
             proc = subprocess.run(
-                command(["-p", prompt, "--output-format", "json"]),
+                command(["-p", prompt, "--output-format", "json"]
+                        + grok_tool_policy.no_tool_arguments()),
                 capture_output=True,
                 timeout=timeout_s,
                 env=child_env,
@@ -467,15 +479,27 @@ def main():
     warnings = []
     backend = None
     fails = []
+    unavailable = []
     for index, (name, path) in enumerate(candidates):
         backend = {"provider": name, "model": None}
-        errors = None
         now = time.monotonic()
         remaining = deadline - now
         if remaining <= 0:
-            fails.append(f"{name}: no time remains in the storyboard request")
+            fails.append(f"{name}: no time remains in the planning request")
             continue
         provider_deadline = now + remaining / (len(candidates) - index)
+        grok_policy = None
+        if name == "grok":
+            launch = path if isinstance(path, dict) else None
+            grok_policy, reason = grok_tool_policy.resolve_grok_tool_policy(
+                path if launch is None else launch["executable"], launch,
+                required_flags=grok_tool_policy.PLANNER_REQUIRED_FLAGS,
+                timeout_s=provider_deadline - time.monotonic())
+            if grok_policy is None:
+                unavailable.append(f"{name}: {reason}")
+                warnings.append(f"agent {name} unavailable, trying next: {reason}"[:200])
+                continue
+        errors = None
         for attempt in (1, 2):
             attempt_budget = provider_deadline - time.monotonic()
             if attempt_budget <= 0:
@@ -484,7 +508,7 @@ def main():
                 warnings.append(f"agent {name} failed, trying next: {fail}")
                 break
             prompt = build_prompt(req, errors=errors)
-            answer, model, fail = spawn_cli(name, path, prompt, attempt_budget)
+            answer, model, fail = spawn_cli(name, path, prompt, attempt_budget, grok_policy)
             if fail:
                 # HARD failure (spawn/auth/exit/timeout): fall through to the
                 # next installed CLI instead of dying on the first.
@@ -530,9 +554,9 @@ def main():
                 + "; ".join(errors or []),
             )
     emit(
-        "error",
+        "error" if fails else "not_run",
         backend=backend,
-        reason="every available CLI agent failed: " + " | ".join(fails),
+        reason="no CLI agent completed planning: " + " | ".join(fails + unavailable),
     )
 
 

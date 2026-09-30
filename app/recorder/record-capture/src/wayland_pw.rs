@@ -198,6 +198,29 @@ pub(crate) fn valid_chunk_data(data: &[u8], offset: usize, size: usize) -> Optio
     data.get(..end)
 }
 
+/// Preserve the first source frame's clock before a potentially blocking pipe
+/// write. FFmpeg can timestamp the frame while reading its bytes, before the
+/// full write returns. Publish this origin only after complete delivery succeeds.
+fn deliver_pixel_frame(
+    start: Instant,
+    capture_start_ms: &mut Option<u64>,
+    deliver: impl FnOnce() -> bool,
+) -> bool {
+    let source_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if !deliver() {
+        return false;
+    }
+    if capture_start_ms.is_none() {
+        *capture_start_ms = Some(source_ms);
+        let delivered_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        eprintln!(
+            "wayland_pw: first pixel frame source_ms={source_ms} delivered_ms={delivered_ms} write_ms={}",
+            delivered_ms.saturating_sub(source_ms)
+        );
+    }
+    true
+}
+
 /// Shared state across the pipewire `param_changed` (sets format, spawns ffmpeg) and
 /// `process` (writes frames, collects cursor) callbacks.
 struct State {
@@ -218,7 +241,7 @@ struct State {
     /// REAL pixel frames actually written to ffmpeg — the "did we capture video?"
     /// signal (a cursor-only buffer writes 0 bytes and must NOT count).
     pixel_frames: u64,
-    /// Shared-capture-clock instant of the first frame accepted by the encoder.
+    /// Shared-capture-clock origin sampled before the first successful frame write.
     capture_start_ms: Option<u64>,
     /// Server-owned readiness proof. It is set only after a real pixel frame
     /// has been written into ffmpeg's active encoder input.
@@ -255,6 +278,10 @@ fn spawn_ffmpeg(st: &mut State, pix_fmt: &str) {
             "zerolatency",
             "-pix_fmt",
             "yuv420p",
+            // Keep sparse arrival timestamps. Automatic MP4 sync in FFmpeg 6.1
+            // duplicates frames at EOF, extrapolating beyond the capture clock.
+            "-fps_mode",
+            "passthrough",
             &st.raw_path,
         ])
         .stdin(Stdio::piped())
@@ -419,19 +446,23 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
                             (size, offset, stride, data.data())
                         {
                             if let Some(valid) = valid_chunk_data(mapped, offset, size) {
-                                let wrote = st.ff_stdin.as_mut().is_some_and(|stdin| {
-                                    write_depadded(stdin, valid, w, h, bpp, stride, offset)
-                                });
+                                let wrote = {
+                                    let State {
+                                        start,
+                                        capture_start_ms,
+                                        ff_stdin,
+                                        ..
+                                    } = &mut *st;
+                                    deliver_pixel_frame(*start, capture_start_ms, || {
+                                        ff_stdin.as_mut().is_some_and(|stdin| {
+                                            write_depadded(stdin, valid, w, h, bpp, stride, offset)
+                                        })
+                                    })
+                                };
                                 if wrote {
                                     st.pixel_frames = st.pixel_frames.saturating_add(1);
                                     if let Some(readiness) = st.readiness.as_ref() {
                                         readiness.mark_first_screen_frame_delivered();
-                                    }
-                                    if st.capture_start_ms.is_none() {
-                                        st.capture_start_ms = Some(
-                                            u64::try_from(st.start.elapsed().as_millis())
-                                                .unwrap_or(u64::MAX),
-                                        );
                                     }
                                     if let Some((preview, generation)) = st.active_preview.as_ref()
                                     {
@@ -609,7 +640,7 @@ pub fn capture(request: PipewireCaptureRequest) -> Result<PipewireCursorCapture,
 
 #[cfg(test)]
 mod tests {
-    use super::{preview_format, valid_chunk_data, write_depadded};
+    use super::{deliver_pixel_frame, preview_format, valid_chunk_data, write_depadded};
     use crate::source_preview_bitmap::SourcePreviewPixelFormat;
     use pipewire::spa::param::video::VideoFormat;
 
@@ -760,5 +791,191 @@ mod tests {
     fn failed_encoder_write_does_not_count_as_a_frame() {
         let mut writer = FailingWriter;
         assert!(!write_depadded(&mut writer, &[0u8; 16], 2, 2, 4, 0, 0));
+    }
+
+    struct SlowWriter {
+        bytes: Vec<u8>,
+        entered_ms: Option<u64>,
+        start: std::time::Instant,
+    }
+
+    impl std::io::Write for SlowWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.entered_ms = Some(self.start.elapsed().as_millis() as u64);
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn slow_first_write_preserves_source_clock_and_later_frames_keep_it() {
+        let start = std::time::Instant::now();
+        let mut origin = None;
+        let mut writer = SlowWriter {
+            bytes: Vec::new(),
+            entered_ms: None,
+            start,
+        };
+        let frame = [7u8; 16];
+        assert!(deliver_pixel_frame(start, &mut origin, || {
+            write_depadded(&mut writer, &frame, 2, 2, 4, 0, 0)
+        }));
+        let first_origin = origin.unwrap();
+        assert!(first_origin <= writer.entered_ms.unwrap());
+        assert!(start.elapsed().as_millis() >= u128::from(first_origin) + 40);
+        assert_eq!(writer.bytes, frame);
+
+        assert!(deliver_pixel_frame(start, &mut origin, || {
+            write_depadded(&mut writer, &frame, 2, 2, 4, 0, 0)
+        }));
+        assert_eq!(origin, Some(first_origin));
+        assert_eq!(writer.bytes.len(), 32);
+    }
+
+    #[test]
+    fn failed_or_invalid_first_frame_does_not_publish_origin() {
+        let start = std::time::Instant::now();
+        let mut origin = None;
+        assert!(!deliver_pixel_frame(start, &mut origin, || {
+            write_depadded(&mut FailingWriter, &[0u8; 16], 2, 2, 4, 0, 0)
+        }));
+        assert_eq!(origin, None);
+        let mut out = Vec::new();
+        assert!(!deliver_pixel_frame(start, &mut origin, || {
+            write_depadded(&mut out, &[0u8; 1], 2, 2, 4, 0, 0)
+        }));
+        assert_eq!(origin, None);
+        assert!(out.is_empty());
+        assert!(deliver_pixel_frame(start, &mut origin, || {
+            write_depadded(&mut out, &[0u8; 16], 2, 2, 4, 0, 0)
+        }));
+        let first_origin = origin;
+        assert!(first_origin.is_some());
+        assert!(!deliver_pixel_frame(start, &mut origin, || {
+            write_depadded(&mut FailingWriter, &[0u8; 16], 2, 2, 4, 0, 0)
+        }));
+        assert_eq!(origin, first_origin);
+    }
+
+    #[test]
+    fn partial_frame_write_does_not_publish_origin() {
+        struct FailAfterFirstRow(Vec<u8>);
+        impl std::io::Write for FailAfterFirstRow {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.0.is_empty() {
+                    return Err(std::io::Error::other("pipe closed after first row"));
+                }
+                self.0.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = FailAfterFirstRow(Vec::new());
+        let mut origin = None;
+        assert!(!deliver_pixel_frame(
+            std::time::Instant::now(),
+            &mut origin,
+            || write_depadded(&mut writer, &[0u8; 24], 2, 2, 4, 12, 0)
+        ));
+        assert_eq!(writer.0.len(), 8);
+        assert_eq!(origin, None);
+    }
+
+    #[test]
+    fn sparse_ffmpeg_checkpoint_preserves_frames_without_extrapolating_stop() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sparse.mp4");
+        let start = std::time::Instant::now();
+        let mut state = super::State {
+            start,
+            raw_path: path.to_str().unwrap().to_owned(),
+            ff_bin: "ffmpeg".to_owned(),
+            width: 128,
+            height: 128,
+            bpp: 4,
+            preview_format: SourcePreviewPixelFormat::Bgrx,
+            active_preview: None,
+            ff_stdin: None,
+            ff_child: None,
+            cursor_metadata: Vec::new(),
+            frames: 0,
+            pixel_frames: 0,
+            capture_start_ms: None,
+            readiness: None,
+            spawn_failed: false,
+        };
+        super::spawn_ffmpeg(&mut state, "bgr0");
+        let mut stdin = state.ff_stdin.take().expect("installed ffmpeg input");
+        let schedule = [0, 120, 240, 360, 860, 1360, 1860];
+        let mut delivered = 0;
+        for (index, at_ms) in schedule.into_iter().enumerate() {
+            let at = start + std::time::Duration::from_millis(at_ms);
+            std::thread::sleep(at.saturating_duration_since(std::time::Instant::now()));
+            let frame = [u8::try_from(index * 25).unwrap(), 100, 150, 0].repeat(128 * 128);
+            assert!(deliver_pixel_frame(
+                start,
+                &mut state.capture_start_ms,
+                || { write_depadded(&mut stdin, &frame, 128, 128, 4, 0, 0) }
+            ));
+            delivered += 1;
+        }
+        let observed_ms =
+            u64::try_from(start.elapsed().as_millis()).unwrap() - state.capture_start_ms.unwrap();
+        drop(stdin);
+        let mut child = state.ff_child.take().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("sparse encoder did not close after EOF");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-count_frames",
+                "-show_entries",
+                "stream=nb_read_frames:format=duration",
+                "-of",
+                "json",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(probe.status.success());
+        let facts: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let decoded: u64 = facts["streams"][0]["nb_read_frames"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let media_ms = facts["format"]["duration"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            * 1000.0;
+        assert_eq!(
+            decoded, delivered,
+            "encoder must preserve actual sparse frames"
+        );
+        assert!(
+            media_ms <= observed_ms as f64 + 200.0,
+            "checkpoint duration {media_ms} exceeds observed span {observed_ms}"
+        );
     }
 }

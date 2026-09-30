@@ -30,21 +30,22 @@ pub(crate) async fn retry_screen_record_export(
             ))
         }
     };
-    let (_project, _edl, dir, revision) = snapshot(state).await?;
+    let (project, _edl, dir, revision) = snapshot(state).await?;
     if revision != descriptor.project_revision {
         return Err(retry_conflict(
             "project revision changed since the failed export; start a new export instead",
         ));
     }
     let format = export_format_from_descriptor(&descriptor.format);
-    let (source, plan, capture_audio) =
-        resolve_export_inputs(&dir, &descriptor.source, &descriptor.plan)?;
+    let (source, plan, capture_audio, render_plan) =
+        resolve_export_inputs(&dir, &project, &descriptor.source, &descriptor.plan)?;
     let staged = stage_retry_inputs_async(
         dir.clone(),
         revision.clone(),
         source,
         plan,
         capture_audio,
+        render_plan,
         format.clone(),
     )
     .await?;
@@ -56,7 +57,7 @@ pub(crate) async fn retry_screen_record_export(
     let mut prepared = allocate_export(
         &dir,
         staged.source.clone(),
-        staged.plan.clone(),
+        staged.render_plan.clone(),
         staged.capture_audio.clone(),
         format,
         None,

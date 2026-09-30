@@ -7,6 +7,13 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::path::Path;
 
+// A v2 sidecar embeds one canonical run already admitted by the session
+// journal's byte limit. Its remaining valid fields are fixed scalar metadata,
+// the bounded capture/target/project identities, and at most two audio sources.
+// Those fields fit comfortably within a second journal budget, preserving long
+// runs with many checkpoint fragments without imposing a smaller recording cap.
+pub(super) const MAX_INPUT_SIDECAR_BYTES: u64 = 2 * record_recovery::MAX_SESSION_JOURNAL_BYTES;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VerifiedInputAudio {
     stream: record_recovery::RecordingStream,
@@ -81,7 +88,7 @@ pub(super) fn existing_matches(
     let path = root
         .capture_file(capture_id, &pin.file_name)
         .map_err(|_| "resolve existing recording-input sidecar".to_string())?;
-    (read_local(&path)? == expected)
+    (read_local(&path, expected.len() as u64)? == expected)
         .then_some(())
         .ok_or_else(|| "recording-input sidecar already exists with different bytes".into())
 }
@@ -228,7 +235,7 @@ fn verify_one(
     if pin.run_sequence != run.sequence || pin.file_name != file_name(run.sequence) {
         return Err("recording-input sidecar pin does not name its exact run".into());
     }
-    let bytes = read_local(&capture_dir.join(&pin.file_name))?;
+    let bytes = read_local(&capture_dir.join(&pin.file_name), MAX_INPUT_SIDECAR_BYTES)?;
     if digest(&bytes) != pin.sha256 {
         return Err("recording-input sidecar hash does not match its journal pin".into());
     }
@@ -280,7 +287,7 @@ fn verify_one(
         .collect())
 }
 
-fn read_local(path: &Path) -> Result<Vec<u8>, String> {
+fn read_local(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !is_plain_regular_file(path).map_err(|_| "inspect recording-input sidecar".to_string())? {
         return Err("recording-input sidecar is not a local regular file".into());
     }
@@ -296,13 +303,30 @@ fn read_local(path: &Path) -> Result<Vec<u8>, String> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let mut file = options
+    let file = options
         .open(path)
         .map_err(|_| "open recording-input sidecar without following links".to_string())?;
     ensure_open_regular(&file)?;
+    if file
+        .metadata()
+        .map_err(|_| "read recording-input sidecar metadata".to_string())?
+        .len()
+        > limit
+    {
+        return Err("recording-input sidecar exceeds its byte limit".into());
+    }
+    read_bounded(file, limit)
+}
+
+fn read_bounded(reader: impl Read, limit: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
         .map_err(|_| "read recording-input sidecar".to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("recording-input sidecar exceeds its byte limit".into());
+    }
     Ok(bytes)
 }
 
@@ -329,4 +353,18 @@ fn is_reparse(metadata: &std::fs::Metadata) -> bool {
 #[cfg(not(windows))]
 fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::read_bounded;
+
+    #[test]
+    fn read_limit_rejects_growth_after_metadata_admission() {
+        assert_eq!(read_bounded(&b"abc"[..], 3).unwrap(), b"abc");
+        assert_eq!(
+            read_bounded(&b"abcd"[..], 3).unwrap_err(),
+            "recording-input sidecar exceeds its byte limit"
+        );
+    }
 }

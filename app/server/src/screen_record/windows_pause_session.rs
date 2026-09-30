@@ -261,8 +261,9 @@ where
                 {
                     return Err(self.fail());
                 }
-                if self.lifecycle.join_after_terminal().is_err() {
-                    return Err(self.fail());
+                if let Err(error) = self.lifecycle.join_after_terminal() {
+                    let _ = self.fail();
+                    return Err(WindowsPauseSessionError::Join(error));
                 }
                 self.lifecycle_closed = true;
                 Ok(Some(WindowsPauseSessionEvent::Stopped))
