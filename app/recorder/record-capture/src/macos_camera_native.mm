@@ -138,10 +138,10 @@ static constexpr int kSxcCameraClosed = 2;
         @synchronized (self) {
             _movieCallbackCount.fetch_add(1);
             _movieObservedLastPtsNs = MAX(_movieObservedLastPtsNs, pts);
-            // Apple delivers these samples in presentation order. Stop from
-            // this callback excludes its current sample. Freeze the previous
-            // included sample and the current boundary before stopRecording;
-            // later callbacks remain diagnostics and cannot move that boundary.
+            // Freeze both the preceding delivery and invoking Stop sample.
+            // Apple documents current-sample exclusion, but retained native
+            // output can include it. The seal proves either frozen endpoint
+            // exactly; later callbacks cannot move either boundary.
             if (_movieStopPtsNs != 0) return;
             const uint64_t previous = _movieLastPtsNs.load();
             stopHere = _movieStopRequested.exchange(false);
@@ -156,9 +156,9 @@ static constexpr int kSxcCameraClosed = 2;
                 _movieLastCadenceNs.store(pts > previous && previous != 0 ? pts - previous : 0);
             }
         }
-        // AVFoundation guarantees that stopRecording called from this
-        // callback excludes the current sample. The frozen preceding sample
-        // therefore names the movie's last included presentation frame.
+        // Apple documents current-sample exclusion here. Native no-reorder
+        // movies can include that sample; preserve its exact PTS as a second
+        // endpoint for independent packet proof, never as extra tolerance.
         // https://developer.apple.com/documentation/avfoundation/avcapturefileoutput/stoprecording()
         // A Stop request arriving from Rust is therefore completed at the
         // file-output frame boundary instead of racing the writer from a

@@ -60,3 +60,140 @@ fn retained_mac_camera_reordered_stop_tail_stays_rejected() {
     let missing = bounded.replace("545042,1664,2625629,___\n", "");
     assert!(verify(missing.as_bytes(), 545043, 315, timing).is_err());
 }
+
+#[test]
+fn retained_no_reordering_movie_proves_invoking_stop_sample_and_source_durations() {
+    let raw = include_bytes!("fixtures/mac_camera_stop_no_reordering/raw.csv");
+    let edited = include_bytes!("fixtures/mac_camera_stop_no_reordering/edited.csv");
+    let timing = no_reordering_native_timing();
+    let verify = |raw: &[u8], edited: &[u8], duration, frames| {
+        verify_edit_list(
+            raw,
+            edited,
+            1904950,
+            duration,
+            TimeBase {
+                num: 1,
+                den: 300_000,
+            },
+            381,
+            frames,
+            timing,
+        )
+    };
+    let result = verify(raw.as_slice(), edited.as_slice(), 1604451, 321).unwrap();
+    assert_eq!(result.duration_ms, 5348);
+    assert_eq!(result.start_pts_ns, timing.start_pts_ns);
+
+    // The final visible packet matches the invoking callback, not a guessed
+    // greatest timestamp. The next encoded sample must stay discarded.
+    let edited_text = std::str::from_utf8(edited).unwrap();
+    let later = edited_text.replace("1604469,5004,1253208,_D_", "1604469,5004,1253208,___");
+    assert!(verify(raw.as_slice(), later.as_bytes(), 1604470, 322)
+        .unwrap_err()
+        .cause
+        .contains("callback disagrees"));
+    let missing = edited_text.replace("1599459,4791,1251647,___\n", "");
+    assert!(verify(raw.as_slice(), missing.as_bytes(), 1604451, 320)
+        .unwrap_err()
+        .cause
+        .contains("inside the edit interval was skipped"));
+    let wrong_offset = edited_text.replace("4245,4992,196608,___", "4246,4992,196608,___");
+    assert!(
+        verify(raw.as_slice(), wrong_offset.as_bytes(), 1604451, 321)
+            .unwrap_err()
+            .cause
+            .contains("one media-time offset")
+    );
+    let wrong_identity = edited_text.replace("0,4777,166495,K__", "0,4777,166495,___");
+    assert!(
+        verify(raw.as_slice(), wrong_identity.as_bytes(), 1604451, 321)
+            .unwrap_err()
+            .cause
+            .contains("identity differs")
+    );
+    let corrupted = edited_text.replace("0,4777,166495,K__", "0,4777,166495,K_C");
+    assert!(verify(raw.as_slice(), corrupted.as_bytes(), 1604451, 321)
+        .unwrap_err()
+        .cause
+        .contains("identity differs"));
+    let raw_text = std::str::from_utf8(raw).unwrap();
+    let too_short = raw_text.replace("1894930,5010,1251647,___", "1894930,1,1251647,___");
+    assert!(
+        verify(too_short.as_bytes(), edited.as_slice(), 1604451, 321)
+            .unwrap_err()
+            .cause
+            .contains("presentation bounds")
+    );
+    let too_long = raw_text.replace("1894930,5010,1251647,___", "1894930,500000,1251647,___");
+    assert!(verify(too_long.as_bytes(), edited.as_slice(), 1604451, 321)
+        .unwrap_err()
+        .cause
+        .contains("exceeds native sample cadence"));
+}
+
+#[test]
+fn frozen_stop_endpoint_rejects_invalid_clocks_and_more_than_one_track_tick() {
+    let timing = no_reordering_native_timing();
+    let scale = 300_000;
+    let exact = 1_599_459_u128 * 1_000_000_000;
+    let limit = 1_000_000_000 + u128::from(scale - 1);
+    assert_eq!(
+        timing.stop_endpoint_elapsed(exact, scale, limit).unwrap(),
+        Some(timing.stop_pts_ns - timing.start_pts_ns)
+    );
+    assert_eq!(
+        timing
+            .stop_endpoint_elapsed(exact + 2_000_000_000, scale, limit)
+            .unwrap(),
+        None
+    );
+    let mut inconsistent = timing;
+    inconsistent.stop_cadence_ns += 1;
+    assert!(inconsistent
+        .stop_endpoint_elapsed(exact, scale, limit)
+        .is_err());
+    let mut invalid_origin = timing;
+    invalid_origin.start_pts_ns = timing.stop_pts_ns + 1;
+    assert!(invalid_origin
+        .stop_endpoint_elapsed(exact, scale, limit)
+        .is_err());
+    let mut empty_boundary = timing;
+    empty_boundary.stop_pts_ns = timing.last_pts_ns;
+    assert!(empty_boundary
+        .stop_endpoint_elapsed(exact, scale, limit)
+        .is_err());
+}
+
+fn no_reordering_native_timing() -> NativeMovieTiming {
+    NativeMovieTiming {
+        start_pts_ns: 393_915_350_620_000,
+        last_pts_ns: 393_920_665_510_000,
+        last_duration_ns: 16_610_000,
+        last_cadence_ns: 16_610_000,
+        callback_count: 383,
+        stop_pts_ns: 393_920_682_150_000,
+        stop_cadence_ns: 16_640_000,
+        observed_last_pts_ns: 393_920_682_150_000,
+    }
+}
+
+#[test]
+#[ignore = "requires retained native movie via SHELLX_CAMERA_STOP_NO_REORDERING_FIXTURE"]
+fn retained_no_reordering_movie_runs_owned_full_probe_pipeline() {
+    let fixture = std::env::var("SHELLX_CAMERA_STOP_NO_REORDERING_FIXTURE").unwrap();
+    let timing = no_reordering_native_timing();
+    let result = verify_movie_edit_list(
+        "ffprobe",
+        Path::new(&fixture),
+        timing,
+        "1/300000",
+        1604451,
+        "5.348170",
+        321,
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    assert_eq!(result.duration_ms, 5348);
+    assert_eq!(result.start_pts_ns, timing.start_pts_ns);
+}

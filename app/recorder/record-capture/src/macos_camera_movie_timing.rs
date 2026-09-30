@@ -28,11 +28,41 @@ pub(super) struct NativeMovieTiming {
     pub(super) last_duration_ns: u64,
     pub(super) last_cadence_ns: u64,
     pub(super) callback_count: u64,
-    /// First excluded sample: frozen where the file delegate calls Stop.
+    /// Invoking sample: frozen where the file delegate calls Stop. Apple
+    /// documents exclusion; retained native output can include this sample.
     pub(super) stop_pts_ns: u64,
     pub(super) stop_cadence_ns: u64,
     /// Latest observed sample, including callbacks after the Stop boundary.
     pub(super) observed_last_pts_ns: u64,
+}
+
+impl NativeMovieTiming {
+    /// Match only the two independently frozen callback endpoints. An included
+    /// invoking sample is admitted exactly, never through a cadence tolerance.
+    pub(super) fn stop_endpoint_elapsed(
+        self,
+        encoded_pts_scaled: u128,
+        ns_scale: u64,
+        limit_scaled: u128,
+    ) -> Result<Option<u64>> {
+        self.stop_pts_ns
+            .checked_sub(self.last_pts_ns)
+            .filter(|&gap| gap != 0 && gap == self.stop_cadence_ns)
+            .ok_or_else(|| {
+                bad("MovieFileOutput Stop boundary does not follow the last included sample")
+            })?;
+        for pts in [self.last_pts_ns, self.stop_pts_ns] {
+            let elapsed = pts
+                .checked_sub(self.start_pts_ns)
+                .ok_or_else(|| bad("MovieFileOutput callback clock is invalid"))?;
+            if (u128::from(elapsed) * u128::from(ns_scale)).abs_diff(encoded_pts_scaled)
+                <= limit_scaled
+            {
+                return Ok(Some(elapsed));
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -401,23 +431,16 @@ fn verify_probe<R: BufRead>(
     // packet's end is the first sample outside that half-open movie interval.
     // A callback beyond the packet end remains an unencoded tail and fails.
     let tick_ns = to_scaled(1, numerator)?.max(denominator);
-    let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns) * denominator;
+    let mut native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns) * denominator;
     if native.stop_pts_ns != 0 {
-        native
-            .stop_pts_ns
-            .checked_sub(native.last_pts_ns)
-            .filter(|&value| value != 0 && value == native.stop_cadence_ns)
+        let selected = native
+            .stop_endpoint_elapsed(last_pts, clock.den, tick_ns + denominator - 1)?
             .ok_or_else(|| {
-                bad("MovieFileOutput Stop boundary does not follow the last included sample")
+                bad("MovieFileOutput last included sample disagrees with final encoded packet")
             })?;
-        if native_elapsed.abs_diff(last_pts) > tick_ns + denominator - 1 {
-            return Err(bad(
-                "MovieFileOutput last included sample disagrees with final encoded packet",
-            ));
-        }
-        // Stop excludes its current callback, even if the camera's next
-        // interval differs from the previous one. The included endpoint is
-        // proved by exact packet PTS above, not by assuming constant cadence.
+        native_elapsed = u128::from(selected) * denominator;
+        // The remaining bounds use the endpoint proved by the packet view,
+        // including an invoking Stop sample only when it matches exactly.
     }
     let encoded_ahead_limit = last_duration
         .checked_add(tick_ns)
@@ -622,6 +645,26 @@ mod tests {
             )
         };
         assert_eq!(verify(native).unwrap().start_pts_ns, native.start_pts_ns);
+        // Observed inclusive Stop: the exact invoking callback is the final
+        // packet. The following packet still exceeds both frozen endpoints.
+        assert!(verify_probe(
+            &metadata("0.150000", "1/1000"),
+            b"0,50\n50,50\n100,50\n".as_slice(),
+            native,
+            150,
+            3,
+        )
+        .is_ok());
+        assert!(verify_probe(
+            &metadata("0.200000", "1/1000"),
+            b"0,50\n50,50\n100,50\n150,50\n".as_slice(),
+            native,
+            200,
+            4,
+        )
+        .unwrap_err()
+        .cause
+        .contains("last included sample disagrees"));
         let mut moved = native;
         moved.last_pts_ns = native.observed_last_pts_ns;
         assert!(verify(moved).is_err());

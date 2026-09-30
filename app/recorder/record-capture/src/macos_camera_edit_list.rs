@@ -372,7 +372,13 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
         let source = raw
             .as_ref()
             .ok_or_else(|| bad("edited packet is absent from full movie"))?;
-        if source.pos != edited.pos || source.duration != edited.duration {
+        // An edit view can report stts durations by local demux index rather
+        // than source sample index. Match the same file position and immutable
+        // key/corruption flags; use the full view's duration for every bound.
+        if source.pos != edited.pos
+            || source.flags.as_bytes()[0] != edited.flags.as_bytes()[0]
+            || source.flags.as_bytes()[2] != edited.flags.as_bytes()[2]
+        {
             return Err(bad("edited packet identity differs from full movie"));
         }
         let delta = source
@@ -397,7 +403,7 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             first_visible.get_or_insert(edited.pts);
             if edited.pts > last_visible_pts {
                 last_visible_pts = edited.pts;
-                last_visible_duration = edited.duration;
+                last_visible_duration = source.duration;
                 last_visible_packet = Some(edited.clone());
             }
             visible_count += 1;
@@ -474,10 +480,22 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
     {
         return Err(bad("final visible packet exceeds native sample cadence"));
     }
-    let native_elapsed = native
+    let mut native_elapsed = native
         .last_pts_ns
         .checked_sub(native.start_pts_ns)
         .ok_or_else(|| bad("MovieFileOutput callback clock is invalid"))?;
+    // Apple documents the preceding sample as included. Actual no-reorder
+    // output can also include the invoking Stop sample. Prove either named
+    // frozen endpoint exactly; never admit an arbitrary later packet.
+    if native.stop_pts_ns != 0 {
+        if let Some(selected) = native.stop_endpoint_elapsed(
+            clock.scaled(last_visible_pts)?,
+            clock.den,
+            tick_scaled + u128::from(clock.den - 1),
+        )? {
+            native_elapsed = selected;
+        }
+    }
     let native_elapsed_scaled = clock.ns_scaled(native_elapsed);
     // Apple's didStartRecording startPTS names the first written buffer in
     // AVCaptureSession.synchronizationClock. It is the native origin for
@@ -496,8 +514,8 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
     // CMTime timestamps are truncated independently to ns: the elapsed
     // subtraction differs from its exact value by less than one ns.
     let callback_delta_scaled = native_elapsed_scaled.abs_diff(clock.scaled(last_visible_pts)?);
-    // A sample-accurate Stop supplies the immediately preceding, included
-    // sample. Its PTS must match the final visible packet within one track
+    // A sample-accurate Stop supplies the preceding and invoking samples.
+    // One frozen PTS must match the final visible packet within one track
     // tick plus the independent CMTime→ns truncation remainder. Later
     // callbacks are deliberately excluded from this coordinate comparison.
     let endpoint_limit_scaled = if native.stop_pts_ns != 0 {
@@ -513,7 +531,11 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
         // Full failed probe files and movie stay in capture staging; retain
         // bounded facts here for record.log and the terminal failure receipt.
         let diagnostic = serde_json::json!({
-            "predicate": "abs(native_last_included_elapsed_ns - edited_last_ns) > endpoint_limit_ns",
+            "predicate": if native.stop_pts_ns != 0 {
+                "no frozen native Stop endpoint matches edited_last_ns within endpoint_limit_ns"
+            } else {
+                "abs(native_last_included_elapsed_ns - edited_last_ns) > endpoint_limit_ns"
+            },
             "coordinates": "startPTS is native presentation zero; raw edit offset maps packet views only",
             "endpoint_limit_ns": if native.stop_pts_ns != 0 { tick_ns } else { callback_limit },
             "native": {
@@ -532,6 +554,7 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
                 "time_base_num": clock.num,
                 "time_base_den": clock.den,
                 "last_visible_duration_ns": visible_duration_ns,
+                "last_visible_source_duration_ticks": last_visible_duration,
                 "raw_duration_ticks": raw_duration_ticks,
                 "presented_duration_ticks": presented_duration_ticks,
                 "edit_offset_ticks": offset,
@@ -552,19 +575,6 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
         return Err(bad(&format!(
             "MovieFileOutput callback disagrees with edited final frame: {diagnostic}"
         )));
-    }
-    if native.stop_pts_ns != 0 {
-        native
-            .stop_pts_ns
-            .checked_sub(native.last_pts_ns)
-            .filter(|&value| value != 0 && value == native.stop_cadence_ns)
-            .ok_or_else(|| {
-                bad("MovieFileOutput Stop boundary does not follow the last included sample")
-            })?;
-        // Apple excludes the current callback sample at Stop. Its interval
-        // may vary from the previous one. The exact included packet endpoint
-        // proves completeness; the excluded callback's gap is diagnostic,
-        // not a tolerance for matching missing visible packets.
     }
     Ok(VerifiedMovieTiming {
         duration_ms: clock.rounded_ms(presented_duration_ticks)?,
@@ -802,7 +812,7 @@ fi
         assert!(verify(timing)
             .unwrap_err()
             .cause
-            .contains("callback disagrees"));
+            .contains("Stop boundary does not follow"));
         timing.last_pts_ns = 100_050_000_000;
         timing.stop_pts_ns += 33_333_333;
         timing.stop_cadence_ns += 33_333_333;
@@ -918,7 +928,7 @@ fi
                 .cause
                 .contains("edited packet is absent from full movie")
         );
-        let wrong_identity = edited.replace("719998,1666,450,_D_", "719998,1667,450,_D_");
+        let wrong_identity = edited.replace("719998,1666,450,_D_", "719998,1666,450,KD_");
         assert!(
             three_dependency_packet_proof(raw, &wrong_identity, 6, 3, native())
                 .unwrap_err()
