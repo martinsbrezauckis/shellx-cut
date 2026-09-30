@@ -93,10 +93,13 @@ impl NativeCameraRun {
     }
 
     pub(super) fn stop(mut self) -> Result<StoppedCameraRun> {
+        if let Some(stage) = self.stage.as_mut() {
+            stage.retain_on_failure();
+        }
         let (device_lost, native_timing) = self.stop_native()?;
         let anchor = self.collector.take_anchor()?;
-        // Preserve the pre-publication native clock admission. The sealed
-        // movie may later name a presentation start after its warmup edit.
+        // startPTS already names the presented first written buffer. Keep
+        // its admission before any no-replace publication.
         anchor.movie_start(native_timing.start_pts_ns)?;
         let (seal, observations) = self
             .stage
@@ -148,6 +151,7 @@ impl NativeCameraRun {
             last_duration_ns: 0,
             last_cadence_ns: 0,
             callback_count: 0,
+            ..NativeMovieTiming::default()
         };
         let status = unsafe {
             sxc_macos_camera_stop(
@@ -160,9 +164,21 @@ impl NativeCameraRun {
                 &mut timing.last_duration_ns,
                 &mut timing.last_cadence_ns,
                 &mut timing.callback_count,
+                &mut timing.stop_pts_ns,
+                &mut timing.stop_cadence_ns,
+                &mut timing.observed_last_pts_ns,
             )
         };
         if status == 0 {
+            if device_lost == 0 && timing.stop_pts_ns == 0 {
+                return Err(error(
+                    "stop macOS camera",
+                    &format!(
+                        "MovieFileOutput did not establish a sample-accurate Stop boundary: {}",
+                        serde_json::to_string(&timing).expect("integer-only timing serializes")
+                    ),
+                ));
+            }
             Ok((device_lost != 0, timing))
         } else {
             Err(native_error("stop macOS camera", &message))
@@ -396,5 +412,8 @@ unsafe extern "C" {
         movie_last_duration_ns: *mut u64,
         movie_last_cadence_ns: *mut u64,
         movie_callback_count: *mut u64,
+        movie_stop_pts_ns: *mut u64,
+        movie_stop_cadence_ns: *mut u64,
+        movie_observed_last_pts_ns: *mut u64,
     ) -> i32;
 }

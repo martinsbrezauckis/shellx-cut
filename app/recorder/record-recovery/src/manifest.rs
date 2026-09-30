@@ -93,9 +93,10 @@ impl ManifestOwner {
         if start.schema != SCHEMA
             || !valid_capture_id(&start.capture_id)
             || start.checkpoint_interval_ms == 0
+            || !start.valid_output_cadence()
         {
             return Err(ManifestError::Invalid(
-                "capture id and interval are required".into(),
+                "capture id, interval and output cadence must be valid".into(),
             ));
         }
         create_plain_dir(root)?;

@@ -16,7 +16,9 @@ use record_core::{error_codes, RecordError, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::macos_camera_clock::{DecimalDuration, TimeBase};
-use crate::macos_camera_movie_timing::{NativeMovieTiming, VerifiedMovieTiming};
+use crate::macos_camera_movie_timing::{
+    retain_failed_metadata, retain_failed_probe, NativeMovieTiming, VerifiedMovieTiming,
+};
 
 const CLOCK_DIAGNOSTIC_PACKET_TAIL: usize = 6;
 
@@ -176,7 +178,11 @@ pub(super) fn verify_movie_edit_list(
         presented_decoded_frames,
         native,
     )
-    .map_err(early)
+    .map_err(|failure| {
+        let failure = retain_failed_probe(raw_file, early(failure));
+        let failure = retain_failed_probe(edited_file, failure);
+        retain_failed_metadata(path, "camera-raw-metadata-", &output.stdout, failure)
+    })
 }
 
 fn packet_proof(
@@ -189,7 +195,13 @@ fn packet_proof(
     let parent = path
         .parent()
         .ok_or_else(|| bad("camera staging parent is missing"))?;
-    let file = tempfile::NamedTempFile::new_in(parent)
+    let file = tempfile::Builder::new()
+        .prefix(if ignore_editlist {
+            "camera-raw-packets-"
+        } else {
+            "camera-edited-packets-"
+        })
+        .tempfile_in(parent)
         .map_err(|cause| bad(&format!("reserve private edit-list proof: {cause}")))?;
     let before = file
         .as_file()
@@ -430,7 +442,6 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             "edit-list presentation bounds disagree with movie packets",
         ));
     }
-    let offset_ns = clock.floor_ns(offset)?;
     let edited_last_ns = clock.floor_ns(last_visible_pts)?;
     let tick_scaled = clock.scaled(1)?;
     let tick_ns = clock.floor_ns(1)?;
@@ -468,14 +479,12 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
         .checked_sub(native.start_pts_ns)
         .ok_or_else(|| bad("MovieFileOutput callback clock is invalid"))?;
     let native_elapsed_scaled = clock.ns_scaled(native_elapsed);
-    let offset_scaled = clock.scaled(offset)?;
-    // Sub-ns ticks can round a callback less than one ns before edit start.
-    if native_elapsed_scaled + u128::from(clock.den - 1) < offset_scaled {
-        return Err(bad("MovieFileOutput callback precedes edit start"));
-    }
-    let callback_after_edit_scaled = native_elapsed_scaled.saturating_sub(offset_scaled);
-    let callback_after_edit = u64::try_from(callback_after_edit_scaled / u128::from(clock.den))
-        .map_err(|_| bad("callback clock overflows nanoseconds"))?;
+    // Apple's didStartRecording startPTS names the first written buffer in
+    // AVCaptureSession.synchronizationClock. It is the native origin for
+    // presented time zero. The raw/edited offset above maps encoded media
+    // preroll to presentation time; applying it to startPTS maps it twice.
+    // https://developer.apple.com/documentation/avfoundation/avcapturefileoutputrecordingdelegate/fileoutput(_:didstartrecordingto:startpts:from:)
+    let callback_after_edit = native_elapsed;
     let callback_limit_scaled = clock
         .ns_scaled(native.last_cadence_ns)
         .checked_add(tick_scaled)
@@ -486,27 +495,36 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
         .ok_or_else(|| bad("native callback cadence limit overflows"))?;
     // CMTime timestamps are truncated independently to ns: the elapsed
     // subtraction differs from its exact value by less than one ns.
-    let callback_delta_scaled = native_elapsed_scaled.abs_diff(
-        offset_scaled
-            .checked_add(clock.scaled(last_visible_pts)?)
-            .ok_or_else(|| bad("edited final packet clock overflows"))?,
-    );
+    let callback_delta_scaled = native_elapsed_scaled.abs_diff(clock.scaled(last_visible_pts)?);
+    // A sample-accurate Stop supplies the immediately preceding, included
+    // sample. Its PTS must match the final visible packet within one track
+    // tick plus the independent CMTime→ns truncation remainder. Later
+    // callbacks are deliberately excluded from this coordinate comparison.
+    let endpoint_limit_scaled = if native.stop_pts_ns != 0 {
+        tick_scaled
+    } else {
+        callback_limit_scaled // spontaneous/device-loss finish, without Stop
+    };
     if callback_delta_scaled
-        > callback_limit_scaled
+        > endpoint_limit_scaled
             .checked_add(u128::from(clock.den - 1))
             .ok_or_else(|| bad("native callback cadence limit overflows"))?
     {
-        // The staged movie is deleted on failure. Keep only bounded packet and
-        // clock facts in the existing failure cause, which is recorded in
-        // capture/record.log and the terminal failure receipt.
+        // Full failed probe files and movie stay in capture staging; retain
+        // bounded facts here for record.log and the terminal failure receipt.
         let diagnostic = serde_json::json!({
-            "predicate": "abs(callback_after_edit_ns - edited_last_ns) > callback_limit_ns",
+            "predicate": "abs(native_last_included_elapsed_ns - edited_last_ns) > endpoint_limit_ns",
+            "coordinates": "startPTS is native presentation zero; raw edit offset maps packet views only",
+            "endpoint_limit_ns": if native.stop_pts_ns != 0 { tick_ns } else { callback_limit },
             "native": {
                 "start_pts_ns": native.start_pts_ns,
                 "last_pts_ns": native.last_pts_ns,
                 "last_duration_ns": native.last_duration_ns,
                 "last_cadence_ns": native.last_cadence_ns,
                 "callback_count": native.callback_count,
+                "stop_pts_ns": native.stop_pts_ns,
+                "stop_cadence_ns": native.stop_cadence_ns,
+                "observed_last_pts_ns": native.observed_last_pts_ns,
                 "elapsed_ns": native_elapsed,
             },
             "movie": {
@@ -535,12 +553,22 @@ pub(super) fn verify_edit_list<R: BufRead, E: BufRead>(
             "MovieFileOutput callback disagrees with edited final frame: {diagnostic}"
         )));
     }
+    if native.stop_pts_ns != 0 {
+        native
+            .stop_pts_ns
+            .checked_sub(native.last_pts_ns)
+            .filter(|&value| value != 0 && value == native.stop_cadence_ns)
+            .ok_or_else(|| {
+                bad("MovieFileOutput Stop boundary does not follow the last included sample")
+            })?;
+        // Apple excludes the current callback sample at Stop. Its interval
+        // may vary from the previous one. The exact included packet endpoint
+        // proves completeness; the excluded callback's gap is diagnostic,
+        // not a tolerance for matching missing visible packets.
+    }
     Ok(VerifiedMovieTiming {
         duration_ms: clock.rounded_ms(presented_duration_ticks)?,
-        start_pts_ns: native
-            .start_pts_ns
-            .checked_add(offset_ns)
-            .ok_or_else(|| bad("edited movie start overflows native clock"))?,
+        start_pts_ns: native.start_pts_ns,
     })
 }
 
@@ -589,7 +617,7 @@ fi
         )
         .unwrap();
         assert_eq!(result.duration_ms, 5);
-        assert_eq!(result.start_pts_ns, timing.start_pts_ns + 1_666_666);
+        assert_eq!(result.start_pts_ns, timing.start_pts_ns);
         let failure = verify_movie_edit_list(
             probe.to_str().unwrap(),
             &movie,
@@ -613,6 +641,68 @@ fi
         assert_eq!(facts["native"]["callback_count"], 5);
         assert!(json.len() < 2_048);
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        // A complete packet proof rejected at the native endpoint must remain
+        // available in the same owned staging directory, with the movie.
+        fs::write(&movie, b"owned synthetic rejected movie").unwrap();
+        timing.last_pts_ns += 10_000_000;
+        let failure = verify_movie_edit_list(
+            probe.to_str().unwrap(),
+            &movie,
+            timing,
+            "1/600",
+            3,
+            "0.005000",
+            3,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(failure.cause.contains("callback disagrees"));
+        assert!(failure.cause.contains("retained probe"));
+        let files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 5); // probe executable, movie, raw/edited rows, raw metadata
+        for (prefix, expected) in [
+            (
+                "camera-raw-packets-",
+                "0,1,50,K__\n1,1,100,K__\n2,1,200,___\n3,1,300,___\n4,1,400,___\n",
+            ),
+            (
+                "camera-edited-packets-",
+                "0,1,100,K__\n1,1,200,___\n2,1,300,___\n3,1,400,_D_\n",
+            ),
+        ] {
+            let path = files
+                .iter()
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with(prefix)
+                })
+                .unwrap();
+            assert_eq!(fs::read_to_string(path).unwrap(), expected);
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let raw_metadata = files
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("camera-raw-metadata-")
+            })
+            .unwrap();
+        let facts: serde_json::Value =
+            serde_json::from_slice(&fs::read(raw_metadata).unwrap()).unwrap();
+        assert_eq!(facts["streams"][0]["nb_read_packets"], "5");
+        assert_eq!(fs::read(&movie).unwrap(), b"owned synthetic rejected movie");
     }
 
     #[test]
@@ -629,10 +719,7 @@ fi
             let result =
                 verify_edit_list(raw.as_bytes(), edited.as_bytes(), 4, 2, clock, 4, 2, timing)
                     .unwrap();
-            assert_eq!(
-                result.start_pts_ns,
-                timing.start_pts_ns + clock.floor_ns(1).unwrap()
-            );
+            assert_eq!(result.start_pts_ns, timing.start_pts_ns);
             assert_eq!(result.duration_ms, clock.rounded_ms(2).unwrap());
             for (raw_rows, edited_rows, raw_count, visible_count) in [
                 (raw.to_owned(), edited.replace("1,1,200", "0,1,200"), 4, 2),
@@ -666,11 +753,84 @@ fi
     fn native() -> NativeMovieTiming {
         NativeMovieTiming {
             start_pts_ns: 100_000_000_000,
-            last_pts_ns: 108_101_400_000,
+            last_pts_ns: 107_133_490_000,
             last_duration_ns: 16_660_000,
             last_cadence_ns: 16_670_000,
             callback_count: 5,
+            ..NativeMovieTiming::default()
         }
+    }
+
+    #[test]
+    fn nonzero_preroll_keeps_native_presentation_origin_and_frozen_stop_endpoint() {
+        // Synthetic full/edited movie views with 949.45ms compression preroll.
+        // The native first-written timestamp already names presentation zero.
+        let raw = "0,5000,50,K__\n284836,5000,100,K__\n299836,5001,200,___\n304837,5000,300,_D_\n";
+        let edited = "0,5000,100,K__\n15000,5001,200,___\n20001,5000,300,_D_\n";
+        let clock = TimeBase {
+            num: 1,
+            den: 300_000,
+        };
+        let mut timing = NativeMovieTiming {
+            start_pts_ns: 100_000_000_000,
+            last_pts_ns: 100_050_000_000,
+            last_duration_ns: 16_670_000,
+            // Natural VFR: prior interval and next excluded interval differ.
+            last_cadence_ns: 16_540_001,
+            stop_pts_ns: 100_066_670_000,
+            stop_cadence_ns: 16_670_000,
+            // Arbitrarily later callback is diagnostic, never the endpoint.
+            observed_last_pts_ns: 100_150_000_000,
+            callback_count: 15,
+        };
+        let verify = |native| {
+            verify_edit_list(
+                raw.as_bytes(),
+                edited.as_bytes(),
+                309837,
+                20001,
+                clock,
+                4,
+                2,
+                native,
+            )
+        };
+        let verified = verify(timing).unwrap();
+        assert_eq!(verified.start_pts_ns, timing.start_pts_ns);
+        assert_eq!(verified.duration_ms, 67);
+        timing.last_pts_ns = timing.observed_last_pts_ns;
+        assert!(verify(timing)
+            .unwrap_err()
+            .cause
+            .contains("callback disagrees"));
+        timing.last_pts_ns = 100_050_000_000;
+        timing.stop_pts_ns += 33_333_333;
+        timing.stop_cadence_ns += 33_333_333;
+        assert!(verify(timing).is_ok());
+        let missing_visible = edited.replace("15000,5001,200,___\n", "");
+        assert!(verify_edit_list(
+            raw.as_bytes(),
+            missing_visible.as_bytes(),
+            309837,
+            20001,
+            clock,
+            4,
+            1,
+            timing
+        )
+        .unwrap_err()
+        .cause
+        .contains("inside the edit interval was skipped"));
+        timing.stop_cadence_ns += 1;
+        assert!(verify(timing)
+            .unwrap_err()
+            .cause
+            .contains("Stop boundary does not follow"));
+        timing.stop_pts_ns = timing.last_pts_ns;
+        assert!(verify(timing)
+            .unwrap_err()
+            .cause
+            .contains("Stop boundary does not follow"));
     }
 
     #[test]
@@ -692,7 +852,7 @@ fi
         )
         .unwrap();
         assert_eq!(verified.duration_ms, 7_134);
-        assert_eq!(verified.start_pts_ns, 100_967_860_000);
+        assert_eq!(verified.start_pts_ns, 100_000_000_000);
     }
 
     fn three_dependency_packet_proof(
@@ -723,7 +883,7 @@ fi
         let edited = "0,1666,100,K__\n711883,1666,200,___\n714998,1667,300,_D_\n718331,1649,400,_D_\n719998,1666,450,_D_\n713349,1651,500,___\n";
         let timing = three_dependency_packet_proof(raw, edited, 6, 3, native()).unwrap();
         assert_eq!(timing.duration_ms, 7_134);
-        assert_eq!(timing.start_pts_ns, 100_967_860_000);
+        assert_eq!(timing.start_pts_ns, 100_000_000_000);
     }
 
     #[test]
@@ -1053,10 +1213,10 @@ fi
     }
 
     #[test]
+    #[ignore = "requires a retained real movie via SHELLX_CAMERA_EDIT_LIST_FIXTURE"]
     fn retained_private_movie_can_prove_the_exact_edit_when_supplied() {
-        let Ok(path) = std::env::var("SHELLX_CAMERA_EDIT_LIST_FIXTURE") else {
-            return;
-        };
+        let path = std::env::var("SHELLX_CAMERA_EDIT_LIST_FIXTURE")
+            .expect("a retained real movie must be supplied explicitly");
         let timing = verify_movie_edit_list(
             "ffprobe",
             Path::new(&path),
@@ -1069,6 +1229,6 @@ fi
         )
         .unwrap();
         assert_eq!(timing.duration_ms, 7_134);
-        assert_eq!(timing.start_pts_ns, 100_967_860_000);
+        assert_eq!(timing.start_pts_ns, 100_000_000_000);
     }
 }

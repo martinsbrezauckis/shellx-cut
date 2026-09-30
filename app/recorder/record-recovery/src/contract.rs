@@ -34,6 +34,9 @@ pub struct CaptureStart {
     pub owner_nonce: String,
     pub started_unix_ms: u64,
     pub checkpoint_interval_ms: u64,
+    /// Admitted native output cadence. Legacy captures retain probe inference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_cadence: Option<record_core::FrameRate>,
 }
 
 impl CaptureStart {
@@ -52,7 +55,16 @@ impl CaptureStart {
                 .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or(0),
             checkpoint_interval_ms,
+            output_cadence: None,
         }
+    }
+
+    pub(crate) fn valid_output_cadence(&self) -> bool {
+        self.output_cadence.is_none_or(|rate| {
+            rate.den != 0
+                && rate.num >= rate.den
+                && u128::from(rate.num) <= 240 * u128::from(rate.den)
+        })
     }
 }
 

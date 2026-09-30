@@ -1,12 +1,17 @@
 use super::*;
 
+fn begin_fixture(capture: &Path, capture_id: &str) {
+    let cadence = record_core::CaptureCadence::from_server_fps(30.0).unwrap();
+    begin(capture, capture_id, &cadence).unwrap();
+}
+
 #[test]
 fn normal_completion_suppresses_restart_recovery() {
     let temp = tempfile::tempdir().unwrap();
     let cache = temp.path().join("screen_record");
     let capture = cache.join("cap");
     std::fs::create_dir_all(&capture).unwrap();
-    begin(&capture, "cap").unwrap();
+    begin_fixture(&capture, "cap");
     let source = capture.join("source.mp4");
     std::fs::write(&source, b"normal output").unwrap();
     complete(&capture, &source).unwrap();
@@ -21,7 +26,7 @@ fn sealed_project_repairs_the_missing_complete_receipt_without_recovery() {
     let temp = tempfile::tempdir().unwrap();
     let cache = temp.path().join("screen_record");
     let capture = cache.join("cap");
-    begin(&capture, "cap").unwrap();
+    begin_fixture(&capture, "cap");
     let source = capture.join("source.mp4");
     std::fs::write(&source, b"already backend-verified source").unwrap();
     let project = serde_json::json!({ "source_video": source });
@@ -45,7 +50,7 @@ fn sealed_project_recovery_bounds_oversized_system_audio_timing() {
     let temp = tempfile::tempdir().unwrap();
     let cache = temp.path().join("screen_record");
     let capture = cache.join("cap");
-    begin(&capture, "cap").unwrap();
+    begin_fixture(&capture, "cap");
     std::fs::write(capture.join("source.mp4"), b"already verified source").unwrap();
     record_recovery::replace_synced(
         &capture.join("project.json"),
@@ -72,7 +77,7 @@ fn v1_scanner_defers_pause_session_owned_capture_without_promoting_it() {
     let temp = tempfile::tempdir().unwrap();
     let cache = temp.path().join("screen_record");
     let capture = cache.join("pause-owned");
-    begin(&capture, "pause-owned").unwrap();
+    begin_fixture(&capture, "pause-owned");
     std::fs::write(
         capture.join(record_recovery::RECORDING_SESSION_JOURNAL_FILE),
         b"intentionally not parsed by v1 recovery\n",
@@ -91,7 +96,7 @@ fn v1_scanner_defers_pause_session_owned_capture_without_promoting_it() {
 fn oversized_pause_session_journal_fails_closed_before_reading() {
     let temp = tempfile::tempdir().unwrap();
     let capture = temp.path().join("pause-owned");
-    begin(&capture, "pause-owned").unwrap();
+    begin_fixture(&capture, "pause-owned");
     let path = capture.join(record_recovery::RECORDING_SESSION_JOURNAL_FILE);
     std::fs::File::create(&path)
         .unwrap()
@@ -111,7 +116,7 @@ fn oversized_pause_session_journal_fails_closed_before_reading() {
 fn oversized_completion_project_does_not_seal_a_receipt() {
     let temp = tempfile::tempdir().unwrap();
     let capture = temp.path().join("cap");
-    begin(&capture, "cap").unwrap();
+    begin_fixture(&capture, "cap");
     std::fs::write(capture.join("source.mp4"), b"source").unwrap();
     let project = capture.join("project.json");
     std::fs::File::create(&project)
@@ -145,7 +150,7 @@ fn sealed_normal_project_retries_torn_tail_archive_without_remuxing_source() {
     let temp = tempfile::tempdir().unwrap();
     let cache = temp.path().join("screen_record");
     let capture = cache.join("cap");
-    begin(&capture, "cap").unwrap();
+    begin_fixture(&capture, "cap");
     let source = capture.join("source.mp4");
     let project = capture.join("project.json");
     std::fs::write(&source, b"already verified normal source").unwrap();
@@ -212,7 +217,7 @@ fn status_page_requires_emitted_cursor_and_serializes_snake_case_receipts() {
     let temp = tempfile::tempdir().unwrap();
     for id in ["capture-a", "capture-b"] {
         let root = temp.path().join(id);
-        begin(&root, id).unwrap();
+        begin_fixture(&root, id);
         let mut owner = ManifestOwner::open(&root).unwrap();
         owner
             .publish_receipt(RecoveryReceipt {
@@ -268,7 +273,7 @@ fn scan_never_follows_quarantine_or_normal_completion_symlinks() {
         .exists());
 
     let sealed = cache.path().join("sealed");
-    begin(&sealed, "sealed").unwrap();
+    begin_fixture(&sealed, "sealed");
     let outside_source = outside.path().join("source.mp4");
     std::fs::write(&outside_source, b"outside remains untouched").unwrap();
     symlink(&outside_source, sealed.join("source.mp4")).unwrap();
@@ -303,7 +308,7 @@ fn scan_and_status_never_follow_a_manifest_symlink() {
     let cache = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let outside_capture = outside.path().join("outside");
-    begin(&outside_capture, "outside").unwrap();
+    begin_fixture(&outside_capture, "outside");
     let outside_manifest = outside_capture.join(MANIFEST_FILE);
     let before = std::fs::read(&outside_manifest).unwrap();
     let capture = cache.path().join("capture");

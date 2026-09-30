@@ -21,6 +21,7 @@ pub(super) struct MacCameraStage {
     artifact_id: String,
     video: String,
     published: bool,
+    retain_failed: bool,
 }
 
 impl MacCameraStage {
@@ -50,6 +51,7 @@ impl MacCameraStage {
             artifact_id,
             video: format!("camera/{leaf}"),
             published: false,
+            retain_failed: false,
         })
     }
 
@@ -57,11 +59,19 @@ impl MacCameraStage {
         &self.stage_path
     }
 
+    pub(super) fn retain_on_failure(&mut self) {
+        self.retain_failed = true;
+    }
+
     pub(super) fn finalize<T>(
         mut self,
         native_timing: NativeMovieTiming,
         validate_presentation: impl FnOnce(VerifiedMovieTiming) -> Result<T>,
     ) -> Result<(CameraMediaSeal, T)> {
+        // Once verification begins, a rejected closed movie is evidence. The
+        // capture's existing failed-retention owner carries this private
+        // staging directory; it is never published as a sealed camera asset.
+        self.retain_failed = true;
         let before = plain_file(&self.stage_path)?;
         let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe = std::env::var("SHELLX_RECORD_FFPROBE").unwrap_or_else(|_| "ffprobe".into());
@@ -161,6 +171,7 @@ impl MacCameraStage {
 impl Drop for MacCameraStage {
     fn drop(&mut self) {
         if !self.published
+            && !self.retain_failed
             && record_recovery::is_plain_regular_file(&self.stage_path).unwrap_or(false)
         {
             let _ = fs::remove_file(&self.stage_path);

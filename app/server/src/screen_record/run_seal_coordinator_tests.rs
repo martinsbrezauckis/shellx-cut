@@ -12,6 +12,9 @@ use record_recovery::{
 };
 use std::time::{Duration, Instant};
 
+#[path = "run_seal_stop_sidecar_tests.rs"]
+mod stop_sidecars;
+
 #[derive(Debug)]
 struct MemoryJournalSink {
     journal: RecordingSessionJournal,

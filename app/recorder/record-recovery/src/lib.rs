@@ -27,6 +27,8 @@ mod stitch;
 mod torn_repair;
 
 #[cfg(test)]
+mod cadence_stitch_tests;
+#[cfg(test)]
 mod manifest_tests;
 #[cfg(test)]
 mod media_input_tests;

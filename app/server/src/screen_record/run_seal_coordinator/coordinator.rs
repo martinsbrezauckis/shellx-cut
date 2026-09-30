@@ -274,7 +274,21 @@ impl<J: RecordingSessionJournalSink> RunSealCoordinator<J> {
         evidence: &SealedRunEvidence,
         pin: RecordingInputSidecarPin,
     ) -> Result<(), RunSealCoordinatorError> {
-        if self.failed_after_append || self.logical.phase().is_terminal() {
+        // Stop freezes logical timestamp issuance before the native owner
+        // closes its active run. Its required sidecar must still become durable
+        // before that exact run and the terminal entries can be appended.
+        let pending_stop_run = self
+            .pending_stop
+            .as_ref()
+            .and_then(|stop| stop.expected.as_ref());
+        let matches_pending_stop = pending_stop_run.is_some_and(|expected| {
+            evidence.generation == expected.generation
+                && evidence.run.sequence == expected.sequence
+                && evidence.run.observed_start_ms == expected.observed_start_ms
+                && evidence.run.logical_start_ms == expected.logical_start_ms
+        });
+        if self.failed_after_append || (self.logical.phase().is_terminal() && !matches_pending_stop)
+        {
             return Err(self.pending_error());
         }
         if !self.intent.input_sidecars_required

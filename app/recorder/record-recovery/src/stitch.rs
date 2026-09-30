@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::integrity::verified_prefix;
 use crate::manifest::{
-    checkpoint_path, is_local_checkpoint_file, is_plain_dir, is_plain_regular_file,
+    checkpoint_path, is_local_checkpoint_file, is_plain_dir, is_plain_regular_file, read_manifest,
 };
 use crate::media::{bounded_status, verify_media};
 use crate::{Checkpoint, ManifestError, MediaFacts};
@@ -65,10 +65,14 @@ pub fn stitch_complete_with_media(
             "refusing to stitch unverified checkpoint".into(),
         ));
     }
+    // Both normal Stop and interrupted recovery consume the same durable
+    // admission. Container nominal rates describe native packets, not intent.
+    let output_cadence = read_manifest(root)?.start.output_cadence;
+    let duration_tolerance_ms = cadence_duration_tolerance_ms(output_cadence);
     let final_path = root.join(output_name);
     if is_plain_regular_file(&final_path)? {
         let media = verify_media(ffmpeg, ffprobe, &final_path)?;
-        return existing_stitch_matches(root, &usable, ffmpeg, ffprobe, &media)?
+        return existing_stitch_matches(root, &usable, ffmpeg, ffprobe, &media, output_cadence)?
             .then_some(StitchedMedia {
                 path: final_path,
                 media,
@@ -94,7 +98,16 @@ pub fn stitch_complete_with_media(
     // VFR tpad alone then starts cloning at that packet's presentation time,
     // earlier than the verified container end, and loses capture-clock time.
     // Normalize all segments to one bounded cadence before extending them.
-    let fps = stitch_frame_rate(&source_media);
+    let fps = output_cadence
+        .map(|rate| format!("{}/{}", rate.num, rate.den))
+        .unwrap_or_else(|| stitch_frame_rate(&source_media).to_string());
+    // A sparse native segment can be shorter than one admitted frame interval.
+    // Retain its final frame so tpad can still preserve the measured span.
+    let fps_filter = if output_cadence.is_some() {
+        format!("fps={fps}:eof_action=pass")
+    } else {
+        format!("fps={fps}")
+    };
     for (index, (segment, source_media)) in usable.iter().zip(&source_media).enumerate() {
         let leading_gap_ms = leading_gap(&usable, index)?;
         if !is_local_checkpoint_file(root, segment.sequence)? {
@@ -133,7 +146,7 @@ pub fn stitch_complete_with_media(
                 .args([
                     "-vf",
                     &format!(
-                        "fps={fps},tpad=start_mode=clone:start_duration={start_padding}:stop_mode=clone:stop_duration={stop_padding},trim=duration={target_duration},setpts=PTS-STARTPTS"
+                        "{fps_filter},tpad=start_mode=clone:start_duration={start_padding}:stop_mode=clone:stop_duration={stop_padding},trim=duration={target_duration},setpts=PTS-STARTPTS"
                     ),
                     "-an",
                     "-c:v",
@@ -152,10 +165,12 @@ pub fn stitch_complete_with_media(
         }
         let media = media.expect("checked above");
         let expected_segment_ms = capture_span_ms.saturating_add(leading_gap_ms);
-        if media.duration_ms.abs_diff(expected_segment_ms) > CONCAT_TOLERANCE_MS || media.has_audio
+        if media.duration_ms.abs_diff(expected_segment_ms) > duration_tolerance_ms
+            || media.has_audio
+            || !matches_output_cadence(&media, output_cadence)
         {
             return Err(ManifestError::Invalid(
-                "transcoded checkpoint does not preserve duration/audio contract".into(),
+                "transcoded checkpoint does not preserve duration/audio/cadence contract".into(),
             ));
         }
         expected_duration_ms = expected_duration_ms.saturating_add(media.duration_ms);
@@ -200,12 +215,13 @@ pub fn stitch_complete_with_media(
         .map(|segment| segment.facts.end_ms)
         .unwrap_or(0);
     if final_media.has_audio
+        || !matches_output_cadence(&final_media, output_cadence)
         || final_media.decoded_video_frames.abs_diff(expected_frames) > 1
-        || final_media.duration_ms.abs_diff(expected_duration_ms) > CONCAT_TOLERANCE_MS
+        || final_media.duration_ms.abs_diff(expected_duration_ms) > duration_tolerance_ms
         || final_media.duration_ms.abs_diff(elapsed_ms) > ELAPSED_TOLERANCE_MS
     {
         return Err(ManifestError::Invalid(
-            "stitched media does not match verified frame/duration/audio contract".into(),
+            "stitched media does not match verified frame/duration/audio/cadence contract".into(),
         ));
     }
     crate::atomic::publish_new_synced(&part, &final_path).map_err(|source| ManifestError::Io {
@@ -227,6 +243,20 @@ fn stitch_frame_rate(sources: &[MediaFacts]) -> u64 {
         .max()
         .unwrap_or(30)
         .clamp(30, 240) as u64
+}
+
+fn matches_output_cadence(media: &MediaFacts, cadence: Option<record_core::FrameRate>) -> bool {
+    cadence
+        .is_none_or(|rate| media.avg_frame_rate == Some(rate) && media.r_frame_rate == Some(rate))
+}
+
+fn cadence_duration_tolerance_ms(cadence: Option<record_core::FrameRate>) -> u64 {
+    cadence.map_or(CONCAT_TOLERANCE_MS, |rate| {
+        // A CFR duration occupies whole frames, including admitted rates below
+        // 30. Quantization may extend the capture span by less than one frame.
+        CONCAT_TOLERANCE_MS
+            .max((1_000 * u128::from(rate.den)).div_ceil(u128::from(rate.num)) as u64)
+    })
 }
 
 fn leading_gap(segments: &[Checkpoint], index: usize) -> Result<u64, ManifestError> {
@@ -287,6 +317,7 @@ fn existing_stitch_matches(
     ffmpeg: &str,
     ffprobe: &str,
     media: &MediaFacts,
+    output_cadence: Option<record_core::FrameRate>,
 ) -> Result<bool, ManifestError> {
     let mut expected_duration_ms = 0u64;
     let mut expected_frames = 0u64;
@@ -304,8 +335,10 @@ fn existing_stitch_matches(
         .map(|segment| segment.facts.end_ms)
         .unwrap_or(0);
     Ok(!media.has_audio
-        && media.decoded_video_frames >= expected_frames
-        && media.duration_ms.abs_diff(expected_duration_ms) <= CONCAT_TOLERANCE_MS
+        && matches_output_cadence(media, output_cadence)
+        && (output_cadence.is_some() || media.decoded_video_frames >= expected_frames)
+        && media.duration_ms.abs_diff(expected_duration_ms)
+            <= cadence_duration_tolerance_ms(output_cadence)
         && media.duration_ms.abs_diff(elapsed_ms) <= ELAPSED_TOLERANCE_MS)
 }
 

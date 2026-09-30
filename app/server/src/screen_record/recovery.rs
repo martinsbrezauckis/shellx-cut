@@ -64,13 +64,16 @@ pub(crate) struct RecoveryStatusItem {
     pub status: CaptureRecoveryStatus,
 }
 
-pub(crate) fn begin(capture_dir: &Path, capture_id: &str) -> Result<(), CutError> {
-    ManifestOwner::begin(
-        capture_dir,
-        CaptureStart::new(capture_id, CHECKPOINT_INTERVAL_MS),
-    )
-    .map(|_| ())
-    .map_err(|error| checkpoint_error("begin checkpoint manifest", error))
+pub(crate) fn begin(
+    capture_dir: &Path,
+    capture_id: &str,
+    cadence: &record_core::CaptureCadence,
+) -> Result<(), CutError> {
+    let mut start = CaptureStart::new(capture_id, CHECKPOINT_INTERVAL_MS);
+    start.output_cadence = Some(cadence.backend_requested);
+    ManifestOwner::begin(capture_dir, start)
+        .map(|_| ())
+        .map_err(|error| checkpoint_error("begin checkpoint manifest", error))
 }
 
 pub(crate) fn complete(capture_dir: &Path, source: &Path) -> Result<(), CutError> {

@@ -258,7 +258,12 @@ fn create_capture(
     capture_id: &str,
 ) -> (std::path::PathBuf, std::path::PathBuf) {
     let capture_dir = crate::screen_record::create_capture_dir(project_dir, capture_id).unwrap();
-    crate::screen_record::recovery::begin(&capture_dir, capture_id).unwrap();
+    crate::screen_record::recovery::begin(
+        &capture_dir,
+        capture_id,
+        &record_core::CaptureCadence::from_server_fps(30.0).unwrap(),
+    )
+    .unwrap();
     crate::screen_record::publish_marker(
         project_dir,
         capture_id,

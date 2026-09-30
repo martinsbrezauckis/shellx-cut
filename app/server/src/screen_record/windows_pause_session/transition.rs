@@ -80,10 +80,9 @@ where
             self.owner.phase(),
             PauseSessionOwnerPhase::Blocked | PauseSessionOwnerPhase::Stopping
         ) {
-            self.fail()
-        } else {
-            WindowsPauseSessionError::Owner(error)
+            let _ = self.fail();
         }
+        WindowsPauseSessionError::Owner(error)
     }
 
     pub(super) fn fail(&mut self) -> WindowsPauseSessionError {
@@ -113,6 +112,6 @@ where
             .map_err(|_| WindowsPauseSessionError::Lifecycle)?;
         self.owner
             .pin_recording_input_sidecar(evidence, pin)
-            .map_err(|_| WindowsPauseSessionError::Lifecycle)
+            .map_err(WindowsPauseSessionError::Owner)
     }
 }

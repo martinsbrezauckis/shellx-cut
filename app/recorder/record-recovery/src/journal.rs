@@ -134,6 +134,7 @@ impl ParseState {
             Entry::Start(start)
                 if self.start.is_none()
                     && start.schema == SCHEMA
+                    && start.valid_output_cadence()
                     && valid_capture_id(&start.capture_id) =>
             {
                 self.start = Some(start)

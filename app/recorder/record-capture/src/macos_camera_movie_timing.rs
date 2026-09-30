@@ -1,7 +1,7 @@
 //! Independent MovieFileOutput and encoded-packet clock proof for a camera seal.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::process::Command;
@@ -21,19 +21,66 @@ const PROBE_SECONDS_PER_FRAME_STEP: u64 = 5;
 const PROBE_BYTES_PER_STEP: u64 = 128 * 1024 * 1024;
 const PROBE_SECONDS_PER_BYTE_STEP: u64 = 2;
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub(super) struct NativeMovieTiming {
     pub(super) start_pts_ns: u64,
     pub(super) last_pts_ns: u64,
     pub(super) last_duration_ns: u64,
     pub(super) last_cadence_ns: u64,
     pub(super) callback_count: u64,
+    /// First excluded sample: frozen where the file delegate calls Stop.
+    pub(super) stop_pts_ns: u64,
+    pub(super) stop_cadence_ns: u64,
+    /// Latest observed sample, including callbacks after the Stop boundary.
+    pub(super) observed_last_pts_ns: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct VerifiedMovieTiming {
     pub(super) duration_ms: u64,
     pub(super) start_pts_ns: u64,
+}
+
+/// Persist an already bounded, identity-checked diagnostic in owned staging.
+/// Preserve the original refusal if retention itself fails.
+pub(super) fn retain_failed_probe(
+    file: tempfile::NamedTempFile,
+    mut failure: RecordError,
+) -> RecordError {
+    match file.keep() {
+        Ok((_, path)) => failure
+            .cause
+            .push_str(&format!("; retained probe {}", path.display())),
+        Err(cause) => failure
+            .cause
+            .push_str(&format!("; failed to retain probe: {cause}")),
+    }
+    failure
+}
+
+pub(super) fn retain_failed_metadata(
+    movie: &Path,
+    label: &str,
+    bytes: &[u8],
+    mut failure: RecordError,
+) -> RecordError {
+    let retained = (|| -> std::io::Result<tempfile::NamedTempFile> {
+        let mut file = tempfile::Builder::new()
+            .prefix(label)
+            .tempfile_in(movie.parent().unwrap())?;
+        file.write_all(bytes)?;
+        file.as_file().sync_all()?;
+        Ok(file)
+    })();
+    match retained {
+        Ok(file) => retain_failed_probe(file, failure),
+        Err(cause) => {
+            failure
+                .cause
+                .push_str(&format!("; failed to retain metadata: {cause}"));
+            failure
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -100,7 +147,9 @@ pub(super) fn verify_movie_timing(
     let parent = path
         .parent()
         .ok_or_else(|| bad("camera staging parent is missing"))?;
-    let packet_file = tempfile::NamedTempFile::new_in(parent)
+    let packet_file = tempfile::Builder::new()
+        .prefix("camera-presented-packets-")
+        .tempfile_in(parent)
         .map_err(|cause| bad(&format!("reserve private packet proof: {cause}")))?;
     let packet_path = packet_file.path().to_path_buf();
     let original = packet_file
@@ -161,7 +210,7 @@ pub(super) fn verify_movie_timing(
         duration_ms,
         decoded_frames,
     );
-    match ordinary {
+    let verified = match ordinary {
         Ok(timing) => Ok(timing),
         Err(failure)
             if failure
@@ -187,7 +236,20 @@ pub(super) fn verify_movie_timing(
             )
         }
         Err(failure) => Err(failure),
-    }
+    };
+    verified.map_err(|mut failure| {
+        failure.cause.push_str(&format!(
+            "; native movie timing {}",
+            serde_json::to_string(&native).expect("integer-only timing serializes")
+        ));
+        let failure = retain_failed_probe(packet_file, failure);
+        retain_failed_metadata(
+            path,
+            "camera-presented-metadata-",
+            &metadata.stdout,
+            failure,
+        )
+    })
 }
 
 fn probe_timeout(decoded_frames: u64, movie_bytes: u64) -> Result<Duration> {
@@ -340,6 +402,23 @@ fn verify_probe<R: BufRead>(
     // A callback beyond the packet end remains an unencoded tail and fails.
     let tick_ns = to_scaled(1, numerator)?.max(denominator);
     let native_elapsed = u128::from(native.last_pts_ns - native.start_pts_ns) * denominator;
+    if native.stop_pts_ns != 0 {
+        native
+            .stop_pts_ns
+            .checked_sub(native.last_pts_ns)
+            .filter(|&value| value != 0 && value == native.stop_cadence_ns)
+            .ok_or_else(|| {
+                bad("MovieFileOutput Stop boundary does not follow the last included sample")
+            })?;
+        if native_elapsed.abs_diff(last_pts) > tick_ns + denominator - 1 {
+            return Err(bad(
+                "MovieFileOutput last included sample disagrees with final encoded packet",
+            ));
+        }
+        // Stop excludes its current callback, even if the camera's next
+        // interval differs from the previous one. The included endpoint is
+        // proved by exact packet PTS above, not by assuming constant cadence.
+    }
     let encoded_ahead_limit = last_duration
         .checked_add(tick_ns)
         .ok_or_else(|| bad("encoded sample cadence overflows"))?;
@@ -492,20 +571,21 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a retained real movie via SHELLX_CAMERA_EDIT_LIST_FIXTURE"]
     fn retained_private_movie_uses_strict_edit_proof_after_packet_boundary_refusal() {
-        let Ok(path) = std::env::var("SHELLX_CAMERA_EDIT_LIST_FIXTURE") else {
-            return;
-        };
+        let path = std::env::var("SHELLX_CAMERA_EDIT_LIST_FIXTURE")
+            .expect("a retained real movie must be supplied explicitly");
         let native = NativeMovieTiming {
             start_pts_ns: 100_000_000_000,
-            last_pts_ns: 108_101_400_000,
+            last_pts_ns: 107_133_490_000,
             last_duration_ns: 16_660_000,
             last_cadence_ns: 16_670_000,
             callback_count: 0,
+            ..NativeMovieTiming::default()
         };
         let timing = verify_movie_timing("ffprobe", Path::new(&path), native, 7_134, 429).unwrap();
         assert_eq!(timing.duration_ms, 7_134);
-        assert_eq!(timing.start_pts_ns, 100_967_860_000);
+        assert_eq!(timing.start_pts_ns, 100_000_000_000);
     }
 
     fn native() -> NativeMovieTiming {
@@ -515,7 +595,54 @@ mod tests {
             last_duration_ns: 0,
             last_cadence_ns: 8_330_000,
             callback_count: 0,
+            ..NativeMovieTiming::default()
         }
+    }
+
+    #[test]
+    fn ordinary_movie_uses_frozen_included_frame_across_variable_stop_intervals() {
+        let native = NativeMovieTiming {
+            start_pts_ns: 100_000_000_000,
+            last_pts_ns: 100_050_000_000,
+            last_duration_ns: 50_000_000,
+            last_cadence_ns: 50_000_000,
+            callback_count: 20,
+            stop_pts_ns: 100_100_000_000,
+            stop_cadence_ns: 50_000_000,
+            observed_last_pts_ns: 100_900_000_000,
+        };
+        let rows = b"0,50\n50,50\n";
+        let verify = |native| {
+            verify_probe(
+                &metadata("0.100000", "1/1000"),
+                rows.as_slice(),
+                native,
+                100,
+                2,
+            )
+        };
+        assert_eq!(verify(native).unwrap().start_pts_ns, native.start_pts_ns);
+        let mut moved = native;
+        moved.last_pts_ns = native.observed_last_pts_ns;
+        assert!(verify(moved).is_err());
+        let mut late = native;
+        late.stop_pts_ns += 50_000_000;
+        late.stop_cadence_ns += 50_000_000;
+        assert!(verify(late).is_ok());
+        // A later excluded sample is allowed; changing its observed gap
+        // without changing the actual boundary is internally inconsistent.
+        late.stop_cadence_ns += 1;
+        assert!(verify(late)
+            .unwrap_err()
+            .cause
+            .contains("Stop boundary does not follow"));
+        let mut missing_frame = native;
+        missing_frame.last_pts_ns -= 10_000_000;
+        missing_frame.stop_cadence_ns += 10_000_000;
+        assert!(verify(missing_frame)
+            .unwrap_err()
+            .cause
+            .contains("last included sample disagrees"));
     }
 
     fn metadata(duration: &str, time_base: &str) -> Vec<u8> {
@@ -792,6 +919,7 @@ mod tests {
             last_duration_ns: 1_000_000,
             last_cadence_ns: 1_000_000,
             callback_count: 0,
+            ..NativeMovieTiming::default()
         };
         let result = verify_probe(
             &metadata("1000.000000", "1/1000"),

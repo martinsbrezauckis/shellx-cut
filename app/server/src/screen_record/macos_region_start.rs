@@ -67,7 +67,7 @@ pub(super) async fn start_from_foreground_ticket(
     windows_path::ensure_pre_marker_path(&dir, &capture_id)?;
     let recovery_scan = recovery::scan_recovery_for_project(&dir)?;
     let out_dir = create_capture_dir(&dir, &capture_id)?;
-    recovery::begin(&out_dir, &capture_id)?;
+    recovery::begin(&out_dir, &capture_id, &cadence)?;
     let project_path = capture_file(&dir, &capture_id, "project.json")?;
     let marker_body = json!({
         "pid": std::process::id(),

@@ -247,19 +247,19 @@ where
                         (None, evidence) => (evidence, true),
                         (Some(_), Some(_)) => return Err(self.fail()),
                     };
-                if needs_input_pin
-                    && evidence
-                        .as_ref()
-                        .is_some_and(|evidence| self.pin_recording_input_sidecar(evidence).is_err())
-                {
-                    return Err(self.fail());
+                if needs_input_pin {
+                    if let Some(evidence) = evidence.as_ref() {
+                        if let Err(error) = self.pin_recording_input_sidecar(evidence) {
+                            let _ = self.fail();
+                            return Err(error);
+                        }
+                    }
                 }
-                if self
-                    .owner
-                    .seal_stop_at(evidence, TerminalDisposition::Completed, observed_at)
-                    .is_err()
+                if let Err(error) =
+                    self.owner
+                        .seal_stop_at(evidence, TerminalDisposition::Completed, observed_at)
                 {
-                    return Err(self.fail());
+                    return Err(self.owner_error(error));
                 }
                 if let Err(error) = self.lifecycle.join_after_terminal() {
                     let _ = self.fail();

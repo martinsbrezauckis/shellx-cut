@@ -57,10 +57,12 @@ static constexpr int kSxcCameraClosed = 2;
     std::atomic_int _sampleState;
     std::atomic_uint_fast64_t _movieStartPtsNs;
     std::atomic_uint_fast64_t _movieLastPtsNs;
-    uint64_t _moviePenultimatePtsNs;
     std::atomic_uint_fast64_t _movieLastDurationNs;
     std::atomic_uint_fast64_t _movieLastCadenceNs;
     std::atomic_uint_fast64_t _movieCallbackCount;
+    uint64_t _movieStopPtsNs;
+    uint64_t _movieStopCadenceNs;
+    uint64_t _movieObservedLastPtsNs;
     std::atomic_bool _movieStopRequested;
     SxcCameraFrameCallback _callback;
     void *_context;
@@ -79,10 +81,12 @@ static constexpr int kSxcCameraClosed = 2;
         _sampleState.store(kSxcCameraPending);
         _movieStartPtsNs.store(0);
         _movieLastPtsNs.store(0);
-        _moviePenultimatePtsNs = 0;
         _movieLastDurationNs.store(0);
         _movieLastCadenceNs.store(0);
         _movieCallbackCount.store(0);
+        _movieStopPtsNs = 0;
+        _movieStopCadenceNs = 0;
+        _movieObservedLastPtsNs = 0;
         _movieStopRequested.store(false);
         _callback = callback;
         _context = context;
@@ -130,32 +134,37 @@ static constexpr int kSxcCameraClosed = 2;
         const uint64_t pts = sxc_time_ns(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
         const uint64_t duration = sxc_time_ns(CMSampleBufferGetDuration(sampleBuffer));
         if (pts == 0 || duration > UINT64_MAX - pts) return;
-        // File-output callbacks can include warmup samples. Keep the two
-        // greatest presentation timestamps, regardless of arrival order, so
-        // the native final sample names the same timeline endpoint as the
-        // encoded packet proof. A later unencoded sample still fails that proof.
+        bool stopHere = false;
         @synchronized (self) {
             _movieCallbackCount.fetch_add(1);
-            const uint64_t greatest = _movieLastPtsNs.load();
-            if (pts > greatest) {
-                _moviePenultimatePtsNs = greatest;
+            _movieObservedLastPtsNs = MAX(_movieObservedLastPtsNs, pts);
+            // Apple delivers these samples in presentation order. Stop from
+            // this callback excludes its current sample. Freeze the previous
+            // included sample and the current boundary before stopRecording;
+            // later callbacks remain diagnostics and cannot move that boundary.
+            if (_movieStopPtsNs != 0) return;
+            const uint64_t previous = _movieLastPtsNs.load();
+            stopHere = _movieStopRequested.exchange(false);
+            if (stopHere) {
+                _movieStopPtsNs = pts;
+                _movieStopCadenceNs = pts > previous && previous != 0 ? pts - previous : 0;
+            } else {
+                // Track the actual previous delivery, rather than choosing
+                // greatest timestamps and hiding broken presentation order.
                 _movieLastPtsNs.store(pts);
                 _movieLastDurationNs.store(duration);
-            } else if (pts < greatest && pts > _moviePenultimatePtsNs) {
-                _moviePenultimatePtsNs = pts;
-            }
-            if (_moviePenultimatePtsNs > 0) {
-                _movieLastCadenceNs.store(_movieLastPtsNs.load() - _moviePenultimatePtsNs);
+                _movieLastCadenceNs.store(pts > previous && previous != 0 ? pts - previous : 0);
             }
         }
         // AVFoundation guarantees that stopRecording called from this
-        // callback includes samples before the current sample. The current
-        // sample can remain outside the presented movie edit range.
+        // callback excludes the current sample. The frozen preceding sample
+        // therefore names the movie's last included presentation frame.
+        // https://developer.apple.com/documentation/avfoundation/avcapturefileoutput/stoprecording()
         // A Stop request arriving from Rust is therefore completed at the
         // file-output frame boundary instead of racing the writer from a
         // different thread and leaving several encoded frames past the last
         // timing callback.
-        if (_movieStopRequested.exchange(false)) {
+        if (stopHere) {
             [(AVCaptureMovieFileOutput *)output stopRecording];
         }
         return;
@@ -354,7 +363,10 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
                                             uint64_t *movie_last_pts_ns,
                                             uint64_t *movie_last_duration_ns,
                                             uint64_t *movie_last_cadence_ns,
-                                            uint64_t *movie_callback_count) {
+                                            uint64_t *movie_callback_count,
+                                            uint64_t *movie_stop_pts_ns,
+                                            uint64_t *movie_stop_cadence_ns,
+                                            uint64_t *movie_observed_last_pts_ns) {
     @autoreleasepool {
         if (device_lost) *device_lost = 0;
         if (movie_start_pts_ns) *movie_start_pts_ns = 0;
@@ -362,6 +374,9 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
         if (movie_last_duration_ns) *movie_last_duration_ns = 0;
         if (movie_last_cadence_ns) *movie_last_cadence_ns = 0;
         if (movie_callback_count) *movie_callback_count = 0;
+        if (movie_stop_pts_ns) *movie_stop_pts_ns = 0;
+        if (movie_stop_cadence_ns) *movie_stop_cadence_ns = 0;
+        if (movie_observed_last_pts_ns) *movie_observed_last_pts_ns = 0;
         if (!opaque) {
             sxc_error(error, error_capacity, @"Camera owner is missing");
             return -1;
@@ -369,7 +384,7 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
         SxcCameraHandle *handle = (__bridge_transfer SxcCameraHandle *)opaque;
         const bool movie_was_recording = handle.movie.isRecording;
         if (movie_was_recording) {
-            // The file-output callback consumes this request after recording
+            // The file-output callback consumes this request before recording
             // the current sample. This is the documented sample-accurate
             // Stop route for AVCaptureFileOutputDelegate.
             handle.delegate->_movieStopRequested.store(true);
@@ -404,6 +419,9 @@ extern "C" int32_t sxc_macos_camera_stop(void *opaque, char *error, size_t error
             if (movie_last_duration_ns) *movie_last_duration_ns = handle.delegate->_movieLastDurationNs.load();
             if (movie_last_cadence_ns) *movie_last_cadence_ns = handle.delegate->_movieLastCadenceNs.load();
             if (movie_callback_count) *movie_callback_count = handle.delegate->_movieCallbackCount.load();
+            if (movie_stop_pts_ns) *movie_stop_pts_ns = handle.delegate->_movieStopPtsNs;
+            if (movie_stop_cadence_ns) *movie_stop_cadence_ns = handle.delegate->_movieStopCadenceNs;
+            if (movie_observed_last_pts_ns) *movie_observed_last_pts_ns = handle.delegate->_movieObservedLastPtsNs;
         }
         return 0;
     }

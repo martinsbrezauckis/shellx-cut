@@ -323,6 +323,9 @@ fn session_error(error: super::windows_pause_session::WindowsPauseSessionError) 
         WindowsPauseSessionError::Owner(PauseSessionOwnerError::Projection(error)) => {
             error.detail().chars().take(512).collect::<String>()
         }
+        WindowsPauseSessionError::Owner(PauseSessionOwnerError::RunSeal(error)) => {
+            error.to_string().chars().take(512).collect::<String>()
+        }
         WindowsPauseSessionError::Join(error) => {
             format!("private pause worker join failed: {error:?}")
                 .chars()
