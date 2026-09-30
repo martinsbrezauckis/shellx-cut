@@ -327,6 +327,32 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
         [handle.session addOutput:handle.movie];
         [handle.session addOutput:handle.samples];
         [handle.session commitConfiguration];
+        // Stop is sealed against the preceding FileOutput callback's PTS.
+        // The default camera encoder can retain B-frame dependencies whose
+        // final edit list still exposes frames past that boundary. Encode
+        // without frame reordering instead of relaxing the independent seal.
+        AVCaptureConnection *movieVideo = [handle.movie connectionWithMediaType:AVMediaTypeVideo];
+        if (!movieVideo) {
+            sxc_error(error, error_capacity, @"The selected camera cannot encode a sample-accurate H.264 recording");
+            return nullptr;
+        }
+        @try {
+            [handle.movie setOutputSettings:@{
+                AVVideoCodecKey: AVVideoCodecTypeH264,
+                AVVideoCompressionPropertiesKey: @{AVVideoAllowFrameReorderingKey: @NO}
+            } forConnection:movieVideo];
+        } @catch (NSException *exception) {
+            (void)exception;
+            sxc_error(error, error_capacity, @"The selected camera does not support recording without frame reordering");
+            return nullptr;
+        }
+        NSDictionary *movieSettings = [handle.movie outputSettingsForConnection:movieVideo];
+        id frameReordering = movieSettings[AVVideoCompressionPropertiesKey][AVVideoAllowFrameReorderingKey];
+        if (![movieSettings[AVVideoCodecKey] isEqual:AVVideoCodecTypeH264] ||
+            ![frameReordering isKindOfClass:[NSNumber class]] || [frameReordering boolValue]) {
+            sxc_error(error, error_capacity, @"The selected camera did not accept sample-accurate recording settings");
+            return nullptr;
+        }
         NSNotificationCenter *notifications = [NSNotificationCenter defaultCenter];
         [notifications addObserver:handle.delegate selector:@selector(captureDeviceDisconnected:)
                                name:AVCaptureDeviceWasDisconnectedNotification object:selected];

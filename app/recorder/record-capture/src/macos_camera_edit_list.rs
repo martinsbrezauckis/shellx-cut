@@ -1232,3 +1232,7 @@ fi
         assert_eq!(timing.start_pts_ns, 100_000_000_000);
     }
 }
+
+#[cfg(test)]
+#[path = "macos_camera_stop_regression.rs"]
+mod retained_stop_tests;
