@@ -35,6 +35,7 @@ interface EnvironmentPanelProps extends CommonProps {
   hasProject?: boolean
   projectSession?: number
   initialCategory?: SettingsCategoryId
+  onCategoryChange?: (category: SettingsCategoryId) => void
 }
 
 function SetupPath({ essentialMissing }: { essentialMissing: boolean }) {
@@ -145,6 +146,7 @@ export function EnvironmentPanel({
   hasProject = false,
   projectSession = 0,
   initialCategory = 'overview',
+  onCategoryChange,
 }: EnvironmentPanelProps) {
   const overlay = useBlockingOverlay<HTMLElement>(onClose)
   const [active, setActive] = useState<SettingsCategoryId>(initialCategory)
@@ -152,6 +154,10 @@ export function EnvironmentPanel({
   // ui.open can navigate between Settings destinations while this drawer is
   // already mounted. Keep the internal category synchronized with that route.
   useEffect(() => setActive(initialCategory), [initialCategory])
+  const navigateCategory = (category: SettingsCategoryId) => {
+    setActive(category)
+    onCategoryChange?.(category)
+  }
 
   return (
     <div className="env-scrim" data-cut-environment-scrim onMouseDown={overlay.onScrimMouseDown}>
@@ -170,7 +176,7 @@ export function EnvironmentPanel({
       >
         <SettingsShell
           active={active}
-          onActive={setActive}
+          onActive={navigateCategory}
           query={query}
           onQuery={setQuery}
           onRefresh={onRefresh}
@@ -180,7 +186,7 @@ export function EnvironmentPanel({
             active={active}
             report={report}
             onRefresh={onRefresh}
-            onNavigate={setActive}
+            onNavigate={navigateCategory}
             onOpenRecording={onOpenRecording}
             onOpenAssets={onOpenAssets}
             hasProject={hasProject}

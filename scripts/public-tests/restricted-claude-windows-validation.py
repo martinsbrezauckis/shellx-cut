@@ -44,9 +44,61 @@ def junction(link: str, target: str) -> None:
         raise RuntimeError("cannot test Windows junction rejection")
 
 
+
+def portable_share_contract() -> None:
+    """Check real orchestration arguments; this is not native NT sharing proof."""
+    with mock.patch.object(restricted, "available", return_value=(True, None)), \
+         mock.patch.object(restricted, "_literal_windows_path", side_effect=lambda value: value), \
+         mock.patch.object(restricted, "_open", return_value=7) as opening, \
+         mock.patch.object(restricted, "_validate", return_value=("staging", (1, b"source"))), \
+         mock.patch.object(restricted, "_private_execution_root", return_value=("output", 8, (1, b"out"))), \
+         mock.patch.object(restricted, "_destination_parent", return_value=9), \
+         mock.patch.object(restricted, "_copy_validated_source") as copy, \
+         mock.patch.object(restricted, "_close") as close:
+        result = restricted.create_frame_only_bundle("staging", ["frames/frame.jpg"])
+        check("staging permits read sharing but no write/delete sharing", opening.call_args.kwargs == {"directory": True, "share": 1})
+        check("copy remains selected-frame and handle-root confined", result == "output" and copy.call_args == mock.call(7, ["frames", "frame.jpg"], 9, "frame.jpg", ("staging", 1), ("output", 1)))
+        check("successful copy closes every owned directory handle", close.call_args_list == [mock.call(9), mock.call(8), mock.call(7)])
+    with mock.patch.object(restricted, "_open", return_value=7) as opening, \
+         mock.patch.object(restricted, "_validate", side_effect=[("parent", (1,b"root")), ("parent/output", (1,b"out"))]), \
+         mock.patch.object(restricted, "_inside", return_value=True), \
+         mock.patch.object(restricted, "_current_user_security_descriptor", return_value=10), \
+         mock.patch.object(restricted, "_api") as api, \
+         mock.patch.object(restricted, "_nt_create", return_value=8) as create, \
+         mock.patch.object(restricted, "_close"):
+        restricted._private_execution_root(os.path.join("parent", "staging"))
+        check("parent permits only read sharing", opening.call_args.kwargs == {"directory": True, "share": 1})
+        check("output remains create-only with current-user security", create.call_args.kwargs == {"directory": True, "disposition": restricted.FILE_CREATE, "security": 10})
+    for failure in [OSError(32, "share violation"), ValueError("reparse root")]:
+        with mock.patch.object(restricted, "available", return_value=(True,None)), \
+             mock.patch.object(restricted, "_literal_windows_path", side_effect=lambda value:value), \
+             mock.patch.object(restricted, "_open", side_effect=failure) as opening, \
+             mock.patch.object(restricted, "_copy_validated_source") as copy:
+            try:
+                restricted.create_frame_only_bundle("staging", ["frames/frame.jpg"])
+            except (OSError, ValueError) as caught:
+                check("open refusal propagates without retry or broadened share", caught is failure and opening.call_count == 1 and not copy.called)
+            else:
+                check("unsafe open refuses", False)
+    with mock.patch.object(restricted, "available", return_value=(True,None)), \
+         mock.patch.object(restricted, "_literal_windows_path", side_effect=lambda value:value), \
+         mock.patch.object(restricted, "_open", return_value=7), \
+         mock.patch.object(restricted, "_validate", return_value=("foreign", (1,b"id"))), \
+         mock.patch.object(restricted, "_private_execution_root") as create, \
+         mock.patch.object(restricted, "_close") as close:
+        try:
+            restricted.create_frame_only_bundle("staging", ["frames/frame.jpg"])
+        except ValueError:
+            check("literal root drift rejects before output creation and closes handle", not create.called and close.call_args == mock.call(7))
+        else:
+            check("foreign root refuses", False)
+
 def main() -> int:
+    portable_share_contract()
+    if FAILURES:
+        return 1
     if os.name != "nt":
-        print("SKIP restricted Claude Windows validation: non-Windows host")
+        print("PASS portable sharing contract; SKIP native Windows validation: non-Windows host")
         return 0
     supported, reason = restricted.available()
     check("typed Win32 handle API is available", supported, str(reason))

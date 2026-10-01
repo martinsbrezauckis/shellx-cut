@@ -16,6 +16,7 @@ FILE_ATTRIBUTE_NORMAL = 0x80
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+FILE_SHARE_READ = 1
 FILE_SHARE_ALL = 7
 FILE_READ_DATA = 1
 FILE_WRITE_DATA = 2
@@ -83,15 +84,12 @@ def _api():
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
     kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                   wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
-                                   wintypes.HANDLE]
+                                   wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes, kernel.CloseHandle.restype = [wintypes.HANDLE], wintypes.BOOL
-    kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                                                    wintypes.LPVOID, wintypes.DWORD]
+    kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
     kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
-    kernel.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR,
-                                                  wintypes.DWORD, wintypes.DWORD]
+    kernel.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
     kernel.GetFinalPathNameByHandleW.restype = wintypes.DWORD
     kernel.GetFileType.argtypes, kernel.GetFileType.restype = [wintypes.HANDLE], wintypes.DWORD
     kernel.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
@@ -254,7 +252,7 @@ def _current_user_security_descriptor() -> int:
 def _private_execution_root(staging_root: str) -> tuple[str, int, tuple[int, bytes]]:
     parent = os.path.dirname(staging_root)
     parent_handle = _open(parent, FILE_READ_ATTRIBUTES | FILE_TRAVERSE | FILE_ADD_SUBDIRECTORY,
-                          directory=True, share=0)
+                          directory=True, share=FILE_SHARE_READ)
     try:
         parent_final, parent_identity = _validate(parent_handle, directory=True)
         if not _inside(parent_final, staging_root):
@@ -319,8 +317,10 @@ def create_frame_only_bundle(staging_bundle: str, frame_relpaths: list[object]) 
     ok, reason = available()
     if not ok:
         raise ValueError(reason)
+    # The adapter is launched in staging. Allow existing read/traverse (cwd)
+    # handles while still denying write/delete sharing on the retained root.
     literal_staging = _literal_windows_path(staging_bundle)
-    staging_handle = _open(staging_bundle, FILE_READ_ATTRIBUTES | FILE_TRAVERSE, directory=True, share=0)
+    staging_handle = _open(staging_bundle, FILE_READ_ATTRIBUTES | FILE_TRAVERSE, directory=True, share=FILE_SHARE_READ)
     try:
         staging_root, staging_identity = _validate(staging_handle, directory=True)
         if _literal_windows_path(staging_root) != literal_staging:

@@ -956,6 +956,7 @@ export default function App() {
             onRefresh={() => refreshDoctor(true)}
             onClose={() => setEnvOpen(false)}
             initialCategory={envCategory}
+            onCategoryChange={setEnvCategory}
             hasProject={project != null}
             projectSession={projectSession}
             onOpenAssets={() => {
