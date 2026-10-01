@@ -143,60 +143,67 @@ async fn verify_pregate_wiring_no_project_then_empty_pass() {
 
 /// render.final{dry_run} returns the render PLAN (geometry, duration, checks)
 /// WITHOUT encoding — no render job is created.
-#[tokio::test]
-async fn render_final_dry_run_plans_without_encoding() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new();
-    dispatch(
-        &state,
-        "project.create",
-        json!({"name":"t","dir": dir.path().join("t.cutproj")}),
-        test_actor(),
-    )
-    .await;
-    let media = dir.path().join("clip.mp4");
-    std::fs::write(&media, b"x").unwrap();
-    dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
-    update_asset(&state, "a1", |a| {
-        a.probe = Some(
-            json!({"kind":"video","width":1920,"height":1080,"duration_ms":5000,"has_audio":true}),
-        );
-    })
-    .await
-    .unwrap();
-    dispatch(
-        &state,
-        "edit.insert",
-        json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,5000],"ripple":false}),
-        test_actor(),
-    )
-    .await;
-    let r = dispatch(
-        &state,
-        "render.final",
-        json!({"dry_run": true}),
-        test_actor(),
-    )
-    .await;
-    assert!(r.ok, "{:?}", r.error);
-    let res = r.result.unwrap();
-    assert_eq!(res["dry_run"], true);
-    assert_eq!(res["output"]["duration_ms"], 5000);
-    assert_eq!(res["output"]["width"], 1920);
-    assert!(res["checks"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("cut_on_word")));
-    assert!(res["segment_count"].as_u64().unwrap() >= 1);
-    // No render job was created (dry run is pure planning).
-    let jobs = dispatch(&state, "jobs.list", json!({}), test_actor()).await;
-    let render_jobs = jobs.result.unwrap()["jobs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|j| j["kind"] == "render")
-        .count();
-    assert_eq!(render_jobs, 0, "dry_run must not create a render job");
+#[test]
+fn render_final_dry_run_plans_without_encoding() {
+    let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        dispatch(
+            &state,
+            "project.create",
+            json!({"name":"t","dir": dir.path().join("t.cutproj")}),
+            test_actor(),
+        )
+        .await;
+        let media = dir.path().join("clip.mp4");
+        std::fs::write(&media, b"x").unwrap();
+        dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
+        update_asset(&state, "a1", |a| {
+            a.probe = Some(
+                json!({"kind":"video","width":1920,"height":1080,"duration_ms":5000,"has_audio":true}),
+            );
+        })
+        .await
+        .unwrap();
+        dispatch(
+            &state,
+            "edit.insert",
+            json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,5000],"ripple":false}),
+            test_actor(),
+        )
+        .await;
+        let r = dispatch(
+            &state,
+            "render.final",
+            json!({"dry_run": true}),
+            test_actor(),
+        )
+        .await;
+        assert!(r.ok, "{:?}", r.error);
+        let res = r.result.unwrap();
+        assert_eq!(res["dry_run"], true);
+        assert_eq!(res["output"]["duration_ms"], 5000);
+        assert_eq!(res["output"]["width"], 1920);
+        assert!(res["checks"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("cut_on_word")));
+        assert!(res["segment_count"].as_u64().unwrap() >= 1);
+        // No render job was created (dry run is pure planning).
+        let jobs = dispatch(&state, "jobs.list", json!({}), test_actor()).await;
+        let render_jobs = jobs.result.unwrap()["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|j| j["kind"] == "render")
+            .count();
+        assert_eq!(render_jobs, 0, "dry_run must not create a render job");
+    });
 }
 
 // ----------------------------------------------------------------------
@@ -248,67 +255,74 @@ fn export_publish_profile_passes_through_to_render_final_args() {
 /// completes through the REAL render.final dry_run path with the platform's
 /// explicit geometry. A bogus profile is rejected by the schema enum BEFORE
 /// dispatch, naming the exact path.
-#[tokio::test]
-async fn export_publish_accepts_profile_and_rejects_unknown_values() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new();
-    dispatch(
-        &state,
-        "project.create",
-        json!({"name":"p","dir": dir.path().join("p.cutproj")}),
-        test_actor(),
-    )
-    .await;
-    let media = dir.path().join("clip.mp4");
-    std::fs::write(&media, b"x").unwrap();
-    dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
-    update_asset(&state, "a1", |a| {
-        a.probe = Some(
-            json!({"kind":"video","width":1920,"height":1080,"duration_ms":5000,"has_audio":true}),
+#[test]
+fn export_publish_accepts_profile_and_rejects_unknown_values() {
+    let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+        dispatch(
+            &state,
+            "project.create",
+            json!({"name":"p","dir": dir.path().join("p.cutproj")}),
+            test_actor(),
+        )
+        .await;
+        let media = dir.path().join("clip.mp4");
+        std::fs::write(&media, b"x").unwrap();
+        dispatch(&state, "media.import", json!({"path": media}), test_actor()).await;
+        update_asset(&state, "a1", |a| {
+            a.probe = Some(
+                json!({"kind":"video","width":1920,"height":1080,"duration_ms":5000,"has_audio":true}),
+            );
+        })
+        .await
+        .unwrap();
+        dispatch(
+            &state,
+            "edit.insert",
+            json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,5000],"ripple":false}),
+            test_actor(),
+        )
+        .await;
+        // Valid profile + dry_run: schema gate passes, render.final returns the plan
+        // (no encode), and the publish annotation still lands on the result.
+        let r = dispatch(
+            &state,
+            "export.publish",
+            json!({"platform": "tiktok", "profile": "silent_screen_demo", "dry_run": true}),
+            test_actor(),
+        )
+        .await;
+        assert!(r.ok, "{:?}", r.error);
+        let res = r.result.unwrap();
+        assert_eq!(res["dry_run"], true);
+        assert_eq!(res["publish"]["platform"], "tiktok");
+        // The tiktok spec's explicit 9:16 geometry reached render.final.
+        assert_eq!(res["output"]["width"], 1080);
+        assert_eq!(res["output"]["height"], 1920);
+        // Unknown profile → the compiled input schema rejects it up front (enum),
+        // naming the offending path — never a silent fall-through to talking_head.
+        let r = dispatch(
+            &state,
+            "export.publish",
+            json!({"platform": "tiktok", "profile": "bogus_profile", "dry_run": true}),
+            test_actor(),
+        )
+        .await;
+        assert!(!r.ok, "bogus profile must be rejected");
+        let e = r.error.unwrap();
+        assert_eq!(e.code, error_codes::INVALID_ARGS);
+        assert!(
+            e.message.contains("/profile") && e.message.contains("enum"),
+            "the error names the offending path and constraint: {}",
+            e.message
         );
-    })
-    .await
-    .unwrap();
-    dispatch(
-        &state,
-        "edit.insert",
-        json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,5000],"ripple":false}),
-        test_actor(),
-    )
-    .await;
-    // Valid profile + dry_run: schema gate passes, render.final returns the plan
-    // (no encode), and the publish annotation still lands on the result.
-    let r = dispatch(
-        &state,
-        "export.publish",
-        json!({"platform": "tiktok", "profile": "silent_screen_demo", "dry_run": true}),
-        test_actor(),
-    )
-    .await;
-    assert!(r.ok, "{:?}", r.error);
-    let res = r.result.unwrap();
-    assert_eq!(res["dry_run"], true);
-    assert_eq!(res["publish"]["platform"], "tiktok");
-    // The tiktok spec's explicit 9:16 geometry reached render.final.
-    assert_eq!(res["output"]["width"], 1080);
-    assert_eq!(res["output"]["height"], 1920);
-    // Unknown profile → the compiled input schema rejects it up front (enum),
-    // naming the offending path — never a silent fall-through to talking_head.
-    let r = dispatch(
-        &state,
-        "export.publish",
-        json!({"platform": "tiktok", "profile": "bogus_profile", "dry_run": true}),
-        test_actor(),
-    )
-    .await;
-    assert!(!r.ok, "bogus profile must be rejected");
-    let e = r.error.unwrap();
-    assert_eq!(e.code, error_codes::INVALID_ARGS);
-    assert!(
-        e.message.contains("/profile") && e.message.contains("enum"),
-        "the error names the offending path and constraint: {}",
-        e.message
-    );
+    });
 }
 
 #[tokio::test]
@@ -691,151 +705,157 @@ async fn jobs_cancel_render_queue_waits_for_concurrent_child_cancellation() {
 
 /// Queue admission retains its already-authorized destinations while it waits
 /// for its scheduler slot. Later folder choices affect other requests only.
-#[tokio::test]
-async fn render_queue_delayed_children_keep_admitted_output_authorization() {
-    use crate::jobs::JobState;
-    use crate::output_paths::{set_session_output_dir, SESSION_OUTPUT_DIR_TEST_LOCK};
-    use std::sync::Arc;
-    use tokio::sync::Notify;
+#[test]
+fn render_queue_delayed_children_keep_admitted_output_authorization() {
+    let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        use crate::jobs::JobState;
+        use crate::output_paths::set_session_output_dir;
+        use std::sync::Arc;
+        use tokio::sync::Notify;
 
-    let _lock = SESSION_OUTPUT_DIR_TEST_LOCK.lock().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let chosen = tempfile::tempdir().unwrap();
-    let later = tempfile::tempdir().unwrap();
-    let media = dir.path().join("clip.mp4");
-    assert!(std::process::Command::new("ffmpeg")
-        .args([
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=blue:s=160x90:r=30",
-            "-t",
-            "0.2",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-y",
-        ])
-        .arg(&media)
-        .status()
-        .unwrap()
-        .success());
+        let dir = tempfile::tempdir().unwrap();
+        let chosen = tempfile::tempdir().unwrap();
+        let later = tempfile::tempdir().unwrap();
+        let media = dir.path().join("clip.mp4");
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=160x90:r=30",
+                "-t",
+                "0.2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-y",
+            ])
+            .arg(&media)
+            .status()
+            .unwrap()
+            .success());
 
-    for explicit in [true, false] {
-        let state = AppState::new();
-        let project = dir.path().join(if explicit {
-            "explicit.cutproj"
-        } else {
-            "default.cutproj"
-        });
-        let created = dispatch(
-            &state,
-            "project.create",
-            json!({"name": if explicit { "explicit" } else { "default" }, "dir": project}),
-            test_actor(),
-        )
-        .await;
-        assert!(created.ok, "{:?}", created.error);
-        assert!(
-            dispatch(&state, "media.import", json!({"path":media}), test_actor())
+        for explicit in [true, false] {
+            let state = AppState::new();
+            let project = dir.path().join(if explicit {
+                "explicit.cutproj"
+            } else {
+                "default.cutproj"
+            });
+            let created = dispatch(
+                &state,
+                "project.create",
+                json!({"name": if explicit { "explicit" } else { "default" }, "dir": project}),
+                test_actor(),
+            )
+            .await;
+            assert!(created.ok, "{:?}", created.error);
+            assert!(
+                dispatch(&state, "media.import", json!({"path":media}), test_actor())
+                    .await
+                    .ok
+            );
+            update_asset(&state, "a1", |a| {
+                a.probe = Some(
+                    json!({"kind":"video","width":160,"height":90,"duration_ms":200,"has_audio":false}),
+                );
+            })
+            .await
+            .unwrap();
+            assert!(
+                dispatch(
+                    &state,
+                    "edit.insert",
+                    json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,200],"ripple":false}),
+                    test_actor()
+                )
                 .await
                 .ok
-        );
-        update_asset(&state, "a1", |a| {
-            a.probe = Some(
-                json!({"kind":"video","width":160,"height":90,"duration_ms":200,"has_audio":false}),
             );
-        })
-        .await
-        .unwrap();
-        assert!(
-            dispatch(
-                &state,
-                "edit.insert",
-                json!({"asset":"a1","track":"v1","at_ms":0,"src_range_ms":[0,200],"ripple":false}),
-                test_actor()
-            )
-            .await
-            .ok
-        );
 
-        let occupied = state.jobs.create("render_queue");
-        let ready = Arc::new(Notify::new());
-        let release = Arc::new(Notify::new());
-        let ready_task = ready.clone();
-        let release_task = release.clone();
-        state
-            .jobs
-            .spawn_limited(&occupied.job_id, "render_queue", 1, async move {
-                ready_task.notify_one();
-                release_task.notified().await;
-            });
-        ready.notified().await;
-        set_session_output_dir(Some(chosen.path().to_path_buf()));
-        let mut delivery = json!({"preset":"draft","hardware":"off","width":160,"height":90});
-        if explicit {
-            delivery["output"] = json!(chosen.path().join("selected.mp4"));
-        }
-        let response = dispatch(
-            &state,
-            "render.queue",
-            json!({"jobs":[delivery]}),
-            test_actor(),
-        )
-        .await;
-        assert!(response.ok, "{:?}", response.error);
-        let result = response.result.unwrap();
-        let planned = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
-        assert_eq!(planned.parent(), Some(chosen.path()));
-        let queue_id = result["queue_id"].as_str().unwrap();
-        set_session_output_dir(None); // the native picker restores its old default
-        set_session_output_dir(Some(later.path().to_path_buf())); // another normal folder choice
-        let unrelated = dispatch(
-            &state,
-            "render.final",
-            json!({"path":chosen.path().join("unrelated.mp4"),"dry_run":true,"hardware":"off"}),
-            test_actor(),
-        )
-        .await;
-        assert!(
-            !unrelated.ok,
-            "a later REST request cannot inherit queue authority"
-        );
-        release.notify_one();
-        let terminal = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            loop {
-                let record = state.jobs.get(queue_id).unwrap();
-                if matches!(record.state, JobState::Done | JobState::Failed) {
-                    break record;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let occupied = state.jobs.create("render_queue");
+            let ready = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let ready_task = ready.clone();
+            let release_task = release.clone();
+            state
+                .jobs
+                .spawn_limited(&occupied.job_id, "render_queue", 1, async move {
+                    ready_task.notify_one();
+                    release_task.notified().await;
+                });
+            ready.notified().await;
+            set_session_output_dir(Some(chosen.path().to_path_buf()));
+            let mut delivery = json!({"preset":"draft","hardware":"off","width":160,"height":90});
+            if explicit {
+                delivery["output"] = json!(chosen.path().join("selected.mp4"));
             }
-        })
-        .await
-        .unwrap();
-        let result = terminal.result.unwrap();
-        assert_eq!(result["succeeded"], 1, "{result}");
-        assert_eq!(result["failed"], 0, "{result}");
-        let child_id = result["jobs"][0]["job_id"].as_str().unwrap();
-        assert_eq!(state.jobs.get(child_id).unwrap().state, JobState::Done);
-        let output = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
-        assert_eq!(output.parent(), Some(chosen.path()));
-        assert!(output.is_file());
-        let later_default = crate::output_paths::fence_output_path(
-            &project,
-            None,
-            "exports/after.mp4",
-            crate::output_paths::OutputPathPolicy::MP4,
-        )
-        .unwrap();
-        assert_eq!(
-            later_default.parent(),
-            Some(later.path()),
-            "queue completion must not overwrite the new preference"
-        );
-    }
-    set_session_output_dir(None);
+            let response = dispatch(
+                &state,
+                "render.queue",
+                json!({"jobs":[delivery]}),
+                test_actor(),
+            )
+            .await;
+            assert!(response.ok, "{:?}", response.error);
+            let result = response.result.unwrap();
+            let planned = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
+            assert_eq!(planned.parent(), Some(chosen.path()));
+            let queue_id = result["queue_id"].as_str().unwrap();
+            set_session_output_dir(None); // the native picker restores its old default
+            set_session_output_dir(Some(later.path().to_path_buf())); // another normal folder choice
+            let unrelated = dispatch(
+                &state,
+                "render.final",
+                json!({"path":chosen.path().join("unrelated.mp4"),"dry_run":true,"hardware":"off"}),
+                test_actor(),
+            )
+            .await;
+            assert!(
+                !unrelated.ok,
+                "a later REST request cannot inherit queue authority"
+            );
+            release.notify_one();
+            let terminal = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    let record = state.jobs.get(queue_id).unwrap();
+                    if matches!(record.state, JobState::Done | JobState::Failed) {
+                        break record;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let result = terminal.result.unwrap();
+            assert_eq!(result["succeeded"], 1, "{result}");
+            assert_eq!(result["failed"], 0, "{result}");
+            let child_id = result["jobs"][0]["job_id"].as_str().unwrap();
+            assert_eq!(state.jobs.get(child_id).unwrap().state, JobState::Done);
+            let output = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
+            assert_eq!(output.parent(), Some(chosen.path()));
+            assert!(output.is_file());
+            let later_default = crate::output_paths::fence_output_path(
+                &project,
+                None,
+                "exports/after.mp4",
+                crate::output_paths::OutputPathPolicy::MP4,
+            )
+            .unwrap();
+            assert_eq!(
+                later_default.parent(),
+                Some(later.path()),
+                "queue completion must not overwrite the new preference"
+            );
+        }
+        set_session_output_dir(None);
+    });
 }

@@ -96,120 +96,127 @@ async fn wait_export(state: &AppState, job_id: &str) -> Value {
     panic!("export job {job_id} did not complete")
 }
 
-#[tokio::test]
-async fn sparse_30fps_capture_export_uses_plan_rate_not_nominal_stream_rate() {
-    let temp = tempfile::tempdir().unwrap();
-    let project_dir = temp.path().join("export_sparse_timebase.cutproj");
-    let state = AppState::new();
-    let created = dispatch(
-        &state,
-        "project.create",
-        json!({"name": "export_sparse_timebase", "dir": project_dir}),
-        test_actor(),
-    )
-    .await;
-    assert!(created.ok, "project create failed: {:?}", created.error);
-
-    let capture = crate::screen_record::screen_record_cache_dir(&project_dir)
-        .unwrap()
-        .join("cap-sparse-timebase");
-    std::fs::create_dir_all(&capture).unwrap();
-    let source = capture.join("source.mp4");
-    let system = capture.join("system.wav");
-    synth_sparse_30fps_video(&source);
-    let source_facts = ffprobe(&source);
-    let source_video = source_facts["streams"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|stream| stream["codec_type"] == "video")
+#[test]
+fn sparse_30fps_capture_export_uses_plan_rate_not_nominal_stream_rate() {
+    let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    assert_eq!(source_video["r_frame_rate"], "60/1");
-    assert_ne!(source_video["avg_frame_rate"], "60/1");
-    synth_tone(&system);
-    std::fs::write(
-        capture.join("system-audio.json"),
-        br#"{"schema":"shellx-cut/system-audio-timing/1","first_packet_offset_ms":0}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        capture.join("project.json"),
-        serde_json::to_vec(&json!({
-            "schema": "shellx-record/1",
-            "settings": {"width": 160, "height": 90, "fps": 30.0, "audio_rate": 48000},
-            "source_video": source.display().to_string(),
-            "events": {
-                "duration_ms": 7_909,
-                "screen_w": 160,
-                "screen_h": 90,
-                "monitors": [], "cursor": [], "clicks": [], "scrolls": [], "keys": []
-            }
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    runtime.block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let project_dir = temp.path().join("export_sparse_timebase.cutproj");
+        let state = AppState::new();
+        let created = dispatch(
+            &state,
+            "project.create",
+            json!({"name": "export_sparse_timebase", "dir": project_dir}),
+            test_actor(),
+        )
+        .await;
+        assert!(created.ok, "project create failed: {:?}", created.error);
 
-    let stopped = dispatch(
-        &state,
-        "screen_record.stop",
-        json!({"capture_id": "cap-sparse-timebase", "autoedit": true}),
-        test_actor(),
-    )
-    .await;
-    assert!(stopped.ok, "stop failed: {:?}", stopped.error);
-    let plan = PathBuf::from(stopped.result.unwrap()["plan"].as_str().unwrap());
-    let plan_json: Value = serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
-    assert_eq!(plan_json["fps"], 30.0);
-    assert_eq!(plan_json["duration_ms"], 7_909);
-
-    let output = project_dir.join("exports/sparse-timebase.mp4");
-    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-    let queued = dispatch(
-        &state,
-        "screen_record.export",
-        json!({"source": source, "plan": plan, "path": output}),
-        test_actor(),
-    )
-    .await;
-    assert!(queued.ok, "export queue failed: {:?}", queued.error);
-    let result = wait_export(&state, queued.result.unwrap()["job_id"].as_str().unwrap()).await;
-    let rendered_frames = result["frames"].as_u64().unwrap();
-    assert!(
-        (237..=239).contains(&rendered_frames),
-        "sparse capture emitted {rendered_frames} planned 30fps frames"
-    );
-
-    let facts = ffprobe(&output);
-    let streams = facts["streams"].as_array().unwrap();
-    let video = streams
-        .iter()
-        .find(|stream| stream["codec_type"] == "video")
+        let capture = crate::screen_record::screen_record_cache_dir(&project_dir)
+            .unwrap()
+            .join("cap-sparse-timebase");
+        std::fs::create_dir_all(&capture).unwrap();
+        let source = capture.join("source.mp4");
+        let system = capture.join("system.wav");
+        synth_sparse_30fps_video(&source);
+        let source_facts = ffprobe(&source);
+        let source_video = source_facts["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stream| stream["codec_type"] == "video")
+            .unwrap();
+        assert_eq!(source_video["r_frame_rate"], "60/1");
+        assert_ne!(source_video["avg_frame_rate"], "60/1");
+        synth_tone(&system);
+        std::fs::write(
+            capture.join("system-audio.json"),
+            br#"{"schema":"shellx-cut/system-audio-timing/1","first_packet_offset_ms":0}"#,
+        )
         .unwrap();
-    assert_eq!(video["avg_frame_rate"], "30/1");
-    assert_eq!(
-        video["nb_read_frames"]
+        std::fs::write(
+            capture.join("project.json"),
+            serde_json::to_vec(&json!({
+                "schema": "shellx-record/1",
+                "settings": {"width": 160, "height": 90, "fps": 30.0, "audio_rate": 48000},
+                "source_video": source.display().to_string(),
+                "events": {
+                    "duration_ms": 7_909,
+                    "screen_w": 160,
+                    "screen_h": 90,
+                    "monitors": [], "cursor": [], "clicks": [], "scrolls": [], "keys": []
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let stopped = dispatch(
+            &state,
+            "screen_record.stop",
+            json!({"capture_id": "cap-sparse-timebase", "autoedit": true}),
+            test_actor(),
+        )
+        .await;
+        assert!(stopped.ok, "stop failed: {:?}", stopped.error);
+        let plan = PathBuf::from(stopped.result.unwrap()["plan"].as_str().unwrap());
+        let plan_json: Value = serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
+        assert_eq!(plan_json["fps"], 30.0);
+        assert_eq!(plan_json["duration_ms"], 7_909);
+
+        let output = project_dir.join("exports/sparse-timebase.mp4");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        let queued = dispatch(
+            &state,
+            "screen_record.export",
+            json!({"source": source, "plan": plan, "path": output}),
+            test_actor(),
+        )
+        .await;
+        assert!(queued.ok, "export queue failed: {:?}", queued.error);
+        let result = wait_export(&state, queued.result.unwrap()["job_id"].as_str().unwrap()).await;
+        let rendered_frames = result["frames"].as_u64().unwrap();
+        assert!(
+            (237..=239).contains(&rendered_frames),
+            "sparse capture emitted {rendered_frames} planned 30fps frames"
+        );
+
+        let facts = ffprobe(&output);
+        let streams = facts["streams"].as_array().unwrap();
+        let video = streams
+            .iter()
+            .find(|stream| stream["codec_type"] == "video")
+            .unwrap();
+        assert_eq!(video["avg_frame_rate"], "30/1");
+        assert_eq!(
+            video["nb_read_frames"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap(),
+            rendered_frames
+        );
+        let duration = facts["format"]["duration"]
             .as_str()
             .unwrap()
-            .parse::<u64>()
-            .unwrap(),
-        rendered_frames
-    );
-    let duration = facts["format"]["duration"]
-        .as_str()
-        .unwrap()
-        .parse::<f64>()
-        .unwrap();
-    assert!(
-        (duration - 7.933).abs() < 0.08,
-        "sparse capture export drifted from its 7.909s plan: {duration}"
-    );
-    let audio = streams
-        .iter()
-        .find(|stream| stream["codec_type"] == "audio")
-        .unwrap();
-    let audio_duration = audio["duration"].as_str().unwrap().parse::<f64>().unwrap();
-    assert!(
-        (audio_duration - duration).abs() < 0.12,
-        "audio no longer follows planned video: video={duration}, audio={audio_duration}"
-    );
+            .parse::<f64>()
+            .unwrap();
+        assert!(
+            (duration - 7.933).abs() < 0.08,
+            "sparse capture export drifted from its 7.909s plan: {duration}"
+        );
+        let audio = streams
+            .iter()
+            .find(|stream| stream["codec_type"] == "audio")
+            .unwrap();
+        let audio_duration = audio["duration"].as_str().unwrap().parse::<f64>().unwrap();
+        assert!(
+            (audio_duration - duration).abs() < 0.12,
+            "audio no longer follows planned video: video={duration}, audio={audio_duration}"
+        );
+    });
 }

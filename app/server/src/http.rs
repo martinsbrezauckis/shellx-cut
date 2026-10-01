@@ -1039,11 +1039,9 @@ mod tests {
     // Export serving (the 0.6.105 "exports outside the project" defect).
     //
     // The session output dir is process-global (one open project per cutd), so
-    // the two tests that set it take this lock and clear it on the way out.
-    // Serializing them also keeps them from reading each other's root while the
-    // shared axum test servers are up.
+    // all readers and writers use the shared output_paths fixture. Its guard
+    // outlives the test runtime and resets the preference even after a panic.
     // ---------------------------------------------------------------------
-    static OUTPUT_DIR_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// Open a project at `dir` on a fresh AppState (the export routes resolve
     /// against the CURRENT project, so every export test needs one open).
@@ -1112,132 +1110,147 @@ mod tests {
     /// The last case is the important one: an absolute path that does not exist
     /// must 404 EVEN THOUGH a same-named file sits in `<project>/exports` — the
     /// route must never answer with a different file than the one requested.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn export_file_route_serves_authorized_output_dir_only() {
-        let _guard = OUTPUT_DIR_TEST_LOCK.lock().await;
-        let tmp = tempfile::tempdir().unwrap();
-        let proj = tmp.path().join("p.cutproj");
-        let state = open_project(&proj).await;
+    #[test]
+    fn export_file_route_serves_authorized_output_dir_only() {
+        let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let proj = tmp.path().join("p.cutproj");
+            let state = open_project(&proj).await;
 
-        // Inside the project's exports subtree.
-        std::fs::create_dir_all(proj.join("exports")).unwrap();
-        let inside = proj.join("exports/audio.mp3");
-        std::fs::write(&inside, b"INSIDE-EXPORT-BYTES").unwrap();
-        // A project file that is NOT an export (must stay unreachable).
-        std::fs::write(proj.join("project.json"), b"{}").unwrap();
+            // Inside the project's exports subtree.
+            std::fs::create_dir_all(proj.join("exports")).unwrap();
+            let inside = proj.join("exports/audio.mp3");
+            std::fs::write(&inside, b"INSIDE-EXPORT-BYTES").unwrap();
+            // A project file that is NOT an export (must stay unreachable).
+            std::fs::write(proj.join("project.json"), b"{}").unwrap();
 
-        // The user's chosen delivery folder + a folder nobody authorized.
-        let outside = tmp.path().join("Deliveries");
-        std::fs::create_dir_all(&outside).unwrap();
-        let fresh = outside.join("audio.mp3");
-        std::fs::write(&fresh, b"OUTSIDE-EXPORT-BYTES-THAT-DIFFER").unwrap();
-        let unauth = tmp.path().join("Private");
-        std::fs::create_dir_all(&unauth).unwrap();
-        let secret = unauth.join("secret.mp4");
-        std::fs::write(&secret, b"NOT-AN-EXPORT").unwrap();
-        // A symlink INSIDE the authorized folder pointing at the unauthorized
-        // one: canonicalization must resolve it before the membership test.
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&secret, outside.join("link.mp4")).unwrap();
+            // The user's chosen delivery folder + a folder nobody authorized.
+            let outside = tmp.path().join("Deliveries");
+            std::fs::create_dir_all(&outside).unwrap();
+            let fresh = outside.join("audio.mp3");
+            std::fs::write(&fresh, b"OUTSIDE-EXPORT-BYTES-THAT-DIFFER").unwrap();
+            let unauth = tmp.path().join("Private");
+            std::fs::create_dir_all(&unauth).unwrap();
+            let secret = unauth.join("secret.mp4");
+            std::fs::write(&secret, b"NOT-AN-EXPORT").unwrap();
+            // A symlink INSIDE the authorized folder pointing at the unauthorized
+            // one: canonicalization must resolve it before the membership test.
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&secret, outside.join("link.mp4")).unwrap();
 
-        crate::output_paths::set_session_output_dir(Some(outside.clone()));
-        let server = spawn_test_server(build_router(state, None)).await;
-        let base = server.base_url.clone();
-        let url = |p: &std::path::Path| {
-            format!(
-                "{base}/api/export-file?path={}",
-                urlencoding_path(&p.display().to_string())
-            )
-        };
+            crate::output_paths::set_session_output_dir(Some(outside.clone()));
+            let server = spawn_test_server(build_router(state, None)).await;
+            let base = server.base_url.clone();
+            let url = |p: &std::path::Path| {
+                format!(
+                    "{base}/api/export-file?path={}",
+                    urlencoding_path(&p.display().to_string())
+                )
+            };
 
-        let (st, body) = get_off_thread(url(&fresh)).await;
-        assert_eq!(st, 200, "an export in the chosen output folder must serve");
-        assert_eq!(
-            body, b"OUTSIDE-EXPORT-BYTES-THAT-DIFFER",
-            "and it must be the OUTSIDE file's bytes, not the same-named inside one"
-        );
+            let (st, body) = get_off_thread(url(&fresh)).await;
+            assert_eq!(st, 200, "an export in the chosen output folder must serve");
+            assert_eq!(
+                body, b"OUTSIDE-EXPORT-BYTES-THAT-DIFFER",
+                "and it must be the OUTSIDE file's bytes, not the same-named inside one"
+            );
 
-        let (st, body) = get_off_thread(url(&inside)).await;
-        assert_eq!(st, 200, "the project's own exports stay reachable");
-        assert_eq!(body, b"INSIDE-EXPORT-BYTES");
+            let (st, body) = get_off_thread(url(&inside)).await;
+            assert_eq!(st, 200, "the project's own exports stay reachable");
+            assert_eq!(body, b"INSIDE-EXPORT-BYTES");
 
-        let (st, _) = get_off_thread(url(&secret)).await;
-        assert_eq!(st, 403, "an unauthorized absolute path must be refused");
+            let (st, _) = get_off_thread(url(&secret)).await;
+            assert_eq!(st, 403, "an unauthorized absolute path must be refused");
 
-        let (st, _) = get_off_thread(url(&proj.join("project.json"))).await;
-        assert_eq!(
-            st, 403,
-            "the read fence is the exports SUBTREE — project files are not exports"
-        );
+            let (st, _) = get_off_thread(url(&proj.join("project.json"))).await;
+            assert_eq!(
+                st, 403,
+                "the read fence is the exports SUBTREE — project files are not exports"
+            );
 
-        let climb = outside.join("../Private/secret.mp4");
-        let (st, _) = get_off_thread(url(&climb)).await;
-        assert_eq!(st, 403, "a `..` climb out of an authorized root is refused");
+            let climb = outside.join("../Private/secret.mp4");
+            let (st, _) = get_off_thread(url(&climb)).await;
+            assert_eq!(st, 403, "a `..` climb out of an authorized root is refused");
 
-        #[cfg(unix)]
-        {
-            let (st, _) = get_off_thread(url(&outside.join("link.mp4"))).await;
-            assert_eq!(st, 403, "a symlink escaping the authorized root is refused");
-        }
+            #[cfg(unix)]
+            {
+                let (st, _) = get_off_thread(url(&outside.join("link.mp4"))).await;
+                assert_eq!(st, 403, "a symlink escaping the authorized root is refused");
+            }
 
-        // Sibling-prefix: /…/Deliveries-evil must not pass as /…/Deliveries.
-        let sibling = tmp.path().join("Deliveries-evil");
-        std::fs::create_dir_all(&sibling).unwrap();
-        let sibling_file = sibling.join("audio.mp3");
-        std::fs::write(&sibling_file, b"SIBLING").unwrap();
-        let (st, _) = get_off_thread(url(&sibling_file)).await;
-        assert_eq!(
-            st, 403,
-            "root membership is per path COMPONENT, not a string prefix"
-        );
+            // Sibling-prefix: /…/Deliveries-evil must not pass as /…/Deliveries.
+            let sibling = tmp.path().join("Deliveries-evil");
+            std::fs::create_dir_all(&sibling).unwrap();
+            let sibling_file = sibling.join("audio.mp3");
+            std::fs::write(&sibling_file, b"SIBLING").unwrap();
+            let (st, _) = get_off_thread(url(&sibling_file)).await;
+            assert_eq!(
+                st, 403,
+                "root membership is per path COMPONENT, not a string prefix"
+            );
 
-        // NO FALLBACK: the requested file is gone, a same-named one exists in
-        // <project>/exports — the answer is 404, never those other bytes.
-        std::fs::remove_file(&fresh).unwrap();
-        let (st, body) = get_off_thread(url(&fresh)).await;
-        assert_eq!(st, 404, "a missing export must 404");
-        assert!(
-            body.is_empty(),
-            "and must NOT be substituted by the same-named file inside the project"
-        );
+            // NO FALLBACK: the requested file is gone, a same-named one exists in
+            // <project>/exports — the answer is 404, never those other bytes.
+            std::fs::remove_file(&fresh).unwrap();
+            let (st, body) = get_off_thread(url(&fresh)).await;
+            assert_eq!(st, 404, "a missing export must 404");
+            assert!(
+                body.is_empty(),
+                "and must NOT be substituted by the same-named file inside the project"
+            );
 
-        let (st, _) =
-            get_off_thread(format!("{base}/api/export-file?path=exports/audio.mp3")).await;
-        assert_eq!(st, 400, "a relative path has no unambiguous meaning here");
-        let (st, _) = get_off_thread(format!("{base}/api/export-file")).await;
-        assert_eq!(st, 400, "a missing ?path= is a bad request");
+            let (st, _) =
+                get_off_thread(format!("{base}/api/export-file?path=exports/audio.mp3")).await;
+            assert_eq!(st, 400, "a relative path has no unambiguous meaning here");
+            let (st, _) = get_off_thread(format!("{base}/api/export-file")).await;
+            assert_eq!(st, 400, "a missing ?path= is a bad request");
 
-        crate::output_paths::set_session_output_dir(None);
+            crate::output_paths::set_session_output_dir(None);
+        });
     }
 
     #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn export_routes_refuse_a_linked_project_exports_directory() {
-        let _guard = OUTPUT_DIR_TEST_LOCK.lock().await;
-        crate::output_paths::set_session_output_dir(None);
-        let tmp = tempfile::tempdir().unwrap();
-        let proj = tmp.path().join("p.cutproj");
-        let state = open_project(&proj).await;
-        let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        let private_export_like_file = outside.join("private.json");
-        std::fs::write(&private_export_like_file, b"private host data").unwrap();
-        std::os::unix::fs::symlink(&outside, proj.join("exports")).unwrap();
+    #[test]
+    fn export_routes_refuse_a_linked_project_exports_directory() {
+        let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            crate::output_paths::set_session_output_dir(None);
+            let tmp = tempfile::tempdir().unwrap();
+            let proj = tmp.path().join("p.cutproj");
+            let state = open_project(&proj).await;
+            let outside = tmp.path().join("outside");
+            std::fs::create_dir_all(&outside).unwrap();
+            let private_export_like_file = outside.join("private.json");
+            std::fs::write(&private_export_like_file, b"private host data").unwrap();
+            std::os::unix::fs::symlink(&outside, proj.join("exports")).unwrap();
 
-        let server = spawn_test_server(build_router(state, None)).await;
-        let base = server.base_url.clone();
-        let (status, _) = get_off_thread(format!("{base}/api/export/private.json")).await;
-        assert_eq!(
-            status, 403,
-            "the project-relative route must not serve through a project exports link"
-        );
-        let absolute = urlencoding_path(&private_export_like_file.display().to_string());
-        let (status, _) = get_off_thread(format!("{base}/api/export-file?path={absolute}")).await;
-        assert_eq!(
-            status, 403,
-            "the absolute route must not retain a linked project exports target as a root"
-        );
-        crate::output_paths::set_session_output_dir(None);
+            let server = spawn_test_server(build_router(state, None)).await;
+            let base = server.base_url.clone();
+            let (status, _) = get_off_thread(format!("{base}/api/export/private.json")).await;
+            assert_eq!(
+                status, 403,
+                "the project-relative route must not serve through a project exports link"
+            );
+            let absolute = urlencoding_path(&private_export_like_file.display().to_string());
+            let (status, _) =
+                get_off_thread(format!("{base}/api/export-file?path={absolute}")).await;
+            assert_eq!(
+                status, 403,
+                "the absolute route must not retain a linked project exports target as a root"
+            );
+            crate::output_paths::set_session_output_dir(None);
+        });
     }
 
     #[tokio::test]
@@ -1268,57 +1281,64 @@ mod tests {
     /// files inside and outside the project. Two different files, one name →
     /// refuse (409) and say so; never
     /// pick one. Unambiguous cases keep their exact previous behavior.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn export_route_refuses_ambiguous_relative_request() {
-        let _guard = OUTPUT_DIR_TEST_LOCK.lock().await;
-        let tmp = tempfile::tempdir().unwrap();
-        let proj = tmp.path().join("p.cutproj");
-        let state = open_project(&proj).await;
-        std::fs::create_dir_all(proj.join("exports")).unwrap();
-        std::fs::write(proj.join("exports/audio.mp3"), b"STALE-INSIDE").unwrap();
-        std::fs::write(proj.join("exports/only-inside.mp3"), b"UNIQUE-INSIDE").unwrap();
-        let outside = tmp.path().join("Deliveries");
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("audio.mp3"), b"FRESH-OUTSIDE-DIFFERENT").unwrap();
+    #[test]
+    fn export_route_refuses_ambiguous_relative_request() {
+        let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let proj = tmp.path().join("p.cutproj");
+            let state = open_project(&proj).await;
+            std::fs::create_dir_all(proj.join("exports")).unwrap();
+            std::fs::write(proj.join("exports/audio.mp3"), b"STALE-INSIDE").unwrap();
+            std::fs::write(proj.join("exports/only-inside.mp3"), b"UNIQUE-INSIDE").unwrap();
+            let outside = tmp.path().join("Deliveries");
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("audio.mp3"), b"FRESH-OUTSIDE-DIFFERENT").unwrap();
 
-        let server = spawn_test_server(build_router(state, None)).await;
-        let base = server.base_url.clone();
+            let server = spawn_test_server(build_router(state, None)).await;
+            let base = server.base_url.clone();
 
-        // No output folder configured → nothing is ambiguous, behavior unchanged.
-        crate::output_paths::set_session_output_dir(None);
-        let (st, body) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
-        assert_eq!(st, 200, "the plain project-relative case must keep working");
-        assert_eq!(body, b"STALE-INSIDE");
+            // No output folder configured → nothing is ambiguous, behavior unchanged.
+            crate::output_paths::set_session_output_dir(None);
+            let (st, body) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
+            assert_eq!(st, 200, "the plain project-relative case must keep working");
+            assert_eq!(body, b"STALE-INSIDE");
 
-        // Output folder holds a DIFFERENT file of the same name → ambiguous.
-        crate::output_paths::set_session_output_dir(Some(outside.clone()));
-        let (st, _) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
-        assert_eq!(
-            st, 409,
-            "two different files named audio.mp3 → refuse, never serve the stale one"
-        );
+            // Output folder holds a DIFFERENT file of the same name → ambiguous.
+            crate::output_paths::set_session_output_dir(Some(outside.clone()));
+            let (st, _) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
+            assert_eq!(
+                st, 409,
+                "two different files named audio.mp3 → refuse, never serve the stale one"
+            );
 
-        // A name that exists in only one place is still unambiguous.
-        let (st, body) = get_off_thread(format!("{base}/api/export/only-inside.mp3")).await;
-        assert_eq!(st, 200, "no rival candidate → serve as before");
-        assert_eq!(body, b"UNIQUE-INSIDE");
+            // A name that exists in only one place is still unambiguous.
+            let (st, body) = get_off_thread(format!("{base}/api/export/only-inside.mp3")).await;
+            assert_eq!(st, 200, "no rival candidate → serve as before");
+            assert_eq!(body, b"UNIQUE-INSIDE");
 
-        // Output folder POINTING AT the exports dir: same file through two
-        // roots is not a conflict.
-        crate::output_paths::set_session_output_dir(Some(proj.join("exports")));
-        let (st, body) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
-        assert_eq!(
-            st, 200,
-            "one file reachable through two roots is not ambiguous"
-        );
-        assert_eq!(body, b"STALE-INSIDE");
+            // Output folder POINTING AT the exports dir: same file through two
+            // roots is not a conflict.
+            crate::output_paths::set_session_output_dir(Some(proj.join("exports")));
+            let (st, body) = get_off_thread(format!("{base}/api/export/audio.mp3")).await;
+            assert_eq!(
+                st, 200,
+                "one file reachable through two roots is not ambiguous"
+            );
+            assert_eq!(body, b"STALE-INSIDE");
 
-        // Traversal out of exports/ is still refused with the output dir set.
-        crate::output_paths::set_session_output_dir(Some(outside.clone()));
-        let (st, _) = get_off_thread(format!("{base}/api/export/..%2fproject.json")).await;
-        assert_eq!(st, 400, "traversal stays refused");
+            // Traversal out of exports/ is still refused with the output dir set.
+            crate::output_paths::set_session_output_dir(Some(outside.clone()));
+            let (st, _) = get_off_thread(format!("{base}/api/export/..%2fproject.json")).await;
+            assert_eq!(st, 400, "traversal stays refused");
 
-        crate::output_paths::set_session_output_dir(None);
+            crate::output_paths::set_session_output_dir(None);
+        });
     }
 
     #[tokio::test]

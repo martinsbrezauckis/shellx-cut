@@ -60,12 +60,11 @@ mod tests {
     use super::*;
     use crate::output_paths::{
         fence_output_path, make_fence, set_session_output_dir, OutputPathPolicy,
-        SESSION_OUTPUT_DIR_TEST_LOCK,
     };
 
     #[test]
     fn snapshot_rejects_foreign_roots_projects_and_does_not_leak_to_other_tasks() {
-        let _lock = SESSION_OUTPUT_DIR_TEST_LOCK.lock().unwrap();
+        let _lock = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -650,6 +650,10 @@ for (const file of boundedSources) {
 }
 
 const boundedTests = [
+  "app/server/src/motion_bridge/tests/edit_return.rs",
+  "app/server/src/output_paths/test_fixture.rs",
+  "app/server/src/dispatch/tests/screen_record_export_regression/fixtures.rs",
+  "app/server/src/dispatch/tests/export_chapters.rs",
   "app/server/src/screen_record/export_job/boundary_tests.rs",
   "app/server/src/screen_record/media_boundary_tests.rs",
   "app/server/src/screen_record/cache_output_tests.rs",

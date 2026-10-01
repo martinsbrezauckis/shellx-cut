@@ -360,6 +360,7 @@ mod tests {
 
     #[test]
     fn creates_and_resolves_latest_ready_return_without_exposing_it_elsewhere() {
+        let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         let root = tempfile::tempdir().unwrap();
         let request = create_request(
             root.path(),

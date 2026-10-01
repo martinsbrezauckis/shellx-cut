@@ -55,6 +55,7 @@ mod caption_track_resolution;
 mod captions_kinetic_regression;
 mod clip_delete_cleanup;
 mod detach_audio;
+mod export_chapters;
 mod generate_project_transition;
 mod generation_cli;
 mod group_review_request_idempotency;
@@ -3880,45 +3881,6 @@ async fn multicam_switch_does_not_destroy_user_program_track() {
             .track(result["program_track"].as_str().unwrap())
             .is_some(),
         "new reserved multicam output track exists"
-    );
-}
-
-/// export.chapters: markers → a time-sorted "M:SS Label" chapter file.
-#[tokio::test]
-async fn export_chapters_writes_sorted_chapter_list() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new();
-    dispatch(
-        &state,
-        "project.create",
-        json!({"name":"t","dir": dir.path().join("t.cutproj")}),
-        test_actor(),
-    )
-    .await;
-    // add out of order — export must time-sort.
-    dispatch(
-        &state,
-        "edit.add_marker",
-        json!({"at_ms": 65000, "label": "Part 2"}),
-        test_actor(),
-    )
-    .await;
-    dispatch(
-        &state,
-        "edit.add_marker",
-        json!({"at_ms": 0, "label": "Intro"}),
-        test_actor(),
-    )
-    .await;
-    let r = dispatch(&state, "export.chapters", json!({}), test_actor()).await;
-    assert!(r.ok, "{:?}", r.error);
-    let res = r.result.unwrap();
-    assert_eq!(res["chapter_count"], 2);
-    assert_eq!(res["first_at_zero"], true);
-    let content = std::fs::read_to_string(res["path"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        content, "0:00 Intro\n1:05 Part 2\n",
-        "sorted, M:SS formatted"
     );
 }
 

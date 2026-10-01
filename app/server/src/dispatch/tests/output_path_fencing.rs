@@ -9,6 +9,7 @@ use super::*;
 /// dirs and non-media suffixes are refused.
 #[test]
 fn output_path_fencing() {
+    let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
     let dir = tempfile::tempdir().unwrap();
     let proj = dir.path().join("p.cutproj");
     std::fs::create_dir_all(&proj).unwrap();
@@ -41,6 +42,7 @@ fn output_path_fencing() {
 #[cfg(unix)]
 #[test]
 fn atomic_output_write_replaces_late_symlink_instead_of_following_it() {
+    let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
     let dir = tempfile::tempdir().unwrap();
     let proj = dir.path().join("p.cutproj");
     std::fs::create_dir_all(proj.join("exports")).unwrap();
@@ -71,9 +73,7 @@ fn atomic_output_write_replaces_late_symlink_instead_of_following_it() {
 
 #[test]
 fn default_output_paths_avoid_existing_files() {
-    let _output_dir_guard = crate::output_paths::SESSION_OUTPUT_DIR_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _output_dir_guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
     crate::output_paths::set_session_output_dir(None);
     let dir = tempfile::tempdir().unwrap();
     let proj = dir.path().join("p.cutproj");

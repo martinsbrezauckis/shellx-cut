@@ -108,6 +108,9 @@ static OUTPUT_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Poisoning is recovered from deliberately: a panicking test tells us about
 /// its own assertion, not about lock hygiene.
 #[cfg(test)]
+pub(crate) mod test_fixture;
+
+#[cfg(test)]
 pub(crate) static SESSION_OUTPUT_DIR_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The current session output dir, if set AND still an existing directory
@@ -932,9 +935,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn live_reservation_artifacts_are_hidden_on_windows() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -962,9 +963,7 @@ mod tests {
     /// each writer additionally declares the suffix its bytes require.
     #[test]
     fn output_path_fencing() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -993,9 +992,7 @@ mod tests {
 
     #[test]
     fn verb_output_suffixes_are_exact_without_relaxing_the_path_fence() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1052,9 +1049,7 @@ mod tests {
 
     #[test]
     fn default_output_names_are_reserved_atomically_for_concurrent_writers() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let project = std::sync::Arc::new(dir.path().join("p.cutproj"));
@@ -1119,9 +1114,7 @@ mod tests {
 
     #[test]
     fn explicit_save_as_conflicts_with_a_live_default_name_reservation() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1156,9 +1149,7 @@ mod tests {
 
     #[test]
     fn unlocked_stale_reservation_marker_is_reclaimed() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1193,9 +1184,7 @@ mod tests {
 
     #[test]
     fn rejected_relative_traversal_never_creates_an_outside_parent() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1232,9 +1221,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn project_export_link_never_becomes_an_authorized_read_root() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1258,9 +1245,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn linked_project_components_never_create_outside_directories() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1309,9 +1294,7 @@ mod tests {
 
     #[test]
     fn plain_project_components_remain_creatable_and_readable() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1347,9 +1330,7 @@ mod tests {
     /// a path in neither root, and still refuse the project's own private files.
     #[test]
     fn review_render_reads_from_every_authorized_export_root() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
@@ -1406,9 +1387,7 @@ mod tests {
     /// the manifest write failed the job with ENOENT. Pin both halves.
     #[test]
     fn bundle_package_members_stay_in_the_project_under_a_session_output_dir() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -1452,9 +1431,7 @@ mod tests {
 
     #[test]
     fn default_output_paths_avoid_existing_files() {
-        let _guard = SESSION_OUTPUT_DIR_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         set_session_output_dir(None);
         let dir = tempfile::tempdir().unwrap();
         let proj = dir.path().join("p.cutproj");

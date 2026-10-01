@@ -288,103 +288,110 @@ async fn recipe_list_describe_are_pure_reads() {
     assert_eq!(r.error.unwrap().code, error_codes::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn bundled_first_edit_completes_with_an_honest_degraded_render_receipt() {
-    let _env_guard = lock_agent_cli_env();
-    let old_sidecar = std::env::var_os("SHELLX_CUT_SIDECAR_DIR");
-    let old_python = std::env::var_os("SHELLX_CUT_PYTHON");
-    let dir = tempfile::tempdir().unwrap();
-    std::env::set_var("SHELLX_CUT_SIDECAR_DIR", dir.path().join("missing-sidecar"));
-    std::env::set_var("SHELLX_CUT_PYTHON", dir.path().join("missing-python"));
-
-    let state = AppState::new();
-    let project_dir = dir.path().join("first-edit.cutproj");
-    let created = dispatch(
-        &state,
-        "project.create",
-        json!({
-            "name": "first-edit",
-            "dir": project_dir,
-            "settings": {"width": 640, "height": 360, "fps": 24},
-            "starter": "first-edit"
-        }),
-        test_actor(),
-    )
-    .await;
-    assert!(created.ok, "starter create: {:?}", created.error);
-    let starter_path = created.result.unwrap()["starter_asset_path"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let imported = dispatch(
-        &state,
-        "media.import",
-        json!({"path": starter_path, "proxy": false}),
-        test_actor(),
-    )
-    .await;
-    assert!(imported.ok, "starter import: {:?}", imported.error);
-    let import_job = imported.result.unwrap()["job_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let imported = wait_job(&state, &import_job, 30).await;
-    assert_eq!(imported.state, crate::jobs::JobState::Done, "{imported:?}");
-
-    let run = dispatch(
-        &state,
-        "recipe.run",
-        json!({"name": "first-project", "args": {"asset": "a1"}}),
-        test_actor(),
-    )
-    .await;
-    assert!(run.ok, "recipe start: {:?}", run.error);
-    let recipe_job = run.result.unwrap()["job_id"].as_str().unwrap().to_string();
-    let finished = wait_job(&state, &recipe_job, 120).await;
-
-    match old_sidecar {
-        Some(value) => std::env::set_var("SHELLX_CUT_SIDECAR_DIR", value),
-        None => std::env::remove_var("SHELLX_CUT_SIDECAR_DIR"),
-    }
-    match old_python {
-        Some(value) => std::env::set_var("SHELLX_CUT_PYTHON", value),
-        None => std::env::remove_var("SHELLX_CUT_PYTHON"),
-    }
-
-    assert_eq!(finished.state, crate::jobs::JobState::Done, "{finished:?}");
-    let report = finished.result.unwrap();
-    assert_eq!(report["status"], "completed_with_warnings", "{report}");
-    let render_stage = report["stage_results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|stage| stage["id"] == "render")
+#[test]
+fn bundled_first_edit_completes_with_an_honest_degraded_render_receipt() {
+    let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    assert_eq!(render_stage["gate"]["pass"], true, "{render_stage}");
-    assert_eq!(render_stage["job_result"]["verified"], false);
-    let render_job_id = render_stage["job_id"].as_str().unwrap();
-    assert_eq!(
-        state.jobs.get(render_job_id).unwrap().completion,
-        Some(crate::jobs::JobCompletion::DoneWithWarnings)
-    );
-    let receipt_path = render_stage["job_result"]["receipt"].as_str().unwrap();
-    let receipt: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(receipt_path).unwrap()).unwrap();
-    let check = |name: &str| {
-        receipt["checks"]
+    runtime.block_on(async {
+        let _env_guard = lock_agent_cli_env();
+        let old_sidecar = std::env::var_os("SHELLX_CUT_SIDECAR_DIR");
+        let old_python = std::env::var_os("SHELLX_CUT_PYTHON");
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SHELLX_CUT_SIDECAR_DIR", dir.path().join("missing-sidecar"));
+        std::env::set_var("SHELLX_CUT_PYTHON", dir.path().join("missing-python"));
+
+        let state = AppState::new();
+        let project_dir = dir.path().join("first-edit.cutproj");
+        let created = dispatch(
+            &state,
+            "project.create",
+            json!({
+                "name": "first-edit",
+                "dir": project_dir,
+                "settings": {"width": 640, "height": 360, "fps": 24},
+                "starter": "first-edit"
+            }),
+            test_actor(),
+        )
+        .await;
+        assert!(created.ok, "starter create: {:?}", created.error);
+        let starter_path = created.result.unwrap()["starter_asset_path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let imported = dispatch(
+            &state,
+            "media.import",
+            json!({"path": starter_path, "proxy": false}),
+            test_actor(),
+        )
+        .await;
+        assert!(imported.ok, "starter import: {:?}", imported.error);
+        let import_job = imported.result.unwrap()["job_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let imported = wait_job(&state, &import_job, 30).await;
+        assert_eq!(imported.state, crate::jobs::JobState::Done, "{imported:?}");
+
+        let run = dispatch(
+            &state,
+            "recipe.run",
+            json!({"name": "first-project", "args": {"asset": "a1"}}),
+            test_actor(),
+        )
+        .await;
+        assert!(run.ok, "recipe start: {:?}", run.error);
+        let recipe_job = run.result.unwrap()["job_id"].as_str().unwrap().to_string();
+        let finished = wait_job(&state, &recipe_job, 120).await;
+
+        match old_sidecar {
+            Some(value) => std::env::set_var("SHELLX_CUT_SIDECAR_DIR", value),
+            None => std::env::remove_var("SHELLX_CUT_SIDECAR_DIR"),
+        }
+        match old_python {
+            Some(value) => std::env::set_var("SHELLX_CUT_PYTHON", value),
+            None => std::env::remove_var("SHELLX_CUT_PYTHON"),
+        }
+
+        assert_eq!(finished.state, crate::jobs::JobState::Done, "{finished:?}");
+        let report = finished.result.unwrap();
+        assert_eq!(report["status"], "completed_with_warnings", "{report}");
+        let render_stage = report["stage_results"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|check| check["name"] == name)
-            .unwrap()["pass"]
-            .as_bool()
-            .unwrap()
-    };
-    assert!(check("cut_on_word"));
-    assert!(check("caption_presence"));
-    assert!(check("duration_matches_edl"));
-    assert!(
-        !check("lufs"),
-        "unmeasured output loudness must not fake a pass"
-    );
+            .find(|stage| stage["id"] == "render")
+            .unwrap();
+        assert_eq!(render_stage["gate"]["pass"], true, "{render_stage}");
+        assert_eq!(render_stage["job_result"]["verified"], false);
+        let render_job_id = render_stage["job_id"].as_str().unwrap();
+        assert_eq!(
+            state.jobs.get(render_job_id).unwrap().completion,
+            Some(crate::jobs::JobCompletion::DoneWithWarnings)
+        );
+        let receipt_path = render_stage["job_result"]["receipt"].as_str().unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(receipt_path).unwrap()).unwrap();
+        let check = |name: &str| {
+            receipt["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|check| check["name"] == name)
+                .unwrap()["pass"]
+                .as_bool()
+                .unwrap()
+        };
+        assert!(check("cut_on_word"));
+        assert!(check("caption_presence"));
+        assert!(check("duration_matches_edl"));
+        assert!(
+            !check("lufs"),
+            "unmeasured output loudness must not fake a pass"
+        );
+    });
 }

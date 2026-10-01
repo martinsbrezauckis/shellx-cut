@@ -183,79 +183,87 @@ mod tests {
         panic!("raw copy job did not finish")
     }
 
-    #[tokio::test]
-    async fn copy_raw_is_fenced_collision_safe_and_byte_exact() {
-        let temp = tempfile::tempdir().unwrap();
-        let project = temp.path().join("raw_copy.cutproj");
-        let state = AppState::new();
-        let created = dispatch(
-            &state,
-            "project.create",
-            json!({"name":"raw_copy","dir":project}),
-            Actor::system(),
-        )
-        .await;
-        assert!(created.ok, "{:?}", created.error);
-        let source = project.join("exports/raw_recording.mp4");
-        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-        std::fs::write(&source, b"raw recording bytes").unwrap();
-
-        for expected in ["raw_recording-copy.mp4", "raw_recording-copy-2.mp4"] {
-            let queued = dispatch(
+    #[test]
+    fn copy_raw_is_fenced_collision_safe_and_byte_exact() {
+        let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let project = temp.path().join("raw_copy.cutproj");
+            let state = AppState::new();
+            let created = dispatch(
                 &state,
-                "screen_record.copy_raw",
-                json!({"source": source}),
+                "project.create",
+                json!({"name":"raw_copy","dir":project}),
                 Actor::system(),
             )
             .await;
-            assert!(queued.ok, "{:?}", queued.error);
-            let response = queued.result.unwrap();
-            let path = PathBuf::from(response["path"].as_str().unwrap());
-            assert_eq!(path.file_name().unwrap(), expected);
-            let done = wait_copy(&state, response["job_id"].as_str().unwrap()).await;
-            assert_eq!(done["bytes"], 19);
-            assert_eq!(std::fs::read(path).unwrap(), b"raw recording bytes");
-        }
-        assert_eq!(std::fs::read(&source).unwrap(), b"raw recording bytes");
+            assert!(created.ok, "{:?}", created.error);
+            let source = project.join("exports/raw_recording.mp4");
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::write(&source, b"raw recording bytes").unwrap();
 
-        let outside = temp.path().join("unrelated.mp4");
-        std::fs::write(&outside, b"unrelated").unwrap();
-        let denied = dispatch(
-            &state,
-            "screen_record.copy_raw",
-            json!({"source": outside}),
-            Actor::system(),
-        )
-        .await;
-        assert!(
-            !denied.ok,
-            "a path outside this project's exports must fail"
-        );
-        #[cfg(unix)]
-        {
-            let linked = project.join("exports/linked_raw.mp4");
-            std::os::unix::fs::symlink(&outside, &linked).unwrap();
+            for expected in ["raw_recording-copy.mp4", "raw_recording-copy-2.mp4"] {
+                let queued = dispatch(
+                    &state,
+                    "screen_record.copy_raw",
+                    json!({"source": source}),
+                    Actor::system(),
+                )
+                .await;
+                assert!(queued.ok, "{:?}", queued.error);
+                let response = queued.result.unwrap();
+                let path = PathBuf::from(response["path"].as_str().unwrap());
+                assert_eq!(path.file_name().unwrap(), expected);
+                let done = wait_copy(&state, response["job_id"].as_str().unwrap()).await;
+                assert_eq!(done["bytes"], 19);
+                assert_eq!(std::fs::read(path).unwrap(), b"raw recording bytes");
+            }
+            assert_eq!(std::fs::read(&source).unwrap(), b"raw recording bytes");
+
+            let outside = temp.path().join("unrelated.mp4");
+            std::fs::write(&outside, b"unrelated").unwrap();
             let denied = dispatch(
                 &state,
                 "screen_record.copy_raw",
-                json!({"source": linked}),
+                json!({"source": outside}),
                 Actor::system(),
             )
             .await;
-            assert!(!denied.ok, "a linked source must fail even under exports");
-        }
-        let same = dispatch(
-            &state,
-            "screen_record.copy_raw",
-            json!({"source": source, "path": source}),
-            Actor::system(),
-        )
-        .await;
-        assert!(!same.ok, "the source must not be its own destination");
+            assert!(
+                !denied.ok,
+                "a path outside this project's exports must fail"
+            );
+            #[cfg(unix)]
+            {
+                let linked = project.join("exports/linked_raw.mp4");
+                std::os::unix::fs::symlink(&outside, &linked).unwrap();
+                let denied = dispatch(
+                    &state,
+                    "screen_record.copy_raw",
+                    json!({"source": linked}),
+                    Actor::system(),
+                )
+                .await;
+                assert!(!denied.ok, "a linked source must fail even under exports");
+            }
+            let same = dispatch(
+                &state,
+                "screen_record.copy_raw",
+                json!({"source": source, "path": source}),
+                Actor::system(),
+            )
+            .await;
+            assert!(!same.ok, "the source must not be its own destination");
+        });
     }
 
     #[test]
     fn cancelled_copy_removes_private_stage_and_never_publishes() {
+        let _output_fixture = crate::output_paths::test_fixture::SessionOutputDirFixture::new();
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("cancel.cutproj");
         std::fs::create_dir_all(&project).unwrap();
