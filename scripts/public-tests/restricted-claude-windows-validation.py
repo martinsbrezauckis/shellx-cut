@@ -47,8 +47,20 @@ def junction(link: str, target: str) -> None:
 
 def portable_share_contract() -> None:
     """Check real orchestration arguments; this is not native NT sharing proof."""
+    for literal in ["C:/frames", "c:\\frames"]:
+        with mock.patch.object(restricted, "_literal_windows_path", return_value=literal):
+            check("local drive cwd preserves the validated literal", restricted._execution_cwd("validated-handle-root") == literal)
+    for literal in ["\\\\server\\share\\frames", "C:frames", "frames", "\\\\?\\Volume{123}\\frames"]:
+        with mock.patch.object(restricted, "_literal_windows_path", return_value=literal):
+            try:
+                restricted._execution_cwd("validated-handle-root")
+            except ValueError:
+                check("unsupported execution cwd refuses", True, literal)
+            else:
+                check("unsupported execution cwd refuses", False, literal)
     with mock.patch.object(restricted, "available", return_value=(True, None)), \
          mock.patch.object(restricted, "_literal_windows_path", side_effect=lambda value: value), \
+         mock.patch.object(restricted, "_execution_cwd", return_value="C:/output") as cwd, \
          mock.patch.object(restricted, "_open", return_value=7) as opening, \
          mock.patch.object(restricted, "_validate", return_value=("staging", (1, b"source"))), \
          mock.patch.object(restricted, "_private_execution_root", return_value=("output", 8, (1, b"out"))), \
@@ -57,7 +69,7 @@ def portable_share_contract() -> None:
          mock.patch.object(restricted, "_close") as close:
         result = restricted.create_frame_only_bundle("staging", ["frames/frame.jpg"])
         check("staging permits read sharing but no write/delete sharing", opening.call_args.kwargs == {"directory": True, "share": 1})
-        check("copy remains selected-frame and handle-root confined", result == "output" and copy.call_args == mock.call(7, ["frames", "frame.jpg"], 9, "frame.jpg", ("staging", 1), ("output", 1)))
+        check("copy remains selected-frame and handle-root confined", result == "C:/output" and cwd.call_args == mock.call("output") and copy.call_args == mock.call(7, ["frames", "frame.jpg"], 9, "frame.jpg", ("staging", 1), ("output", 1)))
         check("successful copy closes every owned directory handle", close.call_args_list == [mock.call(9), mock.call(8), mock.call(7)])
     with mock.patch.object(restricted, "_open", return_value=7) as opening, \
          mock.patch.object(restricted, "_validate", side_effect=[("parent", (1,b"root")), ("parent/output", (1,b"out"))]), \
@@ -119,6 +131,12 @@ def main() -> int:
             output.write(b"outside-secret")
         execution = restricted.create_frame_only_bundle(staging, ["frames/frame.jpg"])
         try:
+            check("copier returns an ordinary local drive cwd", not execution.startswith("\\\\") and os.path.splitdrive(execution)[0].endswith(":"), execution)
+            cmd = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
+            observed = subprocess.run([cmd, "/d", "/c", "cd"], cwd=execution, capture_output=True, text=True)
+            check("system cmd keeps the copied frame root cwd", observed.returncode == 0 and not observed.stderr and os.path.normcase(observed.stdout.strip()) == os.path.normcase(execution), repr((observed.stdout, observed.stderr)))
+            observed = subprocess.run([cmd, "/d", "/c", "type", "frames\\frame.jpg"], cwd=execution, capture_output=True)
+            check("system cmd reads the copied relative frame", observed.returncode == 0 and observed.stdout == b"trusted-frame" and not observed.stderr, repr((observed.stdout, observed.stderr)))
             copied = open(os.path.join(execution, "frames", "frame.jpg"), "rb").read()
             check("validated regular frame copies exact bytes", copied == b"trusted-frame", repr(copied))
             check("execution root excludes staging-only canary",

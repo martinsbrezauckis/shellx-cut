@@ -7,33 +7,24 @@ private handle-rooted directory. Path checks are never used to reopen a frame.
 from __future__ import annotations
 import ctypes
 import os
+import ntpath
 import secrets
 import shutil
 from ctypes import wintypes
 from functools import lru_cache
-FILE_ATTRIBUTE_DIRECTORY = 0x10
-FILE_ATTRIBUTE_NORMAL = 0x80
-FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-FILE_SHARE_READ = 1
-FILE_SHARE_ALL = 7
-FILE_READ_DATA = 1
-FILE_WRITE_DATA = 2
-FILE_ADD_FILE = 2
-FILE_ADD_SUBDIRECTORY = 4
+FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT = 0x10, 0x80, 0x400
+FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT = 0x02000000, 0x00200000
+FILE_SHARE_READ, FILE_SHARE_ALL = 1, 7
+FILE_READ_DATA, FILE_WRITE_DATA = 1, 2
+FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY = 2, 4
 FILE_TRAVERSE = 0x20
 FILE_READ_ATTRIBUTES = 0x80
 SYNCHRONIZE = 0x100000
 OPEN_EXISTING = 3
-FILE_ATTRIBUTE_TAG_INFO = 9
-FILE_STANDARD_INFO = 1
-FILE_ID_INFO = 18
-FILE_CASE_SENSITIVE_INFO = 23
+FILE_ATTRIBUTE_TAG_INFO, FILE_STANDARD_INFO = 9, 1
+FILE_ID_INFO, FILE_CASE_SENSITIVE_INFO = 18, 23
 FILE_TYPE_DISK = 1
-FILE_OPEN = 1
-FILE_CREATE = 2
-FILE_OPEN_IF = 3
+FILE_OPEN, FILE_CREATE, FILE_OPEN_IF = 1, 2, 3
 FILE_DIRECTORY_FILE = 1
 FILE_NON_DIRECTORY_FILE = 0x40
 FILE_SYNCHRONOUS_IO_NONALERT = 0x20
@@ -161,6 +152,13 @@ def _literal_windows_path(path: str) -> str:
 def _identity(handle: int) -> tuple[int, bytes]:
     info = _query(handle, FILE_ID_INFO, _FileIdInfo)
     return info.volume_serial, bytes(info.file_id.identifier)
+def _execution_cwd(final_root: str) -> str:
+    """Expose the validated root as a local DOS cwd supported by cmd launchers."""
+    literal = _literal_windows_path(final_root)
+    drive, tail = ntpath.splitdrive(literal)
+    if len(drive) != 2 or not drive[0].isalpha() or drive[1] != ":" or not tail.startswith(("\\", "/")):
+        raise ValueError("restricted Claude execution cwd requires a local drive path")
+    return literal
 def _inside(root: str, candidate: str) -> bool:
     return candidate.casefold().startswith((root.rstrip("\\/") + "\\").casefold())
 def _safe_relative_frame_path(value: object) -> str:
@@ -327,6 +325,7 @@ def create_frame_only_bundle(staging_bundle: str, frame_relpaths: list[object]) 
             raise ValueError("staging root resolves through an ancestor reparse point")
         execution_root, root_handle, root_identity = _private_execution_root(staging_root)
         try:
+            execution_cwd = _execution_cwd(execution_root)
             source_root, output_root = (staging_root, staging_identity[0]), (execution_root, root_identity[0])
             seen: set[str] = set()
             for value in frame_relpaths:
@@ -340,7 +339,7 @@ def create_frame_only_bundle(staging_bundle: str, frame_relpaths: list[object]) 
                     _copy_validated_source(staging_handle, parts, parent, parts[-1], source_root, output_root)
                 finally:
                     _close(parent)
-            return execution_root
+            return execution_cwd
         except Exception:
             shutil.rmtree(execution_root, ignore_errors=True)
             raise
