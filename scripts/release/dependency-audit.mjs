@@ -9,7 +9,7 @@ import { macosScreenCaptureKitBridgeContract } from './screencapturekit-bridge-c
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(HERE, '..', '..')
 
-const REVIEW_BY = '2026-09-30'
+const REVIEW_BY = '2026-10-15'
 const RELEASE_OWNER = 'ShellX Cut release'
 
 const exception = (advisoryId, packageName, version, reason) => Object.freeze({
@@ -36,7 +36,7 @@ export const RUST_WARNING_EXCEPTIONS = Object.freeze({
       'RUSTSEC-2026-0206',
       'rustybuzz',
       '0.20.1',
-      'resvg/usvg 0.47 still inherit rustybuzz; track their upstream harfrust migration.',
+      'Locked resvg/usvg 0.47 inherit rustybuzz; upstream 0.48 migrated to harfrust, requiring separate title-rendering qualification.',
     ),
     exception(
       'RUSTSEC-2026-0192',

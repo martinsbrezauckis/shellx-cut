@@ -63,9 +63,13 @@ mod tests {
         SESSION_OUTPUT_DIR_TEST_LOCK,
     };
 
-    #[tokio::test]
-    async fn snapshot_rejects_foreign_roots_projects_and_does_not_leak_to_other_tasks() {
+    #[test]
+    fn snapshot_rejects_foreign_roots_projects_and_does_not_leak_to_other_tasks() {
         let _lock = SESSION_OUTPUT_DIR_TEST_LOCK.lock().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let project = tempfile::tempdir().unwrap();
         let chosen = tempfile::tempdir().unwrap();
         let later = tempfile::tempdir().unwrap();
@@ -74,47 +78,45 @@ mod tests {
         let authority = OutputAuthorization::capture(project.path()).unwrap();
         set_session_output_dir(Some(later.path().to_path_buf()));
         let selected = chosen.path().join("selected.mp4");
-        authority
-            .scope(async {
-                assert!(fence_output_path(
-                    project.path(),
-                    selected.to_str(),
-                    "exports/out.mp4",
-                    OutputPathPolicy::MP4
-                )
-                .is_ok());
-                assert!(fence_output_path(
-                    project.path(),
-                    later.path().join("foreign.mp4").to_str(),
-                    "exports/out.mp4",
-                    OutputPathPolicy::MP4
-                )
-                .is_err());
-                assert!(fence_output_path(
-                    project.path(),
-                    Some("../escape.mp4"),
-                    "exports/out.mp4",
-                    OutputPathPolicy::MP4
-                )
-                .is_err());
-                assert!(make_fence(foreign_project.path()).is_err());
-                let resolved = fence_output_path(
-                    project.path(),
-                    None,
-                    "exports/default.mp4",
-                    OutputPathPolicy::MP4,
-                )
-                .unwrap();
-                assert_eq!(resolved.parent(), Some(chosen.path()));
-                let dir = project.path().to_path_buf();
-                let path = selected.clone();
-                assert!(tokio::spawn(async move {
-                    make_fence(&dir).unwrap().fence_output_path(&path).is_err()
-                })
-                .await
-                .unwrap());
+        runtime.block_on(authority.scope(async {
+            assert!(fence_output_path(
+                project.path(),
+                selected.to_str(),
+                "exports/out.mp4",
+                OutputPathPolicy::MP4
+            )
+            .is_ok());
+            assert!(fence_output_path(
+                project.path(),
+                later.path().join("foreign.mp4").to_str(),
+                "exports/out.mp4",
+                OutputPathPolicy::MP4
+            )
+            .is_err());
+            assert!(fence_output_path(
+                project.path(),
+                Some("../escape.mp4"),
+                "exports/out.mp4",
+                OutputPathPolicy::MP4
+            )
+            .is_err());
+            assert!(make_fence(foreign_project.path()).is_err());
+            let resolved = fence_output_path(
+                project.path(),
+                None,
+                "exports/default.mp4",
+                OutputPathPolicy::MP4,
+            )
+            .unwrap();
+            assert_eq!(resolved.parent(), Some(chosen.path()));
+            let dir = project.path().to_path_buf();
+            let path = selected.clone();
+            assert!(tokio::spawn(async move {
+                make_fence(&dir).unwrap().fence_output_path(&path).is_err()
             })
-            .await;
+            .await
+            .unwrap());
+        }));
         assert_eq!(
             super::super::unscoped_session_output_dir().as_deref(),
             Some(later.path())
@@ -126,22 +128,20 @@ mod tests {
         set_session_output_dir(None);
         let project_default = OutputAuthorization::capture(project.path()).unwrap();
         set_session_output_dir(Some(later.path().to_path_buf()));
-        project_default
-            .scope(async {
-                let resolved = fence_output_path(
-                    project.path(),
-                    None,
-                    "exports/project-default.mp4",
-                    OutputPathPolicy::MP4,
-                )
-                .unwrap();
-                assert_eq!(
-                    resolved.parent(),
-                    Some(project.path().join("exports").as_path()),
-                    "captured absence must not inherit a later folder"
-                );
-            })
-            .await;
+        runtime.block_on(project_default.scope(async {
+            let resolved = fence_output_path(
+                project.path(),
+                None,
+                "exports/project-default.mp4",
+                OutputPathPolicy::MP4,
+            )
+            .unwrap();
+            assert_eq!(
+                resolved.parent(),
+                Some(project.path().join("exports").as_path()),
+                "captured absence must not inherit a later folder"
+            );
+        }));
         assert_eq!(
             super::super::unscoped_session_output_dir().as_deref(),
             Some(later.path())
