@@ -3362,10 +3362,11 @@ pub(super) async fn render_queue(
         .with_suggested_action("add at least one delivery; `output` aliases render.final's `path`"));
     }
     // Require an open project up front (fail fast, not inside the spawned queue).
-    {
+    let output_authorization = {
         let g = state.project.read().await;
-        g.as_ref().ok_or_else(no_project)?;
-    }
+        let project = g.as_ref().ok_or_else(no_project)?;
+        crate::output_paths::OutputAuthorization::capture(&project.dir)?
+    };
     // Normalize each entry to render.final args (map the deliver-page `output`
     // alias → render.final's `path`) and VALIDATE it via a render.final dry_run:
     // a bad entry (unknown arg, bad profile/format/geometry) fails the WHOLE queue
@@ -3400,7 +3401,8 @@ pub(super) async fn render_queue(
         if let Value::Object(p) = &mut probe {
             p.insert("dry_run".into(), json!(true));
         }
-        let dr = dispatch_send(state, "render.final", probe, actor.clone()).await;
+        let dr =
+            dispatch_queue_render(state, probe, actor.clone(), output_authorization.clone()).await;
         if !dr.ok {
             // Surface the entry's own error, tagged with its queue index so the
             // caller knows WHICH delivery is malformed.
@@ -3451,7 +3453,9 @@ pub(super) async fn render_queue(
                 );
                 // SAME path render.final uses (its handler + its own job-spawn) — no
                 // render logic duplicated here.
-                let rr = dispatch_send(&st, "render.final", rargs, actor.clone()).await;
+                let rr =
+                    dispatch_queue_render(&st, rargs, actor.clone(), output_authorization.clone())
+                        .await;
                 let render_job = rr
                     .ok
                     .then(|| {
@@ -3568,10 +3572,37 @@ pub(crate) fn dispatch_send<'a>(
     args: Value,
     actor: Actor,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = VerbResult> + Send + 'a>> {
+    dispatch_send_scoped(state, name, args, actor, None)
+}
+
+// Only queue admission supplies this typed authority. Ordinary dispatch never
+// inherits an ambient scope, and spawned tasks require explicit propagation.
+fn dispatch_queue_render<'a>(
+    state: &'a AppState,
+    args: Value,
+    actor: Actor,
+    authorization: crate::output_paths::OutputAuthorization,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = VerbResult> + Send + 'a>> {
+    dispatch_send_scoped(state, "render.final", args, actor, Some(authorization))
+}
+
+fn dispatch_send_scoped<'a>(
+    state: &'a AppState,
+    name: &'a str,
+    args: Value,
+    actor: Actor,
+    authorization: Option<crate::output_paths::OutputAuthorization>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = VerbResult> + Send + 'a>> {
     let state = state.clone();
     let name = name.to_string();
     let nested: std::pin::Pin<Box<dyn std::future::Future<Output = VerbResult> + Send + 'static>> =
-        Box::pin(async move { dispatch(&state, &name, args, actor).await });
+        Box::pin(async move {
+            let action = dispatch(&state, &name, args, actor);
+            match authorization {
+                Some(scope) => scope.scope(action).await,
+                None => action.await,
+            }
+        });
     Box::pin(async move {
         let mut task = AbortDispatchTask(tokio::spawn(nested));
         match (&mut task.0).await {

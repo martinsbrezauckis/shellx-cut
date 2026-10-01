@@ -17,6 +17,8 @@ use cut_media::PathFence;
 use fs2::FileExt;
 use serde_json::{json, Value};
 
+mod authorization;
+pub(crate) use authorization::OutputAuthorization;
 mod policy;
 pub(crate) use policy::OutputPathPolicy;
 
@@ -111,6 +113,13 @@ pub(crate) static SESSION_OUTPUT_DIR_TEST_LOCK: std::sync::Mutex<()> = std::sync
 /// The current session output dir, if set AND still an existing directory
 /// (a folder deleted out from under us is ignored, not a hard export failure).
 fn session_output_dir() -> Option<PathBuf> {
+    if let Some(captured) = authorization::scoped_default_dir() {
+        return captured;
+    }
+    unscoped_session_output_dir()
+}
+
+fn unscoped_session_output_dir() -> Option<PathBuf> {
     let dir = SESSION_OUTPUT_DIR.read().ok()?.clone()?;
     dir.is_dir().then_some(dir)
 }
@@ -177,14 +186,24 @@ pub(crate) fn authorized_export_read_roots(project_dir: &Path) -> Vec<PathBuf> {
 /// may target the project dir, the env-configured CUTD_OUTPUTS_DIR, and the
 /// user's chosen session output dir — those are the only allowed roots.
 pub(crate) fn make_fence(project_dir: &Path) -> Result<PathFence, CutError> {
+    if let Some(captured) = authorization::scoped_fence(project_dir) {
+        return captured;
+    }
+    make_fence_with_default(project_dir, session_output_dir().as_deref())
+}
+
+fn make_fence_with_default(
+    project_dir: &Path,
+    default_dir: Option<&Path>,
+) -> Result<PathFence, CutError> {
     let mut fence = PathFence::new(project_dir)?;
     if let Ok(d) = std::env::var("CUTD_OUTPUTS_DIR") {
         if !d.is_empty() {
             fence = fence.with_extra_root(Path::new(&d))?;
         }
     }
-    if let Some(dir) = session_output_dir() {
-        fence = fence.with_extra_root(&dir)?;
+    if let Some(dir) = default_dir {
+        fence = fence.with_extra_root(dir)?;
     }
     Ok(fence)
 }
