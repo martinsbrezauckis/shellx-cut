@@ -78,14 +78,16 @@ async fn wait_for_owned_jobs_to_settle(state: &AppState, job_ids: &[String]) {
 async fn assemble_broll_holds_its_owner_through_import_then_records_the_calling_actor_checkpoint() {
     let _test_lock = transition_gate_test_lock().lock().await;
     let root = tempfile::tempdir().unwrap();
-    let a_path = root.path().join("a.cutproj");
-    let b_path = root.path().join("b.cutproj");
-    let search_dir = root.path().join("search");
+    let root_path = root.path().canonicalize().unwrap();
+    let a_path = root_path.join("a.cutproj");
+    let b_path = root_path.join("b.cutproj");
+    let search_dir = root_path.join("search");
     std::fs::create_dir_all(&search_dir).unwrap();
     let source = search_dir.join("pinned-broll.mp4");
     let maintained_fixture =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/first-edit-sample.mp4");
     std::fs::copy(&maintained_fixture, &source).expect("copy maintained muxed media fixture");
+    let source = source.canonicalize().unwrap();
 
     let state = AppState::new();
     create_project(&state, "a", &a_path).await;

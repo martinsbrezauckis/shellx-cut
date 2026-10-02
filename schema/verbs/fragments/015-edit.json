@@ -1,0 +1,408 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "edit",
+  "verbs": [
+    {
+      "name": "edit.color_space",
+      "domain": "edit",
+      "description": "Tag a media clip's INPUT color space — the space its SOURCE footage is in (a log / sRGB / Rec.2020 source). The renderer then converts the clip INTO the project working space (project.color), and on to the output space, before grade/effects — so a wide-gamut or screen-capture clip is correctly interpreted instead of being treated as Rec.709. Supported: rec709 (the assumed default for untagged clips), rec2020, srgb, linear; an unknown name is rejected with the supported list. Omitting `input` (or null) CLEARS the tag — the source is then assumed to already be in the working space, and the clip renders byte-identical to an untagged clip. A per-clip attribute (like edit.grade): video media clips only (audio/captions have no pixels), replay-safe, no filesystem/network touch. Conversion is ffmpeg `zscale` (input→working→output); a tagged clip forces the SOFTWARE render path.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Clip id (a media clip on a video track)"
+          },
+          "input": {
+            "type": "string",
+            "enum": [
+              "rec709",
+              "rec2020",
+              "srgb",
+              "linear"
+            ],
+            "description": "Source color space of this clip's footage; omit/null to clear the tag"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{op} — committed-op ride-along; the before/after input space is in op.effects[]",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_color_space",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.color_match",
+      "domain": "edit",
+      "description": "Match a media clip's COLOUR/tonality to a REFERENCE clip — the colorist \"make this shot match that shot\" tool. Samples ONE representative mid-clip frame from each of clip (target) and reference, computes per-channel mean+std (RGB Reinhard-style transfer), and DERIVES an edit.grade correction: brightness from the luma-mean delta, contrast from the luma-std ratio, saturation from the chroma ratio, temperature_k from the warm/cool (R-B) mean delta — scaled by strength (0 = identity/no-op, 1.0 = full match, default 1.0). The correction is APPLIED through the normal edit.grade path, so it composes / undoes / replays like any per-clip grade (it OVERWRITES any existing grade on the clip). The colour ANALYSIS is live (it decodes frames once); the COMMITTED op is a plain, replay-safe grade (concrete params, no resampling on replay). Matching a clip to itself derives an identity grade (clears the grade). v1 LIMITATIONS: single mid-clip frame per side; plain RGB (LAB is the perceptual fast-follow); edit.grade has no green-magenta tint knob, so only the warm/cool axis is corrected. Video media clips only.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "reference"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Target clip id (a media clip on a video track) — the shot to correct"
+          },
+          "reference": {
+            "type": "string",
+            "description": "Reference clip id (a media clip) — the look to match toward"
+          },
+          "strength": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Match strength 0..1 (0 = identity/no-op, 0.5 = halfway, 1.0 = full match). Default 1.0"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, reference, space:\"rgb\", strength, identity, derived:{contrast, brightness, saturation, gamma, temperature_k?}, stats:{target:{mean_r,mean_g,mean_b,std_r,std_g,std_b,mean_luma,std_luma,mean_chroma,std_chroma}, reference:{…}}, sampled_at_s:{target, reference}, analysis_note, op_ids} — the derived grade is COMMITTED as an edit.grade op (op_ids); undo/history track that op. analysis_note states the v1 limits: single representative mid-clip frame, RGB sampling, gamma identity, no green-magenta tint model",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_color_match",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.auto_balance",
+      "domain": "edit",
+      "description": "ONE-CLICK REFERENCE-FREE auto white-balance + exposure on a media clip — a standard 'Auto Color' / 'Balance Color' workflow. Unlike edit.color_match it needs NO reference clip: it samples ONE representative mid-clip frame of clip, NEUTRALISES the frame's OWN colour cast and NUDGES exposure toward a mid-luma target, then DERIVES an edit.grade correction — brightness from the luma-mean delta toward the mid target, contrast a gentle deadbanded pull of the luma spread toward a sane value, temperature_k from the warm/cool (R-B) cast pushed toward neutral (a warm cast cools, a cool cast warms) — scaled by strength (0 = identity/no-op, 1.0 = full correction, default 1.0). mode 'gray_world' (default) assumes the WHOLE-frame average should be neutral grey; mode 'white_patch' measures the cast from the bright NEAR-NEUTRAL region (the highlights that 'should be' white) — more robust when a big saturated object would skew the gray-world average (falls back to gray-world when no such highlights exist). The correction is APPLIED through the normal edit.grade path, so it composes / undoes / replays like any per-clip grade (it OVERWRITES any existing grade). The colour ANALYSIS is live (decodes one frame); the COMMITTED op is a plain, replay-safe grade (concrete params, no resampling on replay). An already-neutral, well-exposed frame derives a near-identity grade (a clean no-op), NOT an error. v1 LIMITATIONS: single mid-clip frame; plain RGB (LAB is the perceptual fast-follow); saturation is left untouched (no principled reference-free target); edit.grade has no green-magenta tint knob, so only the warm/cool axis of the cast is corrected. Video media clips only.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Target clip id (a media clip on a video track) — the shot to balance"
+          },
+          "strength": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Correction strength 0..1 (0 = identity/no-op, 0.5 = halfway, 1.0 = full correction). Default 1.0"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "gray_world",
+              "white_patch"
+            ],
+            "description": "White-balance method: 'gray_world' (default — the whole-frame average should be neutral grey) or 'white_patch' (the bright near-neutral highlights should be white; robust to a big colour object)"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, mode, strength, identity, derived:{contrast, brightness, saturation, gamma, temperature_k?}, stats:{mean_rgb:[r,g,b], mean_luma, channel:{mean_r,…,std_luma,mean_chroma,…}, highlight_warmth?}, sampled_at_s, analysis_note, op_ids} — the derived grade is COMMITTED as an edit.grade op (op_ids); undo/history track that op. highlight_warmth is the bright near-neutral region's warmth used by white_patch (null for gray_world or when no highlights qualified). analysis_note states the v1 limits: single representative mid-clip frame, RGB sampling, saturation/gamma identity, no green-magenta tint model",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_auto_balance",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.matte",
+      "domain": "edit",
+      "description": "AI BACKGROUND REMOVAL/REPLACE on a media clip — a straight-alpha subject cutout WITHOUT a green screen for talking-head workflows. Stores a per-clip MATTE intent; the alpha is baked by the matting sidecar (RVM by default — portable, automatic, license-clean as a user-side runtime) and cached content-addressed by the source. mode 'remove' (default) DROPS the background to reveal the track BELOW — OVERLAY clips ONLY (refused on the base track: nothing under the canvas to reveal; put the subject on a video track ABOVE the background). mode 'replace' fills behind the subject with bg (a solid colour or an asset) and is allowed on any video clip. model 'rvm' (default) | 'matanyone' (opt-in, NVIDIA + non-commercial, user-fetched). quality 'good' (default, native edges) | 'fast' (coarser, quicker). enabled:false CLEARS the matte. Matte routes the timeline to the SOFTWARE renderer (baked-alpha alphamerge composite). Media clips on video tracks only (audio/captions have no pixels).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Clip id (a media clip on a video track; an OVERLAY track for mode=remove)"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "remove",
+              "replace"
+            ],
+            "description": "remove = drop the background (reveal the lower track); replace = fill behind with bg. Default remove."
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "rvm",
+              "matanyone"
+            ],
+            "description": "Matting model. Default rvm (portable, automatic, license-clean). matanyone = opt-in NVIDIA + non-commercial upgrade."
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "fast",
+              "good"
+            ],
+            "description": "Quality/speed tradeoff. Default good (native downsample, best edges); fast = coarser/quicker."
+          },
+          "seed": {
+            "type": "object",
+            "description": "PREMIUM target selection (model=matanyone only): a CLICK or box on one frame → SAM2 makes the first-frame subject mask MatAnyone2 propagates ('pick WHICH subject'). Omit for the RVM auto-seed (finds 'the human'). A different pick re-bakes.",
+            "properties": {
+              "at_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Source time (ms) of the frame the click was made on."
+              },
+              "point": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Positive click [x,y] in SOURCE pixels — the subject to KEEP."
+              },
+              "bbox": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "Subject box [x,y,w,h] in SOURCE pixels (alternative to point)."
+              }
+            },
+            "additionalProperties": false
+          },
+          "bg": {
+            "type": "object",
+            "description": "Replace-mode background (mode=replace only): a solid colour or an asset painted behind the subject.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "color",
+                  "asset"
+                ],
+                "description": "color = solid fill; asset = an imported image/video id."
+              },
+              "color": {
+                "type": "string",
+                "description": "ffmpeg colour name ('black') or '0xRRGGBB' (type=color)."
+              },
+              "asset": {
+                "type": "string",
+                "description": "Imported asset id painted behind the subject (type=asset)."
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "false clears the matte (renders byte-identical to un-matted). Default true."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{op, matte?} — committed-op ride-along; old_matte/new_matte are flat fields in op.effects[]. Applying bakes the alpha before committing and returns its quality receipt in matte; clearing returns the committed op without a matte receipt.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_matte",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.effect",
+      "domain": "edit",
+      "description": "SET a media clip's per-clip EFFECTS list (the 'one-click effects' pass), replacing any existing effects; an empty list clears them. Each effect maps to a CPU-only ffmpeg filter applied IN ORDER. VISUAL effects (video-track clips, after the grade stage): `vignette` {amount 0..1} darkened corners; `sharpen` {amount 0..3} unsharp mask; `blur` {radius px sigma} gaussian blur; `grain` {amount 0..100} film-grain noise; `chroma_key` {color (name or 0xRRGGBB), similarity 0..1, blend 0..1} greenscreen — keys `color` to TRANSPARENT so a LOWER track shows through (OVERLAY clips ONLY — refused on the base track: nothing under the base to reveal; put the subject on a video track ABOVE the background). `mirror` (hflip — un-mirror a webcam/selfie) · `flip` (vflip) · `hue_shift` {degrees} rotate all colors · `rgb_split` {amount px} chromatic-aberration / glitch · `pixelize` {size px} mosaic / retro · `sepia` vintage tone · `auto_color` {amount 0..1} one-click auto contrast + white balance (the 'fix dull footage' button). AUDIO effect (audio-track clips, in the audio chain): `denoise` {amount 0..1} voice/noise reduction (afftdn) — cleans hiss/hum/room tone · `compressor` {amount 0..1} dynamics compressor (acompressor) — evens out loud/quiet speech, auto makeup gain (great for talking-head/podcast). An effect must match its clip's track (visual→video, denoise→audio); an unknown `type`/bad field is a structured error (no broken filter reaches the renderer). COMPOSE ORDER (visual): crop -> conform -> grade -> EFFECTS -> overlay transform. Any effect routes the timeline to the SOFTWARE renderer (these have no CUDA filter).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id to set effects on."
+          },
+          "effects": {
+            "type": "array",
+            "default": [],
+            "description": "Ordered effect list (replaces the clip's current effects; [] clears).",
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "vignette",
+                    "sharpen",
+                    "blur",
+                    "grain",
+                    "chroma_key",
+                    "denoise",
+                    "mirror",
+                    "flip",
+                    "hue_shift",
+                    "rgb_split",
+                    "pixelize",
+                    "sepia",
+                    "auto_color",
+                    "vhs",
+                    "posterize",
+                    "invert",
+                    "emboss",
+                    "compressor",
+                    "gate"
+                  ]
+                },
+                "amount": {
+                  "type": "number",
+                  "description": "vignette 0..1 / sharpen 0..3 / grain 0..100 / denoise 0..1 / compressor 0..1 / gate 0..1 / vhs 0..1 (retro-tape intensity) (audio: gate=noise gate, kills room tone between phrases)"
+                },
+                "levels": {
+                  "type": "number",
+                  "description": "posterize colour levels per channel 2..64 (fewer = more banded; default 8). invert + emboss take no params."
+                },
+                "radius": {
+                  "type": "number",
+                  "description": "blur gaussian sigma in px"
+                },
+                "color": {
+                  "type": "string",
+                  "description": "chroma_key key color — name (\"green\") or 0xRRGGBB"
+                },
+                "similarity": {
+                  "type": "number",
+                  "description": "chroma_key key tolerance 0..1"
+                },
+                "blend": {
+                  "type": "number",
+                  "description": "chroma_key edge blend 0..1"
+                },
+                "degrees": {
+                  "type": "number",
+                  "description": "hue_shift rotation in degrees (0 = none, 180 = complementary). mirror (hflip) + flip (vflip) take no params."
+                }
+              }
+            }
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{op} — committed-op ride-along; the before/after effects list is in op.effects[] (old_effects, effects)",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_effect",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

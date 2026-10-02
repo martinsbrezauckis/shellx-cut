@@ -133,21 +133,21 @@ pub(super) fn verify_movie_edit_list(
         });
         bad(&format!("{}: {diagnostic}", failure.cause))
     };
-    let clock = TimeBase::parse(&stream.time_base).map_err(&early)?;
-    let presented_clock = TimeBase::parse(presented_time_base).map_err(&early)?;
+    let clock = TimeBase::parse(&stream.time_base).map_err(early)?;
+    let presented_clock = TimeBase::parse(presented_time_base).map_err(early)?;
     if u128::from(clock.num) * u128::from(presented_clock.den)
         != u128::from(presented_clock.num) * u128::from(clock.den)
     {
         return Err(early(bad("unedited and presented time bases disagree")));
     }
     if !DecimalDuration::parse(&probe.format.duration)
-        .map_err(&early)?
+        .map_err(early)?
         .matches(clock, stream.duration_ts)
-        .map_err(&early)?
+        .map_err(early)?
         || !DecimalDuration::parse(presented_duration)
-            .map_err(&early)?
+            .map_err(early)?
             .matches(clock, presented_duration_ticks)
-            .map_err(&early)?
+            .map_err(early)?
     {
         return Err(early(bad(
             "movie decimal duration disagrees with exact video ticks",

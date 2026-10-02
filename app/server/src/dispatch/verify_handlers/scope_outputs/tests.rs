@@ -6,10 +6,13 @@ use serde_json::json;
 
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
-    let project = temp.path().join("scopes.cutproj");
+    let temp_path = temp.path().canonicalize().unwrap();
+    let project = temp_path.join("scopes.cutproj");
     std::fs::create_dir_all(project.join("exports/scopes")).unwrap();
-    let outside = temp.path().join("literal-outside-scope-sentinel.txt");
+    let outside = temp_path.join("literal-outside-scope-sentinel.txt");
     std::fs::write(&outside, b"outside stays unchanged").unwrap();
+    let project = project.canonicalize().unwrap();
+    let outside = outside.canonicalize().unwrap();
     (temp, project, outside)
 }
 

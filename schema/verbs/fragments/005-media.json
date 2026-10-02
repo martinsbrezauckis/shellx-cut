@@ -1,0 +1,592 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "media",
+  "verbs": [
+    {
+      "name": "media.import",
+      "domain": "media",
+      "description": "Import a media file as an asset: hashes it, registers it as an op, and kicks the probe→auto-place import chain; proxy/filmstrip and transcribe/perception run as SEPARATE background jobs (proxy_job + enrich_job). Returns immediately. Still images (PNG/JPEG/…) are accepted: probe reports kind=image with no duration, the chain stops after probe (proxy/transcribe/perception skipped — named in the job result), and placement requires edit.insert{duration_ms}. CAPTURE MANIFEST: pass capture_manifest (path to a shellx-cut/capture-manifest/1 JSON written by the recording agent, resolved beside the imported media), or drop it beside the media as <stem>.capture.json — auto-discovered with an in-band warning. Each manifest event becomes a `capture:<type>` marker op (system actor, review-rail visible) with the FULL event payload — data, confidence tag, provenance — preserved in the marker note; events resolve time via at_ms (media time, the contract default) → range_ms[0] (spans mark their start) → utc mapped through recording.clock_map (piecewise-linear, clamped at the anchored span's edges). Markers are created ONLY when this import is auto-placed as the timeline (media time == timeline time); otherwise the job result says so (markers are timeline-absolute). Markers remain confidence-tagged claims from the capture agent and never enter RenderReceipt facts. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "args": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the media file to import"
+          },
+          "capture_manifest": {
+            "type": "string",
+            "description": "Path to a shellx-cut/capture-manifest/1 JSON, resolved beside the imported media and rejected if it escapes that directory. Omit to auto-discover <stem>.capture.json beside the media (warned in-band). Explicit-path errors are hard; a malformed auto-discovered sidecar degrades to a warning."
+          },
+          "proxy": {
+            "type": "boolean",
+            "default": true,
+            "description": "Generate the 960x540 editing proxy in the import chain (default true). Set false for HEAVY files (large FHD / multi-GB raw) to import INSTANTLY instead of blocking minutes on the transcode: the asset stays usable (transcript edits + composed-frame poster scrub from the source), the filmstrip is skipped, and the FINAL RENDER USES THE SOURCE — so output quality is unaffected. Smooth proxy <video> playback is unavailable until/unless a proxy is built."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{asset_id, job_id, capture_manifest?: {path, events}} — watch job_progress events or poll jobs.status; the chain job result carries capture_manifest.{markers_created, events_skipped, skipped[], note}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_import",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.remove",
+      "domain": "media",
+      "description": "Drop an imported asset from the OPEN project — the inverse of media.import and the file-removal half of project cleanup (project.delete removes projects). Removes the assets[<id>] record via a recorded, REPLAY-SAFE media.remove op and unlinks regenerable derived files. Normal user-imported source media is NEVER touched. A project-owned generated source that is a direct child of canonical assets/generated is deleted with its provenance sidecar only after the last asset reference is removed. SAFE DEFAULT: refuses with CONFLICT while any timeline clip still references the asset. Asset removal itself is not timeline-undoable; re-import to restore. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id (e.g. \"a1\") to remove from the open project. List ids via project.state (project.assets)."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{removed:true,asset,source_kept:<ordinary source path or null>,source_deleted:boolean,freed:[...]} — source_deleted is true only for a last-reference project-owned assets/generated file (its provenance sidecar is also freed); ordinary imported sources are always kept",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_remove",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.relink",
+      "domain": "media",
+      "description": "Repoint an imported asset at a new source file — the recovery verb for OFFLINE media (source moved, renamed, or restored elsewhere). Two modes decided by content hash: SAME hash = the file merely moved, pure repath and every derived artifact (probe/proxy/filmstrip/transcript/perception) is KEPT; NEW hash = different content, derived state is cleared and regenerated via the same import chain a fresh media.import runs (result carries the chain job_id — poll jobs.status), while every timeline clip keeps referencing the same asset id (no re-editing needed). Refuses INVALID_ARGS on a KIND mismatch (e.g. relinking a video asset to an audio file — clips assume the kind; import a new asset + edit.replace instead). WARNS (code relink_shorter_than_used) when the new file is shorter than the furthest source point used by any clip — re-trim those clips or renders come up short. REPLAY-SAFE metadata op off the undo cursor (relink back to the old path to restore). Requires an open project. media.check lists which assets are offline. Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id (e.g. \"a1\") to repoint. List ids via project.state (project.assets); media.check flags the offline ones."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the new source media file (must exist and be readable)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{asset, path, old_path, hash_changed, derived_cleared, freed: [<stale derived files unlinked>], job_id?: <import-chain job when content changed>} — NOT_FOUND if the asset id or target path is unknown, INVALID_ARGS on kind mismatch; warning relink_shorter_than_used when clips use source beyond the new duration",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_relink",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.check",
+      "domain": "media",
+      "description": "Read-only OFFLINE-media report: for every imported asset (or one, with {asset}), does its SOURCE file currently exist on disk, and how many timeline clips reference it. Existence is computed from the filesystem at call time — never persisted — so the answer cannot go stale (a moved file shows offline immediately; a restored file shows online immediately). Run before render/export to catch missing media early (render fails with NOT_FOUND on the first offline asset it needs); fix offline assets via media.relink {asset, path} or by restoring the file at its recorded path. The UI's asset tray polls this for offline badges. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Check just this asset id; omit to check every asset in the project."
+          }
+        }
+      },
+      "result": "{count, offline_count, assets: [{asset, path, exists, modified_ms?: <source file Unix epoch ms>, referenced: <number of timeline clips using it>}]} — NOT_FOUND when a requested asset id is unknown",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_check",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.bin_save",
+      "domain": "media",
+      "description": "Save (upsert) a SMART BIN — a NAMED SAVED SEARCH over the project's asset tray (a standard saved-search convention). Membership is COMPUTED at list time (media.bin_list) from the query, never stored, so a bin can't go stale as assets are imported/removed or placed/unplaced. Criteria are AND-combined: media type, name text, unused/used, minimum resolution, missing/offline state, and source modified-time range. At least ONE criterion is required (a bin matching everything is just the tray — refused). Name-keyed: a re-save under the same name REPLACES the query. Replay-safe non-timeline metadata op (the grade.save pattern, off the undo cursor); media.bin_delete removes. The Assets tray renders bins as filter chips with live counts.",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Bin name (the key; re-save replaces)."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "video",
+              "audio",
+              "image"
+            ],
+            "description": "Only assets of this probe kind."
+          },
+          "text": {
+            "type": "string",
+            "description": "Case-insensitive substring match on the source file's basename."
+          },
+          "unused": {
+            "type": "boolean",
+            "description": "true = only assets NOT referenced by any timeline clip (find unused media); false = only assets ON the timeline."
+          },
+          "min_width": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Minimum probed source width in pixels. Assets without probe metadata do not match."
+          },
+          "min_height": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Minimum probed source height in pixels. Assets without probe metadata do not match."
+          },
+          "offline": {
+            "type": "boolean",
+            "description": "true = only missing/offline source files; false = only source files currently present on disk."
+          },
+          "modified_after_ms": {
+            "type": "integer",
+            "description": "Inclusive lower bound for source file modification time in Unix epoch milliseconds."
+          },
+          "modified_before_ms": {
+            "type": "integer",
+            "description": "Inclusive upper bound for source file modification time in Unix epoch milliseconds."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{bin: {name, kind?, text?, unused?, min_width?, min_height?, offline?, modified_after_ms?, modified_before_ms?}, replaced: <true when an existing bin of that name was overwritten>} — invalid_args on an empty name, no criteria, invalid resolution/date range, or an unknown kind",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_bin_save",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.bin_delete",
+      "domain": "media",
+      "description": "Delete a smart bin by name (see media.bin_save). Replay-safe metadata op. The assets the bin matched are untouched — a bin is only a saved search.",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Bin name to delete (media.bin_list shows them)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{deleted: <name>} — NOT_FOUND when no bin carries the name",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_bin_delete",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.bin_list",
+      "domain": "media",
+      "description": "Read-only: every smart bin with its LIVE membership — matching asset ids computed against the current tray, timeline usage, source-file availability, source resolution, and modified times at call time (never cached). Use to browse saved searches or to fetch 'unused media' / 'missing media' / '4K clips' style groupings for further edits.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{count, bins: [{name, kind?, text?, unused?, min_width?, min_height?, offline?, modified_after_ms?, modified_before_ms?, matches: [asset ids], match_count}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_bin_list",
+        "project_state": "optional",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.probe",
+      "domain": "media",
+      "description": "Probe an asset (ffprobe) and store the normalized result on the asset. Synchronous (probing is fast). Local media uses self-contained video, audio and image formats supported by the installed FFmpeg. HLS, concat and other playlist inputs are rejected before they can open nested files; Cut-generated internal concatenation remains supported.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id"
+          }
+        }
+      },
+      "result": "MediaProbe {kind: video|audio|image, duration_ms? (absent for stills), width?, height?, fps?, has_audio, audio_rate?, format, raw}",
+      "behavior": {
+        "mutation_class": "asset_metadata",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_probe",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.waveform",
+      "domain": "media",
+      "description": "Per-bucket audio peaks (abs-max amplitude, 0..1, left->right in time) for the timeline waveform. Synchronous + deterministic; the decode rate is bounded by the probed duration so memory stays small for any clip length. Errors when the asset has no audio stream.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "buckets": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8000,
+            "description": "Number of peak buckets to return (default 1000)."
+          }
+        }
+      },
+      "result": "{asset, bucket_count, peaks:[float 0..1], source_ms, sample_rate} — peaks left-to-right in time",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_waveform",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.filmstrip",
+      "domain": "media",
+      "description": "Build a timeline THUMBNAIL TILE for a video asset from its proxy — a horizontal row of evenly-spaced frames. TWO modes: (1) WHOLE-ASSET (no range_ms) = the base strip over [0,duration], stored on the asset (field `filmstrip`), idempotent, built automatically in the import chain after the proxy step; the UI slices it per clip by the linear fraction t/duration. (2) WINDOWED / ZOOM (range_ms given) = sample just that SOURCE sub-range at `count` frames — the per-zoom density path: the UI requests exactly the frames visible for a clip at the current zoom (≈1 thumb per fixed pixel width), so as you zoom in the window shrinks and density rises, approaching per-frame at sub-second zoom; ephemeral (NOT stored on the asset), returns {thumbs, range_ms, count, h}. Cost is bounded because only the visible window is ever sampled. Video assets WITH a proxy only.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id (must be a video asset with a built proxy)"
+          },
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "WINDOWED mode: [start_ms, end_ms) in the asset's own SOURCE time — sample just this window (the visible clip range at the current zoom) instead of the whole asset. Clamped to [0, duration). Omit for the whole-asset base strip."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 160,
+            "description": "WINDOWED mode: number of frames tiled across the window (≈1 per fixed pixel width of the visible clip). Clamped to [12,160] server-side. Default 12."
+          },
+          "h": {
+            "type": "integer",
+            "minimum": 24,
+            "maximum": 240,
+            "description": "WINDOWED mode: thumbnail height in px. Default 80."
+          }
+        }
+      },
+      "result": "WHOLE-ASSET: {filmstrip} — relative path filmstrip/<id>.jpg (served at /filmstrip/<id>.jpg). WINDOWED: {thumbs, range_ms, count, h} — thumbs = filmstrip/<id>_w<t0>-<t1>_<count>x<h>.jpg, same /filmstrip/ route.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_filmstrip",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.transcribe",
+      "domain": "media",
+      "description": "Run word-level transcription on an asset (job, returns {job_id}). Uses the active STT model from system.set_stt_model: Parakeet v3 by default, Canary-1B-v2 + MMS_FA for smaller-language accuracy, or Whisper large-v3 fallback. Writes receipts/<asset>.words.json and links it on the asset.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "description": "Legacy per-call model override. Prefer system.set_stt_model so the Environment panel, doctor card, and agents agree on the active model."
+          }
+        }
+      },
+      "result": "{job_id} — completion event carries the transcript summary",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_transcribe",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.perception",
+      "domain": "media",
+      "description": "Full instrument run on an asset (words, silences, scenes, beats, loudness) → receipts/<asset>.perception.json (job, returns {job_id}). Cached by asset hash.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{job_id} — completion event carries the PerceptionReport path",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_perception",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.diarize",
+      "domain": "media",
+      "description": "SPEAKER DIARIZATION ('who spoke when') on an asset as a background job (returns {job_id}) — the heavier, separately-provisioned sibling of media.transcribe. Extracts the asset's audio to 16 kHz mono and POSTs it to the diarization service (NVIDIA Sortformer streaming v2, CC-BY-4.0, ≤4 speakers; arrival-order labels S1..Sn), then writes the normalized speaker turns into receipts/<asset>.perception.json as `speaker_turns` AND labels each transcript word with the speaker of the turn it overlaps MOST in time (`WordSpan.speaker`, refreshed into receipts/<asset>.words.json) — so transcript.get / transcript.timeline / captions are speaker-labeled and edit.multicam_switch / audio.dub can key by speaker identity. Also writes receipts/<asset>.diarize.json. If the asset has no transcript yet, the turns are still recorded (words get labeled on the next media.transcribe + media.diarize). Endpoint: CUT_DIARIZE_ENDPOINT (default http://127.0.0.1:9002; set it before launch when the service uses a custom address). The runtime absent / the service unreachable or still loading → an actionable SETUP error (like media.index), never faked turns.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string"
+          },
+          "max_speakers": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8,
+            "description": "Advisory cap — keep only the N most-talkative speakers (Sortformer itself hard-caps at 4). Default: the service's own (4)."
+          }
+        }
+      },
+      "result": "{job_id} — completion event carries {diarization (receipt path), backend, model, num_speakers, n_turns, labeled_words, turns:[{start_ms,end_ms,speaker}]}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_diarize",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

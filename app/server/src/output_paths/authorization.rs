@@ -71,12 +71,13 @@ mod tests {
             .unwrap();
         let project = tempfile::tempdir().unwrap();
         let chosen = tempfile::tempdir().unwrap();
+        let chosen_path = chosen.path().canonicalize().unwrap();
         let later = tempfile::tempdir().unwrap();
         let foreign_project = tempfile::tempdir().unwrap();
-        set_session_output_dir(Some(chosen.path().to_path_buf()));
+        set_session_output_dir(Some(chosen_path.clone()));
         let authority = OutputAuthorization::capture(project.path()).unwrap();
         set_session_output_dir(Some(later.path().to_path_buf()));
-        let selected = chosen.path().join("selected.mp4");
+        let selected = chosen_path.join("selected.mp4");
         runtime.block_on(authority.scope(async {
             assert!(fence_output_path(
                 project.path(),
@@ -107,7 +108,7 @@ mod tests {
                 OutputPathPolicy::MP4,
             )
             .unwrap();
-            assert_eq!(resolved.parent(), Some(chosen.path()));
+            assert_eq!(resolved.parent(), Some(chosen_path.as_path()));
             let dir = project.path().to_path_buf();
             let path = selected.clone();
             assert!(tokio::spawn(async move {

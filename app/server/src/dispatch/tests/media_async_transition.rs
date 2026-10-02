@@ -17,10 +17,12 @@ impl Drop for GateReset {
 async fn media_import_keeps_a_job_with_a_until_project_b_can_open() {
     let _test_lock = transition_gate_test_lock().lock().await;
     let root = tempfile::tempdir().unwrap();
-    let a_path = root.path().join("a.cutproj");
-    let b_path = root.path().join("b.cutproj");
-    let source = root.path().join("source.png");
+    let root_path = root.path().canonicalize().unwrap();
+    let a_path = root_path.join("a.cutproj");
+    let b_path = root_path.join("b.cutproj");
+    let source = root_path.join("source.png");
     std::fs::write(&source, ONE_BY_ONE_PNG).unwrap();
+    let source = source.canonicalize().unwrap();
     let state = AppState::new();
     create_project(&state, "a", &a_path).await;
     create_project(&state, "b", &b_path).await;

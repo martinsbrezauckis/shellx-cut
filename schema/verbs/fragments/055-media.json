@@ -1,0 +1,191 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "media",
+  "verbs": [
+    {
+      "name": "media.intelligence_status",
+      "domain": "media",
+      "description": "Read the current project's cited media-evidence coverage without running analysis. Reports whether the rebuildable MediaEvidenceIndex@1 is present and current for transcript, scene, beat, marker, metadata, and existing visual-index evidence. Every readiness claim is bound to the current asset hash and authoritative receipt/index hash; stale kinds are excluded by media.intelligence_search until rebuilt. No host paths are returned.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Optional exact project asset ids. Omit for all project media."
+          }
+        }
+      },
+      "result": "MediaIntelligenceStatus@1 {schema, index_id?, project_revision, complete, stale, entry_count, coverage:{transcript,visual,scene,beat,marker,metadata}, assets:[{asset_id,available,kinds:{kind:{source,indexed,state}}}]} — no paths",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_status",
+        "project_state": "required",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_rebuild",
+      "domain": "media",
+      "description": "Durably rebuild the path-light MediaEvidenceIndex@1 from evidence Cut already owns: transcript words/speakers, perception scene/beat facts, current markers and media metadata, plus bindings to existing visual indexes. Returns a cancellable background job and runs behind the shared analysis limiter, so playback/render/record work is not given a second unbounded worker pool. This derivation does not transcribe media, run perception, or create missing visual embeddings; it names those missing sources in coverage instead of faking them. A changed project revision before publication refuses the stale snapshot.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Optional exact project asset ids. Omit to derive all project media."
+          },
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "transcript",
+                "visual",
+                "scene",
+                "beat",
+                "marker",
+                "metadata"
+              ]
+            },
+            "description": "Evidence kinds to derive. Omit for every currently supported kind."
+          }
+        }
+      },
+      "result": "{job_id}; jobs.status result becomes {schema:'shellx-cut/media-evidence-index/1', index_id, entry_count, assets, coverage, missing_sources} after atomic publication",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_rebuild",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "media",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "media.intelligence_search",
+      "domain": "media",
+      "description": "Search the current, rebuildable MediaEvidenceIndex@1 and return cursor-bounded EvidenceHit@1 citations. Exact transcript, marker, and metadata matches remain distinct from structural scene/beat matches and semantic visual similarity; scores from different evidence systems are never presented as one universal confidence. Each hit carries an opaque evidence id, sanitized excerpt, exact source range/anchor, current availability, authoritative provenance hashes, and bounded live timeline occurrences. Stale evidence is excluded, not returned with a warning. Visual similarity reads the existing media.index through the local text encoder; non-visual results remain usable when visual coverage/runtime is absent. Read-only and never moves the playhead, inserts media, or sends an agent turn.",
+      "args": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "description": "Words spoken, a visual description, marker text, or media metadata to find."
+          },
+          "asset_ids": {
+            "type": "array",
+            "maxItems": 500,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "transcript",
+                "visual",
+                "scene",
+                "beat",
+                "marker",
+                "metadata"
+              ]
+            }
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "all_project_media",
+              "this_sequence"
+            ],
+            "description": "Default all_project_media. this_sequence excludes assets with no current-sequence occurrence."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Page size, default 40."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Opaque next_cursor from the same query/index snapshot."
+          }
+        }
+      },
+      "result": "EvidenceSearchResult@1 {schema, query, index_id, complete, stale_excluded, warnings, count, hits:[EvidenceHit@1 {evidence_id, asset_id, source_start_ms, source_end_ms, anchor_ms, kind, excerpt, match, relevance?, provenance:{kind,sha256}, available, occurrence_count, occurrences:[{sequence_id,clip_id,track_id,timeline_start_ms,timeline_end_ms}]}], next_cursor?}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "media_intelligence_search",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

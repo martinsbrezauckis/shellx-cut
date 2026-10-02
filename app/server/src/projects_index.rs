@@ -516,9 +516,10 @@ mod tests {
     #[test]
     fn discovery_bounds_project_metadata_and_keeps_projects_listed() {
         let root = tempfile::tempdir().unwrap();
-        let ordinary = root.path().join("ordinary.cutproj");
-        let oversized = root.path().join("oversized.cutproj");
-        let malformed = root.path().join("malformed.cutproj");
+        let root_path = root.path().canonicalize().unwrap();
+        let ordinary = root_path.join("ordinary.cutproj");
+        let oversized = root_path.join("oversized.cutproj");
+        let malformed = root_path.join("malformed.cutproj");
         for dir in [&ordinary, &oversized, &malformed] {
             std::fs::create_dir(dir).unwrap();
         }
@@ -536,13 +537,15 @@ mod tests {
         drop(file);
 
         let mut index = ProjectsIndex::default();
-        reconcile(&mut index, root.path(), 1);
+        reconcile(&mut index, &root_path, 1);
         assert_eq!(index.entries.len(), 3);
         let name_for = |dir: &Path| {
             index
                 .entries
                 .iter()
-                .find(|entry| entry.path == dir.to_string_lossy())
+                .find(|entry| {
+                    Path::new(&entry.path).canonicalize().unwrap() == dir.canonicalize().unwrap()
+                })
                 .unwrap()
                 .name
                 .as_str()

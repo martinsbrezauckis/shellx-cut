@@ -31,10 +31,16 @@ impl Drop for EnvRestore {
 }
 
 async fn create_project(state: &AppState, name: &str, path: &Path) {
+    // These fixtures exercise project ownership, not full-resolution rendering.
+    let settings = cut_core::ProjectSettings {
+        width: 320,
+        height: 180,
+        ..Default::default()
+    };
     let result = dispatch(
         state,
         "project.create",
-        json!({"name": name, "dir": path}),
+        json!({"name": name, "dir": path, "settings": settings}),
         test_actor(),
     )
     .await;
@@ -216,7 +222,7 @@ async fn generate_storyboard_insert_completes_nested_insert_while_project_is_pin
     let root = tempfile::tempdir().unwrap();
     let state = AppState::new();
     let (_a_path, _b_path) = open_a_with_same_revision(&state, root.path()).await;
-    let storyboard = r#"{"schema":"shellx-cut/generate-storyboard-result/1","status":"completed","backend":{"provider":"fixture"},"questions":[],"warnings":[],"storyboard":{"schema":"shellx-cut/generate-storyboard/1","storyboard_id":"pinned","mode":"quick_prompt","status":"valid","scenes":[{"scene_id":"one","index":1,"role":"callout","source":"generate_template","template_id":"builtin.callout.arrow-label","range_ms":[0,1],"params":{"label":"A"}}]}}"#;
+    let storyboard = r#"{"schema":"shellx-cut/generate-storyboard-result/1","status":"completed","backend":{"provider":"fixture"},"questions":[],"warnings":[],"storyboard":{"schema":"shellx-cut/generate-storyboard/1","storyboard_id":"pinned","mode":"quick_prompt","status":"valid","scenes":[{"scene_id":"one","index":1,"role":"callout","source":"generate_template","template_id":"builtin.callout.arrow-label","range_ms":[0,250],"params":{"label":"A","duration_ms":250}}]}}"#;
     let (adapter, started, release) = write_blocking_adapter(root.path(), "pinned", storyboard);
     let _adapter = EnvRestore::set("CUTD_GENERATE_STORYBOARD_ADAPTER", &adapter);
 
@@ -251,4 +257,15 @@ async fn generate_storyboard_insert_completes_nested_insert_while_project_is_pin
             > 1,
         "nested Generate inserts must materialize after the adapter releases"
     );
+    let inserted = &result.result.as_ref().unwrap()["insert"];
+    assert!(!inserted["checkpoints"].as_array().unwrap().is_empty());
+    assert!(!inserted["clips"].as_array().unwrap().is_empty());
+    let project = state.project.read().await;
+    let store = project.as_ref().unwrap();
+    assert_eq!(store.project.name, "a");
+    for asset in inserted["assets"].as_array().unwrap() {
+        let source = &store.project.assets[asset.as_str().unwrap()].path;
+        assert!(Path::new(source).is_file(), "generated overlay is missing");
+    }
+    assert!(!inserted["assets"].as_array().unwrap().is_empty());
 }

@@ -1,0 +1,292 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "title",
+  "verbs": [
+    {
+      "name": "title.add",
+      "domain": "title",
+      "description": "Add a native MOTION-GRAPHICS title: ANIMATED text rendered by resvg per-frame (distinct from captions.add_text's STATIC cards, and built in-house — no external tool). Builds a TitleSpec from a PRESET (lower_third = text near the bottom on an optional translucent bar, fade + slide-up in/out; title_card = large centred text, fade + scale in/out for intros/outros), renders it to a TRANSPARENT overlay video, and composites it on a dedicated TOP-MOST 'title1' overlay video track over [range_ms[0], range_ms[1]). Lowers to honest import + insert ops (the generated .mov lives in the project's titles/ dir; replay re-reads it like any imported media). Geometry/fps come from the project; font_px defaults to a preset-appropriate size from the project height; color defaults to white; bg (the lower_third/top_bar bar) defaults on for lower_third. PRESETS: lower_third | title_card | top_bar (top chyron) | subtitle (small centred bottom line) | headline (bold upper-third banner) — or free placement via x+y. ANIMATION override (fade|slide_up|slide_down|slide_left|slide_right|pop|none) restyles the motion across any preset, so the look count = presets × animations. Use captions.kinetic for per-word text synchronized to a transcript.",
+      "args": {
+        "type": "object",
+        "required": [
+          "text",
+          "range_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The title text"
+          },
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[start_ms, end_ms) on the timeline (absolute); the title animates over this span"
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "lower_third",
+              "title_card",
+              "top_bar",
+              "subtitle",
+              "headline"
+            ],
+            "description": "Title style/position (default lower_third). lower_third = bottom-left on an optional bar; title_card = large centred intro/outro; top_bar = top-left chyron/source label; subtitle = small centred line near the bottom; headline = large bold upper-third banner. (Or use free placement with x+y.)"
+          },
+          "font_px": {
+            "type": "number",
+            "description": "Font size in px at the project height (default: preset-appropriate)"
+          },
+          "color": {
+            "type": "string",
+            "description": "Text color #RRGGBB (default #FFFFFF)"
+          },
+          "bg": {
+            "type": "boolean",
+            "description": "Draw the translucent background bar (lower_third / free placement); default on for lower_third, off for free placement"
+          },
+          "x": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "FREE PLACEMENT: normalized horizontal anchor [0,1] (0=left, 0.5=centre, 1=right). When BOTH x and y are given the title is placed there, overriding the preset position — the 'drop the title anywhere' path."
+          },
+          "y": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "FREE PLACEMENT: normalized vertical anchor [0,1] (0=top, 0.5=middle, 1=bottom). Used with x."
+          },
+          "align": {
+            "type": "string",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ],
+            "description": "FREE PLACEMENT text alignment at (x,y); default center"
+          },
+          "animation": {
+            "type": "string",
+            "enum": [
+              "fade",
+              "slide_up",
+              "slide_down",
+              "slide_left",
+              "slide_right",
+              "pop",
+              "none"
+            ],
+            "description": "Entry/exit ANIMATION override — applies to ANY preset (and free placement), so the option count = presets × animations. fade = pure crossfade; slide_* = fade + glide in from that direction; pop = fade + scale up; none = static, no fade (stays fully on for its whole range). Omit to keep the preset's tasteful default motion (lower_third slides up, title_card scales). IGNORED when `template` is set (templates own their motion)."
+          },
+          "template": {
+            "type": "string",
+            "enum": [
+              "typewriter",
+              "word_pop",
+              "slide_stack",
+              "kinetic_emphasis",
+              "lower_third_reveal",
+              "caption_karaoke"
+            ],
+            "description": "Animated-text TEMPLATE — a keyframed, multi-look motion (distinct from the static preset positions). Takes PRECEDENCE over preset + free placement (x/y) and OWNS the motion, so `animation` is ignored. typewriter = characters reveal left-to-right then fade; word_pop = each word pops in centered, one at a time; slide_stack = words stack on rows sliding in from the left; kinetic_emphasis = the phrase appears and one word (see `emphasis`) scale-pops + recolors to `accent`; lower_third_reveal = a bar slides in then a primary (and optional secondary, split the text on '|') line reveals; caption_karaoke = a dim full line with an `accent` highlight that fills word-by-word. List them with the `title.templates` verb."
+          },
+          "accent": {
+            "type": "string",
+            "description": "Accent color #RRGGBB for templates that highlight a word (kinetic_emphasis, caption_karaoke). Default a warm gold (#FFD24A)."
+          },
+          "emphasis": {
+            "type": "string",
+            "description": "kinetic_emphasis only: the word to emphasize (case-insensitive substring match). Omit to emphasize the longest word."
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Internal composite-action identity. Consecutive generated/native-lowering edits with the same value undo as one user action."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{title_track, asset_id, clip_id, preset, template, range_ms}; lowers to import + insert ops",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "title_add",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "title.update",
+      "domain": "title",
+      "description": "Edit a PLACED title clip's TEXT (and/or style) IN PLACE — the edit companion to title.add (which only ADDS). Selecting a title clip used to give a generic 'Video clip' inspector with no way to change its words. This recovers the originating title.add spec from the op-log, merges the provided overrides (text is the common case; any title.add styling field — color/preset/font_px/bg/x/y/align/animation/template/accent/emphasis — may also be overridden), RE-RENDERS a fresh transparent overlay .mov at the SAME duration, and swaps the clip onto the new asset. The clip id, timeline range, track, and position are all kept; only its pixels change. Commits as ONE lowered op (the asset swap; the new .mov's media.import rides ahead of it) so undo reverts the whole edit and replay re-imports + re-swaps. The clip must be a title overlay clip (on a 'title*' track). Titles generated from captions (captions.kinetic) are NOT editable here — their text is the transcript; edit the captions/transcript instead.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Title clip id (a clip on a 'title*' overlay track, from project.state)"
+          },
+          "text": {
+            "type": "string",
+            "description": "New title text (the common edit; replaces the existing words)"
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "lower_third",
+              "title_card",
+              "top_bar",
+              "subtitle",
+              "headline"
+            ],
+            "description": "Override the title style/position (see title.add)"
+          },
+          "font_px": {
+            "type": "number",
+            "description": "Override the font size in px at the project height"
+          },
+          "color": {
+            "type": "string",
+            "description": "Override the text color #RRGGBB"
+          },
+          "bg": {
+            "type": "boolean",
+            "description": "Override the translucent background bar on/off"
+          },
+          "x": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Override FREE PLACEMENT normalized horizontal anchor [0,1] (used with y)"
+          },
+          "y": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Override FREE PLACEMENT normalized vertical anchor [0,1] (used with x)"
+          },
+          "align": {
+            "type": "string",
+            "enum": [
+              "left",
+              "center",
+              "right"
+            ],
+            "description": "Override FREE PLACEMENT text alignment at (x,y)"
+          },
+          "animation": {
+            "type": "string",
+            "enum": [
+              "fade",
+              "slide_up",
+              "slide_down",
+              "slide_left",
+              "slide_right",
+              "pop",
+              "none"
+            ],
+            "description": "Override the entry/exit ANIMATION (ignored when template is set)"
+          },
+          "template": {
+            "type": "string",
+            "enum": [
+              "typewriter",
+              "word_pop",
+              "slide_stack",
+              "kinetic_emphasis",
+              "lower_third_reveal",
+              "caption_karaoke"
+            ],
+            "description": "Override the animated-text TEMPLATE (see title.add / title.templates)"
+          },
+          "accent": {
+            "type": "string",
+            "description": "Override the accent color #RRGGBB for templates that highlight a word"
+          },
+          "emphasis": {
+            "type": "string",
+            "description": "Override the kinetic_emphasis word"
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Internal composite-action identity used by native Motion reimports so all changed objects undo as one user action."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, track, asset_id, text}; one lowered op appended (re-renders the overlay + swaps the clip's asset in place)",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "title_update",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "title.templates",
+      "domain": "title",
+      "description": "List the animated-text TEMPLATE catalog that `title.add {template}` accepts — each entry is {name, description, params}. A pure READ (no project needed) so a UI or agent can discover the looks (typewriter, word_pop, slide_stack, kinetic_emphasis, lower_third_reveal, caption_karaoke) and their parameters before placing a title. Generated from the in-house catalog, so it never drifts from what title.add accepts.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{templates: [{name, description, params}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "title_templates",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "internal",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

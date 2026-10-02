@@ -1,0 +1,582 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "edit",
+  "verbs": [
+    {
+      "name": "edit.auto_zoom",
+      "domain": "edit",
+      "description": "Add subtle PUNCH-IN zooms at the EMPHASIS moments of a clip — the dynamic short-form / talking-head look (the frame pushes in on the loud beats, then settles back). EMPHASIS DETECTION is live, from the clip's perception report: trigger 'energy' (default) finds local maxima of the per-window momentary-loudness envelope (Loudness.windows — the same audio facts edit.duck consumes), mapped to clip-local time, non-maximum-suppressed by strength + a min-spacing, capped at max_zooms (default ≈ one per 8 s, never every beat); trigger 'transcript' uses utterance/sentence START times instead (the transcript word model, segmented at.?! or a pause gap, like transcript.remove_retakes), forward-greedily min-spaced and capped. Each emphasis point lowers to a 'scale' keyframe RAMP 1.0 → 1.0+intensity → 1.0 (an ease-in rise, a hold_ms hold at full zoom, an ease-back fall), COMMITTED through the normal edit.keyframe{param:'scale'} path — the existing centred-zoompan render path (the multi-point generalization of edit.animate). The committed op carries CONCRETE scale keyframes, so replay needs NO perception (the analysis is live, the result is deterministic). SET semantics on the scale track: re-running OVERWRITES a previous auto_zoom; a manual edit.animate Ken Burns on the clip must be cleared first (the core enforces they are mutually exclusive — the keyframe channel is the richer eased form). intensity defaults 0.12 (a 12% push-in) and is clamped to [0, 0.5]; intensity 0 or a clip with no clear emphasis peaks is a clean count:0 no-op (no op appended). No loudness windows / no transcript words → an actionable error. v1 zooms are CENTRED (subject-tracked focal points are a record-integration follow-up). VIDEO-track media clips with audio (energy) or a transcript (transcript) only.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id (a video-track clip; energy needs audio, transcript needs a transcript)"
+          },
+          "intensity": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 0.5,
+            "description": "Push-in depth: the punch zooms to 1.0+intensity (0.12 = a subtle 12% push-in, the default). Clamped to [0, 0.5]; 0 = no zoom (clean no-op)."
+          },
+          "max_zooms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Cap on the number of punches (default ≈ one per 8 s of clip, capped at 24). The strongest emphasis beats win. 0 = no zooms."
+          },
+          "hold_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How long each punch holds at full zoom before easing back, ms. Default 500."
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "energy",
+              "transcript"
+            ],
+            "description": "Emphasis source: 'energy' (default — loudness peaks) or 'transcript' (sentence/utterance starts)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, zooms:[{at_ms, peak, scale}], intensity, trigger, count, op_ids} — the punches are COMMITTED as scale keyframes via an edit.keyframe op (op_ids); peak is the trigger metric (momentary LUFS for energy, the preceding pause-gap ms for transcript), scale = 1.0+intensity. intensity 0 / no peaks → {count:0, zooms:[], note} with no op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_auto_zoom",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.add_mask",
+      "domain": "edit",
+      "description": "Add (or clear) a vector/freeform MASK on a BASE-track video clip — a region effect (blur/pixelate/black) scoped to a SHAPE, the region-blur / privacy-redaction primitive (region-scoped cleanup; blur a face/label; censor a password). shape: 'rect' (points = 2 opposite corners [[x0,y0],[x1,y1]]), 'ellipse' (points = [[cx,cy],[rx,ry]] centre + radii), or 'polygon'/freeform (points = the vertices, ≥3, drawn closed). All points are FRACTIONS of frame width/height (0..1). effect: 'blur' (default, gaussian; strength = sigma px, default 15), 'pixelate' (mosaic; strength = block px, default 16), or 'black' (solid censor). feather = soft-edge fraction of frame HEIGHT (0 = hard). invert = scope the effect OUTSIDE the shape. enabled:false (or omitting shape) CLEARS the mask. The renderer bakes a feathered shape alpha (resvg) and alphamerge+overlays the effect inside the region (CPU/software path); animatable later via keyframes/tracking. v1 renders on the BASE (first) video track only — an overlay-track clip is refused (clear error). A core op (replay-safe).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Base-track video clip id."
+          },
+          "shape": {
+            "type": "string",
+            "enum": [
+              "rect",
+              "ellipse",
+              "polygon"
+            ],
+            "description": "Region shape (polygon covers freeform). Required unless enabled:false."
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "description": "Normalized points (fractions of frame W/H). rect/ellipse = 2 points; polygon ≥ 3."
+          },
+          "feather": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Soft-edge feather as a fraction of frame height (0 = hard edge; default 0)."
+          },
+          "invert": {
+            "type": "boolean",
+            "description": "Scope the effect OUTSIDE the shape instead of inside (default false)."
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "blur",
+              "pixelate",
+              "black"
+            ],
+            "description": "What to do in the region (default blur)."
+          },
+          "strength": {
+            "type": "number",
+            "description": "blur → gaussian sigma px (default 15); pixelate → block px (default 16); black ignores it."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "false CLEARS the mask (default true)."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, mask, old_mask}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_add_mask",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.redact",
+      "domain": "edit",
+      "description": "REDACTION — a TIME-BOUNDED privacy effect: blur / pixelate / black-box a SHAPE region on a BASE-track video clip, active ONLY during `range_ms` (clip-local [start,end] ms; omit = the whole clip). The editor-side complement to capture-time anonymization: redact a password / API key / face / PII that appears mid-edit in ANY footage (screen recordings, imported clips). Shares the mask field + render path with edit.add_mask but is SECURITY-FRAMED: `mode` is blur (default) / pixelate / box (solid black censor), and an unset blur/pixelate strength uses a heavier OVER-BLUR fail-safe (never under-redact). shape: 'rect' (points = [[x0,y0],[x1,y1]]), 'ellipse' ([[cx,cy],[rx,ry]]) or 'polygon' (vertices ≥3); all points are FRACTIONS of frame W/H (0..1). feather = soft-edge fraction of frame height; invert = redact OUTSIDE the shape. enabled:false (or omitting shape) CLEARS. Render: the baked shape alpha gates the effect (alphamerge+overlay) with `enable='between(t,…)'` for the range (CPU/software path). v1: BASE (first) video track only; one region per clip (multi-region + motion-tracked + OCR auto-detect are next). A core op (replay-safe). To make it FOLLOW a moving subject, track with edit.track then keyframe the region (until tracked-redact lands).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Base-track video clip id."
+          },
+          "shape": {
+            "type": "string",
+            "enum": [
+              "rect",
+              "ellipse",
+              "polygon"
+            ],
+            "description": "Region shape (polygon covers freeform). Required unless enabled:false."
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "description": "Shape points as FRACTIONS of frame W/H: rect = 2 corners, ellipse = [centre, radii], polygon = vertices (≥3)."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "blur",
+              "pixelate",
+              "box"
+            ],
+            "description": "Redaction effect: blur (default, gaussian) | pixelate (mosaic) | box (solid black censor)."
+          },
+          "feather": {
+            "type": "number",
+            "description": "Soft-edge fraction of frame height (0 = hard edge)."
+          },
+          "invert": {
+            "type": "boolean",
+            "description": "Redact OUTSIDE the shape instead of inside."
+          },
+          "strength": {
+            "type": "number",
+            "description": "blur → sigma px (fail-safe default 25); pixelate → block px (default 24); box → ignored."
+          },
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Clip-local [start_ms, end_ms] window the redaction is active in. Omit = the whole clip."
+          },
+          "boxes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "shape",
+                "points"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "shape": {
+                  "type": "string",
+                  "enum": [
+                    "rect",
+                    "ellipse",
+                    "polygon"
+                  ]
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "track": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "t_ms",
+                      "cx",
+                      "cy"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "t_ms": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "cx": {
+                        "type": "number"
+                      },
+                      "cy": {
+                        "type": "number"
+                      }
+                    }
+                  },
+                  "minItems": 2
+                }
+              }
+            },
+            "description": "ADDITIONAL regions (face blur): blur/pixelate N faces or boxes at once, all sharing this `mode`/`strength`/`feather`/`range_ms`. Each box = {shape, points, track?} (fractions of frame W/H); track is the same [{t_ms,cx,cy}] motion-centre array as the primary region. The primary `shape`/`points` is region 0; `boxes` are the rest."
+          },
+          "track": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "t_ms",
+                "cx",
+                "cy"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "t_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cx": {
+                  "type": "number"
+                },
+                "cy": {
+                  "type": "number"
+                }
+              }
+            },
+            "minItems": 2,
+            "description": "MOTION TRACK — the region CENTRE [{t_ms, cx, cy}] (fractions) over time, so the redaction FOLLOWS a moving subject. Feed edit.track's `points`. rect/ellipse shapes only; the shape gives SIZE, the track overrides the centre. The renderer animates the alpha procedurally (geq)."
+          },
+          "ocr_auto": {
+            "type": "boolean",
+            "description": "OCR AUTO-DETECT — read the frame at `at_ms`, find on-screen PII (email/key/card/SSN/IP/JWT/AWS-key/secret-keyword) via OCR (RapidOCR) + regex, and redact the UNION region of all matches (fail-safe over-cover). Omits shape/points (computed). Needs the perception sidecar + rapidocr; returns found:0 (no op) when nothing sensitive is detected. The receipt reports CATEGORIES + box only, never the matched text."
+          },
+          "faces": {
+            "type": "boolean",
+            "description": "FACE AUTO-DETECT — detect every face in the frame at `at_ms` (YuNet, bundled) and BLUR them all at once (multi-region). The one-click privacy redaction for people's faces. Omits shape/points (computed → one box per face, margin-expanded). Shares this call's `mode`/`strength`/`feather`/`range_ms`. Needs the perception sidecar (opencv); returns found:0 (no op) when no face is detected at the frame."
+          },
+          "track_faces": {
+            "type": "boolean",
+            "description": "FACE AUTO-DETECT option: true/default tracks detected faces over time; false uses only the static detection frame. `track` remains the motion-track array for already-resolved redaction regions."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Clip-local frame (ms) to scan for `ocr_auto` / `faces` (default 0). Pick the moment the secret / face is on screen."
+          },
+          "pii": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "email",
+                "api_key",
+                "aws_key",
+                "jwt",
+                "ssn",
+                "ip",
+                "credit_card",
+                "keyword",
+                "secret"
+              ]
+            },
+            "description": "Restrict `ocr_auto` to these PII categories (default: all)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "false CLEARS the redaction (default true)."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, mask, old_mask}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_redact",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "destructive",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.track",
+      "domain": "edit",
+      "description": "MOTION TRACKING — track a region across a clip's frames (cv2: CSRT, with a matchTemplate fallback) and return its trajectory plus ready-to-apply pos_x/pos_y (and optional scale) KEYFRAME arrays, so a title / PiP / blur-mask can FOLLOW the moving subject. Seed the tracker with `bbox` [x,y,w,h] OR a `point` [x,y] (all FRACTIONS of the frame, top-left origin). Tracks the clip-local window [start_ms,end_ms] (default the whole clip), sampling every `every_ms` (default 100). This is a MEASUREMENT (non-mutating, like verify.*): the op log stays cv2-free and replay-deterministic. BIND the result: feed keyframes.pos_x / keyframes.pos_y straight into edit.keyframe {param:'pos_x'|'pos_y'} on an overlay clip (position keyframes and masks consume these natively). Needs the perception sidecar (python + cv2); returns a setup hint if absent. Read-only.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id to track in (its source pixels)."
+          },
+          "bbox": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "Seed box [x,y,w,h] as FRACTIONS of the frame (top-left origin). One of bbox/point is required."
+          },
+          "point": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Seed point [x,y] as fractions; a small box is grown around it. Alternative to bbox."
+          },
+          "start_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Clip-local start of the tracked window (default 0)."
+          },
+          "end_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Clip-local end of the tracked window (default = clip duration)."
+          },
+          "every_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sample interval in ms (default 100). The tracker updates every frame; this thins the emitted keyframes."
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "csrt",
+              "kcf",
+              "mil",
+              "template"
+            ],
+            "description": "Tracker engine (default auto → CSRT, else template fallback)."
+          },
+          "track_scale": {
+            "type": "boolean",
+            "description": "Also emit a `scale` keyframe channel (box size relative to the first sample) for a zoom that follows the subject (default false)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{clip, engine, fps, source:{width,height}, window_ms, sampled, coverage, first, last, keyframes:{pos_x:[{t_ms,value}],pos_y,scale?}, points:[{t_ms,cx,cy,w,h,ok}], apply_hint}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": false,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_track",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.multicam_sync",
+      "domain": "edit",
+      "description": "MULTICAM AUDIO SYNC — align ≥2 clips of the SAME event (interview/podcast/concert shot on several cameras) by cross-correlating their AUDIO energy envelopes. Two cameras hear the same sound at the same wall-clock time, so the lag that best aligns their audio IS the time offset between the clips. Decodes each clip's audio to a 50 Hz RMS envelope, normalized-cross-correlates each against the `reference` (default the first clip) over ±`max_offset_ms` (default 15 s), and returns each clip's `offset_ms` + a confidence `score` (−1..1). MEASUREMENT (non-mutating, like edit.track): to SYNC, place/trim each clip by its offset (the agent applies it). Every clip needs an audio stream. Robust to per-camera gain (mean-subtracted + energy-normalized).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clips"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clips": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "string"
+            },
+            "description": "≥2 media clip ids of the same event."
+          },
+          "reference": {
+            "type": "string",
+            "description": "The clip all offsets are measured against (default: the first clip)."
+          },
+          "max_offset_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "description": "Max |offset| to search for (default 15000). Bounds the cross-correlation lag window."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{reference, env_hz, offsets:[{clip, offset_ms, score, reference?}], sync_hint} — offset_ms = how much LATER the clip's audio is than the reference",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_multicam_sync",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.multicam_switch",
+      "domain": "edit",
+      "description": "AUTO ACTIVE-SPEAKER multicam switching — given ≥2 audio-SYNCED camera angles of one scene (each on its own VIDEO track, already time-aligned on the timeline — run edit.multicam_sync and place the clips first), cut the program to whichever camera is the ACTIVE SPEAKER (loudest) over time: the interview / podcast multicam edit. Per 250 ms window across the angles' OVERLAPPING span, each camera's audio energy is read from its perception Loudness.windows envelope (the same audio facts edit.duck / edit.auto_zoom use), mapped to timeline coordinates; the loudest camera wins, with a small energy HYSTERESIS so two near-equal levels don't flicker. Adjacent same-camera windows merge into shots, and any shot shorter than `min_shot_ms` (default 1500) is dissolved, so there are no sub-second cuts. REPRESENTATION (replay-safe): an ORCHESTRATOR like assemble.broll — records NO op of its own; it wraps the build in an auto-checkpoint, (re)creates a reserved `__mc_program` VIDEO track ON TOP (later video tracks composite over earlier ones, so a full-frame opaque clip occludes the angles beneath → exactly one angle shows), and LOWERS each shot to a plain edit.insert of the active angle's segment at the sync-correct source offset. Existing user tracks named `program` are preserved and not auto-detected as camera angles. AUDIO is unchanged — video tracks contribute no audio to the render (it mixes from audio tracks only), so this switches the PICTURE, not the sound (standard multicam practice; no per-cut audio jumps). One dominant speaker → one shot / no switches (clean, not an error). <2 angles, an angle with no audio energy, or no overlapping span → an actionable error. SPEAKER-IDENTITY MODE (speaker-identity mode): when a diarization exists for the reference/`diarize_asset` (run media.diarize first), pass `mode:\"speaker\"` (or rely on AUTO) to cut to the camera of whoever is SPEAKING — each diarized speaker is mapped to the angle whose mic is loudest during their turns, so an off-camera loud noise no longer steals the shot; `mode:\"energy\"` forces the loudest-mic default. LIMITS: 250 ms window granularity; assumes the angles are already time-aligned; speaker→camera correlation needs per-angle mic separation.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tracks": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "string"
+            },
+            "description": "The camera-angle VIDEO track ids to switch between (≥2). Omit to auto-detect every video track holding a media clip."
+          },
+          "min_shot_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Minimum shot length, ms — no cut faster than this (the anti-flicker / no-sub-second-cut floor). Default 1500."
+          },
+          "reference_track": {
+            "type": "string",
+            "description": "The anchor / default angle the program opens on and falls back to on near-equal levels (must be one of `tracks`). Default: the first angle."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "speaker",
+              "energy"
+            ],
+            "description": "SPEAKER-IDENTITY cutting (speaker-identity mode): \"speaker\" cuts to the camera of whoever is SPEAKING — each diarized speaker is mapped to the angle whose mic is loudest during that speaker's turns, so an off-camera loud noise no longer steals the shot (needs media.diarize on the reference/diarize asset). \"energy\" is the original loudest-mic behavior. Omit for AUTO: speaker mode when a diarization is available, else energy."
+          },
+          "diarize_asset": {
+            "type": "string",
+            "description": "The asset whose diarization (media.diarize speaker_turns) drives speaker mode. Default: the reference angle's asset. Must be one of the camera angles' assets (its track gives the timeline↔source mapping). Ignored in energy mode."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{shots:[{start_ms, end_ms, camera, energy}], switches, tracks, min_shot_ms, program_track, span_ms, mode, checkpoint, revert_hint, note} — the active angle of each shot is COMMITTED as a plain edit.insert onto the reserved `__mc_program` video track (an orchestrator: no op of its own; revert via the checkpoint; replay/diff need no diarization — diarization is read at PLAN time only). `camera` is the on-screen angle's track id, `energy` its mean momentary LUFS over the shot, `switches` = shots−1. `mode` reports {mode:\"speaker\"|\"energy\", and in speaker mode diarize_asset, num_speakers, speaker_to_cam:[{speaker, camera}]}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_multicam_switch",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

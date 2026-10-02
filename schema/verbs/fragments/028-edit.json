@@ -1,0 +1,599 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "edit",
+  "verbs": [
+    {
+      "name": "edit.blend",
+      "domain": "edit",
+      "description": "Set an OVERLAY video track's LAYER blend mode — how the whole track composites onto everything below it (a standard layer blend mode). mode 'normal' (the default when omitted) = the usual alpha-over composite (clears the blend); other modes blend the layer with the base ONLY where the overlay has content: multiply (darken/burn), screen (brighten/glow), overlay (contrast), darken, lighten, difference, addition, subtract, softlight, hardlight. Useful for light leaks, textures, double-exposure, and grade layers. A LAYER property (it applies to the whole track) — put a clip on its own overlay track via edit.add_track to blend just that clip. VIDEO tracks only (the first non-empty video track is the base; empty tracks do not claim the base slot; audio/caption tracks ignore it). CPU-only → opts the timeline out of the GPU fast-track.",
+      "args": {
+        "type": "object",
+        "required": [
+          "track"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "description": "Overlay video track id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "multiply",
+              "screen",
+              "overlay",
+              "darken",
+              "lighten",
+              "difference",
+              "addition",
+              "subtract",
+              "softlight",
+              "hardlight"
+            ],
+            "description": "Blend mode (default 'normal' = clear to alpha-over)"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{track, blend_mode, old_blend_mode}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_blend",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.track_visible",
+      "domain": "edit",
+      "description": "Show or hide a visual timeline track without deleting clips or changing layer order. on:false hides a video or caption track consistently from live preview, exact frames, render, and export; on:true restores it. A hidden base video track leaves a black canvas behind visible overlays rather than promoting another track; hidden overlays and captions are skipped. Audio tracks are refused because audio uses edit.mute. Replay-safe: the flag lives on Track.visible and defaults true for old projects.",
+      "args": {
+        "type": "object",
+        "required": [
+          "track",
+          "on"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "description": "Video or caption track id to show/hide"
+          },
+          "on": {
+            "type": "boolean",
+            "description": "true = visible in output, false = hidden from output"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{track, visible, old_visible}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_track_visible",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.track_lock",
+      "domain": "edit",
+      "description": "Lock or unlock a timeline track against accidental editing. on:true blocks timeline drag/trim/drop/delete/split/context edits and disables the selected clip's Layer drawer and Inspector controls while preserving selection, clips, audibility, visibility, and render output; on:false unlocks the track. Direct agent/API mutation remains explicit and is not silently blocked by this human-UI guard. Replay-safe: the flag lives on Track.locked and defaults false for old projects.",
+      "args": {
+        "type": "object",
+        "required": [
+          "track",
+          "on"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "description": "Track id to lock or unlock"
+          },
+          "on": {
+            "type": "boolean",
+            "description": "true = locked against timeline edits, false = editable"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{track, locked, old_locked}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_track_lock",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.mute",
+      "domain": "edit",
+      "description": "NON-DESTRUCTIVELY mute or un-mute a whole AUDIO track. on:true silences the track in the audio mix; on:false un-mutes it. This is a FLAG on the track — the track's gain (edit.gain, dB) is NEVER touched, so a dialed-in level survives mute → unmute and survives a reload/reopen (this replaces an older mute that wrote -100 dB into the gain and lost the level when the session ended). A muted track contributes SILENCE to the mix; audibility is resolved at render/preview/export time by the rule: an audio track is audible iff it is NOT muted AND (no AUDIO track is soloed OR this track is soloed) — so an explicit mute always wins, even over solo. Video tracks contribute pixels only; imported video sound lives on its linked audio track. Video/caption targets are refused instead of storing a render no-op. Replay-safe: the flag lives in project state and the op is logged like any other edit.",
+      "args": {
+        "type": "object",
+        "required": [
+          "track",
+          "on"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "description": "Audio track id to mute/un-mute"
+          },
+          "on": {
+            "type": "boolean",
+            "description": "true = mute (silence in the mix), false = un-mute"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{track, muted, old_muted}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_mute",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.solo",
+      "domain": "edit",
+      "description": "NON-DESTRUCTIVELY solo or un-solo an AUDIO track. on:true solos the track; on:false clears its solo. While any AUDIO track is soloed, only soloed audio tracks are audible in the mix and every other audio track contributes SILENCE — WITHOUT touching any track's gain (edit.gain). Like mute, this is a FLAG: the dialed-in levels are preserved and survive a reload. An explicit edit.mute still wins over solo (a muted track stays silent even if soloed). Video tracks contribute pixels only; imported video sound lives on its linked audio track. Video/caption targets are refused instead of storing a render no-op. Replay-safe: the flag lives in project state and the op is logged.",
+      "args": {
+        "type": "object",
+        "required": [
+          "track",
+          "on"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "description": "Audio track id to solo/un-solo"
+          },
+          "on": {
+            "type": "boolean",
+            "description": "true = solo (only soloed tracks play), false = clear solo"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{track, solo, old_solo}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_solo",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.pan",
+      "domain": "edit",
+      "description": "Set an AUDIO track's NON-DESTRUCTIVE stereo PAN/balance (core editing): -1.0 = full left, 0 = center, +1.0 = full right. BALANCE semantics on the stereo track chain — center is unity (no filter emitted; untouched mixes stay byte-identical) and panning ATTENUATES the opposite channel on a cosine taper (never boosts, no clipping risk). Applied at the mix stage after concat/duck, so render, preview, and export.audio stems agree. Independent of gain_db (like edit.mute / edit.solo); survives reload. Video/caption tracks refused; out-of-range/NaN refused (not clamped).",
+      "args": {
+        "type": "object",
+        "required": [
+          "track",
+          "pan"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "description": "Audio track id"
+          },
+          "pan": {
+            "type": "number",
+            "minimum": -1,
+            "maximum": 1
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{old_pan, pan} on the track (OpEffect.track); one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_pan",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.paste_attributes",
+      "domain": "edit",
+      "description": "PASTE ATTRIBUTES: copy a SOURCE clip's attributes onto N target clips in one call. PURE ORCHESTRATOR (audio.cleanup_voice pattern): records NO op of its own — takes ONE auto-checkpoint, dispatches the existing replay-safe verbs (edit.grade/transform/crop/speed/gain/fade/effect/eq) per target, STOPS on the first failure and returns the checkpoint + revert_hint (never half-applied silently). Categories: grade (parametric+LUT) · transform (geometry+opacity, + crop when the source has one) · speed (1.0 copies as an explicit reset) · volume (gain dB for audio-track sources + fades when present; video gain is reported skipped because video tracks contribute pixels only) · effects (full effects list, SET semantics — an empty source list clears targets; + EQ when present). Attributes the source doesn't carry are listed in `skipped`, never silently dropped. The source clip itself is filtered out of to_clips. Kind mismatches fail through the sub-verb's own validation.",
+      "args": {
+        "type": "object",
+        "required": [
+          "from_clip",
+          "to_clips",
+          "which"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from_clip": {
+            "type": "string"
+          },
+          "to_clips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "which": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "grade",
+                "transform",
+                "speed",
+                "volume",
+                "effects"
+              ]
+            },
+            "minItems": 1
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{status: ok|failed, from_clip, targets, which, applied[], skipped[], checkpoint, revert_hint}; sub-ops appended by the dispatched verbs",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_paste_attributes",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.slip",
+      "domain": "edit",
+      "description": "SLIP trim (core editing): shift a clip's SOURCE window by by_ms source-milliseconds (positive = show later content) — change WHAT plays without moving the clip. Timeline position, duration, fades, and keyframes untouched; downstream never moves. ONE op. Media clips only; speed ramps refused (clear, slip, re-ramp); bounds validated against the asset probe (no content before 0 / past the asset end); by_ms:0 refused.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "by_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "by_ms": {
+            "type": "integer"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip_id, slipped_ms, old_src: [in,out], src: [in,out]}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_slip",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.roll",
+      "domain": "edit",
+      "description": "ROLL trim (core editing): move the shared CUT between the two adjacent media clips whose boundary sits exactly at at_ms — the left clip's out-point and the right clip's in-point move together by by_ms timeline-milliseconds (positive = cut later). Total timeline length unchanged; downstream never moves. ONE op mutating both clips atomically. Constant speed honored (timeline delta x speed = source delta; exact at 1.0, +/-1ms rounding on retimed clips); speed ramps refused on either side; a crossfade AT the cut is refused (clear it first); emptying either clip refused; bounds validated against the asset probe.",
+      "args": {
+        "type": "object",
+        "required": [
+          "track",
+          "at_ms",
+          "by_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string"
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "by_ms": {
+            "type": "integer"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{at_ms, rolled_ms, left: {clip_id, old_src, src_out_ms}, right: {clip_id, old_src, src_in_ms}}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_roll",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.slide_edit",
+      "domain": "edit",
+      "description": "SLIDE trim (core editing; named beside edit.split_edit — bare edit.slide is the slide-in/out ANIMATION verb): move a clip later/earlier between its two adjacent MEDIA neighbors, who absorb the move — the left neighbor's out-point and the right neighbor's in-point shift by by_ms timeline-milliseconds. The slid clip's own source window and duration are untouched; total timeline length unchanged. ONE op mutating both neighbors atomically. Needs a media clip on BOTH sides (use edit.move otherwise); speed ramps refused on all three; crossfades on a moving boundary refused; emptying a neighbor refused; bounds validated against the asset probe.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "by_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "by_ms": {
+            "type": "integer"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip_id, slid_ms, left: {clip_id, old_src, src_out_ms}, right: {clip_id, old_src, src_in_ms}}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_slide_edit",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "edit.add_marker",
+      "domain": "edit",
+      "description": "Add a marker at an absolute position on the project timeline.",
+      "args": {
+        "type": "object",
+        "required": [
+          "at_ms",
+          "label"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Absolute project timeline milliseconds from zero; never relative to a selected range or clip."
+          },
+          "label": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{marker_id}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_add_marker",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

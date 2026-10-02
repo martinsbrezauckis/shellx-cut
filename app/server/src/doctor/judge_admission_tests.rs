@@ -157,10 +157,8 @@ fn selected_context_probe_passes_exact_handoff_without_path_augmentation() {
     );
     assert_eq!(
         observed["payload"]["launches"]["claude"]["executable"],
-        root.path()
-            .join("claude-provider")
-            .to_string_lossy()
-            .as_ref()
+        provider_entry(root.path(), "claude", "claude")["admission"]["enrollment"]["executable"]
+            ["path"]
     );
     assert!(observed["payload"]["launches"].get("other").is_none());
 }

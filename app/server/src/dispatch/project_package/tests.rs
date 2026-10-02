@@ -121,15 +121,12 @@ mod tests {
         let worker_stopped = Arc::new(AtomicBool::new(false));
         let worker_stopped_for_job = worker_stopped.clone();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let job_id = spawn_bounded_package_worker(
-            &state,
-            Duration::from_millis(20),
-            move |_cancel| {
+        let job_id =
+            spawn_bounded_package_worker(&state, Duration::from_millis(20), move |_cancel| {
                 release_rx.recv().unwrap();
                 worker_stopped_for_job.store(true, Ordering::SeqCst);
                 Ok(())
-            },
-        );
+            });
 
         // The bounded Tokio-time poll proves prompt terminalization without a
         // host wall-clock assertion that becomes scheduler-sensitive when the
@@ -171,18 +168,21 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     async fn packages_only_referenced_media_without_mutating_source_ops_or_cache() {
         let root = tempfile::tempdir().unwrap();
-        let destination = root.path().join("packages");
+        let root_path = root.path().canonicalize().unwrap();
+        let destination = root_path.join("packages");
         fs::create_dir(&destination).unwrap();
-        let source = root.path().join("source.mov");
-        let duplicate = root.path().join("duplicate.mov");
+        let source = root_path.join("source.mov");
+        let duplicate = root_path.join("duplicate.mov");
         fs::write(&source, b"portable package fixture").unwrap();
         fs::write(&duplicate, b"portable package fixture").unwrap();
+        let source = source.canonicalize().unwrap();
+        let duplicate = duplicate.canonicalize().unwrap();
         let source_hash = format!("sha256:{:x}", Sha256::digest(b"portable package fixture"));
         let state = AppState::new();
         let created = dispatch(
             &state,
             "project.create",
-            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+            json!({"name":"source", "dir":root_path.join("source.cutproj")}),
             actor(),
         )
         .await;
@@ -256,8 +256,14 @@ mod tests {
         let plan = planned.result.unwrap();
         assert_eq!(plan["plan"]["unique_media_count"], 1);
         assert_eq!(plan["plan"]["source_file_count"], 2);
-        assert_eq!(plan["plan"]["assets"][0]["source_path"], source.to_string_lossy().as_ref());
-        assert_eq!(plan["plan"]["assets"][1]["source_path"], duplicate.to_string_lossy().as_ref());
+        assert_eq!(
+            plan["plan"]["assets"][0]["source_path"],
+            source.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            plan["plan"]["assets"][1]["source_path"],
+            duplicate.to_string_lossy().as_ref()
+        );
         let mut other_source = plan["plan"].clone();
         other_source["assets"][0]["source_path"] = json!(duplicate.to_string_lossy());
         assert_ne!(hash_json(&other_source).unwrap(), plan["plan_hash"]);
@@ -313,14 +319,16 @@ mod tests {
         let destination = root.path().join("packages");
         fs::create_dir(&destination).unwrap();
         let state = AppState::new();
-        assert!(dispatch(
-            &state,
-            "project.create",
-            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
-            actor(),
-        )
-        .await
-        .ok);
+        assert!(
+            dispatch(
+                &state,
+                "project.create",
+                json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+                actor(),
+            )
+            .await
+            .ok
+        );
 
         let available = dispatch(
             &state,
@@ -330,7 +338,10 @@ mod tests {
         )
         .await;
         assert!(available.ok, "{:?}", available.error);
-        assert_eq!(available.result.as_ref().unwrap()["plan"]["target_status"], "available");
+        assert_eq!(
+            available.result.as_ref().unwrap()["plan"]["target_status"],
+            "available"
+        );
 
         fs::create_dir(destination.join("packed.cutproj")).unwrap();
         let occupied = dispatch(
@@ -341,13 +352,19 @@ mod tests {
         )
         .await;
         assert!(occupied.ok, "{:?}", occupied.error);
-        assert_eq!(occupied.result.as_ref().unwrap()["plan"]["target_status"], "occupied");
-        assert_ne!(available.result.unwrap()["plan_hash"], occupied.result.unwrap()["plan_hash"]);
+        assert_eq!(
+            occupied.result.as_ref().unwrap()["plan"]["target_status"],
+            "occupied"
+        );
+        assert_ne!(
+            available.result.unwrap()["plan_hash"],
+            occupied.result.unwrap()["plan_hash"]
+        );
         assert!(state.jobs.list().is_empty());
     }
 
     #[tokio::test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     async fn plan_refuses_source_path_that_cannot_be_shown_exactly() {
         use std::os::unix::ffi::OsStrExt;
         use std::os::unix::fs::symlink;
@@ -355,34 +372,42 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("packages");
         fs::create_dir(&destination).unwrap();
-        let target = root.path().join(std::ffi::OsStr::from_bytes(b"hidden-\x80.mov"));
+        let target = root
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"hidden-\x80.mov"));
         let alias = root.path().join("alias.mov");
         fs::write(&target, b"media fixture").unwrap();
         symlink(&target, &alias).unwrap();
         let state = AppState::new();
-        assert!(dispatch(
-            &state,
-            "project.create",
-            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
-            actor(),
-        ).await.ok);
+        assert!(
+            dispatch(
+                &state,
+                "project.create",
+                json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+                actor(),
+            )
+            .await
+            .ok
+        );
         {
             let mut guard = state.project.write().await;
             let store = guard.as_mut().unwrap();
-            store.record_import(
-                Some("a1".into()),
-                Asset {
-                    path: alias.to_string_lossy().into_owned(),
-                    hash: format!("sha256:{:x}", Sha256::digest(b"media fixture")),
-                    probe: None,
-                    transcript: None,
-                    perception: None,
-                    proxy: None,
-                    filmstrip: None,
-                },
-                actor(),
-                None,
-            ).unwrap();
+            store
+                .record_import(
+                    Some("a1".into()),
+                    Asset {
+                        path: alias.to_string_lossy().into_owned(),
+                        hash: format!("sha256:{:x}", Sha256::digest(b"media fixture")),
+                        probe: None,
+                        transcript: None,
+                        perception: None,
+                        proxy: None,
+                        filmstrip: None,
+                    },
+                    actor(),
+                    None,
+                )
+                .unwrap();
             store.apply(
                 "edit.insert",
                 json!({"asset":"a1", "track":"v1", "at_ms":0, "src_range_ms":[0,100], "ripple":false}),
@@ -395,7 +420,8 @@ mod tests {
             "project.package_plan",
             json!({"destination":destination, "name":"packed"}),
             actor(),
-        ).await;
+        )
+        .await;
         assert!(!planned.ok);
         assert_eq!(planned.error.unwrap().code, error_codes::INVALID_ARGS);
         assert!(state.jobs.list().is_empty());
@@ -410,18 +436,23 @@ mod tests {
         let destination = root.path().join("packages");
         fs::create_dir(&destination).unwrap();
         let state = AppState::new();
-        assert!(dispatch(
-            &state,
-            "project.create",
-            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
-            actor(),
-        )
-        .await
-        .ok);
+        assert!(
+            dispatch(
+                &state,
+                "project.create",
+                json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+                actor(),
+            )
+            .await
+            .ok
+        );
 
         let target = destination.join("packed.cutproj");
         symlink(root.path().join("missing-package"), &target).unwrap();
-        assert!(fs::symlink_metadata(&target).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(!target.exists(), "fixture must remain a dangling link");
 
         let plan = dispatch(
@@ -432,7 +463,10 @@ mod tests {
         )
         .await;
         assert!(plan.ok, "{:?}", plan.error);
-        assert_eq!(plan.result.as_ref().unwrap()["plan"]["target_status"], "occupied");
+        assert_eq!(
+            plan.result.as_ref().unwrap()["plan"]["target_status"],
+            "occupied"
+        );
         assert!(state.jobs.list().is_empty());
     }
 
@@ -613,7 +647,11 @@ mod tests {
                 .record_import(
                     Some("a1".into()),
                     Asset {
-                        path: root.path().join("offline.mov").to_string_lossy().into_owned(),
+                        path: root
+                            .path()
+                            .join("offline.mov")
+                            .to_string_lossy()
+                            .into_owned(),
                         hash: format!("sha256:{}", "a".repeat(64)),
                         probe: None,
                         transcript: None,
@@ -655,14 +693,16 @@ mod tests {
         let source = root.path().join("source.mov");
         fs::write(&source, b"cancel after copy").unwrap();
         let state = AppState::new();
-        assert!(dispatch(
-            &state,
-            "project.create",
-            json!({"name":"source", "dir":root.path().join("source.cutproj")}),
-            actor(),
-        )
-        .await
-        .ok);
+        assert!(
+            dispatch(
+                &state,
+                "project.create",
+                json!({"name":"source", "dir":root.path().join("source.cutproj")}),
+                actor(),
+            )
+            .await
+            .ok
+        );
         {
             let mut guard = state.project.write().await;
             let store = guard.as_mut().unwrap();

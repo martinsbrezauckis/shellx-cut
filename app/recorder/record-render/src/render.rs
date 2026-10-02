@@ -366,8 +366,8 @@ mod tests {
             .args([
                 "-vf",
                 "select=eq(n\\,94)",
-                "-vsync",
-                "0",
+                "-fps_mode",
+                "passthrough",
                 "-frames:v",
                 "1",
                 "-pix_fmt",

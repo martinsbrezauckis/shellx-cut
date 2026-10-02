@@ -144,23 +144,25 @@ impl ManagedChild {
                 }
                 return Err(error);
             }
-            let status = self
-                .child
-                .lock()
-                .expect("ffmpeg child lock")
-                .try_wait()
-                .map_err(|error| ff_err(self.context, error))?;
-            if let Some(status) = status {
-                self.reaped = true;
-                let tree_result = match self.tree.lock().expect("ffmpeg tree lock").hard_stop() {
-                    Ok(()) => {
-                        self.tree_closed = true;
-                        Ok(())
-                    }
-                    Err(error) => Err(ff_err("close ffmpeg process tree", error)),
-                };
+            if self
+                .exit_ready()
+                .map_err(|error| ff_err(self.context, error))?
+            {
+                // Join before reaping: the watcher must never signal a reused PGID.
                 self.stop_watcher();
-                tree_result?;
+                self.tree
+                    .lock()
+                    .expect("ffmpeg tree lock")
+                    .close_after_exit()
+                    .map_err(|error| ff_err("close ffmpeg process tree", error))?;
+                self.tree_closed = true;
+                let status = self
+                    .child
+                    .lock()
+                    .expect("ffmpeg child lock")
+                    .wait()
+                    .map_err(|error| ff_err(self.context, error))?;
+                self.reaped = true;
                 return Ok(status);
             }
             thread::sleep(PROCESS_POLL);
@@ -175,48 +177,66 @@ impl ManagedChild {
         if self.reaped && self.tree_closed {
             return Ok(());
         }
-        let soft = self
-            .tree
-            .lock()
-            .expect("ffmpeg tree lock")
-            .soft_stop()
-            .err();
-        let _ = self.wait_for_grace();
-        let hard = self
-            .tree
-            .lock()
-            .expect("ffmpeg tree lock")
-            .hard_stop()
-            .err();
+        self.stop_watcher();
+        let _ = self.child.lock().expect("ffmpeg child lock").stdin.take();
+        let exited_before_soft_stop = self.wait_for_grace().unwrap_or(false);
+        let soft = if exited_before_soft_stop {
+            None
+        } else {
+            self.tree
+                .lock()
+                .expect("ffmpeg tree lock")
+                .soft_stop()
+                .err()
+        };
+        let exited_after_soft_stop =
+            exited_before_soft_stop || self.wait_for_grace().unwrap_or(false);
+        let hard = if exited_after_soft_stop {
+            self.tree
+                .lock()
+                .expect("ffmpeg tree lock")
+                .close_after_exit()
+                .err()
+        } else {
+            self.tree
+                .lock()
+                .expect("ffmpeg tree lock")
+                .hard_stop()
+                .err()
+        };
         self.tree_closed = hard.is_none();
         let mut child = self.child.lock().expect("ffmpeg child lock");
-        let kill = child
-            .kill()
-            .err()
-            .filter(|error| error.kind() != io::ErrorKind::InvalidInput);
+        let kill = if exited_after_soft_stop {
+            None
+        } else {
+            child
+                .kill()
+                .err()
+                .filter(|error| error.kind() != io::ErrorKind::InvalidInput)
+        };
         let wait = child.wait().err();
         self.reaped = wait.is_none();
         drop(child);
-        self.stop_watcher();
-        cleanup_result(soft, hard, kill, wait)
+        process_tree::cleanup_result(soft, hard, kill, wait)
     }
 
-    fn wait_for_grace(&mut self) -> io::Result<()> {
+    fn exit_ready(&self) -> io::Result<bool> {
+        let mut child = self.child.lock().expect("ffmpeg child lock");
+        self.tree
+            .lock()
+            .expect("ffmpeg tree lock")
+            .exit_ready(&mut child)
+    }
+
+    fn wait_for_grace(&mut self) -> io::Result<bool> {
         let until = Instant::now() + STOP_GRACE;
         while Instant::now() < until {
-            if self
-                .child
-                .lock()
-                .expect("ffmpeg child lock")
-                .try_wait()?
-                .is_some()
-            {
-                self.reaped = true;
-                return Ok(());
+            if self.exit_ready()? {
+                return Ok(true);
             }
             thread::sleep(PROCESS_POLL);
         }
-        Ok(())
+        Ok(false)
     }
 
     fn stop_watcher(&mut self) {
@@ -250,28 +270,6 @@ fn spawn_watcher(
             thread::sleep(PROCESS_POLL);
         }
     })
-}
-
-fn cleanup_result(
-    soft: Option<io::Error>,
-    hard: Option<io::Error>,
-    kill: Option<io::Error>,
-    wait: Option<io::Error>,
-) -> Result<()> {
-    let errors: Vec<_> = [
-        ("graceful tree stop", soft),
-        ("hard tree stop", hard),
-        ("direct child kill", kill),
-        ("direct child wait", wait),
-    ]
-    .into_iter()
-    .filter_map(|(label, error)| error.map(|error| format!("{label}: {error}")))
-    .collect();
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(ff_err("clean up ffmpeg process", errors.join("; ")))
-    }
 }
 
 pub(super) struct Reader {

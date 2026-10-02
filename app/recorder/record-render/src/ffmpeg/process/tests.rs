@@ -37,6 +37,125 @@ fn cancellation_kills_and_reaps_a_blocked_child() {
 }
 
 #[cfg(unix)]
+fn wait_for_unreaped_exit(child: &ManagedChild) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !child.exit_ready().unwrap() {
+        assert!(Instant::now() < deadline, "leader did not exit in time");
+        thread::sleep(Duration::from_millis(5));
+    }
+    // WNOWAIT must leave the exit status available and the PID reserved until
+    // the owned group closes. A reaping probe would produce ECHILD here.
+    assert!(!child.reaped);
+    assert!(child.exit_ready().unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn natural_exit_is_unreaped_until_stop_closes_the_tree() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "exit 0"]);
+    let mut child = ManagedChild::spawn(
+        &mut command,
+        ProcessControl::bounded(Duration::from_secs(5), || false),
+        "natural exit fixture",
+    )
+    .unwrap();
+    wait_for_unreaped_exit(&child);
+    child.stop_and_reap().unwrap();
+    assert!(child.tree_closed);
+    assert!(child.reaped);
+    assert!(child.child.lock().unwrap().wait().unwrap().success());
+    child.stop_and_reap().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn natural_wait_joins_the_watcher_before_releasing_the_leader_pid() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "exit 0"]);
+    let mut child = ManagedChild::spawn(
+        &mut command,
+        ProcessControl::bounded(Duration::from_secs(5), || false),
+        "watcher join fixture",
+    )
+    .unwrap();
+    child.stop_watcher();
+    wait_for_unreaped_exit(&child);
+    let pid = child.child.lock().unwrap().id();
+    let stopped = child.stopped.clone();
+    let (tx, rx) = mpsc::sync_channel(1);
+    child.stopped.store(false, Ordering::Release);
+    child.watcher = Some(thread::spawn(move || {
+        while !stopped.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+        // An in-flight watcher still owns the numeric group until joined.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        tx.send(result == 0 && unsafe { info.si_pid() } == pid as i32)
+            .unwrap();
+    }));
+    assert!(child.wait().unwrap().success());
+    assert!(
+        rx.recv().unwrap(),
+        "watcher ran after the leader was reaped"
+    );
+    assert!(child.reaped && child.tree_closed);
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_closes_and_reaps_a_live_child() {
+    let mut command = slow_command();
+    let mut child = ManagedChild::spawn(
+        &mut command,
+        ProcessControl::bounded(Duration::from_secs(5), || false),
+        "live stop fixture",
+    )
+    .unwrap();
+    assert!(!child.exit_ready().unwrap());
+    child.stop_and_reap().unwrap();
+    assert!(child.tree_closed);
+    assert!(child.reaped);
+    assert!(!child.child.lock().unwrap().wait().unwrap().success());
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_after_leader_exit_closes_a_live_descendant() {
+    let temp = tempfile::tempdir().unwrap();
+    let pid_file = temp.path().join("exited-leader-grandchild.pid");
+    let mut command = Command::new("sh");
+    command.args([
+        "-c",
+        "sleep 60 & child=$!; printf '%s' \"$child\" > \"$1\"; exit 0",
+        "sh",
+        &pid_file.display().to_string(),
+    ]);
+    let mut child = ManagedChild::spawn(
+        &mut command,
+        ProcessControl::bounded(Duration::from_secs(5), || false),
+        "exited leader stop fixture",
+    )
+    .unwrap();
+    let pid = wait_for_pid(&pid_file);
+    wait_for_unreaped_exit(&child);
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "descendant must be live");
+    child.stop_and_reap().unwrap();
+    assert!(child.tree_closed);
+    assert!(child.reaped);
+    assert!(child.child.lock().unwrap().wait().unwrap().success());
+    assert_gone(pid);
+}
+
+#[cfg(unix)]
 fn wait_for_pid(path: &std::path::Path) -> i32 {
     for _ in 0..100 {
         if let Ok(pid) =

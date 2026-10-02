@@ -81,9 +81,10 @@ async fn review_rejects_a_turn_after_the_open_project_changes() {
 #[tokio::test]
 async fn generated_replacement_commits_in_a_before_b_can_open() {
     let root = tempfile::tempdir().unwrap();
-    let a = root.path().join("a.cutproj");
-    let b = root.path().join("b.cutproj");
-    let source = root.path().join("source.mp4");
+    let root_path = root.path().canonicalize().unwrap();
+    let a = root_path.join("a.cutproj");
+    let b = root_path.join("b.cutproj");
+    let source = root_path.join("source.mp4");
     std::fs::write(&source, b"stub media").unwrap();
     let state = AppState::new();
     for (name, path) in [("a", &a), ("b", &b)] {
@@ -96,6 +97,8 @@ async fn generated_replacement_commits_in_a_before_b_can_open() {
         .await;
         assert!(created.ok, "project fixture failed: {:?}", created.error);
     }
+    let a = a.canonicalize().unwrap();
+    let b = b.canonicalize().unwrap();
     let opened = dispatch(&state, "project.open", json!({"path": a}), Actor::system()).await;
     assert!(opened.ok, "A reopen failed: {:?}", opened.error);
     let imported = dispatch(

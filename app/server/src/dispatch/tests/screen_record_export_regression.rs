@@ -19,7 +19,8 @@ fn polished_stop_saves_collision_safe_raw_mp4_and_editable_plan() {
         .unwrap();
     runtime.block_on(async {
         let temp = tempfile::tempdir().unwrap();
-        let project_dir = temp.path().join("polished_raw.cutproj");
+        let temp_path = temp.path().canonicalize().unwrap();
+        let project_dir = temp_path.join("polished_raw.cutproj");
         let state = AppState::new();
         let created = dispatch(
             &state,
@@ -29,6 +30,7 @@ fn polished_stop_saves_collision_safe_raw_mp4_and_editable_plan() {
         )
         .await;
         assert!(created.ok, "{:?}", created.error);
+        let project_dir = project_dir.canonicalize().unwrap();
 
         let mut first: Option<Value> = None;
         for (capture_id, name) in [
@@ -88,7 +90,8 @@ fn stop_autoedit_export_preserves_capture_timebase_and_aligned_capture_audio() {
         .unwrap();
     runtime.block_on(async {
         let temp = tempfile::tempdir().unwrap();
-        let project_dir = temp.path().join("export_timebase.cutproj");
+        let temp_path = temp.path().canonicalize().unwrap();
+        let project_dir = temp_path.join("export_timebase.cutproj");
         let state = AppState::new();
         let created = dispatch(
             &state,
@@ -98,6 +101,7 @@ fn stop_autoedit_export_preserves_capture_timebase_and_aligned_capture_audio() {
         )
         .await;
         assert!(created.ok, "project create failed: {:?}", created.error);
+        let project_dir = project_dir.canonicalize().unwrap();
 
         let capture = crate::screen_record::screen_record_cache_dir(&project_dir)
             .unwrap()
@@ -197,7 +201,8 @@ fn export_system_only_audio_materializes_its_packet_offset() {
         .unwrap();
     runtime.block_on(async {
         let temp = tempfile::tempdir().unwrap();
-        let project_dir = temp.path().join("export_system_only.cutproj");
+        let temp_path = temp.path().canonicalize().unwrap();
+        let project_dir = temp_path.join("export_system_only.cutproj");
         let state = AppState::new();
         let created = dispatch(
             &state,
@@ -207,6 +212,7 @@ fn export_system_only_audio_materializes_its_packet_offset() {
         )
         .await;
         assert!(created.ok, "project create failed: {:?}", created.error);
+        let project_dir = project_dir.canonicalize().unwrap();
 
         let capture = crate::screen_record::screen_record_cache_dir(&project_dir)
             .unwrap()

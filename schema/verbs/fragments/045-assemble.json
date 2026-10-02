@@ -1,0 +1,218 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "assemble",
+  "verbs": [
+    {
+      "name": "assemble.repurpose",
+      "domain": "assemble",
+      "description": "AUTO-HIGHLIGHT SELECTION AND EXPLICIT MATERIALIZATION: without `apply`, return ranked candidate clips {rank, word_range:[lo,hi], range_ms, duration_ms, text, score, reason} and a revision-bound `plan_binding`; this default never edits the timeline. Resend the unchanged request with `apply:plan_binding`, request_id, and expected_revision equal to plan_binding.project_revision to add the reviewed ranges as one editable timeline operation with one normal Undo. The apply rechecks exact project identity/revision and destination-track safety; it refuses stale or cross-project plans without a partial edit. Heuristic v1 (no model, deterministic): splits words into sentence-ish units at long pauses, greedily packs them into ~target_ms candidates (capped at 1.5x), and scores each by speech density + ASR confidence + optional prompt-keyword overlap + duration fit. Requires the asset to be transcribed (media.transcribe).",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id (must be transcribed)."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "How many top segments to return (default 5)."
+          },
+          "target_ms": {
+            "type": "integer",
+            "minimum": 3000,
+            "maximum": 600000,
+            "description": "Target clip length in ms (default 30000); candidates are packed to ~this, capped at 1.5x."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Optional theme/keywords to bias selection toward (keyword overlap boosts a segment's score)."
+          },
+          "apply": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema", "project_identity", "project_revision", "verb", "asset", "selected_ranges", "transcript_sha256", "materialization"],
+            "properties": {
+              "schema": {"const": "shellx-cut/assemble-plan-binding/1"},
+              "project_identity": {"type": "object", "additionalProperties": false, "required": ["schema", "origin_path_sha256", "project_name"], "properties": {"schema": {"const": "shellx-cut/project-identity/1"}, "origin_path_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "project_name": {"type": "string"}}},
+              "project_revision": {"type": "string", "pattern": "^op_[0-9]{6,}$"},
+              "verb": {"const": "assemble.repurpose"},
+              "asset": {"type": "string", "minLength": 1},
+              "selected_ranges": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}}},
+              "transcript_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+              "materialization": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "reel"}}}
+            },
+            "description": "Revision- and transcript-bound binding returned with this exact plan. Its presence is the explicit apply policy; requires request_id and expected_revision at the request root."
+          }
+        }
+      },
+      "result": "Plan: {asset, count, target_ms, clips:[...], plan_binding, next}; explicit apply: {materialized:true, video_clip_ids, audio_clip_ids, spans_placed, total_ms, undo:{verb,op_id}} with one op_id.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "assemble_repurpose",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "assemble.shorts",
+      "domain": "assemble",
+      "description": "AUTO-SHORTS PLANNER WITH EXPLICIT EDITABLE TIMELINE APPLY. Without `apply`, return ranked short plans plus revision- and transcript-bound plan_binding and materialization eligibility; this default never edits the timeline. When eligibility is true, resend the unchanged request with `apply:plan_binding`, request_id, and expected_revision to commit all reviewed ranges as one editable timeline operation: media clips, their planned source-pixel edit.crop reframes, and transcript-derived caption clips. No render, ASR, provider call, or spend occurs. The plan visibly refuses Apply when the configured project aspect differs from the requested aspect or source geometry is absent; apply repeats that admission plus identity/revision/transcript/track checks and makes no partial edit. Each short is {rank, word_range:[lo,hi], range_ms:[s,e], duration_ms, score (0..100), reason, title, factors?, reframe:{aspect, crop:{x,y,w,h} fractions 0..1 of SOURCE}, has_captions:true}. `aspect` (default \"9:16\"; one of \"9:16\",\"1:1\",\"4:5\",\"16:9\") sets the target. Requires a transcribed asset; perception is optional for factors.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id (must be transcribed)."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "How many top shorts to plan (default 5)."
+          },
+          "target_ms": {
+            "type": "integer",
+            "minimum": 3000,
+            "maximum": 600000,
+            "description": "Target short length in ms (default 30000); candidates are packed to ~this, capped at 1.5x."
+          },
+          "aspect": {
+            "type": "string",
+            "enum": [
+              "9:16",
+              "1:1",
+              "4:5",
+              "16:9"
+            ],
+            "description": "Target aspect for the reframe center-crop (default \"9:16\")."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Optional theme/keywords to bias selection toward (keyword overlap boosts a segment's score)."
+          },
+          "apply": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema", "project_identity", "project_revision", "verb", "asset", "selected_ranges", "transcript_sha256", "materialization"],
+            "properties": {
+              "schema": {"const": "shellx-cut/assemble-plan-binding/1"},
+              "project_identity": {"type": "object", "additionalProperties": false, "required": ["schema", "origin_path_sha256", "project_name"], "properties": {"schema": {"const": "shellx-cut/project-identity/1"}, "origin_path_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "project_name": {"type": "string"}}},
+              "project_revision": {"type": "string", "pattern": "^op_[0-9]{6,}$"},
+              "verb": {"const": "assemble.shorts"},
+              "asset": {"type": "string", "minLength": 1},
+              "selected_ranges": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}}},
+              "transcript_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+              "materialization": {"type": "object", "additionalProperties": false, "required": ["kind", "aspect", "crop"], "properties": {"kind": {"const": "shorts"}, "aspect": {"enum": ["9:16", "1:1", "4:5", "16:9"]}, "crop": {"oneOf": [{"type": "null"}, {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number", "minimum": 0, "maximum": 1}}]}}}
+            },
+            "description": "Revision- and transcript-bound binding returned with this exact plan. Its presence is the explicit apply policy; requires request_id and expected_revision at the request root."
+          }
+        }
+      },
+      "result": "Plan: {asset, count, target_ms, aspect, shorts:[...], plan_binding, materialization:{eligible,required_aspect,project_aspect,reason?}, next, note?}; explicit apply: {materialized:true, video_clip_ids, audio_clip_ids, caption_track, caption_clip_ids, undo:{verb,op_id}} with one op_id.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "assemble_shorts",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "assemble.from_script",
+      "domain": "assemble",
+      "description": "SCRIPT-TO-TIMELINE MATCHING WITH EXPLICIT APPLY: given a written script (one talking point per line) and a transcribed asset, return the ordered match plan plus revision- and transcript-bound plan_binding by default; this default never edits the timeline. Resend the unchanged request with `apply:plan_binding`, request_id, and expected_revision to place only the reviewed matched ranges as one editable timeline operation with one normal Undo. Unmatched lines remain visible in the proposal and are never fabricated; an all-unmatched plan refuses apply. The apply rechecks exact project identity, revision, transcript, and destination-track safety, refusing stale or cross-project plans without a partial edit. Deterministic token-overlap matcher scans forward, so matched segments stay in script order and never overlap. Requires media.transcribe.",
+      "args": {
+        "type": "object",
+        "required": [
+          "asset",
+          "script"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id (must be transcribed)."
+          },
+          "script": {
+            "type": "string",
+            "description": "The script, one talking point/line per newline."
+          },
+          "min_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Minimum token-overlap F1 to count a line as matched (default 0.35)."
+          },
+          "apply": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schema", "project_identity", "project_revision", "verb", "asset", "selected_ranges", "transcript_sha256", "materialization"],
+            "properties": {
+              "schema": {"const": "shellx-cut/assemble-plan-binding/1"},
+              "project_identity": {"type": "object", "additionalProperties": false, "required": ["schema", "origin_path_sha256", "project_name"], "properties": {"schema": {"const": "shellx-cut/project-identity/1"}, "origin_path_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "project_name": {"type": "string"}}},
+              "project_revision": {"type": "string", "pattern": "^op_[0-9]{6,}$"},
+              "verb": {"const": "assemble.from_script"},
+              "asset": {"type": "string", "minLength": 1},
+              "selected_ranges": {"type": "array", "minItems": 0, "maxItems": 50, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0}}},
+              "transcript_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+              "materialization": {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "reel"}}}
+            },
+            "description": "Revision- and transcript-bound reviewed plan. Applying an empty script match is refused without an edit; requires request_id and expected_revision at the request root."
+          }
+        }
+      },
+      "result": "Plan: {asset, min_score, total_lines, matched, segments:[...], assemble_ranges, plan_binding, next}; explicit apply: {materialized:true, video_clip_ids, audio_clip_ids, spans_placed, undo:{verb,op_id}} with one op_id.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "assemble_from_script",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

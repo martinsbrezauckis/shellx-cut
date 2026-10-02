@@ -1,0 +1,128 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "clip",
+  "verbs": [
+    {
+      "name": "clip.candidates",
+      "domain": "clip",
+      "description": "Rank the windows of an asset most likely to work as standalone short-form clips (social repurposing). READ-ONLY analysis over the transcript — no op, no render. Honest HEURISTIC v1 (scoring:\"heuristic\" — an editorial prior on opening-hook strength + a pacing/filler retention proxy, NOT a trained virality model); every candidate carries a human `reason`. With no `asset`, pools across every asset that has a transcript and re-ranks globally.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "type": "string",
+            "description": "Asset id to scan (default: every asset that has a transcript)."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "How many ranked candidates to return (default 5)."
+          },
+          "min_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Minimum candidate length in ms (default 12000)."
+          },
+          "max_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Maximum candidate length in ms (default 60000)."
+          }
+        }
+      },
+      "result": "{candidates:[{asset, word_range:[lo,hi), at_ms, dur_ms, hook_score, retention_score, score, reason, transcript_excerpt}], count, scoring:\"heuristic\"}",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "candidates",
+          "count",
+          "scoring"
+        ],
+        "properties": {
+          "scoring": {
+            "type": "string",
+            "const": "heuristic"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "asset",
+                "word_range",
+                "at_ms",
+                "dur_ms",
+                "hook_score",
+                "retention_score",
+                "score",
+                "reason",
+                "transcript_excerpt"
+              ],
+              "properties": {
+                "asset": {
+                  "type": "string"
+                },
+                "word_range": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "at_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "dur_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hook_score": {
+                  "type": "number"
+                },
+                "retention_score": {
+                  "type": "number"
+                },
+                "score": {
+                  "type": "number"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "transcript_excerpt": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "clip_candidates",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

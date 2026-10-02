@@ -1348,13 +1348,13 @@ mod tests {
 
     #[test]
     fn managed_python_identity_requires_a_concrete_cp312_executable() {
+        let root = tempfile::tempdir().unwrap();
+        let managed = root.path().join("managed");
+        let python = managed.join("cpython-3.12.14").join("python");
         assert_eq!(
-            managed_python_identity(
-                PathBuf::from("/managed/cpython-3.12.14/bin/python"),
-                "Python 3.12.14\n",
-            ),
+            managed_python_identity(python.clone(), "Python 3.12.14\n"),
             Ok(ManagedPython {
-                path: PathBuf::from("/managed/cpython-3.12.14/bin/python"),
+                path: python.clone(),
                 version: "3.12.14".to_string(),
             })
         );
@@ -1365,7 +1365,7 @@ mod tests {
             "not Python\n",
         ] {
             assert!(
-                managed_python_identity(PathBuf::from("/managed/python"), invalid).is_err(),
+                managed_python_identity(managed.join("python"), invalid).is_err(),
                 "wrong or absent Python patch must be rejected: {invalid:?}"
             );
         }

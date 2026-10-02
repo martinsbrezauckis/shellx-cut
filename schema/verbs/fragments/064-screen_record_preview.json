@@ -1,0 +1,238 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "screen_record",
+  "verbs": [
+    {
+      "name": "screen_record.preview_capability",
+      "domain": "screen_record",
+      "description": "Read whether this recorder build has an in-process native source-preview adapter and the only source-selection mode it admits. available/source_selection:exact accepts one current opaque monitor or window identity; available/source_selection:portal requires one fresh user-consented Linux system-picker selection. This is a capability fact, never a browser OS inference. It does not claim a source has been selected, permission is granted, or a frame arrived. Linux Portal preview owns a user-consented, ephemeral raw-frame session without GStreamer, ffmpeg, a child process, or synthetic pixels.",
+      "args": {"type": "object", "additionalProperties": false, "properties": {}},
+      "result": "{state:'available',source_selection:'exact'|'portal'} or {state:'unsupported',prerequisite}. exact means only current opaque monitor/window ids may be used; portal means only {kind:'portal'} may be used and the user picks a source in the system dialog. This returns no source identity, screen name, native handle, frame, path, or permission claim.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_capability",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_start",
+      "domain": "screen_record",
+      "description": "Start one bounded, process-local native source preview for exactly one opaque monitor or window identity from the current screen_record.doctor enumeration. Windows and macOS re-resolve that identity immediately; Linux accepts only Portal and opens a new user-consented, ephemeral PipeWire session. Every adapter retains only the latest bounded BMP in memory. A preview cannot start while a recording owns capture devices. Replacing a source stops/releases the predecessor first; no title, ordinal, native handle, region coordinates, file, restore token, or browser getDisplayMedia fallback is accepted.",
+      "args": {
+        "type": "object",
+        "required": ["source"],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["kind", "monitor_id"],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "monitor"},
+                  "monitor_id": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Exact opaque identity copied unchanged from a current screen_record.doctor.monitors[].id row."}
+                }
+              },
+              {
+                "type": "object",
+                "required": ["kind", "window_id"],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {"const": "window"},
+                  "window_id": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Exact opaque identity copied unchanged from a current screen_record.doctor.windows[].id row."}
+                }
+              },
+              {
+                "type": "object",
+                "required": ["kind"],
+                "additionalProperties": false,
+                "properties": {"kind": {"const": "portal"}}
+              }
+            ],
+            "description": "Exact source selector. Names, ordinals, geometry, primary-display fallbacks, and coordinates are not representable."
+          }
+        }
+      },
+      "result": "{action:'start',status:{state,recursion,has_frame,generation,lease_nonce?:string}}. state:'starting' means native admission only; ready requires a real delivered frame. lease_nonce is an opaque 128-bit per-Cut-server owner identity, present exactly while generation is active; pair it with generation for later lifecycle controls. It is neither authentication nor a native target/ticket. status intentionally omits the selected identity and private region.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_start",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_status",
+      "domain": "screen_record",
+      "description": "Read the current process-local native source-preview lifecycle. The owner polls only its already-admitted native mailbox; this never opens capture, starts a portal, reads a file, or returns the selected source. generation changes on every accepted Start/resume. lease_nonce is minted per Cut-server owner, changes after server restart, and must be paired with generation to reject delayed lifecycle controls.",
+      "args": {"type": "object", "additionalProperties": false, "properties": {}},
+      "result": "{state:'idle'|'starting'|'ready'|'paused'|'hidden'|'permission_required'|'permission_denied'|'source_lost'|'unavailable'|'stopped',recursion:'none'|'detected'|'unavoidable',has_frame,generation|null,lease_nonce?:string,unavailable_reason?:string}. lease_nonce is opaque lowercase 32-hex and present exactly while generation is active; pair it with generation for lifecycle controls. ready is evidence of a retained real frame, never merely successful native startup. unavailable_reason is present only when the process cannot prove a prior native preview release; it states the required process-restart recovery.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_status",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.live_frame",
+      "domain": "screen_record",
+      "description": "Read one bounded real frame from the exact active recording's native source stream. This does not start a second capture, read an open media file, or control recording. The optional frame is cleared at each physical checkpoint rollover and at Stop or failure. State and separate controller-exclusion/recursion facts describe whether returned pixels may include the Cut window; backend policy may refuse preview independently.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "capture_id"
+        ],
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "result": "{capture_id,state:'awaiting_source'|'awaiting_frame'|'ready'|'stale'|'unavailable'|'terminal',reason:string|null,generation:number,frame_age_ms:number|null,last_sample_cost_ms:number|null,max_sample_cost_ms:number,frame:null|{mime:'image/bmp',bytes:1..4194304,generation,captured_at_ms,base64}}. A frame belongs only to the returned capture_id and physical native generation; stale is a real retained frame older than five seconds. Preview failure never changes recording output.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_live_frame",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_frame",
+      "domain": "screen_record",
+      "description": "Read the latest real native source-preview frame and lifecycle snapshot under one owner lock. It returns only a BMP data payload retained in memory by the active generation; no URL, path, image file, screenshot artifact, source identity, title, native handle, or synthetic frame exists. The encoded BMP is capped at 4 MiB before base64 encoding; frame:null is an honest no-frame result.",
+      "args": {"type": "object", "additionalProperties": false, "properties": {}},
+      "result": "{status:{state,recursion,has_frame,generation,lease_nonce?:string},frame:null|{mime:'image/bmp',bytes:1..4194304,generation,captured_at_ms,base64}}. status.lease_nonce is paired with its active generation for lifecycle controls. frame.generation is bound to the returned bytes; a source replacement cannot mix old pixels with a new generation.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_frame",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_pause",
+      "domain": "screen_record",
+      "description": "Pause the current native source preview only when expected_generation and expected_lease_nonce identify its active process-local lease, then synchronously release its native session and retained frame. resume reopens the exact remembered opaque source with a new generation. A stale generation or nonce is rejected without changing a newer or restarted-server preview. This does not pause a recording and has no filesystem or process side effect.",
+      "args": {"type": "object", "required": ["expected_generation", "expected_lease_nonce"], "additionalProperties": false, "properties": {"expected_generation": {"type": "integer", "minimum": 1, "description": "The exact active generation returned by preview_start, preview_status, or preview_frame."}, "expected_lease_nonce": {"type": "string", "pattern": "^[a-f0-9]{32}$", "description": "The exact opaque lease_nonce returned with that active generation. It changes after Cut-server restart and is not an auth token or native target."}}},
+      "result": "{action:'pause',status:{state,recursion,has_frame,generation,lease_nonce?:string}}. While paused, lease_nonce remains paired with generation for the later resume, hide, or stop control. A no-op pause reports the truthful existing lifecycle state.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_pause",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_resume",
+      "domain": "screen_record",
+      "description": "Resume only the paused native source preview identified by expected_generation and expected_lease_nonce. A successful native re-open reports starting until a real callback frame arrives; it always advances generation before any frame can be accepted. A stale generation or nonce is rejected without changing a newer or restarted-server preview. This does not resume a recording and cannot recreate a released/hidden preview without a new preview_start.",
+      "args": {"type": "object", "required": ["expected_generation", "expected_lease_nonce"], "additionalProperties": false, "properties": {"expected_generation": {"type": "integer", "minimum": 1, "description": "The exact paused generation returned by preview_start or preview_status."}, "expected_lease_nonce": {"type": "string", "pattern": "^[a-f0-9]{32}$", "description": "The exact opaque lease_nonce returned with that active generation."}}},
+      "result": "{action:'resume',status:{state,recursion,has_frame,generation,lease_nonce?:string}}. The advanced generation carries the same active owner nonce for later lifecycle controls.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_resume",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_hide",
+      "domain": "screen_record",
+      "description": "Hide the native source preview only when expected_generation and expected_lease_nonce identify its active process-local lease. It synchronously releases the native session and pixels if present, then reports hidden without auto-resuming capture. A stale generation or nonce is rejected without changing a newer or restarted-server preview. It does not alter a recording.",
+      "args": {"type": "object", "required": ["expected_generation", "expected_lease_nonce"], "additionalProperties": false, "properties": {"expected_generation": {"type": "integer", "minimum": 1, "description": "The exact active generation returned by preview_start, preview_status, or preview_frame."}, "expected_lease_nonce": {"type": "string", "pattern": "^[a-f0-9]{32}$", "description": "The exact opaque lease_nonce returned with that active generation."}}},
+      "result": "{action:'hide',status:{state:'hidden',recursion,has_frame:false,generation|null}}.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_hide",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.preview_stop",
+      "domain": "screen_record",
+      "description": "Stop the native source preview only when expected_generation and expected_lease_nonce identify its active process-local lease. It synchronously releases the native session, latest frame, remembered source, and private region before returning stopped. A stale generation or nonce is rejected without changing a newer or restarted-server preview. screen_record.start atomically reserves ordinary capture before its internal preview release.",
+      "args": {"type": "object", "required": ["expected_generation", "expected_lease_nonce"], "additionalProperties": false, "properties": {"expected_generation": {"type": "integer", "minimum": 1, "description": "The exact active generation returned by preview_start, preview_status, or preview_frame."}, "expected_lease_nonce": {"type": "string", "pattern": "^[a-f0-9]{32}$", "description": "The exact opaque lease_nonce returned with that active generation."}}},
+      "result": "{action:'stop',status:{state:'stopped',recursion:'none',has_frame:false,generation:null}}.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {"filesystem": false, "process": false, "network": false, "ui": false},
+        "dispatch": "screen_record_preview_stop",
+        "project_state": "none",
+        "idempotency": "natural",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

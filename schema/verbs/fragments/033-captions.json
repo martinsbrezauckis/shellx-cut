@@ -1,0 +1,554 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "captions",
+  "verbs": [
+    {
+      "name": "captions.import",
+      "domain": "captions",
+      "description": "IMPORT an external SRT, WebVTT, or ASS/SSA subtitle file as caption clips on the 'cap1' track — the inverse of export.srt/export.ass, so subtitles ROUND-TRIP. The format is auto-detected: SRT (comma-decimal timing, numeric indices), VTT (WEBVTT header, dot-decimal timing, optional hours, NOTE/STYLE/REGION blocks, inline <tags>), and ASS/SSA (`[Events]` Dialogue lines, H:MM:SS.cc timing) all parse; ASS override tags incl. `\\k` karaoke are stripped back to plain text and multi-line cues keep their line breaks. By DEFAULT it REPLACES cap1's existing clips (set replace:false to MERGE — the imported cues are appended, then the whole track is re-sorted by start time and the ids re-numbered). Imported captions flow through the existing caption pipeline (burn-in via captions.generate's style, animate via captions.kinetic, export via export.srt/export.vtt/export.ass). Commits as one edit._set_timeline op (replay/diff-clean). Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to a .srt, .vtt, .ass, or .ssa subtitle file. Other extensions are rejected before reading."
+          },
+          "replace": {
+            "type": "boolean",
+            "description": "Replace cap1's existing caption clips (default true). false = merge (append + re-sort by start + re-number ids)."
+          },
+          "style_ref": {
+            "type": "string",
+            "description": "Caption style key (into caption_styles) applied to every imported cue; omit for the default style."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{track_id, caption_count, format, replaced}; lowers to edit._set_timeline",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_import",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.generate",
+      "domain": "captions",
+      "description": "Generate a caption track from the transcript(s) of clips on the timeline, mapped through the EDL to timeline time. Uses style_ref for all generated clips.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "style_ref": {
+            "type": "string",
+            "description": "Caption style key; a default style is created if absent"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{track_id, caption_count, op}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_generate",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.translate",
+      "domain": "captions",
+      "description": "Translate the caption cues into target_lang (TEXT only -- no dubbing/audio/TTS), PRESERVING each cue's EXACT timeline range by default (one source cue -> one target cue at the SAME range_ms). BACKEND: PRIMARY = the user's OWN subscription CLI agent (claude/codex/grok -- the SAME CLI agent.chat uses; pure text in/out, NO MCP/tools), the best-quality path (idioms, names, gender, reading-time fit); FALLBACK = a LOCAL self-hosted model (Opus-MT light per-pair CC-BY, or MADLAD-400 universal via model) run by translate_runner.py in the perception venv (model DOWNLOADS on first use -- not bundled). backend:auto (default)=CLI if available else local; cli/local force one. mode:track (default) adds a NEW caption track in target_lang (source cues KEPT -> bilingual; the new track defaults to the TOP position so it doesn't collide with the bottom source cues). mode:replace overwrites the source cues' text in place (monolingual swap) only if cue ids/ranges/text still match the source read before translation; same-count concurrent cue edits return conflict instead of positional remapping. reflow:true is valid only with mode:track; it re-wraps/retimes the new translated track to reading-speed limits (a translation's length differs from the source) -- offered, not forced. Committed as ONE lowered edit._set_timeline step; the translated text is BAKED into the op so replay is deterministic (no CLI re-call). Source track = source_track, else cap1, else the first caption track.",
+      "args": {
+        "type": "object",
+        "required": [
+          "target_lang"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "target_lang": {
+            "type": "string",
+            "description": "Language to translate INTO (e.g. \"es\", \"lv\", \"Latvian\"). For the LOCAL backend a 2-letter code is required."
+          },
+          "source_lang": {
+            "type": "string",
+            "description": "Source language. Optional for the CLI backend (the LLM auto-detects); REQUIRED for the local Opus-MT backend (per-pair)."
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "cli",
+              "local"
+            ],
+            "description": "auto (default) = CLI if available else local; cli/local force one."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "track",
+              "replace"
+            ],
+            "description": "track (default) = add a target-language track (bilingual); replace = overwrite the source cues' text in place."
+          },
+          "source_track": {
+            "type": "string",
+            "description": "Caption track to translate. Default: cap1, else the first caption track (excluding the txt1 title-card track)."
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "bottom",
+              "top",
+              "center"
+            ],
+            "description": "Vertical position for the NEW track's cues (mode:track). Default top (keeps the bottom source cues visible)."
+          },
+          "reflow": {
+            "type": "boolean",
+            "description": "Re-wrap/retime the translated cues to reading-speed limits (default false). Valid only with mode:track; mode:replace preserves the existing cue timing/count."
+          },
+          "model": {
+            "type": "string",
+            "description": "Override the model: a CLI model name, or a local HF id (e.g. a MADLAD-400 build). Default local = Opus-MT for the pair."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "Spawn timeout. CLI default 180000 (clamp 10000..600000); local default 1800000 (first run downloads the model)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{source_lang, target_lang, backend, backend_proven, model, agent, cues_translated, mode, source_track, target_track, timestamps_preserved:true, replaced?, reflow?, reflow_hint?} -- one lowered edit._set_timeline op (op_ids). mode:track adds target_track; mode:replace reports replaced (cues overwritten on source_track).",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_translate",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.add_text",
+      "domain": "captions",
+      "description": "Place a timed text clip (title/intro/outro card) on the dedicated 'txt1' caption track, burned in by the existing caption pipeline. Separate from captions.generate's 'cap1' so regeneration never wipes text cards. HONEST SCOPE: styled static text — full motion-graphics titles (animation, per-word styling, fades) are a later feature. position without style_ref auto-creates a built-in title style txt_<position> (Inter 64, white on translucent black); neither → the Default bottom caption style. A card ending past the media end grows the composition (black behind the text) — warned in-band.",
+      "args": {
+        "type": "object",
+        "required": [
+          "text",
+          "range_ms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[start_ms, end_ms) on the TIMELINE (absolute)"
+          },
+          "style_ref": {
+            "type": "string",
+            "description": "Existing caption style key (captions.set_style); mutually exclusive with position"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "bottom",
+              "top",
+              "center"
+            ],
+            "description": "Auto-creates built-in title style txt_<position>; mutually exclusive with style_ref"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip_id, track_id: \"txt1\", range_ms, style_ref, op}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_add_text",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.kinetic",
+      "domain": "captions",
+      "description": "Animated, transcript-synced captions (the motion-graphics counterpart to captions.generate's STATIC burn-in), rendered as a native title overlay (resvg per-frame; in-house, no external tool). Default per_word:false animates existing caption LINE cues (run captions.generate first). Set per_word:true to animate each spoken WORD from a transcript mapped through the timeline EDL; this mode does not require a caption track. Both modes optionally narrow to range_ms (a cue is kept if it overlaps the range), build a kinetic TitleSpec spanning [first cue start, last cue end], and place it on the TOP-MOST title1 overlay track — lowering to import + insert. position = bottom (default) | center | top; color defaults white; font_px defaults to a fraction of the project height (larger for word mode). Set replace_static:true to REMOVE overlapping cap1 static cues so the kinetic overlay shows ALONE; overlay placement and static-cue clear are grouped as one Undo action. Default false keeps the kinetic-over-static behavior. Generation cost scales with the span; narrow range_ms for long videos.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Narrow to cues overlapping [start_ms, end_ms); omit for all cues"
+          },
+          "position": {
+            "type": "string",
+            "enum": [
+              "bottom",
+              "center",
+              "top"
+            ],
+            "description": "Vertical placement (default bottom)"
+          },
+          "color": {
+            "type": "string",
+            "description": "Text color #RRGGBB (default #FFFFFF)"
+          },
+          "font_px": {
+            "type": "number",
+            "description": "Font size in px at the project height (default ~5% of height)"
+          },
+          "replace_static": {
+            "type": "boolean",
+            "description": "Remove the cap1 static cues this call animates so the kinetic overlay shows alone (range-aware). Default false."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "per_word": {
+            "type": "boolean",
+            "default": false,
+            "description": "PER-WORD ('karaoke') mode: animate each spoken WORD as its own cue instead of one cue per caption LINE. Reads word timings from the transcript via the EDL, so it does NOT require captions.generate first. Pairs with replace_static for a pure word-by-word look."
+          }
+        }
+      },
+      "result": "{title_track, asset_id, clip_id, cue_count, range_ms, cleared_static}; lowers to import + insert ops",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_kinetic",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.set_style",
+      "domain": "captions",
+      "description": "Create or update a named caption style (font, size, color, bg, pos). two-segment name.",
+      "args": {
+        "type": "object",
+        "required": [
+          "ref",
+          "style"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "Style key, e.g. 'brand1'"
+          },
+          "style": {
+            "type": "object",
+            "required": [
+              "font",
+              "size",
+              "color"
+            ],
+            "properties": {
+              "font": {
+                "type": "string"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "color": {
+                "type": "string"
+              },
+              "bg": {
+                "type": "string"
+              },
+              "pos": {
+                "type": "string",
+                "enum": [
+                  "bottom",
+                  "top",
+                  "center"
+                ]
+              }
+            }
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{style_ref, replaced, op}",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_set_style",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.save_style",
+      "domain": "captions",
+      "description": "Save a named CAPTION STYLE PRESET — the caption analog of grade.save (the style gallery). Snapshot FROM an existing project style key with `ref` ('I styled my captions — keep this look'), or save an inline `style` object directly (exactly one of the two). Name-keyed: a re-save under the same name REPLACES; the built-in catalog names (see captions.list_styles) are reserved. Presets are per-project, persisted replay-safe (grade.save metadata pattern, off the undo cursor). Apply with captions.apply_style; that apply lowers to plain captions.set_style ops, so replay never depends on the preset still existing.",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Preset name (the gallery key; re-save replaces; built-in names refused)."
+          },
+          "ref": {
+            "type": "string",
+            "description": "Snapshot the style at this project caption_styles key (project.state lists them). Exactly one of ref | style."
+          },
+          "style": {
+            "type": "object",
+            "required": [
+              "font",
+              "size",
+              "color"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "font": {
+                "type": "string"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 8
+              },
+              "color": {
+                "type": "string",
+                "description": "CSS color, e.g. \"#fff\""
+              },
+              "bg": {
+                "type": "string",
+                "description": "Background color incl. alpha, e.g. \"#000a\""
+              },
+              "pos": {
+                "type": "string",
+                "enum": [
+                  "bottom",
+                  "top",
+                  "center"
+                ]
+              }
+            },
+            "description": "Inline style to save directly. Exactly one of ref | style."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{preset: {name, style}, replaced} — invalid_args on empty/built-in name or ref+style ambiguity; NOT_FOUND when ref names no existing style",
+      "behavior": {
+        "mutation_class": "project_metadata",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_save_style",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.apply_style",
+      "domain": "captions",
+      "description": "Apply a caption style preset (user gallery first, then the BUILT-IN catalog) — the caption analog of grade.apply. LOWERS to one plain captions.set_style op per updated style key (concrete style recorded per op → each undoable via project.undo and replay-safe, independent of whether the preset still exists). `ref` targets ONE project style key (created if new); OMITTED = restyle EVERY style key referenced by current caption clips — the 'apply this look to my captions' one-liner. Refuses NOT_FOUND when omitted and no caption clip carries a style_ref (nothing to restyle — pass ref).",
+      "args": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Preset name — saved (captions.save_style) or built-in (captions.list_styles)."
+          },
+          "ref": {
+            "type": "string",
+            "description": "Target ONE caption_styles key; omit to restyle every key referenced by current caption clips."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{applied: <name>, refs_updated: [<style keys>], style} — one captions.set_style op per ref (op_ids lists them); NOT_FOUND on unknown preset or nothing-to-restyle",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_apply_style",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "captions.list_styles",
+      "domain": "captions",
+      "description": "Read-only: the caption style gallery — user-saved presets (builtin:false) then the shipped BUILT-IN looks (builtin:true: clean, bold pop, subtle card, top banner, center title, broadcast yellow). Every style uses only fields the burn-in renderer actually honors (font/size/color/bg/pos — no aspirational knobs). Feed a name into captions.apply_style.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{count, presets: [{name, style: {font, size, color, bg?, pos?}, builtin}]}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "captions_list_styles",
+        "project_state": "optional",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "inspect",
+        "risk": "none",
+        "facets": []
+      }
+    }
+  ]
+}

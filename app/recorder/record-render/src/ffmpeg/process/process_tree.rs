@@ -3,6 +3,8 @@
 use std::io;
 use std::process::{Child, Command};
 
+use super::{ff_err, Result};
+
 #[cfg(unix)]
 pub(super) fn configure(command: &mut Command) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
@@ -52,12 +54,55 @@ impl ProcessTree {
         Ok(Self { pgid })
     }
 
+    pub(super) fn exit_ready(&self, child: &mut Child) -> io::Result<bool> {
+        let pid = i32::try_from(child.id())
+            .map_err(|_| io::Error::other("record-render worker process id exceeds i32"))?;
+        if pid != self.pgid {
+            return Err(io::Error::other(
+                "record-render worker process group identity drifted",
+            ));
+        }
+
+        // Child::try_wait reaps an exited Unix leader. Reaping would release
+        // its numeric PID/PGID before descendants are closed, allowing an
+        // unrelated process group to reuse the number. Observe the exit with
+        // WNOWAIT so the zombie leader remains our kernel-backed ownership
+        // token until hard_stop has closed the group.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(unsafe { info.si_pid() } != 0)
+        }
+    }
+
     pub(super) fn soft_stop(&mut self) -> io::Result<()> {
         signal_group(self.pgid, libc::SIGTERM)
     }
 
     pub(super) fn hard_stop(&mut self) -> io::Result<()> {
         signal_group(self.pgid, libc::SIGKILL)
+    }
+
+    pub(super) fn close_after_exit(&mut self) -> io::Result<()> {
+        match self.hard_stop() {
+            Ok(()) => Ok(()),
+            // Darwin returns EPERM when the reserved group contains only its
+            // unreaped zombie leader. The preceding WNOWAIT observation keeps
+            // the PGID from being reused; a live same-UID descendant makes the
+            // group signal succeed and is therefore still forcibly closed.
+            #[cfg(target_os = "macos")]
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -172,6 +217,10 @@ impl ProcessTree {
         }
     }
 
+    pub(super) fn exit_ready(&self, child: &mut Child) -> io::Result<bool> {
+        child.try_wait().map(|status| status.is_some())
+    }
+
     pub(super) fn soft_stop(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -187,6 +236,10 @@ impl ProcessTree {
                 unsafe { GetLastError() } as i32
             ))
         }
+    }
+
+    pub(super) fn close_after_exit(&mut self) -> io::Result<()> {
+        self.hard_stop()
     }
 }
 
@@ -206,4 +259,26 @@ extern "system" {
 #[cfg(windows)]
 unsafe fn nt_resume_process(process: windows_sys::Win32::Foundation::HANDLE) -> i32 {
     NtResumeProcess(process)
+}
+
+pub(super) fn cleanup_result(
+    soft: Option<io::Error>,
+    hard: Option<io::Error>,
+    kill: Option<io::Error>,
+    wait: Option<io::Error>,
+) -> Result<()> {
+    let errors: Vec<_> = [
+        ("graceful tree stop", soft),
+        ("hard tree stop", hard),
+        ("direct child kill", kill),
+        ("direct child wait", wait),
+    ]
+    .into_iter()
+    .filter_map(|(label, error)| error.map(|error| format!("{label}: {error}")))
+    .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ff_err("clean up ffmpeg process", errors.join("; ")))
+    }
 }

@@ -1,0 +1,312 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "system",
+  "verbs": [
+    {
+      "name": "system.mcp_test",
+      "domain": "system",
+      "description": "Run a bounded, read-only self-test of the exact installed cutd executable's MCP stdio proxy against this running ShellX Cut engine. Verifies protocol-version negotiation, ping, complete tools/list generation within the supported payload budget, typed structuredContent, and a system.doctor call that resolves back to this engine address. It never opens or mutates a project and never creates a second authority layer.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{schema:'shellx-cut/mcp-self-test/1', mode:'proxy', read_only:true, executable, command:[executable,'mcp'], protocol_version, ping:true, tools, expected_tools, tools_list_bytes, tools_list_max_bytes, proxy_addr, same_engine:true}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "system_mcp_test",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.doctor",
+      "domain": "system",
+      "description": "Scan the runtime environment and return structured CAPABILITY CARDS — the single source of truth the start wizard, the Settings>Environment panel, and any agent over REST/MCP all read (the shellX 'provider model card' pattern, applied to ShellX Cut's own deps). Cards: ffmpeg + ffprobe (resolved path, source rung env|bundled-or-appdata|path|missing via the cut-media toolpath ladder, version from `<tool> -version`, runnable flag, actionable BtbN hint when missing); perception (python interpreter via the sidecar ladder + a TIER: none|instruments-capable|full-stt, probed cheaply with a short timeout); judge rungs claude|codex|antigravity|grok (details.found reports CLI resolution, while details.judge_ready admits that provider to render review; details.availability_reason is a string when unready and null when ready, and details.adapter_runtime_ready reports whether the bundled adapter and Python were available. Admission runs the bundled ladder's bounded no-model detect protocol and is never inferred from found/version. A failed or malformed probe is status:unknown, not ready. details.chat remains the separate Agent Chat capability/session state); disk (free bytes on the app-data tools volume — downloads need it); plus os/arch/app_version/addr. The result is CACHED in server state, the scan runs once at startup, and a `doctor_updated` WS event fires whenever it changes (refresh / a completed fetch_tool). The ESSENTIAL gate is the ffmpeg card: when it is missing the first-run wizard surfaces; non-essentials never block the editor. Each card: {id, kind: tool|perception|judge|disk, status: ok|missing|degraded|unknown, source?, version?, hint?, details}.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "refresh": {
+            "type": "boolean",
+            "description": "Re-scan instead of returning the cached report (default false — the cached read is fast and never blocks the verb loop; refresh re-probes ffmpeg/python/judge and re-emits doctor_updated on change)."
+          }
+        }
+      },
+      "result": "DoctorReport {schema: \"shellx-cut/doctor/1\", scanned_at, os, arch, app_version, addr, cards: Card[], essential_ok} — essential_ok=false ⇒ ffmpeg missing ⇒ the wizard should surface",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "system_doctor",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.motion_status",
+      "domain": "system",
+      "description": "Run Cut's bounded, read-only ShellX Motion discovery route. It validates the local runtime probe, connector catalog, and fixed Template-to-Cut descriptor without a caller id, provider login, connector execution, download, installation, repair, update, or removal. A discovered runtime remains explicitly unmanaged and connector execution remains unqualified. Distribution lifecycle operations are unavailable until MOTION-DIST-01 provides a verified immutable distribution manifest and a matching platform artifact; no source checkout, PATH binary, or npm package is treated as an install candidate.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{schema:'shellx-cut/motion-management-status@1', readOnly:true, runtime:{status,engine?,cli?,platform?,provenance?}, connector:{catalog,descriptor,capabilityId,descriptorRevision?,descriptorFingerprint?,availability?,availableOnRuntime,execution}, distribution:{status,blocker:{id:'MOTION-DIST-01',message},manifest:{status,candidate:null,version:null},artifact:{platform,status,version:null},installed:{status:'not-managed',candidate:null,version:null},actions:{install|repair|update|remove:{available:false,prerequisite:'MOTION-DIST-01'}}}}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "system_motion_status",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.set_stt_model",
+      "domain": "system",
+      "description": "Pick the TRANSCRIPTION (speech-to-text) model + optional language. Persists the choice in the perception app-data dir so every perception run injects it (SHELLX_CUT_STT_MODEL / SHELLX_CUT_STT_LANG) into the python sidecar. RECOMMENDED models: 'nemo-parakeet-tdt-0.6b-v3' (~25 European languages, fast, torch-free, native WORD timestamps — THE DEFAULT, used for transcript cutting, kinetic captions, chapters), 'nemo-canary-1b-v2' (better accuracy for smaller/weak languages such as Latvian, with torchaudio MMS_FA forced alignment to produce WORD timestamps), and 'whisperx-large-v3' (compatibility fallback). Any onnx-asr / whisperx id is accepted (advanced) and downloads on first use. Omit `model` (or pass clear:true) to RESET to the default. The choice applies to the NEXT uncached perception run — re-run media.perception / media.transcribe on an asset (or re-import) to re-transcribe with it. system.doctor's perception card reports the active model.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "The STT model id (e.g. 'nemo-parakeet-tdt-0.6b-v3' for fast captions, 'nemo-canary-1b-v2' for smaller-language accuracy, or 'whisperx-large-v3' for fallback). Omit (or clear:true) to reset to the default."
+          },
+          "language": {
+            "type": "string",
+            "description": "Optional language hint (e.g. 'lv', 'de', 'fr', 'es'). Weak-language auto routing uses Canary + MMS_FA when no model is explicitly selected; Whisper fallback also uses the hint. Omit for auto."
+          },
+          "clear": {
+            "type": "boolean",
+            "description": "Reset to the built-in default model (ignores model/language)."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{model, language, default_model, applies, doctor}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "system_set_stt_model",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.set_ffmpeg",
+      "domain": "system",
+      "description": "Set or clear the user's MANUAL ffmpeg choice (the Settings>Environment 'Change ffmpeg' control). `path` = an absolute path to the ffmpeg executable the user picked; it is VALIDATED here (must answer `ffmpeg -version`) before being persisted to a small file beside the app-data tools dir, and it WINS over auto-selection. Omit `path` (or pass null) to CLEAR the override and go back to automatic (the best hardware-capable installed ffmpeg). The choice is read at the next engine start so the hardware-capability caches stay consistent, hence the result's restart_required:true; the doctor is re-scanned so the gpu-encode card's override_setting reflects the new value immediately (shown as pending until restart). An explicit SHELLX_CUT_FFMPEG env var still takes precedence over this.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absolute path to the chosen ffmpeg executable; null/omitted clears the override (back to automatic)."
+          }
+        }
+      },
+      "result": "{override: string|null (the persisted choice after this call), restart_required: true, doctor: DoctorReport (rescanned)}",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "system_set_ffmpeg",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.fetch_tool",
+      "domain": "system",
+      "description": "Consented download + install of a MISSING runtime tool, as a background job (returns {job_id}; progress via the jobs domain + job_progress events). SECURITY (hard, path-fencing model): the tool id comes from a BUILT-IN registry ONLY (v1: \"ffmpeg\") — there is NO caller-supplied URL surface, so this is not a fetch-arbitrary-URL primitive. The URL is an https-pinned BtbN FFmpeg-Builds release asset selected BY OS (linux64-gpl.tar.xz / win64-gpl.zip); the archive's sha256 is verified against the release's checksums.sha256 BEFORE anything is installed; the payload is staged in a temp dir and ATOMICALLY moved into the app-data tools dir (the exact dir the cut-media toolpath resolver checks, rung 3) only after verification. On success the doctor re-scans and a doctor_updated event fires — the ffmpeg card flips missing→bundled-or-appdata. rationale is recorded on the job. OS-aware: the Linux asset is fetched+installed live here; the Windows asset path is selected by OS and documented for the cold-notebook session.",
+      "args": {
+        "type": "object",
+        "required": [
+          "tool"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tool": {
+            "type": "string",
+            "enum": [
+              "ffmpeg"
+            ],
+            "description": "Built-in registry id of the tool to download. v1: \"ffmpeg\" (installs both ffmpeg + ffprobe from one BtbN archive). Unknown ids fail fast — there is deliberately no URL arg."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{job_id, tool} — watch job_progress (download% → verifying → installing) or poll jobs.status; the job result is {tool, installed_dir, version, sha256, source_url, bytes, ffmpeg_ok_after}; doctor_updated fires on completion",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "system_fetch_tool",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "setup",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.setup_perception",
+      "domain": "system",
+      "description": "Consented provisioning of the Python PERCEPTION venv (transcription + silence/scenes/beats + auto-reframe), as a background job (returns {job_id}; progress via the jobs domain + job_progress events). The installer ships only the sidecar SCRIPT (instruments.py + dependency requirements); this builds the heavy venv on first run, with consent. SECURITY (path-fencing model, same model as system.fetch_tool): it downloads `uv` (Astral's static Python provisioner) ONLY through the built-in fetch allow-list (https-pinned astral-sh/uv release, per-asset sha256 verified before use) — NO caller-supplied URL. It then has uv install a standalone CPython 3.12 (system python is too old on real desktops — macOS ships 3.9, below the onnx-asr ≥3.10 floor), create the app-data sidecar venv, and `uv pip install -r` the BUNDLED requirements (onnx-asr Parakeet/Canary STT, torchaudio MMS_FA alignment, and the perception stack). On success the doctor re-scans and the `perception` card flips missing→ready. rationale is recorded on the job.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "warm_model": {
+            "type": "boolean",
+            "description": "Download and load the selected ONNX speech model after final dependency checks (default true; Parakeet v3 if no model is selected). Persisted model selection takes precedence over inherited environment. An explicit Whisper choice skips ONNX preparation and uses its own runtime on first transcription. model_warmed reports a successful load; model_warm_error preserves preparation failure separately from package installation. Set false to skip model preparation."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{job_id} — watch job_progress (downloading uv → installing Python → creating venv → installing dependencies → downloading model) or poll jobs.status; the job result is {venv_python, managed_python, python_version, uv_version, package_versions, onnx_asr_ready, model_warmed, model_warm_error, full_perception_ready, extras_note, perception_ok_after}; failed model preparation completes with warnings while preserving installed dependencies; doctor_updated fires on completion",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": true,
+          "ui": false
+        },
+        "dispatch": "system_setup_perception",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "setup",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "system.setup_matte",
+      "domain": "system",
+      "description": "Make AI BACKGROUND REMOVAL (edit.matte) usable LOCALLY — the seamless, one-click install of the user-side matte runtime (the ffmpeg pattern; the user NEVER runs pip or sees a terminal). With NO args: DOWNLOAD the 14 MB RVM model (PeterL1n/RobustVideoMatting v1.0.0, sha256-pinned) into the app-data matte dir, as a background job (returns {job_id}; progress via the jobs domain). onnxruntime rides the PERCEPTION venv (so for anyone who's set up perception the install is just the model). With `path`: BROWSE-to-existing — point at an rvm.onnx already on disk (validated + persisted, synchronous). On success the doctor `matte` card flips missing -> ready. The runtime is invisible plumbing cutd manages (a one-shot CLI spawned per bake, like the perception sidecar) — one app, no second window. OPTIONAL — core editing + render work without it. RVM is GPL: we ship integration, the user installs the model on consent.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "type": "string",
+            "enum": [
+              "rvm",
+              "matanyone"
+            ],
+            "description": "Which background-removal tier to install. Default rvm (portable, AUTOMATIC, license-clean, CPU-ok). matanyone = the PREMIUM opt-in (MatAnyone2 — NVIDIA, non-commercial, target-assigned, cleaner edges)."
+          },
+          "path": {
+            "type": "string",
+            "description": "Browse-to-existing: a model file already on disk (rvm.onnx, or matanyone2.pth when model=matanyone). Omit to download."
+          },
+          "accept_noncommercial": {
+            "type": "boolean",
+            "description": "REQUIRED to install model=matanyone: explicit acceptance that the MatAnyone2 weights are NON-COMMERCIAL (NTU S-Lab License 1.0). Download happens on your consent and responsibility. Without it the verb returns an invalid_args licence notice."
+          },
+          "rationale": {
+            "type": "string",
+            "description": "Optional audit-trail note."
+          }
+        }
+      },
+      "result": "rvm: NO path -> {job_id} (downloads the 14 MB RVM model); WITH path -> {model, source:'browse', doctor}. matanyone (needs accept_noncommercial:true): NO path -> {job_id} (builds an isolated torch venv + downloads the 135 MB checkpoint; a failed MatAnyone2/SAM2 import probe fails the job; finish result {model, venv_python, uv_version, checkpoint, matanyone_ready:true, cuda_available, matte_premium_ready}); WITH path -> browse a matanyone2.pth. Flips the matte / matte_premium doctor card.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "system_setup_matte",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "setup",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,595 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "screen_record",
+  "verbs": [
+    {
+      "name": "screen_record.doctor",
+      "domain": "screen_record",
+      "description": "Report the SCREEN RECORDER's capability cards (the recorder analog of system.doctor). It also projects the app-local microphone choice: `microphones` contains only short-lived opaque tokens plus generic category-and-ordinal labels, and `microphone_selection` reports System Default, a ready selected source, or an unavailable saved source. Windows and macOS enumerate native endpoint identities privately; Linux is System Default only. No endpoint ID, UID, vendor/friendly name, serial, backend name, auth, or path is public. `warm_mic:true` opens the currently resolved source only for one bounded test; it does not persist or switch a source. No project required.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "warm_mic": {
+            "type": "boolean",
+            "description": "When true, briefly test the current resolved microphone source. It never changes selection, persists a token, opens a competing stream during recording, or returns a native endpoint identity."
+          }
+        }
+      },
+      "result": "{cards, ready, start_allowed, monitors:[{id?,index,name,width,height,primary}], windows:[{id,title,app?}], window_capture_supported:boolean, camera:{supported,devices:[{id,label,state,detail}],detail}, scenes:{supported,catalog_revision,layouts,timers,timer_actions,camera_required_layouts,recovery,detail}, pause:{supported,layouts?,streams?,requires?,incompatible,recovery?,detail}, quality:{supported,output_sizes,profiles,detail}, microphones:[{token,label}], microphone_selection:{mode:\"system_default\"|\"selected\",label?,status}, mic_warm?} — scenes is passive/path-free and opens no device; Presenter PiP readiness is conditional on an explicitly selected camera. pause is a passive capability: macOS may advertise the bounded exact-display/integer-FPS screen plus optional mic/system-audio owner and its current incompatibility reasons; it never opens a device and Linux/Windows advertise supported:false. camera enumeration is passive and never opens a device or permission prompt; ids are opaque and labels are display-only. A selected camera is used only by the explicit screen_record.start{camera_id} action. `quality.supported` is true only when this compiled backend owns and final-verifies simple Source/1080p/720p plus Standard/High output requests; its lists are empty otherwise and callers must omit `screen_record.start.quality`. `window_capture_supported` reports whether the compiled native backend can capture application windows, even when the current window list is empty; Linux portal capture reports false. Windows/macOS window rows carry an opaque live native `windows[].id`; the UI passes the selected id unchanged and capture revalidates it, while title and app remain display-only. Windows/macOS monitor rows include an opaque versioned native `id` only when an exact native identity is available; no surrogate is generated. Pass that `id` unchanged as `screen_record.start.monitor_id` to require a fresh exact revalidation; display name, ordinal, primary status, and dimensions never replace it. The legacy display picker continues to use only `index` when `id` is absent; Linux returns no in-app monitor rows. microphones are generic category-and-ordinal labels and expiring opaque tokens only. microphone_selection status is ready, unavailable, system_default_only, or recovered_corruption. A saved selected source that is absent remains unavailable and blocks mic-enabled start; it never falls back. mic_warm is present only when requested and tests the resolved source. No native endpoint ID/UID, vendor/friendly name, serial, backend name, auth, monitor device path, or filesystem path is returned.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "screen_record_doctor",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.system_audio_probe",
+      "domain": "screen_record",
+      "description": "Run one explicit, bounded native system-audio delivery and signal test without starting screen capture or creating a project. This is the consenting counterpart to passive screen_record.doctor: it opens the platform loopback/process-tap path for 0.5–5 seconds, so macOS may show the separate Audio Capture permission prompt. The caller should play a sound during the window. Captured samples are held only long enough to distinguish packet delivery from an all-silent route; Linux/Windows use an exclusively-created private temporary WAV that is removed before return, macOS keeps samples in memory, and no audio bytes or path are returned. No project required.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "max_ms": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 5000,
+            "description": "Native audio test window in milliseconds (default 2500). This bounds capture after platform activation; the action also has a fail-closed 17-second total worker timeout."
+          }
+        }
+      },
+      "result": "{supported, live, signal_detected, backend, window_ms, first_packet_offset_ms, sample_frames, detail} — live is true only when the native backend delivered a real nonempty packet during the bounded window; signal_detected is separately true only when captured samples cross the conservative -60 dBFS signal threshold. first_packet_offset_ms is measured from probe start. No captured audio or temporary path is returned or retained. An unavailable/permission-denied backend returns an actionable error or supported:false; no packet or an all-silent route returns a retry instruction and never shows green readiness.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "screen_record_system_audio_probe",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.recovery_status",
+      "domain": "screen_record",
+      "description": "Read the durable, project-local crash-recovery status for screen recordings without starting recovery work. It returns only filesystem-safe capture ids, checkpoint/open state, and receipt facts (recovered segment count, exact-or-unknown lost-tail bounds, optional audio first-packet offset, and a source basename). It never exposes cache paths, accepts no arbitrary manifest path, and never probes media, remuxes, repairs, renames, signals, or kills a process. Requires an open project. Use this after project.open or screen_record.start recovery_scan to inspect the durable state after navigation.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Exclusive capture-id cursor returned as next_cursor. It must exactly match an emitted capture id for this project; unknown ids are rejected and it is never treated as a path."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Maximum capture rows to return (default 50)."
+          }
+        }
+      },
+      "result": "{captures:[{capture_id, state:\"complete\"|\"recovered\"|\"quarantined\"|\"interrupted\"|\"owner_ambiguous\"|\"torn_journal\"|\"corrupt\", checkpoints, has_open_segment, receipt?:{state:\"complete\"|\"recovered\"|\"quarantined\"|\"interrupted\", recovered_segments, lost_tail_ms|null, lost_tail_lower_bound_ms, lost_tail_upper_bound_ms|null, audio_first_packet_offset_ms|null, source|null}}], next_cursor|null} — lexical project-local pagination. source is only a basename; no status row contains an absolute path or can trigger recovery.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_recovery_status",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.start",
+      "domain": "screen_record",
+      "description": "Start one LIVE screen capture in the background (in-process recorder). OPEN-ENDED: when `duration_ms` is OMITTED the capture runs UNTIL screen_record.stop is called (no fixed window — 'record until I stop'); when `duration_ms` IS given it is an optional UPPER BOUND (whichever fires first — the deadline or stop — ends the capture). A simple `quality` request is accepted only when the current `screen_record.doctor.quality.supported` capability says so; that backend records final verified dimensions, cadence, and encoder facts in the stop result, while unsupported backends refuse rather than silently ignore it. A second active capture returns conflict until the first capture and its audio worker finish. Required screen_record.doctor cards are checked before any worker starts; unavailable platform dependencies return not_found instead of an asynchronous failed recording. On Windows, the action preflights its exact compact WGC checkpoint output before any capture marker or worker: when it would exceed 260 UTF-16 code units including its terminator, it returns invalid_args synchronously with an instruction to use a shorter project path. On Linux, the action-specific preflight allows only the exact prompt-deferred XDG ScreenCast `screen_capture:unknown` card to reach the user-selected source picker; it never changes Doctor `ready`, and every missing, degraded, or other unknown required card still returns not_found. Before it reserves a new capture it scans prior project-local checkpoint manifests: only a dead owner with a contiguous independently playable finalized prefix is recovered, while live/ambiguous owners are deferred and corrupt journals fail closed. The capture runs on a background thread that, when it ends, writes project.json (a RecordingProject {settings, source_video, audio?, events}) + the source mp4 (+ a mic wav when `audio`, + system.wav when `system_audio`) under <project>/cache/screen_record/<capture_id>/. On Windows, system.wav starts at the first real WASAPI packet and a sibling system-audio.json sidecar {schema:'shellx-cut/system-audio-timing/1', first_packet_offset_ms} records its offset from capture start (null means no packet); older/no-sidecar captures retain zero-offset placement. An external stop flag is registered under capture_id so screen_record.stop can end the recording promptly. A local <dir>/.capture.json recovery marker {pid, duration_ms, open_ended, fps, audio, keys} is atomically published so screen_record.stop still recovers a completed capture even across a cutd restart (the in-memory stop flag is lost on restart, but a capture that finalized on its own bound is still read from the file). Marker metadata never selects an output path: stop always derives the exact local <capture_id>/project.json. cutd's OWN environment (WAYLAND_DISPLAY / XDG_RUNTIME_DIR / DBUS) reaches the recorder's ScreenCast portal. `window`, when set on Windows/macOS, must be the opaque identity from the latest doctor enumeration and is revalidated exactly; titles are display-only and a vanished target fails explicitly. `monitor_id`, when set, must be the opaque identity from a current doctor monitor row and is revalidated exactly before capture; it never falls back to `monitor`, name, primary state, or dimensions. `monitor` remains the compatible ordinal path when monitor_id is omitted. Capture state is filesystem-based (no AppState change). Optional expected_project_identity must equal the exact path-free project.state.project_identity under the project-transition lock; a closed project returns no_project and a switched project returns conflict before rehearsal cleanup, native admission, marker, or reservation. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [],
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "OPTIONAL upper-bound capture length in ms. OMIT for OPEN-ENDED capture ('record until I stop' — ended only by screen_record.stop). When given, the capture ends at this deadline OR at stop, whichever comes first."
+          },
+          "fps": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 240,
+            "description": "Capture frame rate (default 30)."
+          },
+          "quality": {
+            "type": "object",
+            "required": [
+              "output_size",
+              "profile"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "output_size": {
+                "type": "string",
+                "enum": [
+                  "source",
+                  "1080p",
+                  "720p"
+                ],
+                "description": "Simple final-output height policy. source preserves captured dimensions; 1080p and 720p downscale only, never upscale. Accepted only when screen_record.doctor.quality.supported is true."
+              },
+              "profile": {
+                "type": "string",
+                "enum": [
+                  "standard",
+                  "high"
+                ],
+                "description": "Simple output-quality preset. Numeric codec controls are not part of this request."
+              }
+            }
+          },
+          "audio": {
+            "type": "boolean",
+            "description": "Also record the microphone (voice narration) → a mic wav muxed at render time (default false)."
+          },
+          "keys": {
+            "type": "boolean",
+            "description": "Record keystrokes for the key-cast overlay. OFF by default (privacy: keys can reveal passwords/secrets). Opt-in."
+          },
+          "monitor": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "1-based monitor index to capture (Windows/macOS; from screen_record.doctor.monitors). None / 0 = primary. This legacy path is used only when monitor_id is omitted; ignored when `window` is set."
+          },
+          "monitor_id": {
+            "type": "string",
+            "description": "Opaque exact native identity copied unchanged from a current screen_record.doctor.monitors[].id row (Windows/macOS). It is revalidated against fresh native enumeration before capture; a stale or unavailable identity fails explicitly, with no ordinal, display-name, primary-state, or geometry fallback. Mutually exclusive with `window`. Omit it when Doctor did not provide an id."
+          },
+          "expected_project_identity": {"type":"object","required":["schema","origin_path_sha256","project_name"],"additionalProperties":false,"properties":{"schema":{"const":"shellx-cut/project-identity/1"},"origin_path_sha256":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},"project_name":{"type":"string","minLength":1}},"description":"Optional exact path-free identity from the current project.state.project_identity. If the open project changed or closed, Start refuses under the project-transition lock before rehearsal cleanup, native device admission, marker creation, or capture reservation. Omit only when the caller does not need project binding."},
+          "window": {
+            "type": "string",
+            "description": "Opaque live native identity from the latest screen_record.doctor.windows[].id enumeration (Windows/macOS). It is revalidated exactly at capture start; title text never selects a target, and a malformed, closed, or replaced target fails explicitly. Takes precedence over `monitor`. Omit for the whole monitor/screen."
+          },
+          "camera_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Opaque camera id copied unchanged from the current screen_record.doctor.camera.devices list. Supplying it is the explicit Use camera action: the native owner may request OS camera permission, waits for a real first frame, shares the screen CaptureClock and Stop boundary, then publishes a separately editable CameraArtifact. Omit it to record screen only. Windows and macOS only."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "scenes": {
+            "type": "object",
+            "required": ["catalog_revision", "initial_scene_id", "presets", "timer"],
+            "additionalProperties": false,
+            "properties": {
+              "catalog_revision": {"type": "integer", "minimum": 1},
+              "initial_scene_id": {"type": "string", "minLength": 1, "maxLength": 64},
+              "presets": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "object", "required": ["id", "name", "preset_revision", "layout"], "additionalProperties": false, "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}, "name": {"type": "string", "minLength": 1, "maxLength": 80}, "preset_revision": {"type": "integer", "minimum": 1}, "layout": {"oneOf": [{"type": "object", "required": ["kind"], "additionalProperties": false, "properties": {"kind": {"const": "screen"}}}, {"type": "object", "required": ["kind", "corner", "size_percent", "shape"], "additionalProperties": false, "properties": {"kind": {"const": "presenter_pip"}, "corner": {"enum": ["top_left", "top_right", "bottom_right", "bottom_left"]}, "size_percent": {"type": "integer", "minimum": 15, "maximum": 35}, "shape": {"enum": ["circle", "rounded_rect"]}}}]}}}},
+              "timer": {"oneOf": [{"type": "object", "required": ["kind"], "additionalProperties": false, "properties": {"kind": {"const": "off"}}}, {"type": "object", "required": ["kind"], "additionalProperties": false, "properties": {"kind": {"const": "elapsed"}}}, {"type": "object", "required": ["kind", "duration_ms"], "additionalProperties": false, "properties": {"kind": {"const": "countdown"}, "duration_ms": {"type": "integer", "minimum": 1}}}]}
+            },
+            "description": "Bounded RecordingSceneConfig@1: named Screen or Presenter PiP layouts and exactly one capture-wide off, elapsed, or countdown timer. Presenter PiP needs a selected admitted camera only when it is initial or activated live."
+          },
+          "pause": {"type": "object", "required": ["mode"], "additionalProperties": false, "properties": {"mode": {"const": "enabled", "description": "Opt in to the bounded macOS pause-safe owner. It requires an exact current display and integer FPS, owns screen plus optional mic/system audio only, and rejects Scenes, camera, keys, window capture, and quality selection before capture reservation. Unavailable on Linux and Windows."}}},
+          "system_audio": {
+            "type": "boolean",
+            "description": "Also capture DESKTOP/SYSTEM audio (game/app sound) as a separate track. Linux uses the native PipeWire default-sink monitor and measures its first nonempty packet on the capture clock; a finalized no-packet WAV is null-timed and skipped, while a PipeWire failure removes its partial WAV. Windows uses endpoint-independent process loopback; macOS uses a Core Audio process tap alongside ScreenCaptureKit."
+          },
+          "studio": {
+            "type": "object",
+            "description": "Optional initial Recording Studio metadata such as the chosen background. Timed camera visibility/transform changes are written through screen_record.studio_event so the raw camera take stays separately editable while polish can replay the chosen composition."
+          }
+        }
+      },
+  "result": "{capture_id, out_dir, status:\"recording\", duration_ms, open_ended, cadence, scenes:{enabled,saved:true,scene_id,preset_revision,catalog_revision,logical_media_time_ms:0,timer_started:false,timer,scene}|null, pause:{enabled}, studio_events, recovery_scan:{recovered:[capture_id], deferred:[detail], failed_closed:[detail]}, note} — scenes.saved acknowledges only the durable frozen journal header/config before the native CaptureClock/timer or camera has started; it is not a live timer/camera claim. pause.enabled only acknowledges opt-in admission; use screen_record.pause or screen_record.resume and their saved durable state acknowledgement before changing the UI. capture_id names a dir under <project>/cache/screen_record/; duration_ms is null + open_ended true for an open-ended capture; cadence is CaptureCadence@1 {schema, requested:{num,den}, backend_requested:{num,den}, probed_media?}, where requested is the exact reduced decimal request and backend_requested is the current v1 nearest-integer 1..240 backend request; start has no measured media facts. studio_events points at the capture's timed composition metadata; recovery_scan reports only this pre-start pass, so query screen_record.recovery_status for durable per-capture receipts; the note flags the one-time XDG ScreenCast consent dialog on the first capture. no_project if no project is open; conflict if expected_project_identity names a different open project; invalid_args if a Windows project path exceeds the WGC checkpoint limit; not_found if required recorder dependencies are unavailable; conflict if another capture still owns the recording devices.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_start",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.stop",
+      "domain": "screen_record",
+      "description": "Finalize a capture started by screen_record.start and surface its artifacts. This STOPS the capture — it sets the capture's external stop flag (ending an OPEN-ENDED recording promptly), then waits for the recorder to write its project.json and reads it. A public Recording Scenes take publishes its create-only recording-scene.receipt.json before project.json becomes visible; Stop revalidates the receipt's capture identity, terminal replay, and exact source/project SHA-256 commitments before returning or forwarding it. For a closed native checkpoint with fewer delivered frames than its measured capture span, finalization materializes the missing span as cloned video frames; contradictory timing remains a fail-closed error. Pipeline: (1) resolve <project>/cache/screen_record/<capture_id>/ (missing → not_found); (1b) SIGNAL stop so an open-ended capture ends now (no-op if cutd restarted and lost the in-memory flag — the file poll still recovers a capture that finalized on its own bound); (2) read local marker duration plus the durable journal start only to derive the exact local <capture_id>/project.json and a finite finalization budget; legacy marker project_path values are ignored; (3) POLL for project.json to exist AND be non-empty for twice the declared/observed capture work plus 15s (45s minimum, 15min maximum; 300ms between checks); never appears → a clean timeout; (4) parse the RecordingProject → extract source_video, audio?, and the embedded events EventTrack, writing the events object to <dir>/events.json (pretty) so it feeds the existing screen_record.autoedit {track} verb; (5) if autoedit:true, chain screen_record.autoedit with the finalized capture settings.fps as config.out_fps and the explicit validated scene_receipt when present, so the plan preserves recorded elapsed time. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "description": "The capture id returned by screen_record.start (names a dir under <project>/cache/screen_record/)."
+          },
+          "autoedit": {
+            "type": "boolean",
+            "description": "After finalizing, chain screen_record.autoedit on the events track to produce an EditPlan with the finalized capture FPS as out_fps (default false)."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "mux_raw": {
+            "type": "boolean",
+            "description": "RAW CAPTURE mode (default false): after finalizing, fold the capture's video + captured sound sources (mic + system) into ONE standalone raw.mp4 with NO autoedit/zoom/cursor/polish pass, and return it as `raw_path`. Both mic and system present → amix into a single full-level audio track. Pair with autoedit:false for Raw mode; combine with autoedit:true to save this unedited MP4 and also return an editable plan for the later polish step."
+          },
+          "raw_path": {
+            "type": "string",
+            "description": "Explicit raw recording .mp4 output path (FENCED). Default: the session output dir (project.set_output_dir) or <project>/exports/raw_recording.mp4."
+          }
+        }
+      },
+      "result": "{capture_id, held_last_frame_ms, project, source, audio, webcam, camera_artifact, cadence, quality, events, studio_events, scene_receipt, raw_streams, plan, clicks, cursor_samples, cursor_correlation} — held_last_frame_ms is the measured duration filled by holding the last verified screen frame when WGC delivered zero new frames for a final checkpoint (0 for an ordinary checkpoint capture, null for unavailable legacy journal); these are generated frames, not newly captured screen pixels. project = the finalized project.json path; source = the captured source_video; audio = the mic wav path or null; webcam = the legacy-compatible optional camera path; camera_artifact = CameraArtifact@1 when a validated synchronized camera artifact exists ({schema, capture_id, artifact_id, video: relative capture leaf, clock:{first_frame_offset_ms,end_frame_offset_ms}, media:{width,height,fps_num,fps_den,frame_count,duration_ms,sha256}, terminal_state}), else null; cadence is the optional persisted CaptureCadence@1. Its optional probed_media records only successful final FFprobe facts: avg_frame_rate and r_frame_rate are exact reduced rationals, and decoded_video_frames/duration_ms are independently measured. `quality` is CaptureQualityResolution@1 {schema,requested:{output_size,profile},width,height,encoder} only when a supporting backend accepted the request and the same final verification measured an H.264 source; it is null for unsupported or legacy capture paths. Invalid 0/0 rates, failed probes, and legacy projects return cadence null or omit probed_media; no value is inferred from settings.fps. events = the written events.json path (feeds screen_record.autoedit); studio_events = the timed composition metadata path when present; scene_receipt is recording-scene.receipt.json when this take has a validated public RecordingSceneProjection@1, otherwise null; raw_streams lists discovered screen/camera/mic/system/studio artifacts plus system_timing when the Windows WASAPI packet-offset sidecar exists; plan = the EditPlan path when autoedit:true (else null); clicks/cursor_samples = the lengths of the events arrays. cursor_correlation = {source, state: exact|approximate|unavailable, exact_clicks, approximate_clicks, unavailable_clicks, max_metadata_age_ms?, detail?}; its click counters are button transitions (press and release). Wayland evdev coordinates are approximate unless paired with fresh PipeWire cursor metadata; X11 and Windows/macOS monitor rdevin desktop coordinates are exact only after a validated capture-surface transform. Linux uses actual finalized video dimensions, and marks rdevin input unavailable if they cannot be established. Windows/macOS window capture has no timestamped rectangle stream, so its rdevin positions are unavailable rather than falsely exact after move or resize. No button transitions report unavailable rather than vacuous exactness. no_project if no project is open; not_found if the capture dir is absent; sidecar if the capture never finalized. RAW MODE adds raw_path (the standalone raw.mp4, null unless mux_raw:true) plus raw_has_mic/raw_has_system.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_stop",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.studio_event",
+      "domain": "screen_record",
+      "description": "Append one timed Recording Studio composition event beside an active capture. During recording, camera visibility and transform events change the polished output; a camera reset event with no layout fields clears the chosen position/size/shape so the active frozen scene preset applies again. Later scene activations keep the chosen layout until reset. Recording markers are also supported. Events are metadata only: raw streams stay unbaked, and polish can replay the event stream into the EditPlan webcam timeline. Requires an open project and a capture_id returned by screen_record.start.",
+      "args": {
+        "type": "object",
+        "required": [
+          "capture_id",
+          "event"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "description": "The capture id returned by screen_record.start."
+          },
+          "event": {
+            "type": "object",
+            "required": [
+              "t_ms",
+              "source",
+              "kind"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "t_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Recording-relative event time in milliseconds."
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "camera",
+                  "recording",
+                  "background"
+                ],
+                "description": "Event source. V1 supports camera composition and recording markers."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "visibility",
+                  "transform",
+                  "reset",
+                  "marker",
+                  "style"
+                ],
+                "description": "camera+visibility toggles the camera, camera+transform changes placement/size/shape, camera+reset restores the active scene layout without changing visibility, recording+marker adds a timed marker, background+style changes the polished backdrop."
+              },
+              "visible": {
+                "type": "boolean",
+                "description": "Camera visibility for camera visibility events."
+              },
+              "x": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Camera overlay top-left X as a normalized output-frame fraction."
+              },
+              "y": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Camera overlay top-left Y as a normalized output-frame fraction."
+              },
+              "size": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "description": "Camera overlay height/diameter as a normalized output-frame fraction."
+              },
+              "shape": {
+                "type": "string",
+                "enum": [
+                  "circle",
+                  "rounded_rect"
+                ],
+                "description": "Camera overlay shape."
+              },
+              "radius": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Rounded-rectangle corner radius in output pixels when shape is rounded_rect."
+              },
+              "label": {
+                "type": "string",
+                "description": "Optional marker label for recording marker events."
+              },
+              "background": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "blur_screen",
+                  "solid",
+                  "gradient"
+                ],
+                "description": "Polished backdrop style for background style events."
+              }
+            }
+          }
+        }
+      },
+      "result": "{studio_events, count, last_event} — studio_events is <capture>/studio-events.json, count is the event count after append, and last_event echoes the accepted event.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_studio_event",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.autoedit",
+      "domain": "screen_record",
+      "description": "Run the recorder's AUTO-EDIT engine: a project-local EventTrack JSON (mouse/keyboard/window events captured during a screen recording) → an EditPlan JSON (the polished cut — click-zooms, speed ramps, cursor smoothing). Uses the linked record-engine in process, writing the plan to <project>/cache/screen_record/<sourcestem>.plan.json. `config` is an optional partial EngineConfig override (max_zoom, zoom timings, cursor/keycast tuning, out_fps, idle tuning); unknown keys are rejected. An explicit scene_receipt returned by screen_record.stop is revalidated against its capture source/project bytes, then replays the bounded public scene timeline into the editable plan. Requires an open project (the plan is cached under it).",
+      "args": {
+        "type": "object",
+        "required": [
+          "track"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "track": {
+            "type": "string",
+            "description": "Project-local path to the EventTrack JSON (normally the events path returned by screen_record.stop)."
+          },
+          "config": {
+            "type": "object",
+            "description": "Optional partial record-engine EngineConfig override. Supported keys: max_zoom, zoom_in_ms, zoom_hold_min_ms, zoom_out_ms, dwell_merge_ms, stay_zoomed_gap_ms, cursor_window, keycast_gap_ms, keycast_hold_ms, out_fps, idle_threshold_ms, enable_idle. Unknown keys are rejected."
+          },
+          "webcam": {
+            "type": "string",
+            "description": "Optional project-local path to the captured webcam stream. When present with studio_events, autoedit patches the EditPlan webcam overlay/timeline."
+          },
+          "camera_artifact": {
+            "type": "object",
+            "description": "Optional internal CameraArtifact@1 from screen_record.stop. It preserves the shared CaptureClock first/end frame interval in the generated webcam overlay plan; callers must not synthesize it from device enumeration."
+          },
+          "studio_events": {
+            "type": "string",
+            "description": "Optional project-local path to studio-events.json. Camera events are converted into EditPlan.webcam.timeline for polish replay."
+          },
+          "scene_receipt": {
+            "type": "string",
+            "description": "Optional explicit path to the capture-owned recording-scene.receipt.json returned by screen_record.stop. It must share the EventTrack's capture directory and validates the capture id, sealed public replay, terminal scene, source SHA-256, and project SHA-256 before its editable timeline is applied."
+          }
+        }
+      },
+      "result": "{plan, summary, config, studio_events, webcam, camera_clock, scene_receipt} — plan = the written EditPlan path; summary = the auto-edit plan summary; config = the resolved EngineConfig used to generate the plan; studio_events/webcam echo the optional Studio inputs when applied; camera_clock is the optional validated CameraArtifact@1 first/end frame interval retained in the webcam overlay plan; scene_receipt echoes the explicit validated receipt whose bounded scene_timeline was persisted in the plan, else null.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_autoedit",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.polish",
+      "domain": "screen_record",
+      "description": "The recorder polish pipeline: bake the project-local recorder MP4 (source recording + EditPlan → zoom/speed/cursor polish) and DROP IT ONTO THE TIMELINE. ORCHESTRATOR (like assemble.broll / import.otio): records NO op of its own — wraps the work in an auto-checkpoint and dispatches media.import + edit.add_track + edit.insert as real, replay-safe ops. Pipeline: (1) CONTENT-ADDRESSED bake (the matte pattern) — cache key = source content hash + plan-bytes hash, baked mp4 at <project>/cache/screen_record/<key>.mp4; a hit returns cached:true and skips the bake, a miss renders through the integrated Cut recorder; (2) media.import the baked mp4 and wait for its import chain; (3) ensure the target track exists (default \"v1\"; an explicit absent `track` is created as a video track) then edit.insert at `at_ms` (default 0, no ripple). When the source capture directory contains a validated CameraArtifact@1, polish additionally imports its contained camera media onto a separate hidden v_camera video track at first_frame_offset_ms, with an explicit source range limited to the measured camera duration. It is editable but hidden to prevent duplicating the legacy baked webcam bubble until B7 adds the real visible-track/preview workflow. A sibling system.wav is imported on its own a_system track; when system-audio.json is present, it starts at first_packet_offset_ms after `at_ms` and is trimmed to the remaining video duration. Missing sidecars retain legacy zero-offset placement. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "source",
+          "plan"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Project-local path to the source recording MP4, normally returned by screen_record.stop."
+          },
+          "plan": {
+            "type": "string",
+            "description": "Project-local path to the EditPlan JSON (from screen_record.autoedit)."
+          },
+          "track": {
+            "type": "string",
+            "description": "Target video track id (default \"v1\"; created if absent)."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Timeline position to insert the baked clip (default 0)."
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "raw": {
+            "type": "boolean",
+            "description": "When true, SKIP the slow zoom/cursor/frame re-render: stream-COPY the captured video and mux the mic (near-instant) so 'stop → editable clip' is fast. The EditPlan is still required (cache-keying) but is NOT applied; run polish again without raw for the auto-zoom/cursor pass. Default false (full polish)."
+          }
+        }
+      },
+      "result": "{clip_id, asset_id, camera_artifact_id?, camera_asset_id?, camera_clip_id?, camera_track_id?, camera_first_frame_offset_ms?, system_clip_id, system_warnings, baked, cached} — baked = the cached mp4 path (polished, or stream-copied when raw:true); when a validated CameraArtifact@1 is present, camera_* identifies its independently editable v_camera clip placed at its immutable shared-clock first_frame_offset_ms; system_clip_id is the independently mixable system-audio clip when one was placed; system_warnings explains a missing packet or unsafe duration. cached = whether the bake was reused. Orchestrator: no op of its own; the sub-verbs (media.import, edit.add_track, edit.insert) record the ops, all revertible via the auto-checkpoint.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_polish",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "screen_record.export",
+      "domain": "screen_record",
+      "description": "Queue the project-local recorder render to a FENCED file WITHOUT touching the timeline (the \"give me the finished clip\" export, vs. screen_record.polish which inserts it). format \"mp4\" (default): render to the fenced .mp4 path through the integrated Cut recorder. Sparse or variable-rate source frames are resampled to the EditPlan FPS before compositing, so a high nominal stream rate cannot duplicate frames and lengthen the planned export. For a direct recorder capture source, MP4 export validates its sibling mic.wav and system.wav artifacts, honors system-audio.json first_packet_offset_ms (or omits a null-timed no-packet system stream), and mixes them through the planned renderer; it never falls back to an unfenced raw-path mux. format \"gif\": render to a temp mp4 then convert to the fenced .gif (gif_fps default 15, gif_width default 720; the temp mp4 is removed). The immediate response captures the output lease and returns a job_id; poll jobs.status for the finished file, progress, cancellation, or actionable error. The output path is fenced and an explicit `path` must match format, else the session output dir (project.set_output_dir), else <project>/exports/recording.<ext>. Requires an open project (for the fence root).",
+      "args": {
+        "type": "object",
+        "required": [
+          "source",
+          "plan"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Project-local path to the source recording MP4, normally returned by screen_record.stop."
+          },
+          "plan": {
+            "type": "string",
+            "description": "Project-local path to the EditPlan JSON (from screen_record.autoedit)."
+          },
+          "path": {
+            "type": "string",
+            "description": "Explicit output path matching format (.mp4 or .gif; fenced). Default: the session output dir or <project>/exports/recording.<ext>."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "mp4",
+              "gif"
+            ],
+            "description": "mp4 (default) = the polished video; gif = render then convert to an animated GIF."
+          },
+          "gif_fps": {
+            "type": "integer",
+            "description": "GIF frame rate (default 15; format:\"gif\" only)."
+          },
+          "gif_width": {
+            "type": "integer",
+            "description": "GIF width px (default 720, height auto; format:\"gif\" only)."
+          }
+        }
+      },
+      "result": "{job_id, path, format, status:\"queued\"} — the fenced destination is reserved before this response returns. Poll jobs.status(job_id): done.result = {path, format, frames, elapsed_ms}; failed.error is actionable. invalid_args on an unknown format.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_export",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "capture",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

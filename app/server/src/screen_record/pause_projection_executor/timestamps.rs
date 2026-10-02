@@ -73,6 +73,9 @@ impl SourceTiming {
         if self.error.is_some() {
             return;
         }
+        // The bounded reader splits on LF; Windows ffprobe emits CRLF. Remove
+        // only its terminal CR so malformed field whitespace remains invalid.
+        let line = line.strip_suffix('\r').unwrap_or(line);
         // Scalar rows are far smaller than the owned reader's 16-KiB line cap.
         // Reject long rows so truncated lines cannot masquerade as valid facts.
         if line.len() > 96 {
@@ -205,6 +208,69 @@ mod tests {
         oversized.observe(&"x".repeat(20000));
         assert!(oversized.finish(5, 200).is_err());
     }
+    #[test]
+    fn accepts_lf_and_crlf_scalar_side_data_and_time_base_rows_equally() {
+        for ending in ["", "\r"] {
+            let mut state = SourceTiming::default();
+            for row in [
+                "frame|best_effort_timestamp=0|",
+                "frame|best_effort_timestamp=30",
+                "frame|best_effort_timestamp=50",
+                "stream|time_base=1/600",
+            ] {
+                state.observe(&format!("{row}{ending}"));
+            }
+            assert!(state.finish(3, 100).is_ok());
+            assert!(state.finish(2, 100).is_err());
+            assert!(state.finish(3, 50).is_err());
+        }
+    }
+
+    #[test]
+    fn crlf_normalization_keeps_invalid_timestamp_evidence_rejected() {
+        for ending in ["", "\r"] {
+            for bad in [
+                "frame|best_effort_timestamp=0",
+                "frame|best_effort_timestamp=-1",
+                "frame|best_effort_timestamp=N/A",
+                "frame|best_effort_timestamp=30 ",
+                "frame|best_effort_timestamp=30||",
+                "frame|best_effort_timestamp=30\r\r",
+                "frame|best_effort_timestamp=3\r0",
+                "frame|",
+                "garbage",
+            ] {
+                let mut state = SourceTiming::default();
+                state.observe(&format!("frame|best_effort_timestamp=0|{ending}"));
+                state.observe(&format!("{bad}{ending}"));
+                state.observe(&format!("stream|time_base=1/600{ending}"));
+                // A terminal CR is one supported line ending. A second CR or
+                // an embedded CR must never turn malformed fields into facts.
+                assert!(state.finish(2, 100).is_err(), "accepted {bad:?}{ending:?}");
+            }
+            for bad in [
+                "stream|time_base=0/600",
+                "stream|time_base=1/0",
+                "stream|time_base=unknown",
+                "stream|time_base=1/600 ",
+                "stream|time_base=1/6\r00",
+            ] {
+                let mut state = SourceTiming::default();
+                state.observe(&format!("frame|best_effort_timestamp=0{ending}"));
+                state.observe(&format!("{bad}{ending}"));
+                assert!(state.finish(1, 100).is_err(), "accepted {bad:?}{ending:?}");
+            }
+            let mut state = SourceTiming::default();
+            state.observe(&format!("{}{ending}", "x".repeat(97)));
+            assert!(state.finish(1, 100).is_err());
+            let mut state = SourceTiming::default();
+            state.observe(&format!("frame|best_effort_timestamp=0{ending}"));
+            state.observe(&format!("stream|time_base=1/600{ending}"));
+            state.observe(&format!("stream|time_base=1/600{ending}"));
+            assert!(state.finish(1, 100).is_err());
+        }
+    }
+
     #[test]
     fn validates_a_long_uninterrupted_run_without_retaining_rows() {
         let mut state = SourceTiming::default();

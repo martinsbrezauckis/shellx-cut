@@ -1,0 +1,43 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "screen_record",
+  "verbs": [
+    {
+      "name": "screen_record.microphone_selection",
+      "domain": "screen_record",
+      "description": "Human Record-workspace preference mutation. Choose `system_default` to preserve existing OS-default microphone behavior, or `selected` with one current opaque microphone token from screen_record.doctor. The server resolves that token immediately to a private native endpoint reference and persists that reference app-locally; it never persists, returns, or accepts a token as the source identity. The mutation is denied while recording, is Human UI only, and is denied to Agent Chat.",
+      "args": {
+        "type": "object",
+        "required": ["mode"],
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["system_default", "selected"],
+            "description": "System Default follows the OS default. Selected requires a current microphone_token."
+          },
+          "microphone_token": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 128,
+            "description": "Short-lived opaque token from screen_record.doctor.microphones[].token. Required only with mode:selected; it is consumed and never persisted."
+          }
+        }
+      },
+      "result": "{microphone_selection:{mode,label?,status}} — public-safe selection projection only; no native endpoint identity or capability token is returned.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {"filesystem": true, "process": false, "network": false, "ui": true},
+        "dispatch": "screen_record_microphone_selection",
+        "project_state": "none",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

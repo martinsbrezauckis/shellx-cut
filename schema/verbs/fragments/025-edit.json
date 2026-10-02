@@ -1,0 +1,111 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "edit",
+  "verbs": [
+    {
+      "name": "edit.eq",
+      "domain": "edit",
+      "description": "Parametric audio EQ on a clip — the audio analog of edit.grade, for cleaning up voice on talking-head / podcast / screen-demo audio. A high-pass (low-cut, removes rumble/HVAC), any number of peaking bands (presence boost, mud/de-ess cut), and a low-pass (high-cut, tames hiss). Two ways to specify: (1) a PRESET (the easy path) — voice (low-cut + de-mud + presence), warmth (low-mid body), de_rumble (subsonic cut), phone (telephone band-limit, a lo-fi effect), de_ess (tame sibilance), brighten (high-end air). (2) RAW high_pass_hz / low_pass_hz / bands[{freq_hz, gain_db, q}]. enabled:false (or an empty/identity EQ) CLEARS it. AUDIO-track media clips only (a video file's audio is a separate clip on its own audio track). Emitted as ffmpeg highpass → equalizer(per band) → lowpass on the clip audio; applies on both the software and GPU render paths (the GPU fast-track reuses the software audio chain).",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string",
+            "description": "Media clip id (on an audio track)"
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "voice",
+              "warmth",
+              "de_rumble",
+              "phone",
+              "de_ess",
+              "brighten"
+            ],
+            "description": "Named EQ shape; resolved to explicit high_pass/low_pass/bands"
+          },
+          "high_pass_hz": {
+            "type": "number",
+            "minimum": 10,
+            "maximum": 20000,
+            "description": "High-pass (low-cut) corner frequency, Hz (raw; omit for none)"
+          },
+          "low_pass_hz": {
+            "type": "number",
+            "minimum": 10,
+            "maximum": 20000,
+            "description": "Low-pass (high-cut) corner frequency, Hz (raw; omit for none)"
+          },
+          "bands": {
+            "type": "array",
+            "default": [],
+            "description": "Peaking bands (raw; ignored when preset is given). A 0 dB band is dropped.",
+            "items": {
+              "type": "object",
+              "required": [
+                "freq_hz",
+                "gain_db"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "freq_hz": {
+                  "type": "number",
+                  "minimum": 10,
+                  "maximum": 20000,
+                  "description": "Band centre frequency, Hz"
+                },
+                "gain_db": {
+                  "type": "number",
+                  "description": "Boost (+) or cut (-) at the centre, dB"
+                },
+                "q": {
+                  "type": "number",
+                  "minimum": 0.1,
+                  "maximum": 20,
+                  "description": "Quality factor / bandwidth (higher = narrower; default 1.0)"
+                }
+              }
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "true (default) = apply EQ; false = clear"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "include_inverse": {
+            "type": "boolean",
+            "default": false,
+            "deprecated": true,
+            "description": "Deprecated compatibility option. Accepted for v0.6 callers but new operations use recompute-by-replay and have no inverse payload to include."
+          }
+        }
+      },
+      "result": "{clip, eq, old_eq}; one op appended",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "edit_eq",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "edit",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

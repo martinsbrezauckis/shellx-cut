@@ -1,0 +1,317 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "render",
+  "verbs": [
+    {
+      "name": "render.bundle",
+      "domain": "render",
+      "description": "Render ONE timeline window into a publish package per platform (social repurposing capstone). Reframes via render_range with the platform aspect geometry + fit:cover, normalizes loudness (default -14 LUFS, social), and emits per platform: hashed mp4 + hashed windowed captions (srt+vtt) + a hashed thumbnail + an OUTPUT-fact receipt. returns {job_id, bundle_id}; the package payload lands in the job result. Package status is ready only when every platform receipt passes, required writes/hashes succeed, optional thumbnails exist, and brand constraints pass. The saved project.brand kit is enforced automatically; brand_ref is an explicit one-call override. An atomic exports/<bundle_id>/manifest.json binds deliverables, hashes, source op, QC, and the brand source/result. Default platforms 9:16 + 1:1 + 16:9. `candidate:{at_ms,dur_ms}` is a TIMELINE window. Output FENCED.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "range_ms": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Timeline window [start, end) to bundle. Omit with `candidate` or to bundle the whole timeline."
+          },
+          "candidate": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "A timeline window as {at_ms, dur_ms} (e.g. a clip.candidates pick mapped to the timeline).",
+            "properties": {
+              "at_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "dur_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Aspect ratios to render, e.g. [\"9:16\",\"1:1\",\"16:9\"] (default). Each is W:H with small integers."
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "standard",
+              "high"
+            ],
+            "description": "Quality tier (default standard)."
+          },
+          "normalize_loudness": {
+            "type": "integer",
+            "minimum": -40,
+            "maximum": -5,
+            "description": "Target integrated LUFS for every clip (default -14, social)."
+          },
+          "brand_ref": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Optional validated one-call brand override. Omit to enforce the saved project.brand kit when present.",
+            "properties": {
+              "fonts": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              },
+              "colors": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {
+                  "type": "string",
+                  "pattern": "^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$"
+                }
+              },
+              "position": {
+                "type": "string",
+                "enum": [
+                  "bottom",
+                  "top",
+                  "center"
+                ]
+              },
+              "min_size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              },
+              "max_size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              },
+              "aspect": {
+                "type": "string",
+                "pattern": "^[0-9]+:[0-9]+$"
+              }
+            }
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{job_id, bundle_id} — package lands in jobs.status.result: {bundle_id,range_ms,status:ready|needs_review|blocked,pass,issues:[{code,severity,aspect?,detail}],warnings:[...],platforms:[{aspect,width,height,path,hash,caption_path,caption_hash,vtt_path,vtt_hash,caption_count,thumb,thumb_hash,receipt_id,pass,duration_ms}],receipt_ids,brand?,manifest_path,manifest_hash}. Non-ready packages finish as done_with_warnings because artifacts are usable but issues require review.",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "bundle_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "bundle_id": {
+            "type": "string"
+          },
+          "x-async-result": {
+            "type": "string",
+            "const": "{bundle_id, range_ms, platforms:[{aspect,path,caption_path,vtt_path,thumb,receipt_id,pass}], receipt_ids, brand?} via jobs.status"
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "render_bundle",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "render",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "render.queue",
+      "domain": "render",
+      "description": "BATCH DELIVERY — a sequential render queue. Fan the ONE current timeline out into N renders, each with its own delivery settings, every one running through the SAME render.final path (job + segmented OOM-bounded encode + auto verify.checks -> RenderReceipt). PURE DELIVERY ORCHESTRATOR (autopilot.run/recipe.run mould): records NO op of its own and makes NO timeline mutation, only dispatches render.final per entry and reuses the job infra; NO checkpoint (nothing to revert). SEQUENTIAL, not concurrent (deliberate): render is memory-heavy and render.final already bounds peak RSS WITHIN one render (adaptive segmentation + a Linux cgroup soft-limit); N renders at once would multiply peak memory by N and defeat that. The next render starts only after the prior reaches a terminal state. Entries are INDEPENDENT deliveries: a failed one is recorded and the queue CONTINUES (never aborts the batch). Each entry is a render.final arg SUBSET (with `output` accepted as the alias for render.final's `path`), VALIDATED UP FRONT by a render.final dry_run per entry — a bad entry fails the WHOLE queue before any encode, naming the offending index. returns {queue_id, count, jobs:[{idx, output}]}; the per-entry job_ids + receipts fill into the queue job result (jobs.status{queue_id}) as each render completes. Requires an open project.",
+      "args": {
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "minItems": 1,
+            "description": "The deliveries to render, in order. Each entry is a render.final arg SUBSET; the render.final dispatch is the authoritative validator (unknown keys / bad enums are rejected per entry, up front, via a dry_run).",
+            "items": {
+              "type": "object",
+              "description": "A render.final arg-set for one delivery. `output` aliases render.final's `path` (the file to write, FENCED per ). Other keys mirror render.final: preset, format, hardware, bitrate, target_size_mb, rate_control, audio_bitrate, profile, fit, resolution, aspect, width, height, normalize_loudness.",
+              "properties": {
+                "output": {
+                  "type": "string",
+                  "description": "Output file path for this delivery (alias for render.final's `path`). FENCED. Omit to use the default <project>/exports/<render_id>.<ext>."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Output file path (render.final's native key). Pass `output` OR `path`, not both."
+                },
+                "preset": {
+                  "type": "string",
+                  "enum": [
+                    "draft",
+                    "standard",
+                    "high"
+                  ]
+                },
+                "format": {
+                  "type": "string",
+                  "enum": [
+                    "h264",
+                    "hevc",
+                    "vp9",
+                    "prores",
+                    "av1"
+                  ]
+                },
+                "hardware": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "off"
+                  ]
+                },
+                "bitrate": {
+                  "type": "string"
+                },
+                "target_size_mb": {
+                  "type": "number"
+                },
+                "rate_control": {
+                  "type": "string",
+                  "enum": [
+                    "vbr",
+                    "cbr"
+                  ]
+                },
+                "audio_bitrate": {
+                  "type": "string"
+                },
+                "profile": {
+                  "type": "string",
+                  "enum": [
+                    "talking_head",
+                    "silent_screen_demo"
+                  ]
+                },
+                "fit": {
+                  "type": "string",
+                  "enum": [
+                    "contain",
+                    "cover"
+                  ]
+                },
+                "resolution": {
+                  "type": "string",
+                  "enum": [
+                    "project",
+                    "match_source"
+                  ]
+                },
+                "aspect": {
+                  "type": "string"
+                },
+                "width": {
+                  "type": "integer"
+                },
+                "height": {
+                  "type": "integer"
+                },
+                "normalize_loudness": {
+                  "type": "integer",
+                  "minimum": -40,
+                  "maximum": -5
+                }
+              }
+            }
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{queue_id, count, jobs:[{idx, output}]} — sequential batch delivery; the queue job result (jobs.status{queue_id}) fills in per-entry {idx, job_id, render_id, output, ok, pass, receipt, error?} as each render.final completes, plus {summary_line, count, succeeded, failed}.",
+      "result_schema": {
+        "type": "object",
+        "required": [
+          "queue_id",
+          "jobs"
+        ],
+        "properties": {
+          "queue_id": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "idx": {
+                  "type": "integer"
+                },
+                "output": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "x-async-result": {
+            "type": "string",
+            "const": "{summary_line, count, succeeded, failed, jobs:[{idx, job_id, render_id, output, ok, pass, receipt, error?}]} via jobs.status{queue_id}"
+          }
+        }
+      },
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "render_queue",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "render",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

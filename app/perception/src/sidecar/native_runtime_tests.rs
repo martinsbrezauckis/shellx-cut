@@ -2,14 +2,34 @@
 
 use super::*;
 
+// Keep this guard inside NATIVE_RUNTIME_ENV_LOCK so unwinding restores the
+// locator before another test can use the environment.
+struct NativeRuntimeEnvRestore(Option<std::ffi::OsString>);
+
+impl NativeRuntimeEnvRestore {
+    fn capture() -> Self {
+        Self(std::env::var_os(cut_native_runtime_context::CONTEXT_ENV))
+    }
+}
+
+impl Drop for NativeRuntimeEnvRestore {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
+            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
+        }
+    }
+}
+
 #[test]
 fn premium_member_is_selected_without_changing_ordinary_python() {
     let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-    let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+    let _restore = NativeRuntimeEnvRestore::capture();
     let temp = tempfile::tempdir().unwrap();
     let context = |name: &str, version: &str| {
         let root = temp.path().join(name);
         std::fs::create_dir(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
         let interpreter = root.join("python");
         let import = root.join("module.py");
         std::fs::write(&interpreter, name.as_bytes()).unwrap();
@@ -66,43 +86,35 @@ fn premium_member_is_selected_without_changing_ordinary_python() {
         {"id": "python", "context": ordinary}
     ]));
     assert!(selected_native_runtime_context(true).is_err());
-    match prior {
-        Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-        None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-    }
 }
 
 #[test]
 fn native_runtime_absent_keeps_the_existing_sidecar_ladder() {
     let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-    let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+    let _restore = NativeRuntimeEnvRestore::capture();
     std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV);
     let runtime = sidecar_runtime().unwrap();
     assert!(runtime.native_context.is_none());
-    match prior {
-        Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-        None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-    }
 }
 
 #[test]
 fn native_runtime_set_selects_the_declared_python_member() {
     let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-    let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+    let _restore = NativeRuntimeEnvRestore::capture();
     let temp = tempfile::tempdir().unwrap();
     let python_root = temp.path().join("python-runtime");
     let tools_root = temp.path().join("media-tools");
+    std::fs::create_dir_all(&python_root).unwrap();
     std::fs::create_dir_all(tools_root.join("bin")).unwrap();
+    let python_root = std::fs::canonicalize(python_root).unwrap();
+    let tools_root = std::fs::canonicalize(tools_root).unwrap();
     let interpreter = python_root.join("python");
     let import = python_root.join("onnx_asr.py");
     let ffmpeg = tools_root.join("bin").join("ffmpeg");
     let ffprobe = tools_root.join("bin").join("ffprobe");
-    std::fs::create_dir_all(&python_root).unwrap();
     for path in [&interpreter, &import, &ffmpeg, &ffprobe] {
         std::fs::write(path, b"fixture").unwrap();
     }
-    let python_root = std::fs::canonicalize(python_root).unwrap();
-    let tools_root = std::fs::canonicalize(tools_root).unwrap();
     let locator = temp.path().join("native-runtime-context.json");
     let context = serde_json::json!({
         "schema": cut_native_runtime_context::SET_CONTEXT_CONTRACT,
@@ -139,24 +151,41 @@ fn native_runtime_set_selects_the_declared_python_member() {
     let selected = native_runtime_context().unwrap().unwrap();
     assert_eq!(selected.interpreter.path, python_root.join("python"));
     assert_eq!(selected.imports[0].module, "onnx_asr");
-    match prior {
-        Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-        None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
-    }
 }
 
 #[test]
 fn invalid_native_runtime_never_falls_through_to_the_legacy_python() {
     let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
-    let prior = std::env::var_os(cut_native_runtime_context::CONTEXT_ENV);
+    let _restore = NativeRuntimeEnvRestore::capture();
     let temp = tempfile::tempdir().unwrap();
     let invalid = temp.path().join("native-runtime-context.json");
     std::fs::write(&invalid, b"not json").unwrap();
     std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, &invalid);
     assert!(sidecar_runtime().is_err());
-    match prior {
-        Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
-        None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
+}
+
+#[test]
+fn native_runtime_environment_is_restored_during_unwind() {
+    let _guard = super::super::NATIVE_RUNTIME_ENV_LOCK.lock().unwrap();
+    let _restore = NativeRuntimeEnvRestore::capture();
+    for prior in [
+        None,
+        Some(std::ffi::OsString::from("prior-runtime-context")),
+    ] {
+        match &prior {
+            Some(value) => std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, value),
+            None => std::env::remove_var(cut_native_runtime_context::CONTEXT_ENV),
+        }
+        let result = std::panic::catch_unwind(|| {
+            let _restore = NativeRuntimeEnvRestore::capture();
+            std::env::set_var(cut_native_runtime_context::CONTEXT_ENV, "abandoned-context");
+            panic!("fixture assertion failure");
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            std::env::var_os(cut_native_runtime_context::CONTEXT_ENV),
+            prior
+        );
     }
 }
 

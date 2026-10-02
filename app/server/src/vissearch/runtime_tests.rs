@@ -100,7 +100,10 @@ fn prepared_runtime_uses_admitted_group_and_isolated_python_command() {
     .unwrap();
     assert_eq!(
         runtime.model,
-        temp.path().join("runtime/models/siglip2-base-patch16-224")
+        temp.path()
+            .join("runtime")
+            .join("models")
+            .join("siglip2-base-patch16-224")
     );
     assert!(runtime.is_native_context());
     let mut command = Command::new(&runtime.python);
@@ -115,12 +118,15 @@ fn prepared_runtime_uses_admitted_group_and_isolated_python_command() {
             "-s".to_string(),
             "-B".to_string(),
             temp.path()
-                .join("payload/siglip_index.py")
+                .join("payload")
+                .join("siglip_index.py")
                 .display()
                 .to_string(),
             "--model".to_string(),
             temp.path()
-                .join("runtime/models/siglip2-base-patch16-224")
+                .join("runtime")
+                .join("models")
+                .join("siglip2-base-patch16-224")
                 .display()
                 .to_string(),
             "--model-id".to_string(),

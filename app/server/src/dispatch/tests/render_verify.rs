@@ -719,9 +719,12 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
         use tokio::sync::Notify;
 
         let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().canonicalize().unwrap();
         let chosen = tempfile::tempdir().unwrap();
+        let chosen_path = chosen.path().canonicalize().unwrap();
         let later = tempfile::tempdir().unwrap();
-        let media = dir.path().join("clip.mp4");
+        let later_path = later.path().canonicalize().unwrap();
+        let media = dir_path.join("clip.mp4");
         assert!(std::process::Command::new("ffmpeg")
             .args([
                 "-v",
@@ -745,7 +748,7 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
 
         for explicit in [true, false] {
             let state = AppState::new();
-            let project = dir.path().join(if explicit {
+            let project = dir_path.join(if explicit {
                 "explicit.cutproj"
             } else {
                 "default.cutproj"
@@ -793,10 +796,10 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
                     release_task.notified().await;
                 });
             ready.notified().await;
-            set_session_output_dir(Some(chosen.path().to_path_buf()));
+            set_session_output_dir(Some(chosen_path.clone()));
             let mut delivery = json!({"preset":"draft","hardware":"off","width":160,"height":90});
             if explicit {
-                delivery["output"] = json!(chosen.path().join("selected.mp4"));
+                delivery["output"] = json!(chosen_path.join("selected.mp4"));
             }
             let response = dispatch(
                 &state,
@@ -808,14 +811,14 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
             assert!(response.ok, "{:?}", response.error);
             let result = response.result.unwrap();
             let planned = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
-            assert_eq!(planned.parent(), Some(chosen.path()));
+            assert_eq!(planned.parent(), Some(chosen_path.as_path()));
             let queue_id = result["queue_id"].as_str().unwrap();
             set_session_output_dir(None); // the native picker restores its old default
-            set_session_output_dir(Some(later.path().to_path_buf())); // another normal folder choice
+            set_session_output_dir(Some(later_path.clone())); // another normal folder choice
             let unrelated = dispatch(
                 &state,
                 "render.final",
-                json!({"path":chosen.path().join("unrelated.mp4"),"dry_run":true,"hardware":"off"}),
+                json!({"path":chosen_path.join("unrelated.mp4"),"dry_run":true,"hardware":"off"}),
                 test_actor(),
             )
             .await;
@@ -841,7 +844,7 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
             let child_id = result["jobs"][0]["job_id"].as_str().unwrap();
             assert_eq!(state.jobs.get(child_id).unwrap().state, JobState::Done);
             let output = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
-            assert_eq!(output.parent(), Some(chosen.path()));
+            assert_eq!(output.parent(), Some(chosen_path.as_path()));
             assert!(output.is_file());
             let later_default = crate::output_paths::fence_output_path(
                 &project,
@@ -852,7 +855,7 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
             .unwrap();
             assert_eq!(
                 later_default.parent(),
-                Some(later.path()),
+                Some(later_path.as_path()),
                 "queue completion must not overwrite the new preference"
             );
         }

@@ -1,0 +1,279 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "motion",
+  "verbs": [
+    {
+      "name": "motion.link.tracking.inspect",
+      "domain": "motion",
+      "description": "Inspect one persisted Motion tracking lifecycle and verify that its package-local source bytes still match the recorded identity. Read-only; strips package paths and raw artifact paths from the Cut response.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "analysis_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "analysis_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          }
+        }
+      },
+      "result": "{ok:true, schema:'shellx-cut/motion-tracking-inspect@1', clip, analysisId, lifecycle, source:{assetId,current,sha256,byteLength}, current, receipt, warnings, localOnly:true}.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "motion_link_tracking_inspect",
+        "project_state": "required",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "motion.link.tracking.apply",
+      "domain": "motion",
+      "description": "Compile a current persisted Motion track into ordinary transform keyframes on a selected visual layer. Motion writes a copy-on-write package and receipt; Cut validates output identity and atomically updates only the linked source binding. The existing Cut render remains the fallback until motion.link.refresh succeeds.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "analysis_id",
+          "layer_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "analysis_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "layer_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "segment_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          },
+          "include_low_confidence": {
+            "type": "boolean",
+            "default": false
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{ok:true, schema:'shellx-cut/motion-tracking-apply@1', clip, analysisId, layerId, plan:{status,fidelity,segmentCount,warnings}, changedPaths, receipt, warnings, state:'source-dirty', refreshRequired:true, restore_hint}.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "motion_link_tracking_apply",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "motion.link.tracking.verify",
+      "domain": "motion",
+      "description": "Verify that a Motion layer's tracking attachment, generated keyframes, lifecycle, and package-local source identity remain current. Read-only and path-free.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "layer_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "layer_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "analysis_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          }
+        }
+      },
+      "result": "{ok:true, schema:'shellx-cut/motion-tracking-verify@1', clip, layerId, analysisId?, verification:{attached,current,reasons,...}, lifecycle, source, receipt, warnings, localOnly:true}.",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "motion_link_tracking_verify",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    },
+    {
+      "name": "motion.link.tracking.detach",
+      "domain": "motion",
+      "description": "Detach Motion stabilization from a selected layer and restore the exact prior transform keyframes recorded by Motion. The copy-on-write package and receipt are validated before Cut updates the linked source; refresh remains explicit and the prior rendered fallback stays usable.",
+      "args": {
+        "type": "object",
+        "required": [
+          "clip",
+          "layer_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "clip": {
+            "type": "string"
+          },
+          "layer_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{ok:true, schema:'shellx-cut/motion-tracking-detach@1', clip, layerId, analysisId?, restoredPreviousKeyframes, changedPaths, receipt, warnings, state:'source-dirty', refreshRequired:true}.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "motion_link_tracking_detach",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "none",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    },
+    {
+      "name": "motion.template_to_cut",
+      "domain": "motion",
+      "description": "Render a ShellX Motion template package through the local ShellX Motion CLI, then optionally import the rendered MP4 into the open Cut project and insert it on the timeline. Used by Generate motion templates and exposed directly for agent/debug workflows. Preview policy is non-mutating and returns PNG/receipt/artifact evidence. Insert policy requires an open project, real render output, and lowers to normal project.checkpoint/media.import/edit.insert ops so replay and undo stay owned by Cut.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "template": {
+            "type": "string",
+            "description": "Motion package root path or built-in alias such as editable-lower-third. Aliases resolve through SHELLX_MOTION_TEMPLATE_ROOT or the discovered ShellX Motion repo."
+          },
+          "params": {
+            "type": "object",
+            "description": "Template parameter values passed as --set key=value to ShellX Motion."
+          },
+          "policy": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "insert"
+            ],
+            "default": "insert",
+            "description": "preview = run Motion preview/dry-run evidence only; insert = render MP4, import it, and place it on the timeline."
+          },
+          "out_dir": {
+            "type": "string",
+            "description": "Optional output directory for Motion package/render/receipt artifacts. Defaults under the open project, or temp for preview with no project."
+          },
+          "at_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Timeline start for insert policy. Defaults to 0."
+          },
+          "track": {
+            "type": "string",
+            "description": "Target track for insert policy. Defaults to v1."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optional timeline/source duration override. Defaults to the rendered Motion package duration."
+          },
+          "dry_run_render": {
+            "type": "boolean",
+            "default": false,
+            "description": "Force Motion dry-run render. Allowed for preview evidence; insert rejects dry-run output because there is no media to import."
+          },
+          "checkpoint": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether direct insert policy records its own checkpoint. Generate inserts pass false because generate.insert already checkpoints."
+          },
+          "job_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "description": "Optional caller-chosen Motion job id. Supply it before starting the blocking connector call, then poll motion.job.get from another request while the render runs."
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      },
+      "result": "{policy, template, params, motion_job_id?, connector, preview?, render?, checkpoint?, import?, insert?, op_ids, clips, assets, artifacts, receiptPath, warnings, restore_hint}. Preview is non-mutating; insert appends checkpoint/media.import/edit.insert ops unless checkpoint:false. Supply job_id before the call to observe live progress through motion.job.get.",
+      "behavior": {
+        "mutation_class": "timeline",
+        "side_effects": {
+          "filesystem": false,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "motion_template_to_cut",
+        "project_state": "required",
+        "idempotency": "request_key",
+        "replayability": "replayable",
+        "async_job": "motion",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}

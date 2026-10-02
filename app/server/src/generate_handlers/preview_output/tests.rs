@@ -15,10 +15,13 @@ fn png() -> Vec<u8> {
 
 fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
-    let project = temp.path().join("preview.cutproj");
+    let temp_path = temp.path().canonicalize().unwrap();
+    let project = temp_path.join("preview.cutproj");
     std::fs::create_dir_all(project.join("frames")).unwrap();
-    let source = temp.path().join("source.png");
+    let source = temp_path.join("source.png");
     std::fs::write(&source, png()).unwrap();
+    let project = project.canonicalize().unwrap();
+    let source = source.canonicalize().unwrap();
     (temp, project, source)
 }
 

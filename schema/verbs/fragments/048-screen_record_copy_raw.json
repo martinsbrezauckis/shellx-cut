@@ -1,0 +1,47 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "screen_record",
+  "verbs": [
+    {
+      "name": "screen_record.copy_raw",
+      "domain": "screen_record",
+      "description": "Save another byte-for-byte copy of a successfully saved raw recording without editing or remuxing it. Pass the absolute raw_path returned by screen_record.stop. The source must be a plain regular MP4 inside the active project's authorized export-read roots, and the destination receives the normal output fence and lease. The copy runs as a cancellable job using a private sibling stage, then publishes only a complete file. The default name is collision-safe in the selected output folder or project exports. Poll jobs.status for completion; cancellation removes the stage and preserves the source.",
+      "args": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Absolute raw_path from a successful screen_record.stop; must still be a plain MP4 in this project's authorized export-read roots."
+          },
+          "path": {
+            "type": "string",
+            "description": "Optional fenced .mp4 Save As destination; omitted uses the selected output folder or project exports with a collision-safe raw_recording-copy.mp4 name."
+          }
+        }
+      },
+      "result": "{job_id,path,status:\"queued\"}; completed jobs.status result is {path,bytes}. No timeline mutation.",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": false,
+          "network": false,
+          "ui": false
+        },
+        "dispatch": "screen_record_copy_raw",
+        "project_state": "required",
+        "idempotency": "none",
+        "replayability": "not_applicable",
+        "async_job": "capture",
+        "ui_exposure": "human",
+        "agent_chat": "deny",
+        "risk": "external",
+        "facets": []
+      }
+    }
+  ]
+}

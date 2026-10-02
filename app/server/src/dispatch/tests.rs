@@ -8129,8 +8129,9 @@ async fn generated_media_import_refuses_a_different_open_project_atomically() {
 #[tokio::test]
 async fn media_remove_cleans_only_project_owned_generated_sources() {
     let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().canonicalize().unwrap();
     let state = AppState::new();
-    let project = dir.path().join("cleanup.cutproj");
+    let project = dir_path.join("cleanup.cutproj");
     let created = dispatch(
         &state,
         "project.create",
@@ -8146,8 +8147,10 @@ async fn media_remove_cleans_only_project_owned_generated_sources() {
     let provenance = generated_dir.join("gen-test.json");
     std::fs::write(&generated, b"generated").unwrap();
     std::fs::write(&provenance, b"{}").unwrap();
-    let external = dir.path().join("external.png");
+    let external = dir_path.join("external.png");
     std::fs::write(&external, b"external").unwrap();
+    let generated = generated.canonicalize().unwrap();
+    let external = external.canonicalize().unwrap();
 
     let make_asset = |path: &Path, hash: &str| cut_core::Asset {
         path: path.display().to_string(),

@@ -1,0 +1,70 @@
+{
+  "schema": "shellx-cut/verb-fragment/1",
+  "domain": "ui",
+  "verbs": [
+    {
+      "name": "ui.state",
+      "domain": "ui",
+      "description": "Revisioned, path-safe state from the connected UI: active workspace and left/right/review tabs, overlays/dialogs, available and agent-openable surface ids, playhead, selection, export range, safe project identity, and the currently rendered About version when its visible text has committed. Errors no_ui_client after the last UI socket disconnects.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right, review, about?:{displayed_version:string|null}, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
+      "behavior": {
+        "mutation_class": "read",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": true,
+          "ui": true
+        },
+        "dispatch": "ui_state",
+        "project_state": "none",
+        "idempotency": "not_applicable",
+        "replayability": "not_applicable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "none",
+        "facets": []
+      }
+    },
+    {
+      "name": "ui.screenshot",
+      "domain": "ui",
+      "description": "Ask the connected UI client to capture itself. returns {path, mime}; inline:true adds base64. Errors no_ui_client when no UI is connected; partial fallback = render.frame composite + DOM-state JSON marked partial.",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inline": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also return base64 (MCP convenience)"
+          }
+        }
+      },
+      "result": "{path, mime, base64?, notes?} — notes? rides along when panels were composited from live pixels",
+      "behavior": {
+        "mutation_class": "external_side_effect",
+        "side_effects": {
+          "filesystem": true,
+          "process": true,
+          "network": false,
+          "ui": true
+        },
+        "dispatch": "ui_screenshot",
+        "project_state": "none",
+        "idempotency": "request_key",
+        "replayability": "not_replayable",
+        "async_job": "none",
+        "ui_exposure": "agent_only",
+        "agent_chat": "deny",
+        "risk": "reversible",
+        "facets": []
+      }
+    }
+  ]
+}
