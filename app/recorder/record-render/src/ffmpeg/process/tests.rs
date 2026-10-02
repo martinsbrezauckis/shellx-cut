@@ -290,31 +290,63 @@ fn suspended_job_claim_contains_an_immediate_descendant() {
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
+    const PID_FILE: &str = "CUT_RECORD_RENDER_JOB_FIXTURE_PID_FILE";
+    const DESCENDANT: &str = "CUT_RECORD_RENDER_JOB_FIXTURE_DESCENDANT";
+    const TEST: &str =
+        "ffmpeg::process::tests::suspended_job_claim_contains_an_immediate_descendant";
+
+    if std::env::var_os(DESCENDANT).is_some() {
+        thread::sleep(Duration::from_secs(60));
+        return;
+    }
+    if let Some(pid_file) = std::env::var_os(PID_FILE) {
+        // Keep inherited output pipes open until the owning Job closes this live child.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(DESCENDANT, "1")
+            .spawn()
+            .unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        std::fs::write(pid_file, child.id().to_string()).unwrap();
+        return;
+    }
+
     let temp = tempfile::tempdir().unwrap();
     let pid_file = temp.path().join("immediate-grandchild.pid");
-    let path = pid_file.display().to_string().replace('\'', "''");
-    let script = format!(
-        "$child = Start-Process cmd.exe -ArgumentList '/C ping -n 60 127.0.0.1 >NUL' -PassThru; Set-Content -NoNewline -Path '{path}' -Value $child.Id"
-    );
-    let mut command = Command::new("powershell.exe");
-    command.args([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &script,
-    ]);
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", TEST, "--nocapture"])
+        .env(PID_FILE, &pid_file);
+    let started = Instant::now();
     let output = super::super::command_output_with_control(
         &mut command,
         &ProcessControl::bounded(Duration::from_secs(5), || false),
         "immediate descendant fixture",
     )
-    .unwrap();
-    assert!(output.status.success());
+    .unwrap_or_else(|error| {
+        panic!(
+            "record-render Job fixture failed after {:?}; descendant PID={:?}; original error={error:?}",
+            started.elapsed(),
+            std::fs::read_to_string(&pid_file)
+        )
+    });
+    assert!(
+        output.status.success(),
+        "record-render Job fixture exited {:?} after {:?}; descendant PID={:?}; stdout={:?}; stderr={:?}",
+        output.status,
+        started.elapsed(),
+        std::fs::read_to_string(&pid_file),
+        output.stdout,
+        output.stderr
+    );
     let pid = wait_for_windows_pid(&pid_file);
     for _ in 0..100 {
         let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if process.is_null() {
+            eprintln!(
+                "record-render Job fixture: descendant PID={pid} was live before parent exit and is now gone; elapsed={:?}",
+                started.elapsed()
+            );
             return;
         }
         let mut exit_code = 0;
@@ -322,6 +354,10 @@ fn suspended_job_claim_contains_an_immediate_descendant() {
             && exit_code != STILL_ACTIVE as u32;
         unsafe { CloseHandle(process) };
         if exited {
+            eprintln!(
+                "record-render Job fixture: descendant PID={pid} was live before parent exit and is now exited; elapsed={:?}",
+                started.elapsed()
+            );
             return;
         }
         thread::sleep(Duration::from_millis(10));
