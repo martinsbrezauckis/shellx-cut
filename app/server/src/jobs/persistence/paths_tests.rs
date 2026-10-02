@@ -1,9 +1,15 @@
 //! Imported jobs cannot grant recovery ownership of another directory.
 
-use super::{quarantine, recover, JobRecord};
+#[cfg(unix)]
+use super::quarantine;
+use super::{recover, JobRecord};
+#[cfg(unix)]
 use crate::events::EventBus;
-use crate::jobs::{JobManager, JobOutcome, JobState};
+#[cfg(unix)]
+use crate::jobs::JobManager;
+use crate::jobs::{JobOutcome, JobState};
 use cut_core::error_codes;
+#[cfg(unix)]
 use std::path::Path;
 
 fn queued_record() -> Vec<u8> {
@@ -14,6 +20,7 @@ fn queued_record() -> Vec<u8> {
     .unwrap()
 }
 
+#[cfg(unix)]
 fn assert_outside_untouched(outside: &Path) {
     assert_eq!(
         std::fs::read(outside.join("preferences.json")).unwrap(),

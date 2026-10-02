@@ -79,13 +79,15 @@ fn kinds(values: &[&str]) -> BTreeSet<String> {
 }
 
 fn prepared_visual_runtime() -> VisualCacheRuntime {
-    VisualCacheRuntime::Prepared(Runtime::prepared_for_test(NativeRuntimeProvenance {
-        contract: "release-runner.native-runtime-context/v1".into(),
-        manifest_sha256: "a".repeat(64),
-        receipt_sha256: "b".repeat(64),
-        model_group: "cut.siglip.google.siglip2-base-patch16-224".into(),
-        model_id: "google/siglip2-base-patch16-224".into(),
-    }))
+    VisualCacheRuntime::Prepared(Box::new(Runtime::prepared_for_test(
+        NativeRuntimeProvenance {
+            contract: "release-runner.native-runtime-context/v1".into(),
+            manifest_sha256: "a".repeat(64),
+            receipt_sha256: "b".repeat(64),
+            model_group: "cut.siglip.google.siglip2-base-patch16-224".into(),
+            model_id: "google/siglip2-base-patch16-224".into(),
+        },
+    )))
 }
 
 fn legacy_visual_index() -> EmbeddingIndex {

@@ -102,7 +102,7 @@ npm --prefix ui run test:lib    # focused public UI contracts
 npm --prefix ui run build       # typecheck and production bundle
 node --test scripts/public-tests/*.test.mjs
                                 # source-only public contract suite (no installed app claim)
-node scripts/check-public-test-inventory.mjs --run
+node scripts/check-published-test-inventory.mjs --run
                                 # classify and run the source-safe public test set
 scripts/make-test-assets.sh     # espeak-ng+ffmpeg → testdata/ with known ground truth
 

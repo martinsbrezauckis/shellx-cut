@@ -1,6 +1,8 @@
 use super::*;
 use crate::matte::native_runtime::PreparedRvmBinding;
-use crate::matte::output::{bake_seed, StagedOutput};
+use crate::matte::output::bake_seed;
+#[cfg(unix)]
+use crate::matte::output::StagedOutput;
 use std::path::PathBuf;
 
 fn matte() -> ClipMatte {

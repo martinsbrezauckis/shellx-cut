@@ -54,7 +54,7 @@ async fn wait_for_desktop_parent_exit() {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 async fn wait_for_desktop_parent_exit() {
     std::future::pending::<()>().await;
 }

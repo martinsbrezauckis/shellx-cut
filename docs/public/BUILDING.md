@@ -82,6 +82,17 @@ The desktop resource map is the canonical manifest for documentation shipped
 inside an installer. Package checks fail if a source is absent and compare the
 bundled documents with the checked-out source.
 
+For an unsigned macOS package, run the Smoke build sequence from the repository
+root after installing the prerequisites above:
+
+```bash
+npm --prefix ui ci --ignore-scripts
+npm --prefix ui run build
+cargo build --release --manifest-path app/Cargo.toml -p server --bin cutd
+node scripts/release/stage-tauri-cutd.mjs
+(cd app/desktop && npx --yes @tauri-apps/cli@2.11.2 build --config '{"bundle":{"createUpdaterArtifacts":false}}')
+```
+
 ### Official release packages
 
 GitHub Releases provide the signed Windows installer, notarized macOS disk
@@ -89,19 +100,6 @@ image, Linux packages, updater payloads, and checksums. Signing and publication
 are maintainer operations and are deliberately outside the public source-build
 workflow. Contributors can validate the same product source through the
 unsigned Smoke build without access to release credentials.
-
-On macOS, `scripts/build-macos.sh release` is a fail-closed maintainer path. It
-requires the Developer ID identity, all three App Store Connect API settings,
-and a signed Tauri updater before it builds. The generated `.app` must pass
-strict code-signature, expected bundle/team identity, Gatekeeper, and stapled
-ticket validation before the final DMG is accepted. The final DMG is then
-submitted to Apple, must return `Accepted`, is stapled, and passes both ticket
-validation and a separate Gatekeeper assessment. Both artifacts are required
-outcomes regardless of the cargo-tauri implementation used to produce them. A
-missing credential, submission error, rejected result, staple failure,
-validation failure, identity mismatch, or missing DMG fails the release build.
-`scripts/build-macos.sh debug` may make a local package but explicitly does not
-qualify it for release or distribution.
 
 ## Verification gates (the definition of done)
 
@@ -117,7 +115,7 @@ scripts/verbargs-sync.sh                     # every verb has a typed UI client 
 node scripts/generate-verb-contract.mjs --check
 npm --prefix ui run build
 npm --prefix ui run test:lib
-node scripts/check-public-test-inventory.mjs
+node scripts/check-published-test-inventory.mjs
 ```
 
 `docs/public/FEATURE_SURFACE_CONTRACT.md` explains the observable human, agent,

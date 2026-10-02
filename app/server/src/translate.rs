@@ -1051,6 +1051,7 @@ pub fn distribute_tokens(start_ms: u64, end_ms: u64, translated: &str) -> Vec<(u
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::io::Write;
 
     #[test]

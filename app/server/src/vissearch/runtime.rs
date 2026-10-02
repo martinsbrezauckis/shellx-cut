@@ -52,7 +52,7 @@ pub(crate) enum VisualCacheRuntime {
     /// No Runner context: retain ordinary installed cache behavior.
     Legacy,
     /// The selected SigLIP group passed full prepared-runtime verification.
-    Prepared(Runtime),
+    Prepared(Box<Runtime>),
     /// A valid Runner context is present, but does not supply SigLIP assets.
     Unavailable,
 }
@@ -160,6 +160,7 @@ pub(crate) fn visual_cache_runtime() -> Result<VisualCacheRuntime, CutError> {
         return Ok(VisualCacheRuntime::Unavailable);
     }
     native_runtime()?
+        .map(Box::new)
         .map(VisualCacheRuntime::Prepared)
         .ok_or_else(|| native_model_error("prepared context disappeared during visual selection"))
 }

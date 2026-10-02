@@ -46,8 +46,8 @@ pub(crate) struct PreparedRvmRuntime {
 
 #[derive(Debug, Clone)]
 pub(crate) enum PreparedMatteRuntime {
-    Rvm(PreparedRvmRuntime),
-    Matanyone(PreparedMatanyoneRuntime),
+    Rvm(Box<PreparedRvmRuntime>),
+    Matanyone(Box<PreparedMatanyoneRuntime>),
 }
 
 impl PreparedMatteRuntime {
@@ -85,6 +85,7 @@ pub(crate) fn prepared_matte_runtime(
     };
     match model {
         MatteModel::Rvm => prepared_rvm_from_context(context, &sidecar.python, &sidecar.script)
+            .map(Box::new)
             .map(PreparedMatteRuntime::Rvm)
             .map(Some),
         MatteModel::Matanyone => super::premium_runtime::prepared_matanyone_from_context(
@@ -92,6 +93,7 @@ pub(crate) fn prepared_matte_runtime(
             &sidecar.python,
             &sidecar.script,
         )
+        .map(Box::new)
         .map(PreparedMatteRuntime::Matanyone)
         .map(Some),
     }

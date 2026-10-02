@@ -2525,10 +2525,9 @@ async fn handle_ws(mut socket: WebSocket, state: AppState) {
                             // existing loopback/origin-guarded socket has
                             // registered as a UI client. It deliberately adds
                             // no verb or HTTP route to the public contract.
-                            Some("ui_mounted") if ui_client_id.is_some() => {
-                                if state.ui_mount_readiness.notify_mounted() {
-                                    tracing::debug!("first Cut app root mounted; warming doctor");
-                                }
+                            Some("ui_mounted") if ui_client_id.is_some()
+                                && state.ui_mount_readiness.notify_mounted() => {
+                                tracing::debug!("first Cut app root mounted; warming doctor");
                             }
                             Some("ui_state") => {
                                 // First state push doubles as UI registration.

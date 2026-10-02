@@ -116,6 +116,7 @@ fn prepared_premium_card_rejects_an_incomplete_resolver_group_without_legacy_fal
         &context.interpreter.path,
         &instruments,
     )
+    .map(Box::new)
     .map(crate::matte::native_runtime::PreparedMatteRuntime::Matanyone)
     .map(Some);
 

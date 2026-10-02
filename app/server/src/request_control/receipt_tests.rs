@@ -1,7 +1,9 @@
 //! Imported request receipt roots cannot redirect publication or replay.
 
 use super::{prepare, receipt};
-use cut_core::{error_codes, Actor, ActorKind, ProjectStore, VerbResult};
+#[cfg(unix)]
+use cut_core::error_codes;
+use cut_core::{Actor, ActorKind, ProjectStore, VerbResult};
 use serde_json::json;
 
 fn fixture(with_ops: bool) -> (tempfile::TempDir, ProjectStore, Actor, VerbResult) {

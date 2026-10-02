@@ -83,6 +83,7 @@ impl Checkpoints {
         Ok((sequence, path))
     }
 
+    #[cfg(not(all(windows, feature = "capture-windows")))]
     pub(crate) fn publish(
         &mut self,
         sequence: u64,

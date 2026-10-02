@@ -294,19 +294,19 @@ async fn direct_materialization<'a>(
         .await?
         .lock_verified(state)
         .await?;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     wait_for_motion_request_build_gate().await;
     Ok(Some(materialization))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Clone)]
 pub(crate) struct MotionRequestBuildGate {
     pub project_pinned: std::sync::Arc<tokio::sync::Notify>,
     pub continue_after_pin: std::sync::Arc<tokio::sync::Notify>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl MotionRequestBuildGate {
     pub(crate) fn new() -> Self {
         Self {
@@ -316,12 +316,12 @@ impl MotionRequestBuildGate {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static MOTION_REQUEST_BUILD_GATE: std::sync::OnceLock<
     std::sync::Mutex<Option<MotionRequestBuildGate>>,
 > = std::sync::OnceLock::new();
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn install_motion_request_build_gate(value: Option<MotionRequestBuildGate>) {
     *MOTION_REQUEST_BUILD_GATE
         .get_or_init(|| std::sync::Mutex::new(None))
@@ -329,7 +329,7 @@ pub(crate) fn install_motion_request_build_gate(value: Option<MotionRequestBuild
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn wait_for_motion_request_build_gate() {
     let value = MOTION_REQUEST_BUILD_GATE
         .get_or_init(|| std::sync::Mutex::new(None))

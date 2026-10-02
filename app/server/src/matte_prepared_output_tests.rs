@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use super::*;
 use crate::matte::premium_runtime::PreparedMatanyoneBinding;
 

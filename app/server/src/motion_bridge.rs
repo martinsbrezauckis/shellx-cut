@@ -6,7 +6,7 @@
 mod connector_contract;
 #[path = "motion_bridge/materialization.rs"]
 mod materialization;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use materialization::{install_motion_request_build_gate, MotionRequestBuildGate};
 pub(crate) use materialization::{
     motion_script_to_cut, motion_script_to_cut_under_materialization, motion_template_to_cut,
@@ -2516,5 +2516,5 @@ pub(crate) fn safe_fragment(value: &str) -> String {
 #[cfg(test)]
 #[path = "motion_bridge/tests.rs"]
 mod tests;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use tests::MOTION_ENV_LOCK;

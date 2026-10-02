@@ -56,9 +56,8 @@ impl CameraCaptureSidecar {
                             &capture_dir,
                             &capture_id,
                         )
-                        .map_err(|error| {
+                        .inspect_err(|_| {
                             stop.store(true, Ordering::Release);
-                            error
                         })?;
                     admit_camera_start(owner.use_camera(&device_id, &clock, &stop), &stop)?;
                     let terminal = await_terminal_command(&terminal_rx)?;

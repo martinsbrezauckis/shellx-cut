@@ -2,6 +2,7 @@
 
 use std::io::Write;
 use std::net::TcpListener;
+#[cfg(unix)]
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

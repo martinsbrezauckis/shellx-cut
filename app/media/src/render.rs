@@ -38,7 +38,9 @@ pub(crate) fn require_plain_internal_dir(path: &Path) -> Result<(), CutError> {
 
 pub(crate) fn ensure_plain_internal_child(parent: &Path, child: &Path) -> Result<(), CutError> {
     require_plain_internal_dir(parent)?;
-    let mut builder = std::fs::DirBuilder::new();
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let mut builder = builder;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
