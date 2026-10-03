@@ -75,12 +75,17 @@ export async function handleVoiceoverPlaybackCommand({
     return
   }
   const atMs = Number(startMs)
-  setPlayheadMs(atMs)
-  const state = await waitForCommittedState(
-    stateRef,
-    beforeRevision,
-    (current) => current.playhead_ms === atMs,
-  )
+  const committed = stateRef.current
+  // An already-committed seek is a no-op: React need not publish a new
+  // revision for the same playhead. Changed seeks still require a commit.
+  if (committed.playhead_ms !== atMs) setPlayheadMs(atMs)
+  const state = committed.playhead_ms === atMs
+    ? committed
+    : await waitForCommittedState(
+      stateRef,
+      beforeRevision,
+      (current) => current.playhead_ms === atMs,
+    )
   if (!state) {
     reject(requested, { code: 'conflict', message: 'voiceover playhead did not commit before playback' })
     return
