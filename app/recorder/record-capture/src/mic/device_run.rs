@@ -62,7 +62,15 @@ pub(super) fn run_device(request: DeviceCaptureRequest) -> Result<CapturedMicrop
         },
     );
     if let Some(level) = terminal_level {
-        level.mark_stopped();
+        match wav_layout {
+            MicrophoneWavLayout::PaddedToCaptureClock => level.mark_stopped(),
+            // PacketStart is reserved for physical segments of the private
+            // macOS pause capture. Its factory owns terminal Stop; a successful
+            // joined segment must allow the next real callback after Resume.
+            MicrophoneWavLayout::PacketStart => {
+                level.finish_segment(end.as_ref().map_or(true, |end| end.microphone_lost))
+            }
+        }
     }
     let end = end?;
     Ok(CapturedMicrophone {

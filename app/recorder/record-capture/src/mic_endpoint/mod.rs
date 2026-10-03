@@ -195,6 +195,7 @@ pub(crate) fn spawn_reserved_microphone_capture_unpadded(
     capture_started: Instant,
     reserved: ReservedMicrophoneCapture,
     recording_gate: Option<Arc<crate::mic::MicRecordingGate>>,
+    level: Option<Arc<crate::mic::RollingAudioLevel>>,
 ) -> JoinHandle<Result<crate::mic::CapturedMicrophone>> {
     crate::mic::spawn_device_mic_reserved_unpadded(
         path,
@@ -204,6 +205,7 @@ pub(crate) fn spawn_reserved_microphone_capture_unpadded(
         capture_started,
         reserved.reservation,
         recording_gate,
+        level,
     )
 }
 

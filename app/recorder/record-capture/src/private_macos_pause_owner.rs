@@ -73,6 +73,7 @@ impl Drop for MacosPausePilotThread {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_private(
     exact_monitor_id: String,
     fps: f64,
@@ -81,6 +82,8 @@ pub fn start_private(
     microphone_source: MicrophoneSource,
     checkpoint: CheckpointConfig,
     preview: Option<ActiveCapturePreview>,
+    readiness: Option<crate::CaptureReadiness>,
+    microphone_level: Option<Arc<crate::RollingAudioLevel>>,
 ) -> record_core::Result<MacosPausePilotThread> {
     if checkpoint.interval_ms == 0 {
         return Err(start_error());
@@ -92,7 +95,15 @@ pub fn start_private(
         system_audio,
     ))
     .map_err(|_| start_error())?;
-    spawn_owner(profile, microphone_source, checkpoint, preview).map_err(|_| start_error())
+    spawn_owner(
+        profile,
+        microphone_source,
+        checkpoint,
+        preview,
+        readiness,
+        microphone_level,
+    )
+    .map_err(|_| start_error())
 }
 
 fn spawn_owner(
@@ -100,25 +111,31 @@ fn spawn_owner(
     microphone_source: MicrophoneSource,
     checkpoint: CheckpointConfig,
     preview: Option<ActiveCapturePreview>,
+    readiness: Option<crate::CaptureReadiness>,
+    microphone_level: Option<Arc<crate::RollingAudioLevel>>,
 ) -> Result<MacosPausePilotThread, MacosPauseStartError> {
     let (commands, receiver, sender, events) = channel();
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = shutdown.clone();
     let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+    // Establish terminal meter ownership before spawning: a refused worker or
+    // screen startup drops this factory without leaving a live model behind.
+    let audio = RequiredMacosPauseAudioFactory::new(
+        checkpoint.manifest_dir.clone().into(),
+        microphone_source,
+        microphone_level,
+    );
     let join = thread::Builder::new()
         .name("shellx-cut-macos-pause".into())
         .spawn(move || {
-            let screen = match RequiredMacosPauseScreenOwner::new(checkpoint.clone(), preview) {
-                Ok(screen) => screen,
-                Err(error) => {
-                    let _ = startup_sender.send(Err(error));
-                    return Err(WindowsPausePilotChannelError::NativeTerminal);
-                }
-            };
-            let audio = RequiredMacosPauseAudioFactory::new(
-                checkpoint.manifest_dir.clone().into(),
-                microphone_source,
-            );
+            let screen =
+                match RequiredMacosPauseScreenOwner::new(checkpoint.clone(), preview, readiness) {
+                    Ok(screen) => screen,
+                    Err(error) => {
+                        let _ = startup_sender.send(Err(error));
+                        return Err(WindowsPausePilotChannelError::NativeTerminal);
+                    }
+                };
             let (owner, started) = match MacosPauseRunOwner::start(profile, screen, audio) {
                 Ok(started) => started,
                 Err(error) => {

@@ -182,6 +182,8 @@ impl Capture for MacosPausePilotCapture {
             self.microphone_source.clone(),
             project_binding,
             cfg.active_preview.clone(),
+            cfg.readiness.clone(),
+            cfg.microphone_level.clone(),
         )
         .map_err(session_error)?;
         let started = cfg

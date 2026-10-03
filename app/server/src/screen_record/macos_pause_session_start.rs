@@ -20,6 +20,8 @@ pub(super) fn start_in_prepared_capture(
     microphone_source: record_capture::MicrophoneSource,
     project_binding: RecordingProjectBinding,
     active_preview: Option<record_capture::active_capture_preview::ActiveCapturePreview>,
+    readiness: Option<record_capture::CaptureReadiness>,
+    microphone_level: Option<std::sync::Arc<record_capture::RollingAudioLevel>>,
 ) -> Result<
     WindowsPauseSession<
         RecordingSessionJournalFile,
@@ -73,6 +75,8 @@ pub(super) fn start_in_prepared_capture(
             interval_ms: super::recovery::CHECKPOINT_INTERVAL_MS,
         },
         active_preview,
+        readiness,
+        microphone_level,
     )
     .map_err(|_| WindowsPauseSessionError::Lifecycle)?;
     let factory = CalibratedWindowsPauseEvidenceFactory::for_exact_monitor(

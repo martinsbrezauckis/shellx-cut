@@ -105,3 +105,76 @@ pub(crate) fn abort_selected(owners: impl IntoIterator<Item = Box<dyn MacosPause
         owner.abort_and_join();
     }
 }
+
+/// Bound real interleaved PCM to the screen interval after its first packet.
+/// This never pads a missing packet or counts the packet offset twice.
+#[cfg(any(all(target_os = "macos", feature = "capture-macos"), test))]
+pub(super) fn bounded_audio_samples(
+    raw_start_ms: u64,
+    raw_end_ms: u64,
+    first_packet_offset_ms: u64,
+    sample_rate: u32,
+    channels: u16,
+    available_samples: usize,
+) -> Result<usize, ()> {
+    if sample_rate == 0 || channels == 0 || available_samples % usize::from(channels) != 0 {
+        return Err(());
+    }
+    let packet_start = raw_start_ms.checked_add(first_packet_offset_ms).ok_or(())?;
+    let duration = raw_end_ms
+        .checked_sub(packet_start)
+        .filter(|value| *value > 0)
+        .ok_or(())?;
+    let frames = duration.checked_mul(u64::from(sample_rate)).ok_or(())? / 1_000;
+    let available_frames = available_samples / usize::from(channels);
+    let frames = usize::try_from(frames)
+        .map_err(|_| ())?
+        .min(available_frames);
+    let samples = frames
+        .checked_mul(usize::from(channels))
+        .filter(|value| *value > 0)
+        .ok_or(())?;
+    Ok(samples)
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::bounded_audio_samples;
+
+    #[test]
+    fn trims_the_retained_native_publication_tail_and_preserves_packet_offset() {
+        // Actual r12: 603648 stereo frames / 48000 = 12576ms, screen 15..10321.
+        let raw_samples = 603_648 * 2;
+        assert_eq!(
+            bounded_audio_samples(15, 10_321, 0, 48_000, 2, raw_samples),
+            Ok(494_688 * 2)
+        );
+        assert_eq!(
+            bounded_audio_samples(15, 10_321, 37, 48_000, 2, raw_samples),
+            Ok(492_912 * 2)
+        );
+    }
+
+    #[test]
+    fn never_pads_short_audio_and_keeps_complete_multichannel_frames() {
+        assert_eq!(bounded_audio_samples(0, 1000, 20, 48_000, 2, 10), Ok(10));
+        assert_eq!(bounded_audio_samples(0, 1000, 0, 44_100, 3, 12), Ok(12));
+    }
+
+    #[test]
+    fn refuses_invalid_or_unrepresentable_packet_intervals() {
+        for args in [
+            (0, 0, 0, 48000, 2, 10),
+            (0, 10, 10, 48000, 2, 10),
+            (0, 10, 11, 48000, 2, 10),
+            (u64::MAX, u64::MAX, 1, 48000, 2, 10),
+            (0, u64::MAX, 0, 48000, 2, 10),
+            (0, 1000, 0, 0, 2, 10),
+            (0, 1000, 0, 48000, 0, 10),
+            (0, 1000, 0, 48000, 2, 1),
+            (0, 1000, 0, 48000, 2, 11),
+        ] {
+            assert!(bounded_audio_samples(args.0, args.1, args.2, args.3, args.4, args.5).is_err());
+        }
+    }
+}

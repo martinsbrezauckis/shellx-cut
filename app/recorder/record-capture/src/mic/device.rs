@@ -221,6 +221,7 @@ pub(crate) fn spawn_device_mic_reserved_with_level(
     not(all(target_os = "macos", feature = "capture-macos")),
     allow(dead_code, reason = "private macOS pause-sidecar capture path")
 )]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_device_mic_reserved_unpadded(
     path: String,
     device: cpal::Device,
@@ -229,6 +230,7 @@ pub(crate) fn spawn_device_mic_reserved_unpadded(
     capture_started: Instant,
     reservation: MicrophoneCaptureReservation,
     recording_gate: Option<Arc<MicRecordingGate>>,
+    level: Option<Arc<RollingAudioLevel>>,
 ) -> JoinHandle<Result<CapturedMicrophone>> {
     spawn_device_mic_reserved_with_layout(
         path,
@@ -238,7 +240,7 @@ pub(crate) fn spawn_device_mic_reserved_unpadded(
         capture_started,
         reservation,
         recording_gate,
-        None,
+        level,
         MicrophoneWavLayout::PacketStart,
     )
 }

@@ -23,13 +23,30 @@ use std::thread::JoinHandle;
 pub(crate) struct RequiredMacosPauseAudioFactory {
     capture_dir: PathBuf,
     microphone_source: MicrophoneSource,
+    microphone_level: Option<Arc<crate::RollingAudioLevel>>,
 }
 
 impl RequiredMacosPauseAudioFactory {
-    pub(crate) fn new(capture_dir: PathBuf, microphone_source: MicrophoneSource) -> Self {
+    pub(crate) fn new(
+        capture_dir: PathBuf,
+        microphone_source: MicrophoneSource,
+        microphone_level: Option<Arc<crate::RollingAudioLevel>>,
+    ) -> Self {
         Self {
             capture_dir,
             microphone_source,
+            microphone_level,
+        }
+    }
+}
+
+impl Drop for RequiredMacosPauseAudioFactory {
+    fn drop(&mut self) {
+        // The factory is retained across Pause/Resume and released only when
+        // the logical capture owner exits, including startup/cleanup failure.
+        // DeviceLost is more specific and mark_stopped never overwrites it.
+        if let Some(level) = self.microphone_level.as_ref() {
+            level.mark_stopped();
         }
     }
 }
@@ -44,6 +61,7 @@ impl MacosPauseAudioFactory for RequiredMacosPauseAudioFactory {
         for stream in profile.selected_audio_streams() {
             let artifact = artifact_name(stream, started.physical_generation)?;
             let path = self.capture_dir.join(&artifact);
+            let raw_path = self.capture_dir.join(format!(".{artifact}.capture.wav"));
             let owner = match stream {
                 RecordingStream::MicrophoneAudio => {
                     match reserve_microphone_capture(&self.microphone_source) {
@@ -51,18 +69,20 @@ impl MacosPauseAudioFactory for RequiredMacosPauseAudioFactory {
                             let stop = Arc::new(AtomicBool::new(false));
                             let ready = Arc::new(AtomicBool::new(false));
                             let handle = spawn_reserved_microphone_capture_unpadded(
-                                path.to_string_lossy().into_owned(),
+                                raw_path.to_string_lossy().into_owned(),
                                 stop.clone(),
                                 ready,
                                 started.monotonic_at,
                                 reserved,
                                 None,
+                                self.microphone_level.clone(),
                             );
                             Ok(Box::new(MicrophoneOwner {
                                 stop,
                                 handle: Some(handle),
                                 artifact,
                                 path,
+                                raw_path,
                                 started: started.clone(),
                             })
                                 as Box<dyn MacosPauseAudioOwner>)
@@ -105,6 +125,7 @@ struct MicrophoneOwner {
     handle: Option<JoinHandle<record_core::Result<crate::mic::CapturedMicrophone>>>,
     artifact: String,
     path: PathBuf,
+    raw_path: PathBuf,
     started: MacosPausePilotStarted,
 }
 
@@ -125,16 +146,24 @@ impl MacosPauseAudioOwner for MicrophoneOwner {
             .join()
             .map_err(|_| ())?
             .map_err(|_| ())?;
-        let expected_path = self.path.to_string_lossy();
+        let expected_path = self.raw_path.to_string_lossy();
         if captured.microphone_lost || captured.path.as_deref() != Some(expected_path.as_ref()) {
             return Err(());
         }
+        let first_packet_offset_ms = captured.first_packet_offset_ms.ok_or(())?;
+        publish_bounded_microphone_wav(
+            &self.raw_path,
+            &self.path,
+            self.started.observed_start_ms,
+            first_packet_offset_ms,
+            screen_raw_end_ms,
+        )?;
         sealed_file(
             RecordingStream::MicrophoneAudio,
             self.artifact.clone(),
             &self.path,
             &self.started,
-            captured.first_packet_offset_ms.ok_or(())?,
+            first_packet_offset_ms,
             screen_raw_end_ms,
         )
     }
@@ -193,10 +222,18 @@ impl MacosPauseAudioOwner for SystemAudioOwner {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(())?;
+        let count = super::audio::bounded_audio_samples(
+            self.started.observed_start_ms,
+            screen_raw_end_ms,
+            first_packet_offset_ms,
+            sample_rate,
+            channels,
+            samples.as_slice().len(),
+        )?;
         crate::macos_system_audio::publish_system_wav_named(
             self.path.parent().ok_or(())?,
             file_name,
-            samples.as_slice(),
+            &samples.as_slice()[..count],
             channels,
             sample_rate,
         )
@@ -326,4 +363,143 @@ fn same_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+/// The native writer retains its complete raw leaf; only the real samples
+/// inside the screen interval become the immutable generation sidecar.
+fn publish_bounded_microphone_wav(
+    raw_path: &Path,
+    path: &Path,
+    raw_start_ms: u64,
+    first_packet_offset_ms: u64,
+    raw_end_ms: u64,
+) -> Result<(), ()> {
+    let file = open_local(raw_path)?;
+    let before = file.metadata().map_err(|_| ())?;
+    let mut reader = hound::WavReader::new(file).map_err(|_| ())?;
+    let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err(());
+    }
+    let available = usize::try_from(reader.len()).map_err(|_| ())?;
+    let count = super::audio::bounded_audio_samples(
+        raw_start_ms,
+        raw_end_ms,
+        first_packet_offset_ms,
+        spec.sample_rate,
+        spec.channels,
+        available,
+    )?;
+    let parent = path
+        .parent()
+        .filter(|parent| Some(*parent) == raw_path.parent())
+        .ok_or(())?;
+    let (part, file) =
+        record_recovery::create_staging_file(parent, "pause-mic-boundary").map_err(|_| ())?;
+    let written = (|| -> Result<(), ()> {
+        let mut writer = hound::WavWriter::new(file, spec).map_err(|_| ())?;
+        for sample in reader.samples::<i16>().take(count) {
+            writer
+                .write_sample(sample.map_err(|_| ())?)
+                .map_err(|_| ())?;
+        }
+        writer.finalize().map_err(|_| ())?;
+        let current = open_local(raw_path)?.metadata().map_err(|_| ())?;
+        if before.len() != current.len() || !same_identity(&before, &current) {
+            return Err(());
+        }
+        record_recovery::publish_new_synced(&part, path).map_err(|_| ())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    fn raw_wav(path: &Path) {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for index in 0..603_648 * 2 {
+            writer.write_sample((index % 30_000) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn durable_audio_factory_terminalizes_meter_without_reviving_device_loss() {
+        for lost in [false, true] {
+            let level = Arc::new(crate::RollingAudioLevel::new());
+            let factory = RequiredMacosPauseAudioFactory::new(
+                PathBuf::new(),
+                MicrophoneSource::SystemDefault,
+                Some(level.clone()),
+            );
+            if lost {
+                level.mark_device_lost();
+            }
+            drop(factory);
+            level.observe_i16(&[i16::MIN]);
+            let snapshot = level.snapshot();
+            assert_eq!(
+                snapshot.lifecycle,
+                if lost {
+                    crate::AudioLevelLifecycle::DeviceLost
+                } else {
+                    crate::AudioLevelLifecycle::Stopped
+                }
+            );
+            assert!(snapshot.stale);
+            assert_eq!(snapshot.peak_dbfs, None);
+        }
+    }
+
+    #[test]
+    fn publishes_only_real_pcm_inside_the_screen_boundary_without_replacing_raw() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("raw.wav");
+        let final_path = dir.path().join("sealed.wav");
+        raw_wav(&raw);
+        let original = std::fs::read(&raw).unwrap();
+        assert_eq!(hound::WavReader::open(&raw).unwrap().duration(), 603_648);
+        publish_bounded_microphone_wav(&raw, &final_path, 15, 37, 10_321).unwrap();
+        let mut reader = hound::WavReader::open(&final_path).unwrap();
+        assert_eq!(reader.spec().channels, 2);
+        assert_eq!(reader.spec().sample_rate, 48_000);
+        assert_eq!(reader.duration(), 492_912);
+        for (index, sample) in reader.samples::<i16>().enumerate() {
+            assert_eq!(sample.unwrap(), (index % 30_000) as i16);
+        }
+        assert_eq!(std::fs::read(&raw).unwrap(), original);
+        let mut sealed_file = open_local(&final_path).unwrap();
+        let (hash, duration_ms) = wav_facts(&mut sealed_file).unwrap();
+        assert_eq!(duration_ms, 10_269);
+        let sealed = std::fs::read(&final_path).unwrap();
+        assert_eq!(hash, format!("{:x}", Sha256::digest(&sealed)));
+        assert!(publish_bounded_microphone_wav(&raw, &final_path, 15, 37, 10_321).is_err());
+        assert_eq!(std::fs::read(&final_path).unwrap(), sealed);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn refuses_missing_interval_and_symlink_without_publishing_or_leaving_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("raw.wav");
+        let linked = dir.path().join("link.wav");
+        let final_path = dir.path().join("sealed.wav");
+        raw_wav(&raw);
+        assert!(publish_bounded_microphone_wav(&raw, &final_path, 15, 37, 52).is_err());
+        std::os::unix::fs::symlink(&raw, &linked).unwrap();
+        assert!(publish_bounded_microphone_wav(&linked, &final_path, 15, 37, 10_321).is_err());
+        assert!(!final_path.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
 }

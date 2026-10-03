@@ -30,6 +30,7 @@ pub(crate) struct RequiredMacosPauseScreenOwner {
     next_physical_generation: u64,
     active: Option<ActiveScreen>,
     preview: Option<ActiveCapturePreview>,
+    readiness: Option<crate::CaptureReadiness>,
 }
 
 struct ActiveScreen {
@@ -119,6 +120,7 @@ impl RequiredMacosPauseScreenOwner {
     pub(crate) fn new(
         checkpoint: CheckpointConfig,
         preview: Option<ActiveCapturePreview>,
+        readiness: Option<crate::CaptureReadiness>,
     ) -> Result<Self, MacosPauseStartError> {
         let checkpoints = Checkpoints::open(Some(&checkpoint))
             .map_err(|_| MacosPauseStartError::NativeStartFailed)?
@@ -129,6 +131,7 @@ impl RequiredMacosPauseScreenOwner {
             next_physical_generation: 1,
             active: None,
             preview,
+            readiness,
         })
     }
 
@@ -198,16 +201,25 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
             .as_ref()
             .and_then(ActiveCapturePreview::begin_segment);
         let preview_guard = PreviewGenerationGuard(preview.clone());
-        if let Some((preview, generation)) = preview.clone().zip(preview_generation) {
+        let observer_preview = preview
+            .clone()
+            .zip(preview_generation)
+            .map(|(preview, generation)| (preview, generation, Instant::now()));
+        if self.readiness.is_some() || observer_preview.is_some() {
             if crate::macos_readiness::attach_first_screen_frame_observer(
                 &mut stream,
-                None,
-                Some((preview.clone(), generation, Instant::now())),
+                self.readiness.clone(),
+                observer_preview,
             )
             .is_err()
             {
-                // Preview is optional; the recording output remains the owner.
-                preview.mark_readback_unavailable(generation);
+                if self.readiness.is_some() {
+                    return Err(MacosPauseStartError::NativeStartFailed);
+                }
+                // Preview alone remains optional; public readiness does not.
+                if let Some((preview, generation)) = preview.clone().zip(preview_generation) {
+                    preview.mark_readback_unavailable(generation);
+                }
             }
         }
         if stream.add_recording_output(output.output()).is_err() || stream.start_capture().is_err()

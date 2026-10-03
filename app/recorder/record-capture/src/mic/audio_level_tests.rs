@@ -76,3 +76,44 @@ fn accepts_each_native_pcm_shape_without_a_synthetic_signal() {
     bytes_level.observe_s16le_bytes_at(&[0, 0, 0, 128, 0], start);
     assert_eq!(bytes_level.snapshot_at(start).peak_dbfs, Some(0.0));
 }
+
+#[test]
+fn joined_pause_segment_clears_samples_and_resume_accepts_only_new_real_packets() {
+    let level = RollingAudioLevel::new();
+    let start = Instant::now();
+    level.observe_i16_at(&[i16::MIN], start);
+    assert!(level.snapshot_at(start).clipping);
+    level.finish_segment(false);
+    let paused = level.snapshot_at(start);
+    assert_eq!(paused.lifecycle, AudioLevelLifecycle::Active);
+    assert_eq!(paused.peak_dbfs, None);
+    assert_eq!(paused.sample_age_ms, None);
+    assert!(paused.stale);
+    level.observe_i16_at(&[16_384], start + Duration::from_millis(1));
+    let resumed = level.snapshot_at(start + Duration::from_millis(1));
+    assert!(!resumed.stale);
+    assert!(!resumed.clipping);
+    assert!((resumed.peak_dbfs.unwrap() + 6.0).abs() < 0.1);
+    level.mark_stopped();
+    level.finish_segment(false);
+    level.observe_i16_at(&[i16::MIN], start + Duration::from_millis(2));
+    let stopped = level.snapshot_at(start + Duration::from_millis(2));
+    assert_eq!(stopped.lifecycle, AudioLevelLifecycle::Stopped);
+    assert!(stopped.stale);
+    assert!(!stopped.clipping);
+}
+
+#[test]
+fn failed_pause_segment_is_terminal_and_successful_close_cannot_revive_it() {
+    let level = RollingAudioLevel::new();
+    let start = Instant::now();
+    level.observe_i16_at(&[16_384], start);
+    level.finish_segment(true);
+    level.finish_segment(false);
+    level.mark_stopped();
+    level.observe_i16_at(&[i16::MIN], start + Duration::from_millis(1));
+    let failed = level.snapshot_at(start + Duration::from_millis(1));
+    assert_eq!(failed.lifecycle, AudioLevelLifecycle::DeviceLost);
+    assert!(failed.stale);
+    assert!(!failed.clipping);
+}

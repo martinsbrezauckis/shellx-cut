@@ -96,6 +96,20 @@ impl RollingAudioLevel {
         }
     }
 
+    /// A private pause segment has joined its native callback. Its durable
+    /// capture owner still owns the model across Resume. Clear only an Active
+    /// segment's measurements; terminal streams are never revived.
+    pub(super) fn finish_segment(&self, failed: bool) {
+        let mut state = self.lock_state();
+        if state.lifecycle == AudioLevelLifecycle::Active {
+            if failed {
+                state.lifecycle = AudioLevelLifecycle::DeviceLost;
+            } else {
+                *state = LevelState::default();
+            }
+        }
+    }
+
     /// Record a native device failure; a later Stop cannot overwrite it.
     pub fn mark_device_lost(&self) {
         let mut state = self.lock_state();
