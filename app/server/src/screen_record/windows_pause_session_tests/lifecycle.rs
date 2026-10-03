@@ -342,3 +342,76 @@ fn no_capture_registry_is_reintroduced_into_the_private_owner() {
     let (_session, _commands, _events, log) = session(origin);
     assert_eq!(&*log.borrow(), &["intent", "native"]);
 }
+
+#[test]
+fn selected_audio_stop_from_paused_retains_the_sealed_run_and_joins() {
+    for system_audio in [false, true] {
+        let streams = SelectedCaptureStreams::new(true, system_audio, false, false);
+        let origin = Instant::now();
+        let (mut session, commands, events, log) = session_with_streams(origin, streams.clone());
+        session.request_pause_at(at(origin, 100)).unwrap();
+        let _ = commands.try_recv().unwrap();
+        let audio = streams
+            .streams()
+            .iter()
+            .copied()
+            .filter(|stream| *stream != record_recovery::RecordingStream::ScreenVideo)
+            .map(
+                |stream| record_capture::windows_pause_pilot::WindowsSealedAudioRun {
+                    stream,
+                    source_generation: 1,
+                    artifact: format!("recording-{stream:?}-generation-1.wav"),
+                    bytes: 48,
+                    sha256: "a".repeat(64),
+                    media_duration_ms: 120,
+                    native_ready_unix_ms: 1_000,
+                    native_ready_raw_ms: 0,
+                    raw_start_ms: 0,
+                    raw_end_ms: 120,
+                },
+            )
+            .collect();
+        events
+            .send(WindowsPausePilotEvent::PauseSealed {
+                generation: 1,
+                epoch: 1,
+                run: native_run(17, 137),
+                input: None,
+                audio,
+                observed_at: at(origin, 120),
+            })
+            .unwrap();
+        assert_eq!(
+            session.pump_once().unwrap(),
+            Some(WindowsPauseSessionEvent::Paused)
+        );
+        let sealed = session.journal().sealed_runs()[0].clone();
+        assert_eq!(sealed.fragments.len(), streams.streams().len());
+        session.request_stop_at(at(origin, 150)).unwrap();
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Some(record_capture::windows_pause_pilot::WindowsPausePilotCommand::Stop { epoch: 2 })
+        ));
+        events
+            .send(WindowsPausePilotEvent::StopSealed {
+                epoch: 2,
+                run: None,
+                input: None,
+                audio: Vec::new(),
+                observed_at: at(origin, 160),
+            })
+            .unwrap();
+        assert_eq!(
+            session.pump_once().unwrap(),
+            Some(WindowsPauseSessionEvent::Stopped)
+        );
+        assert_eq!(session.journal().sealed_runs(), &[sealed]);
+        assert_eq!(
+            session.journal().terminal().unwrap().disposition,
+            record_recovery::TerminalDisposition::Completed
+        );
+        assert_eq!(&*log.borrow(), &["intent", "native", "join"]);
+        drop(session);
+        assert_eq!(&*log.borrow(), &["intent", "native", "join"]);
+    }
+}

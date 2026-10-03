@@ -156,7 +156,10 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
                 audio,
                 observed_at,
             } => {
-                if input.is_some() || !self.matches_selected_audio(&audio) {
+                // A paused Stop seals no new run: its audio was already verified
+                // with PauseSealed. sealed_stop still requires the matching
+                // no-run expectation, exact epoch, and an empty audio list.
+                if input.is_some() || (run.is_some() && !self.matches_selected_audio(&audio)) {
                     return Err(WindowsPauseAdapterError::EvidenceRejected);
                 }
                 self.sealed_stop(epoch, run, audio, observed_at)

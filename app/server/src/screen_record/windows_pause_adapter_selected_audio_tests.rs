@@ -176,3 +176,93 @@ fn translation_rejects_a_missing_or_duplicate_selected_audio_owner() {
         Err(WindowsPauseAdapterError::EvidenceRejected)
     ));
 }
+
+#[test]
+fn stop_with_a_new_run_still_requires_exact_selected_audio() {
+    for audio in [
+        Vec::new(),
+        vec![sealed_audio(RecordingStream::SystemAudio)],
+        vec![
+            sealed_audio(RecordingStream::MicrophoneAudio),
+            sealed_audio(RecordingStream::MicrophoneAudio),
+        ],
+    ] {
+        let (commands, _command_rx, event_tx, event_rx) = channel();
+        let mut owner = owner(commands);
+        let origin = Instant::now();
+        owner
+            .start_after_backend_origin(SessionTimeOrigin::observed(origin, 1_000))
+            .unwrap();
+        let request = owner.request_stop_at(at(origin, 100)).unwrap();
+        let mut translator = WindowsPauseEventTranslator::with_streams(
+            event_rx,
+            Factory { reject: false },
+            SelectedCaptureStreams::new(true, false, false, false),
+        );
+        translator.expect_stop(&request);
+        event_tx
+            .send(WindowsPausePilotEvent::StopSealed {
+                epoch: 1,
+                run: Some(run(1, 0, 120)),
+                input: None,
+                audio,
+                observed_at: at(origin, 120),
+            })
+            .unwrap();
+        assert!(matches!(
+            translator.try_next(),
+            Err(WindowsPauseAdapterError::EvidenceRejected)
+        ));
+    }
+}
+
+#[test]
+fn no_run_stop_cannot_omit_an_expected_run_or_supply_unexpected_audio() {
+    for paused in [false, true] {
+        let (commands, command_rx, event_tx, event_rx) = channel();
+        let mut owner = owner(commands);
+        let origin = Instant::now();
+        owner
+            .start_after_backend_origin(SessionTimeOrigin::observed(origin, 1_000))
+            .unwrap();
+        if paused {
+            owner.request_pause_at(at(origin, 10)).unwrap();
+            let _ = command_rx.try_recv().unwrap();
+            let mut factory = Factory { reject: false };
+            let evidence = factory
+                .verify_and_build(1, &run(1, 0, 120), at(origin, 120))
+                .unwrap();
+            let fact = crate::screen_record::pause_worker_protocol::PauseWorkerFact::PauseSealed {
+                stream: RecordingStream::ScreenVideo,
+                generation: 1,
+                observed_boundary: crate::screen_record::windows_pause_adapter_events::observed(
+                    1,
+                    at(origin, 120),
+                ),
+            };
+            owner.accept_worker_fact(fact, at(origin, 120)).unwrap();
+            owner.seal_pause_at(evidence, at(origin, 120)).unwrap();
+        }
+        let request = owner.request_stop_at(at(origin, 150)).unwrap();
+        let mut translator = WindowsPauseEventTranslator::with_streams(
+            event_rx,
+            Factory { reject: false },
+            SelectedCaptureStreams::new(true, false, false, false),
+        );
+        translator.expect_stop(&request);
+        event_tx
+            .send(WindowsPausePilotEvent::StopSealed {
+                epoch: if paused { 2 } else { 1 },
+                run: None,
+                input: None,
+                audio: if paused {
+                    vec![sealed_audio(RecordingStream::MicrophoneAudio)]
+                } else {
+                    Vec::new()
+                },
+                observed_at: at(origin, 160),
+            })
+            .unwrap();
+        assert!(translator.try_next().is_err());
+    }
+}

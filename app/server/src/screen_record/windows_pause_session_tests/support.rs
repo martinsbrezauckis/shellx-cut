@@ -30,7 +30,7 @@ pub(super) struct MemoryJournal {
 }
 
 impl MemoryJournal {
-    fn new(log: &Rc<RefCell<Vec<&'static str>>>) -> Self {
+    fn new(log: &Rc<RefCell<Vec<&'static str>>>, streams: &SelectedCaptureStreams) -> Self {
         log.borrow_mut().push("intent");
         Self {
             journal: RecordingSessionJournal::new(RecordingSessionIntent::new(
@@ -41,7 +41,7 @@ impl MemoryJournal {
                 None,
                 false,
                 "shellx-monitor-v1:windows:exact",
-                vec![RecordingStream::ScreenVideo],
+                streams.streams().to_vec(),
             ))
             .unwrap(),
         }
@@ -118,6 +118,7 @@ impl WindowsPauseLifecycle for Lifecycle {
 pub(super) struct Factory {
     starts: Vec<Option<u64>>,
     next: u64,
+    audio: Vec<record_capture::windows_pause_pilot::WindowsSealedAudioRun>,
 }
 
 impl WindowsPauseEvidenceFactory for Factory {
@@ -195,7 +196,25 @@ impl WindowsPauseEvidenceFactory for Factory {
                         avg_frame_rate: None,
                         r_frame_rate: None,
                     },
-                }],
+                }]
+                .into_iter()
+                .chain(self.audio.iter().map(|audio| StreamFragment {
+                    stream: audio.stream,
+                    checkpoint_sequence: None,
+                    stream_sequence: 0,
+                    artifact: audio.artifact.clone(),
+                    bytes: audio.bytes,
+                    sha256: audio.sha256.clone(),
+                    facts: StreamFragmentFacts {
+                        start_offset_ms: 0,
+                        end_offset_ms: logical_end_ms - logical_start_ms,
+                        media_duration_ms: audio.media_duration_ms,
+                        decoded_video_frames: None,
+                        avg_frame_rate: None,
+                        r_frame_rate: None,
+                    },
+                }))
+                .collect(),
             },
             SealedLegacyProjectionRun::new(
                 sequence,
@@ -204,8 +223,21 @@ impl WindowsPauseEvidenceFactory for Factory {
                 settings,
                 events,
             ),
-            vec![RecordingStream::ScreenVideo],
+            std::iter::once(RecordingStream::ScreenVideo)
+                .chain(self.audio.iter().map(|audio| audio.stream))
+                .collect(),
         ))
+    }
+
+    fn verify_and_build_with_audio(
+        &mut self,
+        generation: u64,
+        run: &WindowsSealedScreenRun,
+        audio: &[record_capture::windows_pause_pilot::WindowsSealedAudioRun],
+        at: Instant,
+    ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
+        self.audio = audio.to_vec();
+        self.verify_and_build(generation, run, at)
     }
 }
 
@@ -314,9 +346,21 @@ pub(super) fn session(
     WindowsPausePilotEventSender,
     Rc<RefCell<Vec<&'static str>>>,
 ) {
+    session_with_streams(origin, SelectedCaptureStreams::screen_only())
+}
+
+pub(super) fn session_with_streams(
+    origin: Instant,
+    streams: SelectedCaptureStreams,
+) -> (
+    WindowsPauseSession<MemoryJournal, Factory, Lifecycle>,
+    record_capture::windows_pause_pilot::WindowsPausePilotCommandReceiver,
+    WindowsPausePilotEventSender,
+    Rc<RefCell<Vec<&'static str>>>,
+) {
     let (commands, command_rx, event_tx, event_rx) = channel();
     let log = Rc::new(RefCell::new(Vec::new()));
-    let journal = MemoryJournal::new(&log);
+    let journal = MemoryJournal::new(&log, &streams);
     event_tx
         .send(WindowsPausePilotEvent::Started {
             started: started(origin, 0),
@@ -324,7 +368,16 @@ pub(super) fn session(
         .unwrap();
     let session = WindowsPauseSession::from_started_lifecycle(
         journal,
-        &admission(),
+        &WindowsPauseSessionAdmission::admit(
+            Target {
+                legacy_index: Some(7),
+                exact_id: Some(exact_monitor()),
+            },
+            streams,
+            30.0,
+            100,
+        )
+        .unwrap(),
         Lifecycle::new(commands, event_rx, log.clone()),
         Factory::default(),
     )
