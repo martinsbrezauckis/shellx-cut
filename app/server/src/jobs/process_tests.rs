@@ -283,6 +283,21 @@ async fn suspended_job_claim_contains_an_immediate_grandchild() {
 
 #[tokio::test]
 async fn caps_retained_diagnostics_while_draining_pipes() {
+    #[cfg(windows)]
+    if std::env::var_os("CUT_SERVER_DIAGNOSTICS_FIXTURE").is_some() {
+        use std::io::Write;
+
+        // Write the same payload in bulk, without PowerShell startup or console conversion.
+        let payload = vec![b'0'; 600000];
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&payload).unwrap();
+        stdout.flush().unwrap();
+        let mut stderr = std::io::stderr().lock();
+        stderr.write_all(&payload).unwrap();
+        stderr.flush().unwrap();
+        return;
+    }
+
     #[cfg(unix)]
     let mut command = {
         let mut command = Command::new("sh");
@@ -294,29 +309,40 @@ async fn caps_retained_diagnostics_while_draining_pipes() {
     };
     #[cfg(windows)]
     let mut command = {
-        let mut command = Command::new("powershell.exe");
+        let mut command = Command::new(std::env::current_exe().unwrap());
         command.args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$value = '0' * 600000; [Console]::Out.Write($value); [Console]::Error.Write($value)",
+            "--exact",
+            "jobs::process::tests::caps_retained_diagnostics_while_draining_pipes",
+            "--nocapture",
         ]);
+        command.env("CUT_SERVER_DIAGNOSTICS_FIXTURE", "1");
         command
     };
     #[cfg(not(any(unix, windows)))]
     return;
 
+    let started = std::time::Instant::now();
     let output = run_owned(
         &mut command,
         None,
         &ProcessControl::with_cancellation(Duration::from_secs(5), JobCancellation::test_active()),
     )
     .await
-    .unwrap();
+    .unwrap_or_else(|error| {
+        panic!(
+            "diagnostics fixture failed after {:?}; original error={error:?}",
+            started.elapsed()
+        )
+    });
     assert!(output.status.success());
     assert_eq!(output.stdout.len(), OUTPUT_CAP_BYTES);
     assert_eq!(output.stderr.len(), OUTPUT_CAP_BYTES);
     assert!(output.stdout_truncated);
     assert!(output.stderr_truncated);
+    eprintln!(
+        "diagnostics fixture retained stdout={} stderr={}, both truncated, successful exit; elapsed={:?}",
+        output.stdout.len(),
+        output.stderr.len(),
+        started.elapsed()
+    );
 }

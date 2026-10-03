@@ -144,9 +144,22 @@ test('dependency audit uses npm.cmd on Windows', () => {
   assert.equal(plan.at(-1).command, 'npm.cmd')
 })
 
-test('WDIO tooling resolves the recursion-bounded deepmerge-ts security release', () => {
+test('declared native tooling retains its security fix or stays outside the public dependency graph', () => {
   const packageJson = JSON.parse(readFileSync(new URL('../../ui/package.json', import.meta.url), 'utf8'))
   const packageLock = JSON.parse(readFileSync(new URL('../../ui/package-lock.json', import.meta.url), 'utf8'))
+  const nativeRoot = name => name.startsWith('@wdio/') || name === 'webdriverio'
+  const declared = { ...packageJson.dependencies, ...packageJson.devDependencies }
+  if (!Object.keys(declared).some(nativeRoot)) {
+    for (const name of ['@wdio/native-utils', '@puppeteer/browsers', 'deepmerge-ts', 'js-yaml', 'serialize-javascript']) {
+      assert.equal(Object.hasOwn(packageJson.overrides ?? {}, name), false, `private override exported: ${name}`)
+    }
+    for (const path of Object.keys(packageLock.packages ?? {})) {
+      assert.doesNotMatch(path, /(?:^|\/)node_modules\/(?:@wdio\/|webdriverio(?:\/|$)|deepmerge-ts(?:\/|$)|mocha(?:\/|$)|braces(?:\/|$))/, `private tooling exported: ${path}`)
+    }
+    assert.deepEqual(packageLock.packages?.['']?.devDependencies, packageJson.devDependencies)
+    assert.deepEqual(packageLock.packages?.['']?.dependencies, packageJson.dependencies)
+    return
+  }
   const locked = packageLock.packages?.['node_modules/deepmerge-ts']
   assert.equal(packageJson.overrides?.['deepmerge-ts'], '8.0.1')
   assert.equal(locked?.version, '8.0.1')
