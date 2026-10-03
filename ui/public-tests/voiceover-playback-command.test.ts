@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { handleVoiceoverPlaybackCommand } from '../src/app/voiceoverPlaybackCommand'
 import { clearVoiceoverOwner, rememberVoiceoverOwner } from '../src/app/voiceoverOwnerRuntime'
+import { previewPlaybackCleanupPosition, previewPlaybackClockPosition } from '../src/panels/Preview/useVoiceoverPlayback'
 
 type CommandArgs = Parameters<typeof handleVoiceoverPlaybackCommand>[0]
 
@@ -115,4 +116,56 @@ test('committed no-op seek still refuses when Preview did not actually begin pla
   assert.equal(result.answers.length, 0)
   assert.match(result.errors[0].message, /Preview did not begin/)
   assert.ok(result.calls.includes('playback'))
+})
+
+test('ordinary Preview still clamps and stops at either content boundary', () => {
+  assert.deepEqual(previewPlaybackClockPosition(1500, 1000, null), { positionMs: 1000, stop: true })
+  assert.deepEqual(previewPlaybackClockPosition(-10, 1000, null), { positionMs: 0, stop: true })
+  assert.deepEqual(previewPlaybackClockPosition(500, 1000, null), { positionMs: 500, stop: false })
+})
+
+test('owned open-ended Voiceover advances actual Preview clock beyond empty content', () => {
+  assert.deepEqual(previewPlaybackClockPosition(100, 0, { outMs: null }), { positionMs: 100, stop: false })
+  assert.deepEqual(previewPlaybackClockPosition(3100, 0, { outMs: null }), { positionMs: 3100, stop: false })
+})
+
+test('valid Voiceover start beyond current content is preserved', () => {
+  assert.deepEqual(previewPlaybackClockPosition(2000, 0, { outMs: null }), { positionMs: 2000, stop: false })
+})
+
+test('finite Voiceover Out beyond content reaches observed boundary without stopping before owned acknowledgement', () => {
+  assert.deepEqual(previewPlaybackClockPosition(2000, 1000, { outMs: 3000 }), { positionMs: 2000, stop: false })
+  assert.deepEqual(previewPlaybackClockPosition(3100, 1000, { outMs: 3000 }), { positionMs: 3000, stop: false })
+})
+
+test('released Voiceover owner restores normal duration boundary decisions', () => {
+  assert.deepEqual(previewPlaybackClockPosition(3100, 1000, null), { positionMs: 1000, stop: true })
+})
+
+const clockOwner = {
+  requestId: 'voiceover-a', requestFingerprint: 'a'.repeat(64), bridgeEpoch: 1,
+  ownerSessionId: 'session-a', ownerCapability: 'capability-a', outMs: null,
+}
+
+test('normal clock cleanup cannot overwrite a newly admitted Voiceover start', () => {
+  assert.equal(previewPlaybackCleanupPosition(500, 1000, null, clockOwner), null)
+  assert.equal(previewPlaybackCleanupPosition(500, 0, null, clockOwner), null)
+})
+
+test('old Voiceover clock cleanup cannot overwrite a new epoch or replacement take', () => {
+  assert.equal(previewPlaybackCleanupPosition(500, 1000, clockOwner,
+    { ...clockOwner, bridgeEpoch: 2 }), null)
+  assert.equal(previewPlaybackCleanupPosition(500, 1000, clockOwner,
+    { ...clockOwner, requestId: 'voiceover-b', requestFingerprint: 'b'.repeat(64),
+      ownerSessionId: 'session-b', ownerCapability: 'capability-b' }), null)
+})
+
+test('terminal Voiceover cleanup preserves the finishing take position beyond old content', () => {
+  assert.equal(previewPlaybackCleanupPosition(3100, 0, clockOwner, null), 3100)
+  assert.equal(previewPlaybackCleanupPosition(3100, 1000, { ...clockOwner, outMs: 3000 }, null), 3000)
+})
+
+test('unchanged ordinary and unchanged owner clock cleanup still publish their correct positions', () => {
+  assert.equal(previewPlaybackCleanupPosition(1500, 1000, null, null), 1000)
+  assert.equal(previewPlaybackCleanupPosition(3100, 0, clockOwner, { ...clockOwner }), 3100)
 })

@@ -11,6 +11,46 @@ interface VoiceoverPlayback {
   ownerCapability: string
 }
 
+/** Clock position shared by Preview playback and the correlated start seek. */
+export function previewPlaybackClockPosition(
+  positionMs: number,
+  durationMs: number,
+  voiceover: Pick<VoiceoverPlayback, 'outMs'> | null,
+): { positionMs: number; stop: boolean } {
+  if (voiceover) {
+    // The reserved take owns its clock beyond current program content. At
+    // finite Out, publish the boundary and let the server accept Stop; setting
+    // rate zero here would prevent the hook from reporting that observation.
+    return {
+      positionMs: Math.max(0, Math.min(voiceover.outMs ?? Infinity, Math.round(positionMs))),
+      stop: false,
+    }
+  }
+  return {
+    positionMs: Math.max(0, Math.min(durationMs, Math.round(positionMs))),
+    stop: positionMs <= 0 || positionMs >= durationMs,
+  }
+}
+
+/** Old clock cleanup must not overwrite a newly admitted Voiceover seek. */
+export function previewPlaybackCleanupPosition(
+  positionMs: number,
+  durationMs: number,
+  previous: VoiceoverPlayback | null,
+  current: VoiceoverPlayback | null,
+): number | null {
+  if (current && (!previous
+    || current.requestId !== previous.requestId
+    || current.requestFingerprint !== previous.requestFingerprint
+    || current.bridgeEpoch !== previous.bridgeEpoch
+    || current.ownerSessionId !== previous.ownerSessionId
+    || current.ownerCapability !== previous.ownerCapability
+    || current.outMs !== previous.outMs)) return null
+  // A true terminal transition still seals the old clock position using that
+  // take's horizon, rather than rewinding to the old program content extent.
+  return previewPlaybackClockPosition(positionMs, durationMs, previous).positionMs
+}
+
 interface UseVoiceoverPlaybackArgs {
   playheadMs: number
   durationMs: number
@@ -48,15 +88,16 @@ export function useVoiceoverPlayback({
       if (!requestId || !/^[a-f0-9]{64}$/i.test(requestFingerprint)
         || !Number.isSafeInteger(bridgeEpoch) || !Number.isSafeInteger(startMs)
         || !ownerSessionId || !ownerCapability) return
-      config.current.onSeek(Math.max(0, Math.min(config.current.durationMs, Number(startMs))))
-      setVoiceoverPlayback({
+      const playback = {
         requestId,
         requestFingerprint,
         bridgeEpoch: Number(bridgeEpoch),
         outMs: Number.isSafeInteger(outMs) ? Number(outMs) : null,
         ownerSessionId,
         ownerCapability,
-      })
+      }
+      config.current.onSeek(previewPlaybackClockPosition(Number(startMs), config.current.durationMs, playback).positionMs)
+      setVoiceoverPlayback(playback)
       setRate(1)
     }
     const onVoiceoverStop = () => {

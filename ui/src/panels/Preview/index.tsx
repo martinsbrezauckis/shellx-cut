@@ -19,7 +19,7 @@ import { activeVideo, previewFrameMs, RVFC_SUPPORTED, videoFrameCallbacks } from
 import { PreviewFrameError, PreviewOfflineOverlays, PreviewOfflineStage, usePreviewOfflineMedia } from './PreviewOffline'
 import { usePreviewExportActions } from './usePreviewExportActions'
 import { usePreviewViewOptions } from './usePreviewViewOptions'
-import { useVoiceoverPlayback } from './useVoiceoverPlayback'
+import { previewPlaybackCleanupPosition, previewPlaybackClockPosition, useVoiceoverPlayback } from './useVoiceoverPlayback'
 import { GuideOverlay } from './GuideOverlay'
 import { useContainBox } from './useContainBox'
 import { events } from '../../lib/events'
@@ -406,9 +406,9 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // re-binding (same configRef pattern as the Timeline gestures). `video`
   // carries the active clip placement so the rVFC clock maps presented source
   // time → timeline position without re-subscribing each frame.
-  const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, rate, video })
-  cfg.current = { playheadMs, durationMs, frameMs, onSeek, rate, video }
   const voiceoverPlayback = useVoiceoverPlayback({ playheadMs, durationMs, rate, onSeek, setRate })
+  const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, rate, video, voiceoverPlayback })
+  cfg.current = { playheadMs, durationMs, frameMs, onSeek, rate, video, voiceoverPlayback }
 
   // --- playback clock --------------------------------------------------------
   // FREE-RUN (forward 1×, <video> mounted): the element plays itself, hardware-
@@ -446,7 +446,8 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
       const advance = (toMs: number) => {
         if (handedOff) return
         handedOff = true
-        cfg.current.onSeek(Math.round(toMs))
+        const c = cfg.current
+        c.onSeek(previewPlaybackClockPosition(toMs, c.durationMs, c.voiceoverPlayback).positionMs)
       }
       const syncFromMediaTime = (now: number, mediaTime: number) => {
         if (stopped) return
@@ -455,9 +456,16 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
         if (vid) {
           const timelineMs = timelineMsAtSourcePosition(vid, mediaTime * 1000)
           const clipEndMs = vid.startMs + vid.durMs
-          if (timelineMs >= c.durationMs - 1) { c.onSeek(Math.round(c.durationMs)); setRate(0); return }
+          if (timelineMs >= c.durationMs - 1) {
+            c.onSeek(previewPlaybackClockPosition(c.durationMs, c.durationMs, c.voiceoverPlayback).positionMs)
+            if (!c.voiceoverPlayback) setRate(0)
+            return
+          }
           if (timelineMs >= clipEndMs - 1) advance(Math.min(c.durationMs, clipEndMs))
-          else if (now - lastDispatch >= 100) { lastDispatch = now; c.onSeek(Math.round(timelineMs)) }
+          else if (now - lastDispatch >= 100) {
+            lastDispatch = now
+            c.onSeek(previewPlaybackClockPosition(timelineMs, c.durationMs, c.voiceoverPlayback).positionMs)
+          }
         }
       }
       const onFrame = (now: number, meta: { mediaTime: number }) => {
@@ -489,7 +497,8 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
         cancelAnimationFrame(fallbackRaf)
         v.pause()
         const c = cfg.current
-        c.onSeek(Math.round(Math.max(0, Math.min(c.durationMs, c.playheadMs))))
+        const position = previewPlaybackCleanupPosition(c.playheadMs, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
+        if (position !== null) c.onSeek(position)
       }
     }
 
@@ -502,25 +511,27 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
       const c = cfg.current
       acc += (now - last) * c.rate
       last = now
-      if (acc <= 0 || acc >= c.durationMs) {
-        const clamped = Math.max(0, Math.min(c.durationMs, Math.round(acc)))
-        c.onSeek(clamped)
+      const position = previewPlaybackClockPosition(acc, c.durationMs, c.voiceoverPlayback)
+      if (position.stop) {
+        c.onSeek(position.positionMs)
         setRate(0)
         return
       }
       if (now - lastDispatch >= 100) {
         lastDispatch = now
-        c.onSeek(Math.round(acc))
+        c.onSeek(position.positionMs)
       }
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
     return () => {
       cancelAnimationFrame(raf)
-      cfg.current.onSeek(Math.round(Math.max(0, Math.min(cfg.current.durationMs, acc))))
+      const c = cfg.current
+      const position = previewPlaybackCleanupPosition(acc, c.durationMs, voiceoverPlayback, c.voiceoverPlayback)
+      if (position !== null) c.onSeek(position)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rate, playbackSrcKey])
+  }, [rate, playbackSrcKey, voiceoverPlayback])
 
   // --- preview <video> follows the playhead WHEN NOT free-running ------------
   // During forward 1× free-run the element owns currentTime (its own clock);
