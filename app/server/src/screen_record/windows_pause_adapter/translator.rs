@@ -9,18 +9,18 @@ use crate::screen_record::windows_pause_adapter_events::{
 };
 use record_capture::windows_pause_pilot::{
     WindowsPausePilotEvent, WindowsPausePilotEventReceiver, WindowsPausePilotOperation,
-    WindowsPausePilotStarted, WindowsSealedScreenRun,
+    WindowsPausePilotStarted, WindowsSealedAudioRun, WindowsSealedScreenRun,
 };
+use record_capture::SelectedCaptureStreams;
 use record_recovery::RecordingStream;
 
-/// Controller-held event half. It binds a returned `StopSealRequest` before it
-/// drains a queued terminal event, so the owner dispatch and terminal evidence
-/// remain composable without making the owner a polling loop.
+/// Bind Stop's expectation before queued evidence; dispatch never implies terminal admission.
 pub(crate) struct WindowsPauseEventTranslator<F> {
     events: WindowsPausePilotEventReceiver,
     evidence_factory: F,
     stop_expectation: Option<(Option<u64>, u64)>,
-    streams: record_capture::SelectedCaptureStreams,
+    stop_seals_pending_pause: bool,
+    streams: SelectedCaptureStreams,
 }
 
 impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
@@ -28,19 +28,20 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
         Self::with_streams(
             events,
             evidence_factory,
-            record_capture::SelectedCaptureStreams::screen_only(),
+            SelectedCaptureStreams::screen_only(),
         )
     }
 
     pub(crate) fn with_streams(
         events: WindowsPausePilotEventReceiver,
         evidence_factory: F,
-        streams: record_capture::SelectedCaptureStreams,
+        streams: SelectedCaptureStreams,
     ) -> Self {
         Self {
             events,
             evidence_factory,
             stop_expectation: None,
+            stop_seals_pending_pause: false,
             streams,
         }
     }
@@ -48,6 +49,14 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
     /// One-shot bind after `PauseSessionOwner::request_stop_at` returns.
     pub(crate) fn expect_stop(&mut self, request: &PauseSessionStopRequest) {
         self.stop_expectation = Some((request.seal().generation(), request.epoch().value()));
+        self.stop_seals_pending_pause = false;
+    }
+
+    /// Bind the exact pending Pause boundary observed before Stop invalidated it,
+    /// even if native Stop discards Pause; readiness is not that boundary.
+    pub(crate) fn expect_stop_after_pending_pause(&mut self, request: &PauseSessionStopRequest) {
+        self.expect_stop(request);
+        self.stop_seals_pending_pause = true;
     }
 
     pub(crate) fn set_session_origin(
@@ -79,14 +88,11 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
     pub(crate) fn try_next(
         &mut self,
     ) -> Result<Option<WindowsPauseAdapterEvent>, WindowsPauseAdapterError> {
-        let Some(event) = self
-            .events
+        self.events
             .try_recv()
             .map_err(|_| WindowsPauseAdapterError::WorkerChannelClosed)?
-        else {
-            return Ok(None);
-        };
-        self.translate(event).map(Some)
+            .map(|event| self.translate(event))
+            .transpose()
     }
 
     fn translate(
@@ -156,9 +162,8 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
                 audio,
                 observed_at,
             } => {
-                // A paused Stop seals no new run: its audio was already verified
-                // with PauseSealed. sealed_stop still requires the matching
-                // no-run expectation, exact epoch, and an empty audio list.
+                // Paused Stop reuses verified Pause audio; sealed_stop requires
+                // the matching no-run expectation, exact epoch and empty audio.
                 if input.is_some() || (run.is_some() && !self.matches_selected_audio(&audio)) {
                     return Err(WindowsPauseAdapterError::EvidenceRejected);
                 }
@@ -178,10 +183,10 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
         generation: u64,
         epoch: u64,
         run: WindowsSealedScreenRun,
-        audio: Vec<record_capture::windows_pause_pilot::WindowsSealedAudioRun>,
+        audio: Vec<WindowsSealedAudioRun>,
         observed_at: std::time::Instant,
     ) -> Result<WindowsPauseAdapterEvent, WindowsPauseAdapterError> {
-        let evidence = self.evidence_factory.verify_and_build_with_audio(
+        let evidence = self.evidence_factory.verify_and_build_pause_with_audio(
             generation,
             &run,
             &audio,
@@ -211,7 +216,7 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
         &mut self,
         epoch: u64,
         run: Option<WindowsSealedScreenRun>,
-        audio: Vec<record_capture::windows_pause_pilot::WindowsSealedAudioRun>,
+        audio: Vec<WindowsSealedAudioRun>,
         observed_at: std::time::Instant,
     ) -> Result<WindowsPauseAdapterEvent, WindowsPauseAdapterError> {
         let (expected, expected_epoch) = self
@@ -221,37 +226,36 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
         if epoch != expected_epoch {
             return Err(WindowsPauseAdapterError::UnexpectedStopEpoch);
         }
-        match (expected, run) {
-            (None, None) if audio.is_empty() => Ok(WindowsPauseAdapterEvent::StopSealed {
-                epoch,
-                evidence: None,
-                observed_at,
-            }),
+        let evidence = match (expected, run) {
+            (None, None) if audio.is_empty() => None,
             (Some(generation), Some(run)) => {
-                let evidence = self.evidence_factory.verify_and_build_with_audio(
+                let build = if self.stop_seals_pending_pause {
+                    F::verify_and_build_pause_with_audio
+                } else {
+                    F::verify_and_build_with_audio
+                };
+                let evidence = build(
+                    &mut self.evidence_factory,
                     generation,
                     &run,
                     &audio,
                     observed_at,
                 )?;
                 ensure_evidence_generation(generation, &evidence)?;
-                Ok(WindowsPauseAdapterEvent::StopSealed {
-                    epoch,
-                    evidence: Some(evidence),
-                    observed_at,
-                })
+                Some(evidence)
             }
             (None, Some(run)) if audio.is_empty() => {
                 self.evidence_factory
                     .verify_discarded_stop(&run, observed_at)?;
-                Ok(WindowsPauseAdapterEvent::StopSealed {
-                    epoch,
-                    evidence: None,
-                    observed_at,
-                })
+                None
             }
-            _ => Err(WindowsPauseAdapterError::UnexpectedStopRun),
-        }
+            _ => return Err(WindowsPauseAdapterError::UnexpectedStopRun),
+        };
+        Ok(WindowsPauseAdapterEvent::StopSealed {
+            epoch,
+            evidence,
+            observed_at,
+        })
     }
 
     fn failed(
@@ -262,9 +266,7 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
         observed_at: std::time::Instant,
     ) -> Result<WindowsPauseAdapterEvent, WindowsPauseAdapterError> {
         if operation == WindowsPausePilotOperation::Stop
-            && self
-                .stop_expectation
-                .is_some_and(|(_, expected_epoch)| epoch != expected_epoch)
+            && matches!(self.stop_expectation, Some((_, expected)) if epoch != expected)
         {
             return Err(WindowsPauseAdapterError::UnexpectedStopEpoch);
         }
@@ -287,14 +289,8 @@ impl<F: WindowsPauseEvidenceFactory> WindowsPauseEventTranslator<F> {
             .collect()
     }
 
-    /// The worker event must carry one and only one owner result for every
-    /// admitted audio stream. Facts are generated from the same private
-    /// selection only after this check, so a missing, stale, duplicate, or
-    /// unselected WAV can never complete a durable transition.
-    fn matches_selected_audio(
-        &self,
-        audio: &[record_capture::windows_pause_pilot::WindowsSealedAudioRun],
-    ) -> bool {
+    /// Reject missing, stale, duplicate or unselected audio before selected-stream facts.
+    fn matches_selected_audio(&self, audio: &[WindowsSealedAudioRun]) -> bool {
         let mut actual = audio.iter().map(|item| item.stream).collect::<Vec<_>>();
         actual.sort_unstable();
         let expected = self

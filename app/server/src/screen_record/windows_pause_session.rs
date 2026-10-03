@@ -153,11 +153,20 @@ where
     /// Owner transition and native Stop dispatch happen first; only then is the
     /// translator allowed to consume its one expected terminal event.
     pub(crate) fn request_stop_at(&mut self, at: Instant) -> Result<(), WindowsPauseSessionError> {
+        let pending_pause = matches!(
+            self.owner.phase(),
+            PauseSessionOwnerPhase::PauseAwaitingFacts { .. }
+                | PauseSessionOwnerPhase::PauseAwaitingSeal { .. }
+        );
         let request = self
             .owner
             .request_stop_at(at)
             .map_err(|error| self.owner_error(error))?;
-        self.translator.expect_stop(&request);
+        if pending_pause {
+            self.translator.expect_stop_after_pending_pause(&request);
+        } else {
+            self.translator.expect_stop(&request);
+        }
         Ok(())
     }
 

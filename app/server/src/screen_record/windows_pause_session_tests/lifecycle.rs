@@ -415,3 +415,230 @@ fn selected_audio_stop_from_paused_retains_the_sealed_run_and_joins() {
         assert_eq!(&*log.borrow(), &["intent", "native", "join"]);
     }
 }
+
+// Use the production calibrated factory, not the synthetic Factory above: the
+// Resume command and its later Pause boundary have distinct generations.
+#[test]
+fn calibrated_resume_then_pause_and_stop_preserve_boundary_generations() {
+    use crate::screen_record::windows_pause_adapter::WindowsPauseAdapterError;
+    use crate::screen_record::windows_pause_evidence::CalibratedWindowsPauseEvidenceFactory;
+    use crate::screen_record::windows_pause_evidence_artifacts::WindowsPauseArtifactVerifier;
+    use record_capture::windows_pause_pilot::{
+        channel, WindowsPausePilotCommand, WindowsSealedAudioRun,
+    };
+    use record_recovery::{Checkpoint, MediaFacts, RecordingStream, TerminalDisposition};
+    use std::{cell::RefCell, rc::Rc};
+
+    struct Artifacts;
+    impl WindowsPauseArtifactVerifier for Artifacts {
+        fn verify(&self, _: &Checkpoint) -> Result<(), WindowsPauseAdapterError> {
+            Ok(())
+        }
+        fn verify_audio(&self, _: &WindowsSealedAudioRun) -> Result<(), WindowsPauseAdapterError> {
+            Ok(())
+        }
+    }
+    fn run(
+        sequence: u64,
+        start: u64,
+        end: u64,
+    ) -> record_capture::windows_pause_pilot::WindowsSealedScreenRun {
+        let mut run = native_run(start, end);
+        run.range.first_physical_generation = sequence + 1;
+        run.range.last_physical_generation = sequence + 1;
+        run.range.first_checkpoint_sequence = sequence;
+        run.range.last_checkpoint_sequence = sequence;
+        let checkpoint = &mut run.checkpoints[0];
+        checkpoint.physical_generation = sequence + 1;
+        checkpoint.checkpoint.sequence = sequence;
+        checkpoint.checkpoint.file = format!("checkpoints/segment-{sequence:06}.mp4");
+        checkpoint.checkpoint.media = Some(MediaFacts {
+            duration_ms: end - start,
+            decoded_video_frames: 1,
+            has_audio: false,
+            width: None,
+            height: None,
+            codec_name: None,
+            avg_frame_rate: None,
+            r_frame_rate: None,
+        });
+        run
+    }
+    fn audio(generation: u64, start: u64, end: u64) -> Vec<WindowsSealedAudioRun> {
+        [
+            RecordingStream::MicrophoneAudio,
+            RecordingStream::SystemAudio,
+        ]
+        .into_iter()
+        .map(|stream| WindowsSealedAudioRun {
+            stream,
+            source_generation: generation,
+            artifact: format!(
+                "recording-{}-generation-{generation:020}.wav",
+                if stream == RecordingStream::MicrophoneAudio {
+                    "microphone"
+                } else {
+                    "system"
+                }
+            ),
+            bytes: 48,
+            sha256: "a".repeat(64),
+            media_duration_ms: end - start,
+            native_ready_unix_ms: 1000 + start,
+            native_ready_raw_ms: start,
+            raw_start_ms: start,
+            raw_end_ms: end,
+        })
+        .collect()
+    }
+    // Normal paused Stop, active Stop, Stop winning an in-flight Pause, and
+    // already queued Pause evidence retained by terminal Stop.
+    for (second_pause, pending_stop, queued_pause) in [
+        (true, false, false),
+        (false, false, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
+        let origin = Instant::now();
+        let streams = SelectedCaptureStreams::new(true, true, false, false);
+        let (command_tx, commands, events, event_rx) = channel();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let journal = MemoryJournal::new(&log, &streams);
+        let mut first = started(origin, 0);
+        first.physical_generation = 1;
+        events
+            .send(WindowsPausePilotEvent::Started { started: first })
+            .unwrap();
+        let mut session = WindowsPauseSession::from_started_lifecycle(
+            journal,
+            &WindowsPauseSessionAdmission::admit(
+                Target {
+                    legacy_index: None,
+                    exact_id: Some(format!("shellx-monitor-v1:windows:{}", "a".repeat(64))),
+                },
+                streams,
+                30.0,
+                100,
+            )
+            .unwrap(),
+            Lifecycle::new(command_tx, event_rx, log.clone()),
+            CalibratedWindowsPauseEvidenceFactory::new(Artifacts),
+        )
+        .unwrap();
+        session.request_pause_at(at(origin, 100)).unwrap();
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Some(WindowsPausePilotCommand::Pause {
+                generation: 1,
+                epoch: 1
+            })
+        ));
+        events
+            .send(WindowsPausePilotEvent::PauseSealed {
+                generation: 1,
+                epoch: 1,
+                run: run(0, 17, 137),
+                input: None,
+                audio: audio(1, 17, 137),
+                observed_at: at(origin, 160),
+            })
+            .unwrap();
+        assert_eq!(
+            session.pump_once().unwrap(),
+            Some(WindowsPauseSessionEvent::Paused)
+        );
+        session.request_resume_at(at(origin, 180)).unwrap();
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Some(WindowsPausePilotCommand::Resume {
+                generation: 2,
+                epoch: 2
+            })
+        ));
+        let mut resumed = started(origin, 200);
+        resumed.physical_generation = 2;
+        events
+            .send(WindowsPausePilotEvent::ResumeReady {
+                generation: 2,
+                epoch: 2,
+                started: resumed,
+            })
+            .unwrap();
+        assert_eq!(
+            session.pump_once().unwrap(),
+            Some(WindowsPauseSessionEvent::Resumed)
+        );
+        if second_pause || pending_stop {
+            session.request_pause_at(at(origin, 300)).unwrap();
+            assert!(matches!(
+                commands.try_recv().unwrap(),
+                Some(WindowsPausePilotCommand::Pause {
+                    generation: 3,
+                    epoch: 3
+                })
+            ));
+            if second_pause {
+                events
+                    .send(WindowsPausePilotEvent::PauseSealed {
+                        generation: 3,
+                        epoch: 3,
+                        run: run(1, 217, 317),
+                        input: None,
+                        audio: audio(2, 217, 317),
+                        observed_at: at(origin, 330),
+                    })
+                    .unwrap();
+                assert_eq!(
+                    session
+                        .pump_once()
+                        .expect("real resumed Pause boundary3 must seal readiness2"),
+                    Some(WindowsPauseSessionEvent::Paused)
+                );
+            }
+        }
+        session.request_stop_at(at(origin, 350)).unwrap();
+        let epoch = if second_pause || pending_stop { 4 } else { 3 };
+        assert!(
+            matches!(commands.try_recv().unwrap(), Some(WindowsPausePilotCommand::Stop { epoch: actual }) if actual == epoch)
+        );
+        if queued_pause {
+            events
+                .send(WindowsPausePilotEvent::PauseSealed {
+                    generation: 3,
+                    epoch: 3,
+                    run: run(1, 217, 317),
+                    input: None,
+                    audio: audio(2, 217, 317),
+                    observed_at: at(origin, 330),
+                })
+                .unwrap();
+            assert_eq!(
+                session.pump_once().unwrap(),
+                Some(WindowsPauseSessionEvent::StopRunRetained)
+            );
+        }
+        events
+            .send(WindowsPausePilotEvent::StopSealed {
+                epoch,
+                run: (!second_pause && !queued_pause).then(|| run(1, 217, 417)),
+                input: None,
+                audio: if second_pause || queued_pause {
+                    Vec::new()
+                } else {
+                    audio(2, 217, 417)
+                },
+                observed_at: at(origin, 430),
+            })
+            .unwrap();
+        assert_eq!(
+            session.pump_once().unwrap(),
+            Some(WindowsPauseSessionEvent::Stopped)
+        );
+        assert_eq!(session.journal().sealed_runs().len(), 2);
+        assert_eq!(
+            session.journal().terminal().unwrap().disposition,
+            TerminalDisposition::Completed
+        );
+        assert_eq!(&*log.borrow(), &["intent", "native", "join"]);
+    }
+}

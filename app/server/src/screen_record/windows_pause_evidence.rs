@@ -19,6 +19,13 @@ mod validation;
 use fragments::fragments;
 pub(crate) use input::{RecordingAudioDraft, RecordingInputDraft};
 use validation::{raw_span, validate_accepted, validate_audio, validate_run};
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SealBoundary {
+    Pause,
+    Stop,
+    DiscardedStop,
+}
+
 #[derive(Clone)]
 struct RawStartCalibration {
     server_generation: Option<u64>,
@@ -103,8 +110,14 @@ impl<V: WindowsPauseArtifactVerifier> WindowsPauseEvidenceFactory
             .as_ref()
             .and_then(|staged| staged.server_generation)
             .unwrap_or(0);
-        self.build(generation, native, &[], post_close_observed_at, true)
-            .map(|_| ())
+        self.build(
+            generation,
+            native,
+            &[],
+            post_close_observed_at,
+            SealBoundary::DiscardedStop,
+        )
+        .map(|_| ())
     }
 
     fn set_session_origin(
@@ -127,7 +140,13 @@ impl<V: WindowsPauseArtifactVerifier> WindowsPauseEvidenceFactory
         native: &WindowsSealedScreenRun,
         post_close_observed_at: Instant,
     ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
-        self.build(generation, native, &[], post_close_observed_at, false)
+        self.build(
+            generation,
+            native,
+            &[],
+            post_close_observed_at,
+            SealBoundary::Stop,
+        )
     }
 
     fn verify_and_build_with_audio(
@@ -137,7 +156,28 @@ impl<V: WindowsPauseArtifactVerifier> WindowsPauseEvidenceFactory
         audio: &[WindowsSealedAudioRun],
         post_close_observed_at: Instant,
     ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
-        self.build(generation, native, audio, post_close_observed_at, false)
+        self.build(
+            generation,
+            native,
+            audio,
+            post_close_observed_at,
+            SealBoundary::Stop,
+        )
+    }
+    fn verify_and_build_pause_with_audio(
+        &mut self,
+        generation: u64,
+        native: &WindowsSealedScreenRun,
+        audio: &[WindowsSealedAudioRun],
+        post_close_observed_at: Instant,
+    ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
+        self.build(
+            generation,
+            native,
+            audio,
+            post_close_observed_at,
+            SealBoundary::Pause,
+        )
     }
 }
 
@@ -148,7 +188,7 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
         native: &WindowsSealedScreenRun,
         native_audio: &[WindowsSealedAudioRun],
         post_close_observed_at: Instant,
-        discarded: bool,
+        boundary: SealBoundary,
     ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
         let origin = self
             .origin
@@ -157,8 +197,21 @@ impl<V: WindowsPauseArtifactVerifier> CalibratedWindowsPauseEvidenceFactory<V> {
             .staged
             .as_ref()
             .ok_or(WindowsPauseAdapterError::CalibrationRejected)?;
-        let expected_generation = (self.next_sequence != 0).then_some(generation);
-        if (!discarded && staged.server_generation != expected_generation)
+        // Resume readiness belongs to the active run. A later Pause advances
+        // that generation once; Stop seals the active generation unchanged.
+        // This is the same distinction made by RunSealCoordinator boundaries.
+        let generation_matches = if self.next_sequence == 0 {
+            staged.server_generation.is_none()
+        } else {
+            let expected = match boundary {
+                SealBoundary::Pause => staged
+                    .server_generation
+                    .and_then(|ready| ready.checked_add(1)),
+                SealBoundary::Stop | SealBoundary::DiscardedStop => staged.server_generation,
+            };
+            expected == Some(generation)
+        };
+        if (boundary != SealBoundary::DiscardedStop && !generation_matches)
             || native.observed_start_ms != staged.raw_start_ms
             || native.accepted != staged.accepted
         {

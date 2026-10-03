@@ -51,4 +51,16 @@ pub(crate) trait WindowsPauseEvidenceFactory {
         }
         self.verify_and_build(server_generation, run, post_close_observed_at)
     }
+    /// Pause seals at the next command boundary after resumed readiness. Stop
+    /// seals the current active generation instead; callers must distinguish
+    /// these operations even when both return the same native run shape.
+    fn verify_and_build_pause_with_audio(
+        &mut self,
+        server_generation: u64,
+        run: &WindowsSealedScreenRun,
+        audio: &[WindowsSealedAudioRun],
+        post_close_observed_at: std::time::Instant,
+    ) -> Result<SealedRunEvidence, WindowsPauseAdapterError> {
+        self.verify_and_build_with_audio(server_generation, run, audio, post_close_observed_at)
+    }
 }

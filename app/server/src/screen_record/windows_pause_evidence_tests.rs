@@ -292,3 +292,42 @@ fn stale_generation_or_duplicate_audio_source_is_rejected_before_sidecar_constru
         .verify_and_build_with_audio(1, &run(77, 177), &[one.clone(), one], at(origin, 130))
         .is_err());
 }
+
+#[test]
+fn resumed_pause_requires_exact_successor_while_stop_keeps_readiness_generation() {
+    let origin = Instant::now();
+    let first = started(origin, 77, 0);
+    for readiness in [2, u64::MAX] {
+        for seal in [0, 1, 2, 3, 4, u64::MAX] {
+            let mut pause = factory(&first);
+            pause
+                .verify_and_build(1, &run(77, 177), at(origin, 130))
+                .unwrap();
+            pause
+                .stage_started(Some(readiness), &started(origin, 999, 200))
+                .unwrap();
+            let result = pause.verify_and_build_pause_with_audio(
+                seal,
+                &run(999, 1099),
+                &[],
+                at(origin, 320),
+            );
+            assert_eq!(
+                result.is_ok(),
+                readiness.checked_add(1) == Some(seal),
+                "readiness {readiness}, Pause {seal}"
+            );
+            let mut stop = factory(&first);
+            stop.verify_and_build(1, &run(77, 177), at(origin, 130))
+                .unwrap();
+            stop.stage_started(Some(readiness), &started(origin, 999, 200))
+                .unwrap();
+            assert_eq!(
+                stop.verify_and_build_with_audio(seal, &run(999, 1099), &[], at(origin, 320))
+                    .is_ok(),
+                seal == readiness,
+                "readiness {readiness}, Stop {seal}"
+            );
+        }
+    }
+}

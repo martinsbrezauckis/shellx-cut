@@ -45,7 +45,6 @@ declare global {
     webkitAudioContext?: typeof AudioContext
   }
 }
-
 export interface PreviewProps {
   project: Project | null
   doctor?: DoctorReport | null
@@ -69,12 +68,10 @@ export interface PreviewProps {
    * selected (the Section button is then disabled — no implicit 30s fallback). */
   exportRange?: [number, number] | null
 }
-
 const isObject = (v: unknown): v is object => v !== null && typeof v === 'object'
 const isTitleAlign = (v: unknown): v is 'left' | 'center' | 'right' => v === 'left' || v === 'center' || v === 'right'
 const isRedactMode = (v: unknown): v is 'blur' | 'pixelate' | 'box' => v === 'blur' || v === 'pixelate' || v === 'box'
 const isMaskShape = (v: unknown): v is MaskShape => v === 'rect' || v === 'ellipse' || v === 'polygon'
-
 export default function Preview({ project, doctor = null, playheadMs, onSeek, headOpId, selectedClipIds, exportRange }: PreviewProps) {
   const [rate, setRate] = useState<Rate>(0)
   const [posterStale, setPosterStale] = useState(false)
@@ -118,7 +115,6 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     setFailedSources(new Set())
   }, [projectKey])
   const videoRef = useRef<HTMLVideoElement>(null)
-
   // --- timeline audio monitoring --------------------------------------------
   // The base + overlay <video>s are MUTED (a single proxy clip's embedded track
   // is NOT the timeline mix), so the live preview was silent while
@@ -140,7 +136,6 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // in-flight read 404 — caught by console-clean). Alternating _monitor_a/_b.mp3
   // means a re-render never overwrites the file the element is currently reading.
   const mixBuf = useRef<'a' | 'b'>('a')
-
   // --- master output meter (Audio Monitoring v2a) ---------------------------
   // Tap a Web Audio AnalyserNode off the SAME <audio> that plays the export mix,
   // so the meter reads the EXACT export level (WYSIWYG — no JS re-mix). A
@@ -180,13 +175,11 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
       // Audio) — the element was NOT rerouted, so it still plays normally; just no meter.
     }
   }, [])
-
   useEffect(() => {
     const onShow = () => setComposed(true)
     document.addEventListener('cut:show-composed', onShow)
     return () => document.removeEventListener('cut:show-composed', onShow)
   }, [])
-
   useEffect(() => {
     const onFocus = () => {
       rootRef.current?.scrollIntoView({ block: 'nearest' })
@@ -195,7 +188,6 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     document.addEventListener('cut:focus-preview', onFocus)
     return () => document.removeEventListener('cut:focus-preview', onFocus)
   }, [])
-
   // #193b: receive the Title drawer's live placement → show/hide the draggable ghost.
   useEffect(() => {
     const onPlace = (e: Event) => {
@@ -226,7 +218,6 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     const y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))
     document.dispatchEvent(new CustomEvent('cut:title-place-move', { detail: { x, y } }))
   }, [])
-
   // Arm/disarm draw-region mode from the Inspector's "Draw region" toggle.
   // detail = {active:true, clip, mode} to arm, {active:false} to disarm. Clears
   // any half-drawn box when disarmed so a cancel leaves no ghost.
@@ -247,7 +238,6 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     document.addEventListener('cut:redact-draw', onArm)
     return () => document.removeEventListener('cut:redact-draw', onArm)
   }, [])
-
   // Arm/disarm the region-MASK draw from the Mask drawer. detail = {active:true, clip,
   // shape, nonce} arms (or re-arms with a new shape / cleared shape); {active:false}
   // disarms. Mirrors the redact arm above; MaskOverlay (keyed by clip+shape+nonce)
@@ -265,7 +255,6 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
     document.addEventListener('cut:mask-draw', onArm)
     return () => document.removeEventListener('cut:mask-draw', onArm)
   }, [])
-
   /** Map a clientX/Y to NORMALIZED fractions of the LETTERBOXED frame. The
    *  stageRef element IS the contain-fitted frame box (its rect already excludes
    *  the black letterbox bars), so (clientX - rect.left)/rect.width is exactly

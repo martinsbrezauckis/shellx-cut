@@ -30,7 +30,10 @@ pub(super) struct MemoryJournal {
 }
 
 impl MemoryJournal {
-    fn new(log: &Rc<RefCell<Vec<&'static str>>>, streams: &SelectedCaptureStreams) -> Self {
+    pub(super) fn new(
+        log: &Rc<RefCell<Vec<&'static str>>>,
+        streams: &SelectedCaptureStreams,
+    ) -> Self {
         log.borrow_mut().push("intent");
         Self {
             journal: RecordingSessionJournal::new(RecordingSessionIntent::new(
@@ -80,7 +83,7 @@ pub(super) struct Lifecycle {
 }
 
 impl Lifecycle {
-    fn new(
+    pub(super) fn new(
         commands: record_capture::windows_pause_pilot::WindowsPausePilotCommandSender,
         events: WindowsPausePilotEventReceiver,
         log: Rc<RefCell<Vec<&'static str>>>,
