@@ -22,7 +22,7 @@
 // Callers: SettingsCategoryContent (Settings > About). Deps: lib/doctor,
 // lib/tauri (bridge), lib/updateState (pure model).
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
 import type { DoctorReport } from '../../lib/doctor'
 import {
   checkForUpdatesNow,
@@ -30,7 +30,9 @@ import {
   installUpdateNow,
   isTauri,
   onShellUpdateState,
+  type AboutLinkDestination,
 } from '../../lib/tauri'
+import { handleAboutLinkClick } from './aboutLinkClick'
 import {
   describeUpdateStatus,
   formatCheckedAgo,
@@ -46,6 +48,7 @@ export default function About({ report }: { report: DoctorReport | null }) {
   // Local honest feedback when the BRIDGE itself fails (distinct from the
   // shell reporting a failed check inside a valid snapshot).
   const [bridgeError, setBridgeError] = useState<string | null>(null)
+  const [linkError, setLinkError] = useState<string | null>(null)
   const [requestingCheck, setRequestingCheck] = useState(false)
   const [requestingInstall, setRequestingInstall] = useState(false)
   // Re-render tick so "Checked N ago" stays truthful while the panel is open.
@@ -118,6 +121,12 @@ export default function About({ report }: { report: DoctorReport | null }) {
   const installable = shouldShowUpdateButton(snapshot)
   const busy = requestingCheck || requestingInstall || !!snapshot?.checking || !!snapshot?.installing
 
+  const openLink = (destination: AboutLinkDestination, version?: string) => (event: MouseEvent<HTMLAnchorElement>) => {
+    void handleAboutLinkClick(destination, version, event, (message) => {
+      if (live.current) setLinkError(message)
+    })
+  }
+
   return (
     <section className="env-about" data-cut-about data-cut-app-version={version}>
       <div className="env-about-row">
@@ -186,7 +195,8 @@ export default function About({ report }: { report: DoctorReport | null }) {
         The installed app checks GitHub for signed releases at launch and every 6 hours while it stays open. You can turn automatic checks off under Storage &amp; privacy; the manual check here still works, and installing always asks before restart. Linux builds update through deb/rpm packages instead and make no update request.
       </p>
       <div className="env-about-links">
-        <a href="https://theshellx.com" target="_blank" rel="noopener noreferrer">
+        <a href="https://theshellx.com" target="_blank" rel="noopener noreferrer"
+          data-cut-about-link="site" onClick={openLink('site')}>
           theshellx.com
         </a>
         <span className="env-about-dot">·</span>
@@ -194,6 +204,8 @@ export default function About({ report }: { report: DoctorReport | null }) {
           href="https://github.com/martinsbrezauckis/shellx-cut"
           target="_blank"
           rel="noopener noreferrer"
+          data-cut-about-link="github"
+          onClick={openLink('github')}
         >
           GitHub
         </a>
@@ -203,6 +215,8 @@ export default function About({ report }: { report: DoctorReport | null }) {
           target="_blank"
           rel="noopener noreferrer"
           data-cut-about-release-notes
+          data-cut-about-link="release_notes"
+          onClick={openLink('release_notes', snapshot?.status === 'available' ? snapshot.version ?? undefined : undefined)}
           title={installable ? `Release notes for ShellX Cut ${snapshot?.version}` : 'Release notes for the latest published version'}
         >
           release notes
@@ -210,6 +224,7 @@ export default function About({ report }: { report: DoctorReport | null }) {
         <span className="env-about-dot">·</span>
         <span className="env-about-license">MIT</span>
       </div>
+      {linkError && <p className="env-about-status env-about-status--error" data-cut-about-link-error role="alert">{linkError}</p>}
     </section>
   )
 }

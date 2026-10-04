@@ -108,7 +108,7 @@ fn ready_rollup_requires_core_and_platform_cards() {
         mk("ffmpeg", "ok"),
         mk("screen_capture", "ok"),
         mk("input_hook", "ok"),
-        mk("webcam", "missing"),
+        mk("system_audio", "missing"),
     ];
     assert!(ready_rollup(&all_ok));
     let missing_one = vec![
@@ -143,6 +143,48 @@ fn ready_rollup_requires_core_and_platform_cards() {
     ];
     assert!(!ready_rollup(&linux_missing_input));
     assert!(!ready_rollup(&[]));
+}
+
+#[tokio::test]
+async fn doctor_projects_capture_cards_and_separate_camera_capability() {
+    let result = screen_record_doctor(json!({})).await.unwrap();
+    let doctor = result.result.unwrap();
+    let cards = doctor["cards"].as_array().unwrap();
+    assert!(cards.iter().all(|card| card["name"] != "webcam"));
+    assert!(cards.iter().any(|card| card["name"] == "screen_capture"));
+    let camera = &doctor["camera"];
+    assert!(camera["supported"].is_boolean());
+    assert!(camera["devices"].is_array());
+    assert!(camera["detail"].is_string());
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(
+            camera["supported"], true,
+            "Linux capture build has a private native owner"
+        );
+        match record_capture::private_camera_owner::devices() {
+            Ok(nodes) => {
+                let actual = camera["devices"].as_array().unwrap();
+                assert_eq!(actual.len(), nodes.len());
+                for node in nodes {
+                    assert!(actual.iter().any(|row| row["id"] == node.id));
+                }
+            }
+            Err(_) => {
+                assert!(camera["devices"].as_array().unwrap().is_empty());
+                assert!(camera["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("discovery is unavailable"));
+            }
+        }
+        assert_eq!(
+            super::camera_public::admit_selected("linux-camera-v1-stale")
+                .unwrap_err()
+                .code,
+            cut_core::error_codes::INVALID_ARGS,
+        );
+    }
 }
 
 #[test]

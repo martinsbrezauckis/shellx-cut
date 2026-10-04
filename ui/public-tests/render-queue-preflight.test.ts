@@ -14,7 +14,7 @@ const queueModal = readFileSync(resolve(here, '../src/topbar/RenderQueueModal.ts
 assert.match(topbar, /<RenderQueueModal /)
 assert.match(topbar, /onPreflight=\{runVideoPreflight\}/)
 assert.match(queueModal, /await onPreflight\('rendering queued deliveries'/)
-assert.ok(queueModal.indexOf('await onPreflight(') < queueModal.indexOf("callVerb('render.queue'"), 'queue submission remains inside the shared gate')
+assert.ok(queueModal.indexOf('await onPreflight(') < queueModal.indexOf('await owner.submit('), 'queue submission remains inside the shared gate')
 
 const jobs = [{ preset: 'standard', aspect: 'project' }, { preset: 'high', aspect: '9:16' }]
 const enqueued: typeof jobs[] = []

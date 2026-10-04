@@ -25,8 +25,11 @@ pub(crate) async fn screen_record_copy_raw(
     struct Args {
         source: String,
         path: Option<String>,
+        expected_origin_path_sha256: Option<String>,
     }
     let args: Args = parse_args(args)?;
+    let _transition = state.project_transition.lock().await;
+    crate::project_origin::admit(state, args.expected_origin_path_sha256.as_deref()).await?;
     let (_project, _edl, dir, _revision) = snapshot(state).await?;
     let source = resolve_saved_raw_source(&dir, &args.source)?;
     let input = File::open(&source).map_err(|error| io_error("open raw recording", error))?;
@@ -202,15 +205,33 @@ mod tests {
             )
             .await;
             assert!(created.ok, "{:?}", created.error);
+            let identity = dispatch(&state, "project.state", json!({}), Actor::system()).await;
+            let origin = identity.result.unwrap()["project_identity"]["origin_path_sha256"]
+                .as_str()
+                .unwrap()
+                .to_string();
             let source = project.join("exports/raw_recording.mp4");
             std::fs::create_dir_all(source.parent().unwrap()).unwrap();
             std::fs::write(&source, b"raw recording bytes").unwrap();
 
-            for expected in ["raw_recording-copy.mp4", "raw_recording-copy-2.mp4"] {
+            for (index, expected) in ["raw_recording-copy.mp4", "raw_recording-copy-2.mp4"]
+                .into_iter()
+                .enumerate()
+            {
+                if index == 1 {
+                    let renamed = dispatch(
+                        &state,
+                        "project.rename",
+                        json!({"name":"renamed raw copy"}),
+                        Actor::system(),
+                    )
+                    .await;
+                    assert!(renamed.ok, "{:?}", renamed.error);
+                }
                 let queued = dispatch(
                     &state,
                     "screen_record.copy_raw",
-                    json!({"source": source}),
+                    json!({"source": source,"expected_origin_path_sha256":origin}),
                     Actor::system(),
                 )
                 .await;

@@ -344,7 +344,7 @@
           }
         }
       },
-      "result": "{path, format}",
+      "result": "{path, format} — warns `richness_dropped` with a sorted `dropped` list for omitted nondefault playback state; caption tracks also warn `captions_not_in_xml`",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -367,7 +367,7 @@
     {
       "name": "export.otio",
       "domain": "export",
-      "description": "Export the timeline as OpenTimelineIO (.otio) JSON — the industry-standard interchange (ASWF, Apache-2.0) that round-trips with DaVinci Resolve / Premiere / Final Cut, richer than the XML formats. Maps each video/audio track + clip to OTIO Track/Clip with source_range (RationalTime frames) + ExternalReference media; gaps → Gap. Times use the project fps. Caption tracks are not representable in OTIO and are omitted (warned in-band; use export.srt/vtt/ass). Default path <project>/exports/timeline.otio; an explicit FENCED path must end in .otio. The .otio is byte-lossless for Cut's timeline (the model round-trips export→parse).",
+      "description": "Export the timeline as OpenTimelineIO (.otio) JSON interchange. Maps video/audio tracks and clips to OTIO Track/Clip with frame-quantized source_range and ExternalReference media; gaps become Gap. Cut's local parser can recover the supported cut/track timing subset, subject to frame rounding; rich playback state is not preserved and target-NLE round-trip fidelity is unverified. Nondefault omitted state receives a `richness_dropped` warning. Caption tracks are omitted with a separate `captions_not_in_otio` warning; export captions separately. Default path <project>/exports/timeline.otio; an explicit FENCED path must end in .otio.",
       "args": {
         "type": "object",
         "required": [],
@@ -381,7 +381,7 @@
           }
         }
       },
-      "result": "{path, format:\"otio\"} — warns `captions_not_in_otio` when caption tracks are present",
+      "result": "{path, format:\"otio\"} — warns `richness_dropped` with a sorted `dropped` list for omitted nondefault playback state and `captions_not_in_otio` when caption tracks are present",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -404,7 +404,7 @@
     {
       "name": "export.edl",
       "domain": "export",
-      "description": "Export the timeline as a CMX3600 EDL (.edl) — the universal edit-decision-list interchange every NLE and color suite reads (DaVinci Resolve / Premiere / Avid / Final Cut). Built from the same frame-quantized timeline as export.xml/otio, so the cut points line up to the frame. One numbered event per clip: channel V for the video track, A/A2/A3... per audio track; source reel = the file stem sanitised to <=8 uppercase alphanumerics, with a `* FROM CLIP NAME:` comment carrying the real filename for relink. NON-DROP FRAME timecodes against the rounded fps; EDL out-points are EXCLUSIVE. Gaps are implicit (the next event's record-in jumps forward). EDL is a CUTS-ONLY format: transitions, effects, grades, per-clip gain, speed changes and captions cannot be represented and are dropped (a `richness_dropped` warning lists what was omitted). Default path <project>/exports/timeline.edl; an explicit FENCED path must end in .edl. `title` names the sequence (defaults to the project name).",
+      "description": "Export the timeline as a CMX3600 EDL (.edl) built from the same frame-quantized cuts as export.xml/otio. One numbered event per clip: channel V for the selected video track, A/A2/A3... per audio track; source reel = the file stem sanitised to <=8 uppercase alphanumerics, with a `* FROM CLIP NAME:` relink comment. NON-DROP FRAME timecodes use rounded fps and exclusive out-points; gaps are implicit. EDL carries cuts and source references, not Cut's rich playback state: effects, grades, fades, clip mute ranges, track visibility/mute/solo/gain/ducking/pan/blend and other omitted edits are reported by a `richness_dropped` warning when present. Default <project>/exports/timeline.edl; an explicit FENCED path must end in .edl. `title` defaults to the project name. Target-NLE preservation is unverified.",
       "args": {
         "type": "object",
         "required": [],
@@ -421,7 +421,7 @@
           }
         }
       },
-      "result": "{path, event_count} — warns `richness_dropped` (with a `dropped` list) when the project carries transitions/effects/grades/gain/speed/captions the EDL cannot represent",
+      "result": "{path, event_count} — warns `richness_dropped` with a sorted `dropped` list when the project carries omitted nondefault playback state or captions",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

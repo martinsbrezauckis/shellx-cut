@@ -5,6 +5,23 @@
 // (the SCK capturesAudio path is broken on macOS 15+/26).
 
 fn main() {
+    println!("cargo:rerun-if-changed=src/linux_camera_native.c");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+        && std::env::var("CARGO_FEATURE_CAPTURE_LINUX").is_ok()
+    {
+        let gst = pkg_config::Config::new()
+            .atleast_version("1.20")
+            .probe("gstreamer-1.0")
+            .expect("Linux camera capture needs GStreamer core development headers >= 1.20");
+        let mut build = cc::Build::new();
+        build.file("src/linux_camera_native.c");
+        for include in gst.include_paths {
+            build.include(include);
+        }
+        build
+            .flag_if_supported("-std=c11")
+            .compile("sxc_linux_camera_native");
+    }
     println!("cargo:rerun-if-changed=src/mac_systemaudio.mm");
     println!("cargo:rerun-if-changed=src/mic_endpoint/macos.mm");
     println!("cargo:rerun-if-changed=src/macos_camera_native.mm");

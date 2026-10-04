@@ -206,6 +206,7 @@ export function useUiCommandController({
             reject(command, requested, { code: 'not_found', message: `surface '${panel}' has no available opener` }, { surface: panel, selector: definition.selector })
             return
           }
+          const rightTab = definition.action.kind === 'right' ? definition.action.tab : null
           const state = await waitForCommittedState(
             stateRef,
             before.state_revision,
@@ -213,12 +214,32 @@ export function useUiCommandController({
               if (!current.open_surface_ids.includes(panel)) return false
               const target = queryTarget(definition.selector)
               if (!target) return false
+              if (rightTab) {
+                return current.right.body_status === 'loaded'
+                  && !!queryTarget(`[data-cut-right-body-loaded="${rightTab}"]`)
+              }
               if (definition.action?.kind !== 'focus') return true
               return document.activeElement === target || target.contains(document.activeElement)
             },
+            1_500,
+            rightTab
+              ? (current) => current.right.active_tab === rightTab
+                && (current.right.body_status === 'blocked' || current.right.body_status === 'failed')
+              : undefined,
           )
           if (state) answer(command, true, requested, state, { surface: panel, selector: definition.selector })
-          else reject(command, requested, { code: 'conflict', message: `surface '${panel}' did not become observable before the confirmation deadline` }, { surface: panel, selector: definition.selector })
+          else {
+            const current = stateRef.current
+            const blocked = rightTab !== null
+              && current.right.active_tab === rightTab
+              && (current.right.body_status === 'blocked' || current.right.body_status === 'failed')
+            reject(command, requested, {
+              code: 'conflict',
+              message: blocked
+                ? `surface '${panel}' body is ${current.right.body_status}; use the recovery control to load it`
+                : `surface '${panel}' did not become observable before the confirmation deadline`,
+            }, { surface: panel, selector: blocked ? current.right.recovery_selector ?? definition.selector : definition.selector })
+          }
           return
         }
         case 'ui.highlight': {

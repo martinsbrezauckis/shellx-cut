@@ -31,14 +31,7 @@ pub(super) fn resolve_receipt_path(
     }
     let path = match render_id {
         Some(id) => {
-            if !safe_receipt_id(id) {
-                return Err(CutError::new(
-                    error_codes::INVALID_ARGS,
-                    format!("invalid render_id '{id}'"),
-                    "render_id must be a receipt id, not a path",
-                )
-                .with_suggested_action("use a render id such as render_001"));
-            }
+            validate_receipt_id(id)?;
             receipts.join(format!("{id}.json"))
         }
         None => {
@@ -80,6 +73,18 @@ fn safe_receipt_id(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+fn validate_receipt_id(id: &str) -> Result<(), CutError> {
+    if safe_receipt_id(id) {
+        return Ok(());
+    }
+    Err(CutError::new(
+        error_codes::INVALID_ARGS,
+        format!("invalid render_id '{id}'"),
+        "render_id must be a receipt id, not a path",
+    )
+    .with_suggested_action("use a render id such as render_001"))
 }
 
 /// verify.checks{render_id?} — return the persisted check battery of a

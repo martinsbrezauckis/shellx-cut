@@ -404,18 +404,17 @@ const failedScanRows = healthRecoveryRows({
 assert.equal(failedScanRows.find((row) => row.id === 'journal')?.state, 'attention', 'a failed later page invalidates an earlier journal green')
 assert.equal(failedScanRows.find((row) => row.id === 'media')?.state, 'attention', 'a failed later page invalidates the partial media aggregate')
 
-assert.equal(
-  healthRecoveryRows({
-    hasProject: true,
-    projectHealth: final,
-    jobs: null,
-    captureDoctor: { ready: false, cards: [{ name: 'screen', status: 'unknown', detail: 'Readiness was not verified.' }] },
-    captureRecovery: captureInventory(['recovered']),
-    toolchain: null,
-  }).find((row) => row.id === 'capture')?.state,
-  'attention',
-  'unverified readiness outranks a recoverable receipt',
-)
+const captureReadinessFailure = healthRecoveryRows({
+  hasProject: true,
+  projectHealth: final,
+  jobs: null,
+  captureDoctor: { ready: false, cards: [{ name: 'screen_capture', status: 'unknown', detail: 'Screen capture readiness was not verified.' }] },
+  captureRecovery: captureInventory(['recovered']),
+  toolchain: null,
+}).find((row) => row.id === 'capture')
+assert.equal(captureReadinessFailure?.state, 'attention', 'unverified readiness outranks a recoverable receipt')
+assert.match(captureReadinessFailure?.detail ?? '', /Screen capture readiness was not verified/)
+assert.doesNotMatch(captureReadinessFailure?.detail ?? '', /camera capture is not available in this release/i)
 assert.equal(
   healthRecoveryRows({
     hasProject: true,

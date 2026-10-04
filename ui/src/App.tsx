@@ -50,6 +50,8 @@ import { useAppImportEvents } from './app/useAppImportEvents'
 import { useAppLayoutController } from './app/useAppLayoutController'
 import { useRecordingWorkspaceNavigation, type RequestLayout } from './app/useRecordingWorkspaceNavigation'
 import { useRecordingSession } from './app/useRecordingSession'
+import { RecordingDeliveryProvider } from './app/RecordingDeliveryContext'
+import { useRenderQueueOwner } from './topbar/useRenderQueueOwner'
 import { RecordingSessionProvider } from './app/RecordingSessionContext'
 import './app/recordingSession.css'
 import { useSourceNavigationController } from './app/useSourceNavigationController'
@@ -548,6 +550,7 @@ export default function App() {
     onEnsureProject: ensureRecordingProject,
     onResult: () => { void resync() },
   })
+  const renderQueueOwner = useRenderQueueOwner(project, projectSession)
 
   useUiCommandController({
     stateRef: uiStateRef,
@@ -741,8 +744,9 @@ export default function App() {
   // rail right. Three draggable dividers; sizes persisted via useLayout.
   return (
     <OfflineMediaProvider project={project} onProjectChanged={resync}>
-    <VolumeAutomationProvider key={projectSession}>
     <RecordingSessionProvider session={recordingSession}>
+    <RecordingDeliveryProvider project={project}>
+    <VolumeAutomationProvider key={projectSession}>
     <div
       ref={embeddedManualFrontend ? undefined : appRootMountReporter.current}
       className="app"
@@ -773,6 +777,7 @@ export default function App() {
       ) : (
       <TopBar
         project={project}
+        renderQueueOwner={renderQueueOwner}
         onOpenMusic={() => toggleDrawer('music')}
         onOpenMixer={() => openRightTab('audio')}
         onOpenProjects={toggleProjects}
@@ -982,8 +987,9 @@ export default function App() {
       />
       <UserActionFeedback />
     </div>
-    </RecordingSessionProvider>
     </VolumeAutomationProvider>
+    </RecordingDeliveryProvider>
+    </RecordingSessionProvider>
     </OfflineMediaProvider>
   )
 }

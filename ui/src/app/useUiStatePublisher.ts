@@ -30,6 +30,9 @@ interface UiStatePublisherArgs {
 
 const EMPTY_DOM: UiDomState = {
   activeReviewTab: null,
+  rightBodyTab: null,
+  rightBodyStatus: null,
+  rightRecoverySelector: null,
   dialogs: [],
   aboutVersion: null,
   uiSourceContentManifestSha256: null,

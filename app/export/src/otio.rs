@@ -1,8 +1,8 @@
 //! otio.rs — OpenTimelineIO (.otio) interchange.
 //!
-//! Role: serialize Cut's timeline to the industry-standard OTIO JSON (ASWF,
-//! Apache-2.0) so cuts round-trip with Resolve / Premiere / FCP, and parse it
-//! back. OTIO is JSON with a small, STABLE schema, so — like this crate's
+//! Role: serialize Cut's supported cut/track timing subset to OTIO JSON and
+//! parse that subset back. Target-NLE fidelity and rich playback state are not
+//! established. OTIO is JSON with a small, STABLE schema, so — like this crate's
 //! hand-rolled FCPXML/MLT serializers — we map it directly (no heavy binding).
 //!
 //! Mapping (Cut ↔ OTIO):
@@ -15,9 +15,8 @@
 //!   - a GAP → Gap.1 with source_range = TimeRange(0, duration).
 //!   Times are RationalTime{rate=fps, value=FRAMES} (value = round(ms/1000·fps)).
 //!
-//! [`parse_otio`] reads the structure back to a flat [`OtioTrack`] list — the basis
-//! of the lossless round-trip test (export → parse → equal) and of a future
-//! `import.otio` verb. Caller: dispatch.rs (`export.otio`).
+//! [`parse_otio`] reads the structure back to a flat [`OtioTrack`] list.
+//! Caller: dispatch.rs (`export.otio`, `import.otio`).
 
 use crate::error::ExportError;
 use crate::model::{file_stem, file_uri, parse_timeline};
@@ -268,10 +267,9 @@ fn active_media_target(clip: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// A 2-track timeline (video clip + gap + clip; audio clip) round-trips through
-    /// OTIO LOSSLESSLY: export → parse reproduces the track/clip structure + times.
+    /// Export → parse recovers this frame-aligned cut/track timing subset.
     #[test]
-    fn otio_round_trip_is_lossless() {
+    fn otio_round_trip_recovers_simple_cut_timing() {
         let timeline = json!({
             "settings": {"width": 1920, "height": 1080, "fps": 30.0, "audio_rate": 48000},
             "assets": {

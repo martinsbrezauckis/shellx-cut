@@ -22,7 +22,7 @@ DECLARE FIRST:   name the rhythm before editing; don't let pacing be an accident
 Decide and write down (op rationales + a marker plan) what the piece's pulse is:
 fast open → settle → build → tight close? Even pace throughout? A pattern you can
 NAME ("tight-tight-breathe-tight") will survive 80 ops; an unstated one won't.
-Practical move: `marker.add` at intended section boundaries first, then edit each
+Practical move: `edit.add_marker` at intended section boundaries first, then edit each
 section to its intended energy. The markers double as chapter receipts later.
 
 ## Breath room and landings

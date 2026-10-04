@@ -13,7 +13,7 @@ DEAD AIR:        only remove gaps over ~1.5–2s; leave 0.5–0.8s behind, never
 TYPICAL SHRINK:  3–8% of duration; podcasts are NOT shorts — don't compress the talk
 CROSSTALK:       never cut inside overlapping speech — cuts there are always audible
 MUSIC BED:       18–20 dB below speech; duck by splitting the music clip + edit.gain
-CHAPTERS:        marker.add at every topic change as you read the transcript
+CHAPTERS:        edit.add_marker at every topic change as you read the transcript
 ```
 
 ## Workflow
@@ -24,7 +24,8 @@ and read it end-to-end once before any edit — you cannot chapter or cut a
 conversation you haven't read. `project.checkpoint{name:"raw"}`.
 
 ### 2. Chapters first (markers cost nothing)
-While reading, `marker.add{at_ms, label}` at every topic shift. This pays three
+While reading, use `edit.add_marker{at_ms, label}` at every topic shift, for example
+`edit.add_marker{at_ms:0,label:"Introduction"}`. This pays three
 ways: chapter export for YouTube/show notes, navigation for the human reviewer,
 and a map for your own later passes. Use the transcript word timestamps to place
 markers at the START of the sentence that opens the topic, not mid-handover.

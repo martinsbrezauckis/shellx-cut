@@ -45,7 +45,6 @@ function readinessSummary(ready: boolean | null, startAllowed: boolean | null): 
 /** Compact outcome first; individual Doctor facts stay available without occupying setup flow. */
 export function RecordingReadinessSummary({ cards, ready, startAllowed }: RecordingReadinessSummaryProps) {
   const summary = readinessSummary(ready, startAllowed)
-  const visibleCards = cards.filter((card) => card.name !== 'webcam')
   return (
     <section className="rec__readiness" data-cut-rec-cards data-cut-rec-readiness data-cut-rec-readiness-state={summary.state}>
       <div className="rec__readiness-summary">
@@ -54,9 +53,9 @@ export function RecordingReadinessSummary({ cards, ready, startAllowed }: Record
         <p data-cut-rec-readiness-detail>{summary.detail}</p>
       </div>
       <details className="rec__readiness-details" data-cut-rec-readiness-details>
-        <summary data-cut-action="record-readiness-details-toggle">{visibleCards.length} technical checks</summary>
+        <summary data-cut-action="record-readiness-details-toggle">{cards.length} technical checks</summary>
         <div className="rec__cards">
-          {visibleCards.map((card) => (
+          {cards.map((card) => (
             <div key={card.name} className={`rec__card rec__card--${cardStatus(card)}`} data-cut-rec-card={card.name} data-cut-rec-card-status={cardStatus(card)}>
               <span className="rec__card-name">{recordCardLabel(card.name)}</span>
               <span className="rec__card-detail">{card.detail}</span>

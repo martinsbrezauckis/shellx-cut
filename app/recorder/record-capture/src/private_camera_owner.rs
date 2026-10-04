@@ -87,6 +87,10 @@ fn platform_runtime(capture_directory: &Path) -> Result<CameraRuntime> {
     {
         return crate::macos_camera::private_runtime(capture_directory);
     }
+    #[cfg(all(target_os = "linux", feature = "capture-linux"))]
+    {
+        return crate::linux_camera::private_runtime(capture_directory);
+    }
     #[allow(unreachable_code)]
     Ok(CameraRuntime::unavailable_for_build())
 }
@@ -100,6 +104,10 @@ fn platform_devices() -> Result<Vec<CameraDevice>> {
     {
         return crate::macos_camera::private_devices();
     }
+    #[cfg(all(target_os = "linux", feature = "capture-linux"))]
+    {
+        return crate::linux_camera::private_devices();
+    }
     #[allow(unreachable_code)]
     Ok(Vec::new())
 }
@@ -112,6 +120,10 @@ fn platform_readiness(opaque_device_id: &str) -> CameraReadiness {
     #[cfg(target_os = "macos")]
     {
         return crate::macos_camera::private_readiness(opaque_device_id);
+    }
+    #[cfg(all(target_os = "linux", feature = "capture-linux"))]
+    {
+        return crate::linux_camera::private_readiness(opaque_device_id);
     }
     #[allow(unreachable_code)]
     CameraReadiness::Missing {

@@ -76,12 +76,17 @@ const PANEL_PAINT_SETTLE_MS = 350
  *  these callbacks never run, the sentinel armed
  *  by AppRightRail survives, and the next launch refuses to restore the tab. */
 function PanelPaintConfirm({ tab }: { tab: string }) {
+  const [painted, setPainted] = useState(false)
   useEffect(() => {
+    setPainted(false)
     let raf2 = 0
     let timer: number | undefined
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
-        timer = window.setTimeout(() => confirmPanelPainted(tab), PANEL_PAINT_SETTLE_MS)
+        timer = window.setTimeout(() => {
+          confirmPanelPainted(tab)
+          setPainted(true)
+        }, PANEL_PAINT_SETTLE_MS)
       })
     })
     return () => {
@@ -90,7 +95,7 @@ function PanelPaintConfirm({ tab }: { tab: string }) {
       if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [tab])
-  return null
+  return painted ? <span hidden data-cut-right-body-loaded={tab} /> : null
 }
 
 export default function AppRightRail({

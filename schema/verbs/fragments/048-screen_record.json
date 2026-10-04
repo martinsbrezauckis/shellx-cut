@@ -191,7 +191,7 @@
             "minLength": 1,
             "maxLength": 128,
             "pattern": "^[A-Za-z0-9_-]+$",
-            "description": "Opaque camera id copied unchanged from the current screen_record.doctor.camera.devices list. Supplying it is the explicit Use camera action: the native owner may request OS camera permission, waits for a real first frame, shares the screen CaptureClock and Stop boundary, then publishes a separately editable CameraArtifact. Omit it to record screen only. Windows and macOS only."
+            "description": "Opaque camera id copied unchanged from the current screen_record.doctor.camera.devices list. Supplying it is the explicit Use camera action: the screen-owned native sidecar may request OS camera permission or device access after the shared CaptureClock opens, waits for a real first frame, and at terminal Stop can publish a separately editable CameraArtifact. A Start acknowledgement alone does not prove camera frames or output. Omit it to record screen only. Available only when current Doctor advertises a supported native camera build and the selected device."
           },
           "rationale": {
             "type": "string"
@@ -568,6 +568,11 @@
           "gif_width": {
             "type": "integer",
             "description": "GIF width px (default 720, height auto; format:\"gif\" only)."
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Optional canonical project origin digest from project.state.project_identity; a changed project conflicts before export admission."
           }
         }
       },

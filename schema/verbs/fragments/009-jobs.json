@@ -5,7 +5,7 @@
     {
       "name": "jobs.status",
       "domain": "jobs",
-      "description": "Status of one background job (probe/proxy/transcribe/perception/render/judge). jobs domain replaces media.status.",
+      "description": "Status of one background job (probe/proxy/transcribe/perception/render/judge). jobs domain replaces media.status. Pass optional expected_origin_path_sha256 from project.state.project_identity when polling a project-owned UI job; a changed open project returns conflict before any job lookup. Omit it for the backward-compatible unscoped API.",
       "args": {
         "type": "object",
         "required": [
@@ -15,6 +15,10 @@
         "properties": {
           "job_id": {
             "type": "string"
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
           }
         }
       },
@@ -70,7 +74,7 @@
     {
       "name": "jobs.cancel",
       "domain": "jobs",
-      "description": "Cancel one active background job from this server run. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
+      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
       "args": {
         "type": "object",
         "required": [
@@ -80,6 +84,10 @@
         "properties": {
           "job_id": {
             "type": "string"
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
           }
         }
       },

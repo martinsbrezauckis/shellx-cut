@@ -29,6 +29,30 @@ export function isTauri(): boolean {
   return !!tauri()
 }
 
+export type AboutLinkDestination = 'site' | 'github' | 'release_notes'
+
+/** Ask the shell to open one fixed About destination in the OS default browser. */
+export async function openAboutLink(
+  destination: AboutLinkDestination,
+  version?: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const t = tauri()
+  if (!t) return { ok: false, message: 'Open the desktop app to launch this link in your default browser.' }
+  try {
+    await t.core.invoke('open_about_link', { destination, version: version ?? null })
+    return { ok: true }
+  } catch (error) {
+    return {
+      ok: false,
+      message: typeof error === 'string' && error.trim()
+        ? error
+        : error instanceof Error && error.message
+          ? error.message
+          : 'The desktop shell could not open this link in your default browser.',
+    }
+  }
+}
+
 /** A deliberately small reply from the identity-bound desktop source reveal. */
 export interface RegisteredSourceRevealReply {
   status: 'revealed' | 'refused'

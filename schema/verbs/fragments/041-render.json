@@ -152,7 +152,7 @@
     {
       "name": "render.queue",
       "domain": "render",
-      "description": "BATCH DELIVERY — a sequential render queue. Fan the ONE current timeline out into N renders, each with its own delivery settings, every one running through the SAME render.final path (job + segmented OOM-bounded encode + auto verify.checks -> RenderReceipt). PURE DELIVERY ORCHESTRATOR (autopilot.run/recipe.run mould): records NO op of its own and makes NO timeline mutation, only dispatches render.final per entry and reuses the job infra; NO checkpoint (nothing to revert). SEQUENTIAL, not concurrent (deliberate): render is memory-heavy and render.final already bounds peak RSS WITHIN one render (adaptive segmentation + a Linux cgroup soft-limit); N renders at once would multiply peak memory by N and defeat that. The next render starts only after the prior reaches a terminal state. Entries are INDEPENDENT deliveries: a failed one is recorded and the queue CONTINUES (never aborts the batch). Each entry is a render.final arg SUBSET (with `output` accepted as the alias for render.final's `path`), VALIDATED UP FRONT by a render.final dry_run per entry — a bad entry fails the WHOLE queue before any encode, naming the offending index. returns {queue_id, count, jobs:[{idx, output}]}; the per-entry job_ids + receipts fill into the queue job result (jobs.status{queue_id}) as each render completes. Requires an open project.",
+      "description": "BATCH DELIVERY — a sequential render queue. Fan the ONE current timeline out into N renders, each with its own delivery settings, every one running through the SAME render.final path (job + segmented OOM-bounded encode + auto verify.checks -> RenderReceipt). PURE DELIVERY ORCHESTRATOR (autopilot.run/recipe.run mould): records NO op of its own and makes NO timeline mutation, only dispatches render.final per entry and reuses the job infra; NO checkpoint (nothing to revert). SEQUENTIAL, not concurrent (deliberate): render is memory-heavy and render.final already bounds peak RSS WITHIN one render (adaptive segmentation + a Linux cgroup soft-limit); N renders at once would multiply peak memory by N and defeat that. The next render starts only after the prior reaches a terminal state. Entries are INDEPENDENT deliveries: a failed one is recorded and the queue CONTINUES (never aborts the batch). Each entry is a render.final arg SUBSET (with `output` accepted as the alias for render.final's `path`), VALIDATED UP FRONT by a render.final dry_run per entry — a bad entry fails the WHOLE queue before any encode, naming the offending index. returns {queue_id, count, jobs:[{idx, output}]}; the per-entry job_ids + receipts fill into the queue job result (jobs.status{job_id: queue_id}) as each render completes. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -257,10 +257,15 @@
           },
           "rationale": {
             "type": "string"
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Optional canonical project origin digest from project.state.project_identity; a changed project conflicts before dry-run or queue admission."
           }
         }
       },
-      "result": "{queue_id, count, jobs:[{idx, output}]} — sequential batch delivery; the queue job result (jobs.status{queue_id}) fills in per-entry {idx, job_id, render_id, output, ok, pass, receipt, error?} as each render.final completes, plus {summary_line, count, succeeded, failed}.",
+      "result": "{queue_id, count, jobs:[{idx, output}]} — sequential batch delivery; the queue job result (jobs.status{job_id: queue_id}) fills in per-entry {idx, job_id, render_id, output, ok, pass, receipt, error?} as each render.final completes, plus {summary_line, count, succeeded, failed}.",
       "result_schema": {
         "type": "object",
         "required": [
@@ -290,7 +295,7 @@
           },
           "x-async-result": {
             "type": "string",
-            "const": "{summary_line, count, succeeded, failed, jobs:[{idx, job_id, render_id, output, ok, pass, receipt, error?}]} via jobs.status{queue_id}"
+            "const": "{summary_line, count, succeeded, failed, jobs:[{idx, job_id, render_id, output, ok, pass, receipt, error?}]} via jobs.status{job_id: queue_id}"
           }
         }
       },

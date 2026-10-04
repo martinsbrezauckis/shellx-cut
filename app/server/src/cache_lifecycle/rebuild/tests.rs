@@ -43,6 +43,159 @@ async fn state_with_image_asset() -> (tempfile::TempDir, AppState, std::path::Pa
     (root, state, source, hash)
 }
 
+#[tokio::test]
+async fn second_reservation_failure_retains_first_retirement_and_durable_partial_job() {
+    let root = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let created = crate::dispatch::dispatch(
+        &state,
+        "project.create",
+        json!({"name": "cache-rebuild", "dir": root.path().join("cache-rebuild.cutproj")}),
+        cut_core::Actor::system(),
+    )
+    .await;
+    assert!(created.ok, "project create: {:?}", created.error);
+    let source = root.path().join("source.mp4");
+    let source_bytes = b"original imported video bytes";
+    std::fs::write(&source, source_bytes).unwrap();
+    let hash = cut_core::hash_file(&source).unwrap();
+    let project_dir = {
+        let mut project = state.project.write().await;
+        let store = project.as_mut().unwrap();
+        store
+            .record_import(
+                Some("a1".into()),
+                cut_core::Asset {
+                    path: source.to_string_lossy().into_owned(),
+                    hash: hash.clone(),
+                    probe: Some(json!({"kind": "video", "duration_ms": 1000})),
+                    transcript: None,
+                    perception: None,
+                    proxy: None,
+                    filmstrip: None,
+                },
+                cut_core::Actor::system(),
+                None,
+            )
+            .unwrap();
+        store.dir.clone()
+    };
+    let old_hash = "sha256:previous-source";
+    let proxy = project_dir.join("proxies/a1.mp4");
+    let filmstrip = project_dir.join("filmstrip/a1.jpg");
+    for (kind, path, bytes) in [
+        (CacheKind::Proxies, &proxy, b"old proxy".as_slice()),
+        (
+            CacheKind::Thumbnails,
+            &filmstrip,
+            b"old filmstrip".as_slice(),
+        ),
+    ] {
+        reserve_rebuild_output(&project_dir, kind, "a1", old_hash).unwrap();
+        std::fs::write(path, bytes).unwrap();
+        complete_rebuild_output(&project_dir, kind, "a1", old_hash).unwrap();
+    }
+    let before_filmstrip = std::fs::read(&filmstrip).unwrap();
+    let before_filmstrip_entry = {
+        let ledger = super::super::ownership::read_ledger(&project_dir).unwrap();
+        ledger.entries.get("filmstrip/a1.jpg").cloned().unwrap()
+    };
+    let error = start_rebuild_with_reserver(
+        &state,
+        json!({"asset_ids": ["a1"]}),
+        |dir, kind, asset, hash| {
+            if kind == CacheKind::Thumbnails {
+                return Err(CutError::new(
+                    error_codes::IO,
+                    "filmstrip reservation fault",
+                    "test-only second reservation failure",
+                ));
+            }
+            reserve_rebuild_output(dir, kind, asset, hash)
+        },
+    )
+    .await
+    .expect_err("the second reservation must fail after the proxy is retired");
+    assert_eq!(error.code, error_codes::IO);
+    assert!(error.message.contains("check Jobs"));
+    assert_eq!(error.cause, "test-only second reservation failure");
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(cut_core::hash_file(&source).unwrap(), hash);
+    assert!(!proxy.exists());
+    assert_eq!(std::fs::read(&filmstrip).unwrap(), before_filmstrip);
+    let ledger = super::super::ownership::read_ledger(&project_dir).unwrap();
+    let proxy_entry = ledger.entries.get("proxies/a1.mp4").unwrap();
+    assert_eq!(proxy_entry.state, "pending");
+    assert!(proxy_entry.output_retired);
+    assert_eq!(proxy_entry.source_hash.as_deref(), Some(hash.as_str()));
+    let filmstrip_entry = ledger.entries.get("filmstrip/a1.jpg").unwrap();
+    assert_eq!(
+        serde_json::to_value(filmstrip_entry).unwrap(),
+        serde_json::to_value(before_filmstrip_entry).unwrap()
+    );
+    assert!(state.cache_rebuild_active.lock().await.is_none());
+    let jobs = state.jobs.list();
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
+    assert_eq!(job.state, JobState::Failed);
+    assert!(!state.jobs.has_active_task_for_tests(&job.job_id));
+    assert_eq!(job.error.as_ref().unwrap().code, error_codes::IO);
+    assert_eq!(
+        job.error.as_ref().unwrap().cause,
+        "test-only second reservation failure"
+    );
+    assert_eq!(
+        job.result.as_ref().unwrap()["ownership_verification"],
+        "verified"
+    );
+    assert_eq!(job.result.as_ref().unwrap()["counts"]["pending_retired"], 1);
+    assert_eq!(
+        job.result.as_ref().unwrap()["counts"]["pending_unretired"],
+        0
+    );
+    assert_eq!(
+        job.result.as_ref().unwrap()["pending_outputs"][0]["asset_id"],
+        "a1"
+    );
+    assert_eq!(
+        job.result.as_ref().unwrap()["pending_outputs"][0]["kind"],
+        "proxies"
+    );
+    assert!(job.persistence_error.is_none());
+
+    let reopened = JobManager::new(EventBus::new());
+    reopened.attach_project(&project_dir).unwrap();
+    let recovered = reopened.get(&job.job_id).unwrap();
+    assert_eq!(recovered.state, JobState::Failed);
+    assert_eq!(recovered.result, job.result);
+    assert_eq!(
+        rebuild_output_state(&project_dir, CacheKind::Proxies, "a1", &hash).unwrap(),
+        RebuildOutputState::Pending
+    );
+    let estimate = start_rebuild(&state, json!({"asset_ids": ["a1"], "estimate_only": true}))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(estimate["status"], "estimated");
+    assert_eq!(estimate["scheduled_assets"], 1);
+    assert_eq!(estimate["scheduled_outputs"], 2);
+    assert_eq!(state.jobs.list().len(), 1);
+    assert!(state.cache_rebuild_active.lock().await.is_none());
+    assert!(!state.jobs.has_active_task_for_tests(&job.job_id));
+    reserve_rebuild_output(&project_dir, CacheKind::Proxies, "a1", &hash).unwrap();
+    assert!(
+        !proxy.exists(),
+        "the exact pending retry must not recreate or adopt the retired proxy"
+    );
+    reserve_rebuild_output(&project_dir, CacheKind::Thumbnails, "a1", &hash).unwrap();
+    assert!(!filmstrip.exists());
+    assert_eq!(
+        rebuild_output_state(&project_dir, CacheKind::Thumbnails, "a1", &hash).unwrap(),
+        RebuildOutputState::Pending
+    );
+}
+
 #[test]
 fn missing_and_stale_outputs_become_durable_pending_reservations() {
     let root = tempfile::tempdir().unwrap();

@@ -3,7 +3,7 @@
 // N deliveries — each its own output file + quality preset + format/aspect — and
 // fire ONE render.queue that runs them SEQUENTIALLY through the same render.final
 // path (job + segmented encode + auto verify.checks → RenderReceipt). The queue is
-// itself a background job (queue_id); we poll jobs.status{queue_id} for overall
+// itself a background job (queue_id); the app owner polls jobs.status{job_id: queue_id} for overall
 // progress + per-entry state as each delivery completes. render.queue is a pure
 // delivery orchestrator: it records NO op and makes NO timeline mutation, so this is
 // a display-only surface (nothing to undo). Honest degradation: a bad entry (unknown
@@ -14,14 +14,14 @@
 // (render.queue + jobs.status), icons, renderqueue.css.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { callVerb, type VerbArgs, type VerbResults } from '../lib/client'
-import { outputDirectoryForPath, withAuthorizedOutputPath } from '../lib/exportDestination'
+import { type VerbArgs } from '../lib/client'
+import { outputDirectoryForPath } from '../lib/exportDestination'
 import { mediaBasename } from '../lib/mediaPath'
-import { renderQueueTerminalError, type RenderQueueTerminalResult } from '../lib/renderQueueTerminal'
 import { isTauri, pickRenderOutput } from '../lib/tauri'
 import { Icon } from '../icons'
 import type { VideoPreflightStatus } from './videoPreflight'
 import { useBlockingOverlay } from '../components/overlay/useBlockingOverlay'
+import { type RenderQueueOwner, type RenderQueueRow, newRenderQueueRow } from './useRenderQueueOwner'
 import './renderqueue.css'
 
 /** render.final quality tiers + reframe aspects (schema enums; mirror topbar). */
@@ -47,14 +47,7 @@ function aspectFromInput(value: string, fallback: Aspect): Aspect {
 /** One queue ROW in the form (the editable shape; mapped to a render.final arg
  * subset on submit). output is optional — empty = the engine's default
  * <project>/exports/<render_id> path. */
-interface Row {
-  output: string
-  preset: Preset
-  aspect: Aspect
-}
-const newRow = (): Row => ({ output: '', preset: 'standard', aspect: 'project' })
-
-type Phase = 'form' | 'running' | 'done' | 'error'
+type Row = RenderQueueRow
 
 function duplicateOutputPaths(rows: Row[]): string | null {
   const seen = new Set<string>()
@@ -68,27 +61,16 @@ function duplicateOutputPaths(rows: Row[]): string | null {
   return null
 }
 
-/** The queue job's accruing result — per-entry job ids/outputs/receipts land here
- * (jobs.status{queue_id}.result) as each render completes. Read defensively. */
-interface QueueResult extends RenderQueueTerminalResult {
-  queue_id?: string
-  jobs?: Array<{ idx?: number; output?: string; job_id?: string; state?: string; ok?: boolean; error?: { code?: string; message?: string } }>
-}
-
 export interface RenderQueueModalProps {
   onClose: () => void
   onPreflight: (actionLabel: string, action: () => Promise<void>, onCancel: () => void, isActive: () => boolean) => Promise<VideoPreflightStatus>
+  owner: RenderQueueOwner
 }
 
-export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueModalProps) {
+export default function RenderQueueModal({ onClose, onPreflight, owner }: RenderQueueModalProps) {
   const overlay = useBlockingOverlay<HTMLDivElement>(onClose)
-  // Start with TWO rows — a batch is ≥2 deliveries; one row would just be Render.
-  const [rows, setRows] = useState<Row[]>([newRow(), { ...newRow(), aspect: '9:16' }])
-  const [phase, setPhase] = useState<Phase>('form')
-  const [err, setErr] = useState<string | null>(null)
-  const [queueId, setQueueId] = useState<string | null>(null)
-  const [progress, setProgress] = useState(0)
-  const [queue, setQueue] = useState<QueueResult | null>(null)
+  const { rows, phase, error: err, admitted, progress, result: queue } = owner.state
+  const queueId = admitted?.id ?? null
   const [pickerNote, setPickerNote] = useState<string | null>(null)
   const cancelled = useRef(false)
   const submitting = useRef(false)
@@ -107,18 +89,15 @@ export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueMo
 
   const setRow = (i: number, patch: Partial<Row>) => {
     if (submitting.current) return
-    setErr(null)
-    setRows((rs) => rs.map((r, k) => (k === i ? { ...r, ...patch } : r)))
+    owner.setRows((rs) => rs.map((r, k) => (k === i ? { ...r, ...patch } : r)))
   }
   const addRow = () => {
     if (submitting.current) return
-    setErr(null)
-    setRows((rs) => [...rs, newRow()])
+    owner.setRows((rs) => [...rs, newRenderQueueRow()])
   }
   const removeRow = (i: number) => {
     if (submitting.current) return
-    setErr(null)
-    setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, k) => k !== i)))
+    owner.setRows((rs) => (rs.length <= 1 ? rs : rs.filter((_, k) => k !== i)))
   }
   const chooseOutput = async (i: number) => {
     if (submitting.current) return
@@ -127,8 +106,14 @@ export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueMo
       setPickerNote('Open the desktop app to choose an output file.')
       return
     }
-    const path = await pickRenderOutput()
-    if (path && !submitting.current) setRow(i, { output: path })
+    const epoch = owner.intentEpoch()
+    try {
+      const path = await pickRenderOutput()
+      if (cancelled.current || !owner.intentCurrent(epoch) || submitting.current) return
+      if (path) setRow(i, { output: path })
+    } catch {
+      if (!cancelled.current && owner.intentCurrent(epoch)) setPickerNote('Could not choose an output file. Try again.')
+    }
   }
 
   // Map the form rows → render.final arg subsets. 'project' aspect omits the arg (a
@@ -140,37 +125,12 @@ export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueMo
       ...(r.output.trim() ? { output: r.output.trim() } : {}),
     })), [rows])
 
-  // Poll the queue job until it reaches a terminal state, folding overall progress +
-  // the accruing per-entry result into view. Mirrors DirectorModal's pollJob.
-  const pollQueue = useCallback(async (qid: string) => {
-    for (;;) {
-      if (cancelled.current) return
-      const r = await callVerb('jobs.status', { job_id: qid })
-      const rec = r.result as VerbResults['jobs.status'] | undefined
-      if (rec) {
-        if (typeof rec.progress === 'number') setProgress(rec.progress)
-        const res = rec.result as QueueResult | undefined
-        if (res) setQueue(res)
-        if (rec.state === 'done') {
-          const terminalError = renderQueueTerminalError(res)
-          if (terminalError) { setErr(terminalError); setPhase('error'); return }
-          setPhase('done')
-          return
-        }
-        if (rec.state === 'failed') { setErr(rec.error?.message ?? rec.error?.code ?? 'a delivery failed'); setPhase('error'); return }
-      } else if (!r.ok) {
-        setErr(r.error?.message ?? 'lost the queue job'); setPhase('error'); return
-      }
-      await new Promise((resolve) => setTimeout(resolve, 700))
-    }
-  }, [])
-
   const submit = useCallback(async () => {
     if (submitting.current || phase !== 'form') return
-    setErr(null)
+    owner.setFormError(null)
     try {
       const duplicate = duplicateOutputPaths(rows)
-      if (duplicate) { setErr('Each queued delivery must use a different output file.'); return }
+      if (duplicate) { owner.setFormError('Each queued delivery must use a different output file.'); return }
       const outputDirs = [...new Set(rows
         .map((row) => row.output.trim())
         .filter(Boolean)
@@ -179,53 +139,36 @@ export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueMo
         .map((dir) => dir.replace(/\\/g, '/').toLowerCase()))]
       const explicitOutputCount = rows.filter((row) => row.output.trim()).length
       if (explicitOutputCount > 0 && explicitOutputCount < rows.length) {
-        setErr('Choose output files for every queued render, or use the default exports folder for every row.')
+        owner.setFormError('Choose output files for every queued render, or use the default exports folder for every row.')
         return
       }
       if (outputDirs.length > 1) {
-        setErr('Choose all queue outputs in one folder, or use the default exports folder for every row.')
+        owner.setFormError('Choose all queue outputs in one folder, or use the default exports folder for every row.')
         return
       }
       const jobs = buildJobs()
       const explicitPath = rows.find((row) => row.output.trim())?.output.trim()
+      const epoch = owner.intentEpoch()
       submitting.current = true
       setChecking(true)
       const preflightStatus = await onPreflight('rendering queued deliveries', async () => {
-        if (cancelled.current) return
+        if (cancelled.current || !owner.intentCurrent(epoch)) return
         setChecking(false)
         setAwaitingWarning(false)
-        setProgress(0)
-        setQueue(null)
-        setPhase('running')
-        try {
-          const r = await withAuthorizedOutputPath(explicitPath, () =>
-            callVerb('render.queue', { jobs, rationale: `batch deliver ${jobs.length} renders` }))
-          if (!r.ok) { setErr(r.error?.message ?? r.error?.code ?? 'render.queue rejected'); setPhase('error'); return }
-          const res = r.result as QueueResult | undefined
-          const qid = res?.queue_id
-          setQueue(res ?? null)
-          if (!qid) { setErr('render.queue returned no queue id'); setPhase('error'); return }
-          setQueueId(qid)
-          await pollQueue(qid)
-        } catch (e) {
-          setErr(e instanceof Error ? e.message : String(e))
-          setPhase('error')
-        } finally {
-          releasePreflight()
-        }
+        await owner.submit(jobs, explicitPath, epoch)
+        releasePreflight()
       }, releasePreflight, () => !cancelled.current)
       if (preflightStatus === 'warning') {
         if (!cancelled.current && submitting.current) { setChecking(false); setAwaitingWarning(true) }
       } else {
         releasePreflight()
-        if (preflightStatus === 'blocked') setErr('Install FFmpeg before rendering queued deliveries.')
+        if (preflightStatus === 'blocked') owner.setFormError('Install FFmpeg before rendering queued deliveries.')
       }
     } catch (e) {
       releasePreflight()
-      setErr(e instanceof Error ? e.message : String(e))
-      setPhase('error')
+      owner.setFormError(e instanceof Error ? e.message : String(e))
     }
-  }, [buildJobs, onPreflight, phase, pollQueue, releasePreflight, rows])
+  }, [buildJobs, onPreflight, owner, phase, releasePreflight, rows])
 
   const pct = Math.round(progress * 100)
   const entries = queue?.jobs ?? []
@@ -239,7 +182,11 @@ export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueMo
           <button className="rq-x" data-cut-render-queue-close onClick={onClose} aria-label="Close">×</button>
         </header>
 
-        {phase === 'form' && (
+        {owner.foreign && <div className="rq-error" data-cut-render-queue-owner-other>
+          <div className="rq-error-msg">A previous project's render queue is still owned by that project. Reopen it to check the exact queue status.</div>
+        </div>}
+
+        {!owner.foreign && phase === 'form' && (
           <div className="rq-form" data-cut-render-queue-form>
             {formLocked && <p className="rq-note" data-cut-render-queue-preflight-status>
               {checking ? 'Checking export before queueing…' : 'Review the preflight warning to continue or cancel.'}
@@ -316,10 +263,11 @@ export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueMo
           </div>
         )}
 
-        {(phase === 'running' || phase === 'done') && (
+        {!owner.foreign && (phase === 'running' || phase === 'status_unknown' || phase === 'submitting' || phase === 'done') && (
           <div className="rq-progress" data-cut-render-queue-progress={phase}>
             <div className="rq-overall">
-              <span>{phase === 'done' ? 'Queue complete' : 'Rendering deliveries…'}</span>
+              <span>{phase === 'done' ? 'Queue complete' : phase === 'status_unknown' ? 'Queue status unknown; checking again…'
+                : phase === 'submitting' ? 'Dispatching the render queue…' : 'Rendering deliveries…'}</span>
               <span className="rq-pct" data-cut-render-queue-pct={pct}>{pct}%</span>
             </div>
             <div className="rq-bar"><div className="rq-bar-fill" style={{ width: `${Math.max(4, pct)}%` }} /></div>
@@ -337,17 +285,17 @@ export default function RenderQueueModal({ onClose, onPreflight }: RenderQueueMo
             {phase === 'done' && (
               <div className="rq-actions">
                 <span className="rq-count" data-cut-render-queue-done>Find the files in the Review tab.</span>
-                <button className="rq-btn rq-btn--primary" data-cut-render-queue-done-close onClick={onClose}>Done</button>
+                <button className="rq-btn rq-btn--primary" data-cut-render-queue-done-close onClick={() => { owner.acknowledge(); onClose() }}>Done</button>
               </div>
             )}
           </div>
         )}
 
-        {phase === 'error' && (
+        {!owner.foreign && (phase === 'error' || phase === 'submit_unknown') && (
           <div className="rq-error" data-cut-render-queue-error>
             <div className="rq-error-msg"><Icon name="warning" size={16} tone="warn" /> {err}</div>
             <div className="rq-actions">
-              <button className="rq-btn" data-cut-render-queue-error-back onClick={() => { setErr(null); setPhase('form') }}>Back</button>
+              <button className="rq-btn" data-cut-render-queue-error-back onClick={owner.acknowledge}>{phase === 'submit_unknown' ? 'Start another queue' : 'Back'}</button>
               <button className="rq-btn rq-btn--primary" data-cut-render-queue-error-close onClick={onClose}>Close</button>
             </div>
           </div>

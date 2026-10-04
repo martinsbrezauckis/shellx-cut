@@ -3,7 +3,8 @@ use std::path::Path;
 use super::super::dispatch;
 use super::test_actor;
 use crate::jobs::{
-    JobInputFingerprint, JobRetry, ScreenRecordExportRetryDescriptor, ScreenRecordExportRetryFormat,
+    JobInputFingerprint, JobRetry, ScreenRecordExportRetryDescriptor,
+    ScreenRecordExportRetryFormat, VerifyRerunRetryDescriptor,
 };
 use crate::state::AppState;
 use serde_json::json;
@@ -152,4 +153,76 @@ async fn jobs_retry_refuses_changed_recorder_inputs_before_output_admission() {
     assert!(state.jobs.get(&parent_id).unwrap().retry.unwrap().eligible);
     assert_eq!(state.jobs.list().len(), 1, "retry must not create a child");
     assert!(!project_dir.join("exports/recording.mp4").exists());
+}
+
+#[tokio::test]
+async fn jobs_retry_rejects_recovered_path_receipt_ids_without_admitting_a_child() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_dir = temp.path().join("verify_retry.cutproj");
+    let state = AppState::new();
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name": "verify_retry", "dir": project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let job = state.jobs.create_with_retry(
+        "verify-rerun",
+        Some(JobRetry::verify_rerun(VerifyRerunRetryDescriptor {
+            project_revision: "op_000000".into(),
+            render_id: r"\\attacker.invalid\share\render_001".into(),
+            output_hash: "sha256:fixture".into(),
+            duration_ms: 1,
+            footage_profile: "talking_head".into(),
+            inputs: Vec::new(),
+        })),
+    );
+    state.jobs.fail(
+        &job.job_id,
+        cut_core::CutError::new("job_failed", "fixture failure", "fixture"),
+    );
+    drop(state);
+
+    let recovered = AppState::new();
+    let opened = dispatch(
+        &recovered,
+        "project.open",
+        json!({"path": project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(opened.ok, "{:?}", opened.error);
+    assert!(recovered.jobs.retry_candidate(&job.job_id).is_ok());
+    let before = std::fs::read(
+        project_dir
+            .join("jobs")
+            .join(format!("{}.json", job.job_id)),
+    )
+    .unwrap();
+    let retried = dispatch(
+        &recovered,
+        "jobs.retry",
+        json!({"job_id": job.job_id}),
+        test_actor(),
+    )
+    .await;
+    let error = retried.error.expect("path-valued receipt ID must refuse");
+    assert!(!retried.ok);
+    assert_eq!(error.code, cut_core::error_codes::CONFLICT);
+    assert!(error
+        .cause
+        .contains("render_id must be a receipt id, not a path"));
+    assert_eq!(recovered.jobs.list().len(), 1);
+    assert_eq!(
+        std::fs::read(
+            project_dir
+                .join("jobs")
+                .join(format!("{}.json", job.job_id))
+        )
+        .unwrap(),
+        before,
+        "refusal must not rewrite retry lineage or admit a child"
+    );
 }

@@ -34,6 +34,7 @@ import { assetReadiness, mediaCapabilitiesFromDoctor, summarizeMediaReadiness, t
 import SourceMonitor, { type SourceMonitorAsset } from './SourceMonitor'
 import AssetContextMenu, { type AssetContextMenuState } from './AssetContextMenu'
 import BulkRelinkPanel from './BulkRelinkPanel'
+import { useSmartBins, type SmartBinRow } from './useSmartBins'
 import './assets.css'
 
 export interface AssetsProps {
@@ -68,20 +69,6 @@ interface AssetRow {
   transcript?: string
   perception?: string
   probe: ProbeView
-}
-
-interface SmartBinRow {
-  name: string
-  kind?: string
-  text?: string
-  unused?: boolean
-  min_width?: number
-  min_height?: number
-  offline?: boolean
-  modified_after_ms?: number
-  modified_before_ms?: number
-  matches?: string[]
-  match_count: number
 }
 
 /** Default image insert length (no intrinsic duration — edit.insert needs one). */
@@ -298,21 +285,18 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
   const [filterNeedsAction, setFilterNeedsAction] = useState(false)
   const [libraryIds, setLibraryIds] = useState<Set<string>>(new Set())
   const [activeBin, setActiveBin] = useState<string | null>(null)
-  const [bins, setBins] = useState<SmartBinRow[]>([])
+  const originDigest = project?.project_identity?.origin_path_sha256 ?? null
+  const binIntentRef = useRef({ projectScope, originDigest })
+  const binLiveRef = useRef(false)
+  binIntentRef.current = { projectScope, originDigest }
   useEffect(() => {
-    let alive = true
-    if (!project) {
-      setBins([])
-      return
-    }
-    void callVerb('media.bin_list', {}).then((r) => {
-      if (!alive || !r.ok) return
-      setBins((r.result as { bins?: SmartBinRow[] })?.bins ?? [])
-    })
-    return () => {
-      alive = false
-    }
-  }, [project])
+    binLiveRef.current = true
+    return () => { binLiveRef.current = false }
+  }, [])
+  const { bins, status: binStatus, reload: reloadBins, removeLocal: removeBinLocal } = useSmartBins(projectScope, originDigest, !!project)
+  useEffect(() => {
+    setActiveBin(null)
+  }, [projectScope, originDigest])
 
   /** Apply a bin: copy its query into the filter controls (visible + editable). */
   const applyBin = (bin: (typeof bins)[number] | null) => {
@@ -330,6 +314,7 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
     if (!filterText && !filterKind && !filterUnused && !filterLarge && !filterOffline && !filterRecent) return
     const name = window.prompt('Save this filter as a smart bin — name:')?.trim()
     if (!name) return
+    const intent = binIntentRef.current
     const recentAfter = Date.now() - RECENT_WINDOW_MS
     const r = await callVerb('media.bin_save', {
       name,
@@ -341,19 +326,21 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
       ...(filterRecent ? { modified_after_ms: recentAfter } : {}),
       rationale: 'user: save Assets filter as smart bin',
     })
+    if (!binLiveRef.current || binIntentRef.current.projectScope !== intent.projectScope || binIntentRef.current.originDigest !== intent.originDigest) return
     setNote(r.ok ? `Saved bin "${name}"` : `Save failed: ${r.error?.message ?? 'error'}`)
     if (r.ok) {
-      const listed = await callVerb('media.bin_list', {})
-      if (listed.ok) setBins((listed.result as { bins?: SmartBinRow[] })?.bins ?? [])
       setActiveBin(name)
+      await reloadBins()
     }
-    setTimeout(() => setNote(null), 3500)
+    setTimeout(() => {
+      if (binLiveRef.current && binIntentRef.current.projectScope === intent.projectScope && binIntentRef.current.originDigest === intent.originDigest) setNote(null)
+    }, 3500)
   }
 
   const deleteBin = async (name: string) => {
     const r = await callVerb('media.bin_delete', { name, rationale: 'user: delete smart bin' })
     if (r.ok) {
-      setBins((current) => current.filter((bin) => bin.name !== name))
+      removeBinLocal(name)
       if (activeBin === name) applyBin(null)
     }
     setNote(r.ok ? `Deleted bin "${name}"` : `Delete failed: ${r.error?.message ?? 'error'}`)
@@ -725,6 +712,12 @@ export default function Assets({ project, projectScope, doctor, playheadMs, onPr
             >
               ★ save bin
             </button>
+          )}
+          {binStatus === 'unavailable' && (
+            <span className="assets__bin-unavailable" data-cut-bin-unavailable role="status">
+              Smart bins unavailable{bins.length ? '; showing last loaded bins' : ''}.
+              <button type="button" data-cut-action="bin-retry" onClick={() => void reloadBins()}>Retry loading</button>
+            </span>
           )}
           {bins.length > 0 && (
             <span className="assets__bins" role="group" aria-label="Smart bins" data-cut-bins={bins.length}>

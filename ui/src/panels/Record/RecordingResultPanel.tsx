@@ -18,7 +18,9 @@ interface RecordingResultPanelProps {
   hotkeyScope: string
   exportFormat: 'mp4' | 'gif'
   exportRunning: boolean
+  exportCancelable: boolean
   rawCopyRunning: boolean
+  rawCopyCancelable: boolean
   exportNote: string
   rawCopyNote: string
   recoveryAction: 'retry_stop' | 'check_status' | null
@@ -38,7 +40,7 @@ interface RecordingResultPanelProps {
 export function RecordingResultPanel({
   outcome, raw, message, duration, rawSaved, polishedClipSaved, hasMic, hasSystem,
   streams, cursorCorrelation, cadence, quality, hotkeyScope, exportFormat, exportRunning,
-  rawCopyRunning, exportNote, rawCopyNote, recoveryAction, onFormat, onExport,
+  rawCopyRunning, rawCopyCancelable, exportCancelable, exportNote, rawCopyNote, recoveryAction, onFormat, onExport,
   onCancelExport, onSaveRawCopy, onCancelRawCopy, onAddRawToTimeline,
   onOpenEdit, onNewRecording, onOpenOutputSettings, onRecovery,
 }: RecordingResultPanelProps) {
@@ -96,7 +98,7 @@ export function RecordingResultPanel({
                   ))}
                 </div>
                 <button type="button" className="rec__export-btn" data-cut-action="record-export" disabled={exportRunning} onClick={onExport}>Export {exportFormat.toUpperCase()}…</button>
-                {exportRunning && <button type="button" className="rec__export-btn" data-cut-action="record-export-cancel" onClick={onCancelExport}>Cancel export</button>}
+                {exportCancelable && <button type="button" className="rec__export-btn" data-cut-action="record-export-cancel" onClick={onCancelExport}>Cancel export</button>}
               </>
             )}
             {raw ? (
@@ -104,7 +106,7 @@ export function RecordingResultPanel({
             ) : (
               <button type="button" className="rec__export-btn" data-cut-action="record-save-raw-copy" disabled={rawCopyRunning} onClick={onSaveRawCopy}>Save raw MP4 copy…</button>
             )}
-            {rawCopyRunning && <button type="button" className="rec__export-btn" data-cut-action="record-copy-cancel" onClick={onCancelRawCopy}>Cancel copy</button>}
+            {rawCopyCancelable && <button type="button" className="rec__export-btn" data-cut-action="record-copy-cancel" onClick={onCancelRawCopy}>Cancel copy</button>}
             {onOpenOutputSettings && <button type="button" className="rec__export-btn" data-cut-action="record-output-settings" onClick={onOpenOutputSettings}>Export folder settings</button>}
           </div>
           {rawCopyNote && <p className="rec__export-note" data-cut-rec-copy-note role="status">{rawCopyNote}</p>}

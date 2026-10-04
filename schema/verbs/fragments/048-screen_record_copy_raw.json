@@ -20,6 +20,11 @@
           "path": {
             "type": "string",
             "description": "Optional fenced .mp4 Save As destination; omitted uses the selected output folder or project exports with a collision-safe raw_recording-copy.mp4 name."
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Optional canonical project origin digest from project.state.project_identity; a changed project conflicts before copy admission."
           }
         }
       },

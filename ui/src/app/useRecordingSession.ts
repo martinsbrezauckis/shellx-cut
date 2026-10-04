@@ -19,6 +19,8 @@ export type RecordingPhase = 'idle' | 'countdown' | 'starting' | 'recording' | '
 export interface RecordingSessionState {
   phase: RecordingPhase
   captureId: string | null
+  resultCaptureId: string | null
+  resultProjectIdentity: Project['project_identity'] | null
   projectName: string | null
   raw: boolean
   rawPath: string | null
@@ -64,7 +66,8 @@ export interface RecordingDraftView {
 }
 
 const INITIAL: RecordingSessionState = {
-  phase: 'idle', captureId: null, projectName: null, raw: false, rawPath: null,
+  phase: 'idle', captureId: null, resultCaptureId: null, resultProjectIdentity: null,
+  projectName: null, raw: false, rawPath: null,
   source: null, plan: null, clipId: null, startedAt: null, endedAt: null, message: '', indicatorWarning: null, countdownRemaining: 0,
   recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, cursorCorrelation: null, cadence: null, quality: null, rawHasMic: false, rawHasSystem: false,
 }
@@ -184,7 +187,10 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       // or device validation just because project admission was asynchronous.
       const guardFailure = startGuardRef.current?.()
       if (guardFailure) { showSetup(guardFailure); return }
-      publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw, rawPath: null, source: null, plan: null, clipId: null, endedAt: null, recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, cursorCorrelation: null, cadence: null, quality: null })
+      publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw,
+        rawPath: null, source: null, plan: null, resultCaptureId: null, resultProjectIdentity: null,
+        clipId: null, endedAt: null, recoveryAction: null, initialStudioWarning: null, startResult: null,
+        rawStreams: null, cursorCorrelation: null, cadence: null, quality: null })
       // A fallback project may take time to create. Recheck the source again
       // immediately before Start, including on first use.
       const doctor = await callVerb('screen_record.doctor', {})
@@ -221,7 +227,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         return
       }
       captureRef.current = admitted.captureId
-      projectIdentityRef.current = currentProject.project_identity
+      projectIdentityRef.current = currentProject.project_identity ? { ...currentProject.project_identity } : undefined
       activePresetRef.current = preset
       const warning = await indicator('begin_recording_indicator', admitted.captureId)
       let initialStudioWarning: string | null = null
@@ -375,7 +381,9 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         publish({ phase: 'error', captureId: null, message: 'Capture ended, but no raw MP4 was confirmed.', indicatorWarning: warning })
         return
       }
-      publish({ rawPath: result.raw_path, source: result.source ?? null, plan: result.plan ?? null, captureId: null, recoveryAction: null, indicatorWarning: warning, endedAt: Date.now(),
+      publish({ rawPath: result.raw_path, source: result.source ?? null, plan: result.plan ?? null,
+        resultCaptureId: id, resultProjectIdentity: projectIdentityRef.current ? { ...projectIdentityRef.current } : null,
+        captureId: null, recoveryAction: null, indicatorWarning: warning, endedAt: Date.now(),
         rawStreams: result.raw_streams ?? null, cursorCorrelation: result.cursor_correlation ?? null, cadence: result.cadence ?? null, quality: result.quality ?? null,
         rawHasMic: Boolean(result.raw_has_mic), rawHasSystem: Boolean(result.raw_has_system) })
       if (preset.raw) {

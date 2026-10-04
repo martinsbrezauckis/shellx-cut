@@ -3,9 +3,9 @@
   "schema": "shellx-cut/verbs/1",
   "release_truth": {
     "schema": "shellx-cut/release-truth@1",
-    "version": "0.6.114",
+    "version": "0.6.115",
     "status": "candidate",
-    "published_version": "0.6.113"
+    "published_version": "0.6.114"
   },
   "mutation_controls": {
     "request_id": {
@@ -3355,7 +3355,7 @@
     {
       "name": "jobs.status",
       "domain": "jobs",
-      "description": "Status of one background job (probe/proxy/transcribe/perception/render/judge). jobs domain replaces media.status.",
+      "description": "Status of one background job (probe/proxy/transcribe/perception/render/judge). jobs domain replaces media.status. Pass optional expected_origin_path_sha256 from project.state.project_identity when polling a project-owned UI job; a changed open project returns conflict before any job lookup. Omit it for the backward-compatible unscoped API.",
       "args": {
         "type": "object",
         "required": [
@@ -3365,6 +3365,10 @@
         "properties": {
           "job_id": {
             "type": "string"
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
           }
         }
       },
@@ -3420,7 +3424,7 @@
     {
       "name": "jobs.cancel",
       "domain": "jobs",
-      "description": "Cancel one active background job from this server run. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
+      "description": "Cancel one active background job from this server run. Pass optional expected_origin_path_sha256 from project.state.project_identity for a project-owned UI job; a changed open project returns conflict before job lookup or cancellation. Omitting it retains the backward-compatible unscoped API. state remains failed with code job_cancelled for client compatibility, while jobs.status records outcome:cancelled and outcome_reason:user_cancelled. Cancellation waits for tracked blocking workers and their synchronous child processes to finish; if the bounded drain period expires, job_cancel_pending tells the caller to wait and retry instead of falsely claiming the worker stopped. Already-finished, recovered, or unknown jobs are rejected with structured errors.",
       "args": {
         "type": "object",
         "required": [
@@ -3430,6 +3434,10 @@
         "properties": {
           "job_id": {
             "type": "string"
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
           }
         }
       },
@@ -13168,7 +13176,7 @@
           }
         }
       },
-      "result": "{path, format}",
+      "result": "{path, format} — warns `richness_dropped` with a sorted `dropped` list for omitted nondefault playback state; caption tracks also warn `captions_not_in_xml`",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -13191,7 +13199,7 @@
     {
       "name": "export.otio",
       "domain": "export",
-      "description": "Export the timeline as OpenTimelineIO (.otio) JSON — the industry-standard interchange (ASWF, Apache-2.0) that round-trips with DaVinci Resolve / Premiere / Final Cut, richer than the XML formats. Maps each video/audio track + clip to OTIO Track/Clip with source_range (RationalTime frames) + ExternalReference media; gaps → Gap. Times use the project fps. Caption tracks are not representable in OTIO and are omitted (warned in-band; use export.srt/vtt/ass). Default path <project>/exports/timeline.otio; an explicit FENCED path must end in .otio. The .otio is byte-lossless for Cut's timeline (the model round-trips export→parse).",
+      "description": "Export the timeline as OpenTimelineIO (.otio) JSON interchange. Maps video/audio tracks and clips to OTIO Track/Clip with frame-quantized source_range and ExternalReference media; gaps become Gap. Cut's local parser can recover the supported cut/track timing subset, subject to frame rounding; rich playback state is not preserved and target-NLE round-trip fidelity is unverified. Nondefault omitted state receives a `richness_dropped` warning. Caption tracks are omitted with a separate `captions_not_in_otio` warning; export captions separately. Default path <project>/exports/timeline.otio; an explicit FENCED path must end in .otio.",
       "args": {
         "type": "object",
         "required": [],
@@ -13205,7 +13213,7 @@
           }
         }
       },
-      "result": "{path, format:\"otio\"} — warns `captions_not_in_otio` when caption tracks are present",
+      "result": "{path, format:\"otio\"} — warns `richness_dropped` with a sorted `dropped` list for omitted nondefault playback state and `captions_not_in_otio` when caption tracks are present",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -13228,7 +13236,7 @@
     {
       "name": "export.edl",
       "domain": "export",
-      "description": "Export the timeline as a CMX3600 EDL (.edl) — the universal edit-decision-list interchange every NLE and color suite reads (DaVinci Resolve / Premiere / Avid / Final Cut). Built from the same frame-quantized timeline as export.xml/otio, so the cut points line up to the frame. One numbered event per clip: channel V for the video track, A/A2/A3... per audio track; source reel = the file stem sanitised to <=8 uppercase alphanumerics, with a `* FROM CLIP NAME:` comment carrying the real filename for relink. NON-DROP FRAME timecodes against the rounded fps; EDL out-points are EXCLUSIVE. Gaps are implicit (the next event's record-in jumps forward). EDL is a CUTS-ONLY format: transitions, effects, grades, per-clip gain, speed changes and captions cannot be represented and are dropped (a `richness_dropped` warning lists what was omitted). Default path <project>/exports/timeline.edl; an explicit FENCED path must end in .edl. `title` names the sequence (defaults to the project name).",
+      "description": "Export the timeline as a CMX3600 EDL (.edl) built from the same frame-quantized cuts as export.xml/otio. One numbered event per clip: channel V for the selected video track, A/A2/A3... per audio track; source reel = the file stem sanitised to <=8 uppercase alphanumerics, with a `* FROM CLIP NAME:` relink comment. NON-DROP FRAME timecodes use rounded fps and exclusive out-points; gaps are implicit. EDL carries cuts and source references, not Cut's rich playback state: effects, grades, fades, clip mute ranges, track visibility/mute/solo/gain/ducking/pan/blend and other omitted edits are reported by a `richness_dropped` warning when present. Default <project>/exports/timeline.edl; an explicit FENCED path must end in .edl. `title` defaults to the project name. Target-NLE preservation is unverified.",
       "args": {
         "type": "object",
         "required": [],
@@ -13245,7 +13253,7 @@
           }
         }
       },
-      "result": "{path, event_count} — warns `richness_dropped` (with a `dropped` list) when the project carries transitions/effects/grades/gain/speed/captions the EDL cannot represent",
+      "result": "{path, event_count} — warns `richness_dropped` with a sorted `dropped` list when the project carries omitted nondefault playback state or captions",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {
@@ -13268,7 +13276,7 @@
     {
       "name": "import.otio",
       "domain": "import",
-      "description": "Preview or atomically import a foreign OpenTimelineIO (.otio) timeline. `mode:\"preview\"` performs a bounded (16 MiB), read-only structure/count/media-availability pass and returns a SHA-256 `source_hash`; `mode:\"replace\"` (default) optionally requires that hash, probes every available referenced media file before mutation, then adds new assets and replaces the active timeline in ONE replay-safe, undoable `import.otio` op. Missing media clips are preserved as timed gaps with an `otio_media_missing` warning. Unsupported nested stacks/transitions/effects/markers, disabled or cropped items, generated media references, invalid time values, wrong media kinds, source ranges beyond media duration, remote file authorities, and non-file URI schemes are refused rather than silently dropped. The current project format is preserved; source geometry is reported for an explicit later project.format decision. Caption tracks are not in OTIO.",
+      "description": "Preview or atomically import a foreign OpenTimelineIO (.otio) timeline. `mode:\"preview\"` performs a bounded (16 MiB), read-only structure/count/media-availability pass and returns a SHA-256 `source_hash`; `mode:\"replace\"` (default) optionally requires that hash, probes every available referenced media file before mutation, then adds new assets and replaces the active timeline in ONE replay-safe, undoable `import.otio` op. Missing media clips are preserved as timed gaps with an `otio_media_missing` warning. Source ranges beyond probed media duration are refused, except exact Cut frame-rounding drift of at most 50 ms at EOF; accepted clips clamp to EOF with `otio_time_clamped`. A larger or nonmatching overrun requires explicit source retrimming. Unsupported nested stacks/transitions/effects/markers, disabled or cropped items, generated media references, invalid time values, wrong media kinds, remote file authorities, and non-file URI schemes are refused rather than silently dropped. The current project format is preserved; source geometry is reported for an explicit later project.format decision. Caption tracks are not in OTIO.",
       "args": {
         "type": "object",
         "required": [
@@ -13297,7 +13305,7 @@
           }
         }
       },
-      "result": "preview -> {status:\"preview\", source_hash, tracks, track_count, clips, gaps, media_available, media_missing, missing_sources, source_format, format_policy:\"preserve_project\"}; replace -> {status:\"imported\", source_hash, tracks_created, clips_inserted, gaps, missing_clips, assets_imported, assets_reused, jobs, source_format, format_policy:\"preserve_project\"} with one op id; warns `otio_media_missing` when missing clips became timed gaps",
+      "result": "preview -> {status:\"preview\", source_hash, tracks, track_count, clips, gaps, media_available, media_missing, missing_sources, source_format, format_policy:\"preserve_project\"}; replace -> {status:\"imported\", source_hash, tracks_created, clips_inserted, gaps, missing_clips, time_clamped_clips, assets_imported, assets_reused, jobs, source_format, format_policy:\"preserve_project\"} with one op id; warns `otio_media_missing` when missing clips became timed gaps and `otio_time_clamped` when exact Cut rounding of at most 50 ms was clamped to probed EOF",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {
@@ -13775,7 +13783,7 @@
     {
       "name": "render.queue",
       "domain": "render",
-      "description": "BATCH DELIVERY — a sequential render queue. Fan the ONE current timeline out into N renders, each with its own delivery settings, every one running through the SAME render.final path (job + segmented OOM-bounded encode + auto verify.checks -> RenderReceipt). PURE DELIVERY ORCHESTRATOR (autopilot.run/recipe.run mould): records NO op of its own and makes NO timeline mutation, only dispatches render.final per entry and reuses the job infra; NO checkpoint (nothing to revert). SEQUENTIAL, not concurrent (deliberate): render is memory-heavy and render.final already bounds peak RSS WITHIN one render (adaptive segmentation + a Linux cgroup soft-limit); N renders at once would multiply peak memory by N and defeat that. The next render starts only after the prior reaches a terminal state. Entries are INDEPENDENT deliveries: a failed one is recorded and the queue CONTINUES (never aborts the batch). Each entry is a render.final arg SUBSET (with `output` accepted as the alias for render.final's `path`), VALIDATED UP FRONT by a render.final dry_run per entry — a bad entry fails the WHOLE queue before any encode, naming the offending index. returns {queue_id, count, jobs:[{idx, output}]}; the per-entry job_ids + receipts fill into the queue job result (jobs.status{queue_id}) as each render completes. Requires an open project.",
+      "description": "BATCH DELIVERY — a sequential render queue. Fan the ONE current timeline out into N renders, each with its own delivery settings, every one running through the SAME render.final path (job + segmented OOM-bounded encode + auto verify.checks -> RenderReceipt). PURE DELIVERY ORCHESTRATOR (autopilot.run/recipe.run mould): records NO op of its own and makes NO timeline mutation, only dispatches render.final per entry and reuses the job infra; NO checkpoint (nothing to revert). SEQUENTIAL, not concurrent (deliberate): render is memory-heavy and render.final already bounds peak RSS WITHIN one render (adaptive segmentation + a Linux cgroup soft-limit); N renders at once would multiply peak memory by N and defeat that. The next render starts only after the prior reaches a terminal state. Entries are INDEPENDENT deliveries: a failed one is recorded and the queue CONTINUES (never aborts the batch). Each entry is a render.final arg SUBSET (with `output` accepted as the alias for render.final's `path`), VALIDATED UP FRONT by a render.final dry_run per entry — a bad entry fails the WHOLE queue before any encode, naming the offending index. returns {queue_id, count, jobs:[{idx, output}]}; the per-entry job_ids + receipts fill into the queue job result (jobs.status{job_id: queue_id}) as each render completes. Requires an open project.",
       "args": {
         "type": "object",
         "required": [
@@ -13880,10 +13888,15 @@
           },
           "rationale": {
             "type": "string"
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Optional canonical project origin digest from project.state.project_identity; a changed project conflicts before dry-run or queue admission."
           }
         }
       },
-      "result": "{queue_id, count, jobs:[{idx, output}]} — sequential batch delivery; the queue job result (jobs.status{queue_id}) fills in per-entry {idx, job_id, render_id, output, ok, pass, receipt, error?} as each render.final completes, plus {summary_line, count, succeeded, failed}.",
+      "result": "{queue_id, count, jobs:[{idx, output}]} — sequential batch delivery; the queue job result (jobs.status{job_id: queue_id}) fills in per-entry {idx, job_id, render_id, output, ok, pass, receipt, error?} as each render.final completes, plus {summary_line, count, succeeded, failed}.",
       "result_schema": {
         "type": "object",
         "required": [
@@ -13913,7 +13926,7 @@
           },
           "x-async-result": {
             "type": "string",
-            "const": "{summary_line, count, succeeded, failed, jobs:[{idx, job_id, render_id, output, ok, pass, receipt, error?}]} via jobs.status{queue_id}"
+            "const": "{summary_line, count, succeeded, failed, jobs:[{idx, job_id, render_id, output, ok, pass, receipt, error?}]} via jobs.status{job_id: queue_id}"
           }
         }
       },
@@ -15321,7 +15334,7 @@
             "minLength": 1,
             "maxLength": 128,
             "pattern": "^[A-Za-z0-9_-]+$",
-            "description": "Opaque camera id copied unchanged from the current screen_record.doctor.camera.devices list. Supplying it is the explicit Use camera action: the native owner may request OS camera permission, waits for a real first frame, shares the screen CaptureClock and Stop boundary, then publishes a separately editable CameraArtifact. Omit it to record screen only. Windows and macOS only."
+            "description": "Opaque camera id copied unchanged from the current screen_record.doctor.camera.devices list. Supplying it is the explicit Use camera action: the screen-owned native sidecar may request OS camera permission or device access after the shared CaptureClock opens, waits for a real first frame, and at terminal Stop can publish a separately editable CameraArtifact. A Start acknowledgement alone does not prove camera frames or output. Omit it to record screen only. Available only when current Doctor advertises a supported native camera build and the selected device."
           },
           "rationale": {
             "type": "string"
@@ -15846,6 +15859,11 @@
           "gif_width": {
             "type": "integer",
             "description": "GIF width px (default 720, height auto; format:\"gif\" only)."
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Optional canonical project origin digest from project.state.project_identity; a changed project conflicts before export admission."
           }
         }
       },
@@ -15887,6 +15905,11 @@
           "path": {
             "type": "string",
             "description": "Optional fenced .mp4 Save As destination; omitted uses the selected output folder or project exports with a collision-safe raw_recording-copy.mp4 name."
+          },
+          "expected_origin_path_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "Optional canonical project origin digest from project.state.project_identity; a changed project conflicts before copy admission."
           }
         }
       },
@@ -15959,7 +15982,7 @@
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right, review, about?:{displayed_version:string|null}, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
+      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right:{collapsed,pinned,active_tab,body_status:'loaded'|'loading'|'blocked'|'failed'|null,recovery_selector:string|null}, review, about?:{displayed_version:string|null}, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {
@@ -16126,7 +16149,7 @@
           }
         }
       },
-      "result": "Confirmed UI transition. Success is {applied:true, verb, request_id, requested:{panel}, state, surface, selector} only after the exact connected client commits the registry surface and its stable selector is present (timeline/preview are also focused). Unknown, unavailable, already-open/no-op, disconnected, or timed-out requests return ok:false; a UI rejection also carries result.applied:false plus the resulting state. The enum is generated from the shared UI surface registry used by human openers, ui.state, palette routes, selectors, and browser tests.",
+      "result": "Confirmed UI transition. Success is {applied:true, verb, request_id, requested:{panel}, state, surface, selector} only after the exact connected client commits the registry surface and its stable selector is present (timeline/preview are also focused; right tools additionally require a painted body marker). Blocked or failed right-tool bodies return applied:false promptly with the recovery selector. Unknown, unavailable, already-open/no-op, disconnected, or timed-out requests return ok:false; a UI rejection also carries result.applied:false plus the resulting state. The enum is generated from the shared UI surface registry used by human openers, ui.state, palette routes, selectors, and browser tests.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

@@ -27,7 +27,7 @@ ASPECT IS A PROJECT SETTING: set width/height/fps at project.create — reframin
   platform only turns loud content DOWN).
 - Captions: `export.srt` sidecar (toggleable, indexed). Burn-in only as
   a brand choice.
-- Chapters: your `marker.add` map exports as the chapter list (first marker at
+- Chapters: your `edit.add_marker` map exports as the chapter list (first marker at
   0:00, minimum 3 chapters, each ≥10s — YouTube's rules for showing them).
 
 ## Shorts / Reels / TikTok (9:16 vertical)
@@ -58,7 +58,7 @@ ASPECT IS A PROJECT SETTING: set width/height/fps at project.create — reframin
 
 See `craft/podcast-episode.md` for the edit; delivery deltas: −16 LUFS (more
 headroom for speech dynamics), SRT always, chapters always, and consider a
-separate audio export with `audio.export` if the feed needs it.
+separate audio export with `export.audio{format:"mp3"}` if the feed needs it.
 
 ## NLE handoff (the "finish in Premiere/Resolve" deliverable)
 

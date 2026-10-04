@@ -15,6 +15,12 @@
   content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
   background: var(--orange); opacity: .35; z-index: 2;
 }
+.pv-voiceover-out-warning {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 7;
+  max-width: min(520px, calc(100% - 24px)); padding: 8px 10px;
+  border: 1px solid var(--amber); border-radius: var(--radius-card);
+  background: var(--surface-2); color: var(--ink); box-shadow: var(--shadow-dropdown);
+}
 .pv-context-trigger {
   position: absolute;
   right: 8px;

@@ -68,9 +68,12 @@ pub(crate) async fn screen_record_export(
         format: Option<String>,
         gif_fps: Option<u32>,
         gif_width: Option<u32>,
+        expected_origin_path_sha256: Option<String>,
     }
 
     let args: Args = parse_args(args)?;
+    let _transition = state.project_transition.lock().await;
+    crate::project_origin::admit(state, args.expected_origin_path_sha256.as_deref()).await?;
     let format = export_format(args.format.as_deref(), args.gif_fps, args.gif_width)?;
     let (project, _edl, dir, revision) = snapshot(state).await?;
     let (source, plan_path, capture_audio, plan) =

@@ -68,12 +68,19 @@ export function useVoiceoverPlayback({
   rate,
   onSeek,
   setRate,
-}: UseVoiceoverPlaybackArgs): VoiceoverPlayback | null {
+}: UseVoiceoverPlaybackArgs): { playback: VoiceoverPlayback | null; outUnconfirmed: boolean } {
   const [voiceoverPlayback, setVoiceoverPlayback] = useState<VoiceoverPlayback | null>(null)
+  const [outUnconfirmed, setOutUnconfirmed] = useState(false)
+  const claimRef = useRef<VoiceoverPlayback | null>(null)
+  const liveRef = useRef(true)
+  const rateRef = useRef(rate)
+  const inFlightRef = useRef<{ promise: Promise<unknown>; controller: AbortController; claim: VoiceoverPlayback } | null>(null)
+  rateRef.current = rate
   const config = useRef({ durationMs, onSeek })
   config.current = { durationMs, onSeek }
 
   useEffect(() => {
+    liveRef.current = true
     const onVoiceoverPlayback = (event: Event) => {
       const detail = event instanceof CustomEvent && event.detail && typeof event.detail === 'object'
         ? event.detail as Record<string, unknown>
@@ -96,52 +103,111 @@ export function useVoiceoverPlayback({
         ownerSessionId,
         ownerCapability,
       }
+      inFlightRef.current?.controller.abort()
+      claimRef.current = playback
+      setOutUnconfirmed(false)
       config.current.onSeek(previewPlaybackClockPosition(Number(startMs), config.current.durationMs, playback).positionMs)
       setVoiceoverPlayback(playback)
       setRate(1)
     }
     const onVoiceoverStop = () => {
+      inFlightRef.current?.controller.abort()
+      claimRef.current = null
+      setOutUnconfirmed(false)
       setRate(0)
       setVoiceoverPlayback(null)
     }
     document.addEventListener('cut:voiceover-playback', onVoiceoverPlayback)
     document.addEventListener('cut:voiceover-stop', onVoiceoverStop)
     return () => {
+      inFlightRef.current?.controller.abort()
+      liveRef.current = false
+      claimRef.current = null
       document.removeEventListener('cut:voiceover-playback', onVoiceoverPlayback)
       document.removeEventListener('cut:voiceover-stop', onVoiceoverStop)
     }
   }, [setRate])
 
-  const outReported = useRef<string | null>(null)
+  const atOut = voiceoverPlayback?.outMs !== null && voiceoverPlayback?.outMs !== undefined
+    && playheadMs >= voiceoverPlayback.outMs
   useEffect(() => {
-    if (!voiceoverPlayback || voiceoverPlayback.outMs === null || rate === 0) return
-    if (playheadMs < voiceoverPlayback.outMs || outReported.current === voiceoverPlayback.requestId) return
-    outReported.current = voiceoverPlayback.requestId
-    void (async () => {
-      try {
-        const response = await callVerb('voiceover.observe_playhead', {
-          owner_session_id: voiceoverPlayback.ownerSessionId,
-          owner_capability: voiceoverPlayback.ownerCapability,
-          request_id: voiceoverPlayback.requestId,
-          request_fingerprint: voiceoverPlayback.requestFingerprint,
-          bridge_epoch: voiceoverPlayback.bridgeEpoch,
-          playhead_ms: playheadMs,
-        })
-        // A stale Out must never stop another tab's Preview locally. Only the
-        // accepted server transition (or its terminal projection) owns that.
-        if (response.ok && response.result) {
-          const status = response.result as { phase?: string }
-          if (['finishing', 'finished', 'placed'].includes(status.phase ?? '')) {
-            document.dispatchEvent(new CustomEvent('cut:voiceover-stop'))
-          }
-        } else {
-          outReported.current = null
-        }
-      } catch {
-        outReported.current = null
+    if (!voiceoverPlayback || !atOut || rate === 0) return
+    const claim = voiceoverPlayback
+    let retired = false
+    let timer: number | null = null
+    let attempts = 0
+    const current = () => !retired && liveRef.current && claimRef.current === claim && rateRef.current !== 0
+    const terminal = (result: unknown) => {
+      if (!result || typeof result !== 'object') return false
+      const status = result as {
+        request_id?: string; phase?: string; terminal?: string
+        owner_claim?: { session_id?: string; capability?: string } | null
+        placement?: { asset_id?: string; clip_id?: string; op_id?: string; already_applied?: boolean }
       }
-    })()
-  }, [playheadMs, rate, setRate, voiceoverPlayback])
+      if (status.request_id !== claim.requestId) return false
+      if (status.owner_claim !== undefined) {
+        return status.owner_claim?.session_id === claim.ownerSessionId
+          && status.owner_claim?.capability === claim.ownerCapability
+          && ['finishing', 'finished'].includes(status.phase ?? '')
+      }
+      if (status.phase === 'finished') {
+        return ['cancelled', 'zero_samples', 'device_lost_no_samples'].includes(status.terminal ?? '')
+      }
+      return status.phase === 'placed'
+        && ['saved', 'device_lost_saved_prefix'].includes(status.terminal ?? '')
+        && !!status.placement?.asset_id && !!status.placement.clip_id && !!status.placement.op_id
+        && typeof status.placement.already_applied === 'boolean'
+    }
+    const stopIfCurrent = () => {
+      if (current()) document.dispatchEvent(new CustomEvent('cut:voiceover-stop'))
+    }
+    const serialized = async <T,>(start: (signal: AbortSignal) => Promise<T>): Promise<T | null> => {
+      const prior = inFlightRef.current
+      if (prior) { try { await prior.promise } catch { /* Its owner handles its own failure. */ } }
+      if (!current()) return null
+      const controller = new AbortController()
+      const pending = start(controller.signal)
+      inFlightRef.current = { promise: pending, controller, claim }
+      const timeout = window.setTimeout(() => controller.abort(), 2_500)
+      try { return await pending } finally {
+        window.clearTimeout(timeout)
+        if (inFlightRef.current?.promise === pending) inFlightRef.current = null
+      }
+    }
+    const observe = async () => {
+      if (!current()) return
+      attempts += 1
+      try {
+        const response = await serialized(signal => callVerb('voiceover.observe_playhead', {
+          owner_session_id: claim.ownerSessionId,
+          owner_capability: claim.ownerCapability,
+          request_id: claim.requestId,
+          request_fingerprint: claim.requestFingerprint,
+          bridge_epoch: claim.bridgeEpoch,
+          playhead_ms: claim.outMs!,
+        }, signal))
+        if (!current()) return
+        if (response?.ok && terminal(response.result)) { stopIfCurrent(); return }
+      } catch { /* The server may have accepted Out before the reply was lost. */ }
+      if (!current()) return
+      try {
+        const read = await serialized(signal => callVerb('voiceover.tick', {
+          owner_session_id: claim.ownerSessionId, owner_capability: claim.ownerCapability,
+        }, signal))
+        if (!current()) return
+        if (read?.ok && terminal(read.result)) { stopIfCurrent(); return }
+      } catch { /* Keep the exact take and retry the observed Out below. */ }
+      if (!current()) return
+      if (attempts >= 5) { setOutUnconfirmed(true); return }
+      timer = window.setTimeout(() => { void observe() }, Math.min(2_000, 250 * 2 ** (attempts - 1)))
+    }
+    void observe()
+    return () => {
+      retired = true
+      if (timer !== null) window.clearTimeout(timer)
+      if (inFlightRef.current?.claim === claim) inFlightRef.current.controller.abort()
+    }
+  }, [atOut, rate === 0, voiceoverPlayback])
 
-  return voiceoverPlayback
+  return { playback: voiceoverPlayback, outUnconfirmed }
 }

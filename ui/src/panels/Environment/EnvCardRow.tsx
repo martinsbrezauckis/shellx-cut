@@ -6,6 +6,7 @@ import {
   hasFetchAction,
   hasMatteSetupAction,
   hasSetupAction,
+  premiumMatteAvailability,
   environmentCardStatus,
   setupMatte,
   setupPerception,
@@ -56,6 +57,14 @@ function compactFact(card: DoctorCard): string | null {
 
 function compactHint(card: DoctorCard): string | null {
   const status = environmentCardStatus(card)
+  if (card.id === 'matte_premium') {
+    const availability = premiumMatteAvailability(card)
+    if (availability === 'ready') return null
+    if (availability === 'missing') return 'Install Premium only for cleaner edges and subject picking on supported NVIDIA machines.'
+    if (availability === 'hardware-unavailable') return `${card.hint || 'Premium is installed, but no NVIDIA CUDA GPU is available.'} Use Standard (RVM) or a supported NVIDIA machine.`
+    if (availability === 'unverified') return card.hint || 'Premium hardware could not be verified. Re-scan before using this tier.'
+    return card.hint || 'Premium could not be prepared. Review the diagnostic hint and re-scan.'
+  }
   if (card.kind === 'judge') {
     if (card.details?.judge_ready === false) {
       const reason = typeof card.details?.availability_reason === 'string'
@@ -76,7 +85,6 @@ function compactHint(card: DoctorCard): string | null {
   if (card.id === 'ffmpeg') return 'Install video processing so imports, previews, and exports work.'
   if (card.id === 'perception') return 'Install captions when you need transcripts, word edits, silence cleanup, or search.'
   if (card.id === 'matte') return 'Install the standard cutout model for on-device background removal.'
-  if (card.id === 'matte_premium') return 'Install only for cleaner edges and subject picking on supported NVIDIA machines.'
   if (status === 'degraded') return 'Re-scan or set this up again if the feature does not work.'
   return 'Set this up only if you need this feature.'
 }

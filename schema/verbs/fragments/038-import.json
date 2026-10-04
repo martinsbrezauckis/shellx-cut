@@ -5,7 +5,7 @@
     {
       "name": "import.otio",
       "domain": "import",
-      "description": "Preview or atomically import a foreign OpenTimelineIO (.otio) timeline. `mode:\"preview\"` performs a bounded (16 MiB), read-only structure/count/media-availability pass and returns a SHA-256 `source_hash`; `mode:\"replace\"` (default) optionally requires that hash, probes every available referenced media file before mutation, then adds new assets and replaces the active timeline in ONE replay-safe, undoable `import.otio` op. Missing media clips are preserved as timed gaps with an `otio_media_missing` warning. Unsupported nested stacks/transitions/effects/markers, disabled or cropped items, generated media references, invalid time values, wrong media kinds, source ranges beyond media duration, remote file authorities, and non-file URI schemes are refused rather than silently dropped. The current project format is preserved; source geometry is reported for an explicit later project.format decision. Caption tracks are not in OTIO.",
+      "description": "Preview or atomically import a foreign OpenTimelineIO (.otio) timeline. `mode:\"preview\"` performs a bounded (16 MiB), read-only structure/count/media-availability pass and returns a SHA-256 `source_hash`; `mode:\"replace\"` (default) optionally requires that hash, probes every available referenced media file before mutation, then adds new assets and replaces the active timeline in ONE replay-safe, undoable `import.otio` op. Missing media clips are preserved as timed gaps with an `otio_media_missing` warning. Source ranges beyond probed media duration are refused, except exact Cut frame-rounding drift of at most 50 ms at EOF; accepted clips clamp to EOF with `otio_time_clamped`. A larger or nonmatching overrun requires explicit source retrimming. Unsupported nested stacks/transitions/effects/markers, disabled or cropped items, generated media references, invalid time values, wrong media kinds, remote file authorities, and non-file URI schemes are refused rather than silently dropped. The current project format is preserved; source geometry is reported for an explicit later project.format decision. Caption tracks are not in OTIO.",
       "args": {
         "type": "object",
         "required": [
@@ -34,7 +34,7 @@
           }
         }
       },
-      "result": "preview -> {status:\"preview\", source_hash, tracks, track_count, clips, gaps, media_available, media_missing, missing_sources, source_format, format_policy:\"preserve_project\"}; replace -> {status:\"imported\", source_hash, tracks_created, clips_inserted, gaps, missing_clips, assets_imported, assets_reused, jobs, source_format, format_policy:\"preserve_project\"} with one op id; warns `otio_media_missing` when missing clips became timed gaps",
+      "result": "preview -> {status:\"preview\", source_hash, tracks, track_count, clips, gaps, media_available, media_missing, missing_sources, source_format, format_policy:\"preserve_project\"}; replace -> {status:\"imported\", source_hash, tracks_created, clips_inserted, gaps, missing_clips, time_clamped_clips, assets_imported, assets_reused, jobs, source_format, format_policy:\"preserve_project\"} with one op id; warns `otio_media_missing` when missing clips became timed gaps and `otio_time_clamped` when exact Cut rounding of at most 50 ms was clamped to probed EOF",
       "behavior": {
         "mutation_class": "timeline",
         "side_effects": {

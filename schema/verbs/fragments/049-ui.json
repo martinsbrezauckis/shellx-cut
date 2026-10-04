@@ -11,7 +11,7 @@
         "additionalProperties": false,
         "properties": {}
       },
-      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right, review, about?:{displayed_version:string|null}, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
+      "result": "{schema:'shellx-cut/ui-state/2', connected:true, ui_clients, state_revision, active_workspace, left, right:{collapsed,pinned,active_tab,body_status:'loaded'|'loading'|'blocked'|'failed'|null,recovery_selector:string|null}, review, about?:{displayed_version:string|null}, overlays, open_surface_ids, available_surface_ids, agent_openable_surface_ids, playhead_ms, selected_clip_ids, export_range?, project:{open,name?,active_sequence?}}",
       "behavior": {
         "mutation_class": "read",
         "side_effects": {

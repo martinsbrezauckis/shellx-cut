@@ -4,13 +4,20 @@ use super::*;
 // jobs.* handlers (the background-job contract)
 // ---------------------------------------------------------------------------
 
-/// jobs.status{job_id} — job record lookup.
+/// jobs.status{job_id,expected_origin_path_sha256?} — job record lookup.
 pub(super) async fn jobs_status(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         job_id: String,
+        expected_origin_path_sha256: Option<String>,
     }
     let a: Args = parse_args(args)?;
+    let _transition = if a.expected_origin_path_sha256.is_some() {
+        Some(state.project_transition.lock().await)
+    } else {
+        None
+    };
+    crate::project_origin::admit(state, a.expected_origin_path_sha256.as_deref()).await?;
     match state.jobs.get(&a.job_id) {
         Some(rec) => Ok(VerbResult::ok(public_job_value(rec)?)),
         None => Err(CutError::new(
@@ -46,13 +53,23 @@ fn public_job_value(record: crate::jobs::JobRecord) -> Result<Value, CutError> {
     Ok(value)
 }
 
-/// jobs.cancel{job_id} — abort an active background task from this server run.
+/// jobs.cancel{job_id,expected_origin_path_sha256?} — abort an active task.
 pub(super) async fn jobs_cancel(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
     #[derive(serde::Deserialize)]
     struct Args {
         job_id: String,
+        expected_origin_path_sha256: Option<String>,
     }
     let a: Args = parse_args(args)?;
+    // Project activation holds the same transition gate through JobManager
+    // detach/attach. Do not hold project.read across abort: workers may need it
+    // while cancellation waits for them to drain.
+    let _transition = if a.expected_origin_path_sha256.is_some() {
+        Some(state.project_transition.lock().await)
+    } else {
+        None
+    };
+    crate::project_origin::admit(state, a.expected_origin_path_sha256.as_deref()).await?;
     let record = match state.jobs.get(&a.job_id) {
         Some(record) => record,
         None => {

@@ -5,8 +5,8 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 
 # ShellX Cut — agent-first video editing
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
-> **Engine v0.6.114 candidate.** v0.6.113 is the latest published release.
+<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
+> **Engine v0.6.115 candidate.** v0.6.114 is the latest published release.
 > Synced to the contract (`schema/verbs.json` — the single
 > machine-readable source of truth; if this guide and that file disagree, trust
 > the file): **308 verbs across 34 domains** under the public verb contract.
@@ -223,10 +223,11 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `rehearsal_start` / `rehearsal_discard` / `start` /
 >   `screen_record.status` / `screen_record.pause` / `screen_record.resume` / `stop` /
 >   `recovery_status` / `studio_event` / `autoedit` / `polish` / `export` (live screen/audio
->   capture, raw streams, auto-edit plan, content-addressed bake). On Windows and
->   macOS, Doctor can advertise opaque camera choices for an explicit Auto-edit
->   recording. The admitted camera is finalized as a separate editable take with
->   shared-clock evidence; permission, busy-device, and no-frame failures never
+>   capture, raw streams, auto-edit plan, content-addressed bake). On Windows,
+>   macOS, and Linux native-camera builds, Doctor can advertise opaque camera
+>   choices for an explicit Auto-edit recording. The admitted camera is
+>   finalized as a separate editable take with shared-clock evidence;
+>   permission, busy-device, and no-frame failures never
 >   fall back to another device. Preview Pause, Resume, Hide, and Stop each take
 >   the latest positive `generation` and matching opaque `lease_nonce` returned
 >   with that active lease by Start, Status, Frame, or a nonterminal Pause/Resume
@@ -449,6 +450,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 > - **AI matte (no green screen)** — `edit.matte` (+ `system.setup_matte`):
 >   background removal/replace, RVM auto default or premium target-assigned
 >   MatAnyone2 (SAM2 click-to-pick subject).
+>   Premium UI readiness requires confirmed NVIDIA/CUDA hardware and consent
+>   to its non-commercial model licence. Setup uses platform-selected PyTorch;
+>   installation or a slow CPU API attempt does not qualify usable Mac Premium.
+>   Use Standard RVM on Mac.
 >   Subject seeds use integer source pixels and source time in milliseconds.
 >   Read applied/cleared intent from the committed `op.effects[]` fields;
 >   applying also returns the immediate alpha-bake quality receipt as `matte`.
@@ -801,6 +806,12 @@ requested. It verifies source identity before publication, reserves ownership
 durably before output, never adopts legacy/unowned files, and leaves unfinished
 pending reservations resumable after cancellation or restart. It never changes
 source media, exports, recordings, captures, receipts, or foreign files.
+If scheduling fails after an earlier owned cache output was retired, inspect
+the failed `cache_rebuild` job through `jobs.status`: its partial result names
+only verified pending asset/output identities and retired counts, or marks
+ownership verification unavailable. Resolve the cause, restore or relink a
+changed source if needed, then retry the same rebuild. Do not claim that an old
+derived cache file was restored.
 
 Use `project.cache_preview {}` before any cleanup claim. It returns a path-free,
 one-use plan only for aged, unreferenced proxy and filmstrip files that still
@@ -831,6 +842,15 @@ ENRICH job finished — wait on `enrich_job`. Wait by either:
 - polling `jobs.status {job_id}` (every 2–5 s, not a hot loop) until
   `state:"done"`, or
 - watching WS `job_progress` events for that job_id.
+
+For a project-owned UI job, include the immutable
+`expected_origin_path_sha256` from `project.state.project_identity` in
+`jobs.status` and `jobs.cancel`; a changed project returns `conflict` before a
+possibly reused job ID is read or cancelled. Existing unscoped calls remain
+supported.
+The app also passes this digest when admitting `render.queue`,
+`screen_record.export`, or `screen_record.copy_raw` so a project switch cannot
+retarget the new job. Legacy callers may omit it.
 
 `media.import` is intentionally project-local. Do not assume it populates the
 cross-project Library: generated and pipeline-internal imports use this verb too.
@@ -1221,7 +1241,10 @@ evidence. Admission does not prove a live provider turn or native behavior.
   call `import.otio {path, mode:"preview"}` and present its track/media summary;
   pass the returned `source_hash` to `mode:"replace"` so changed bytes conflict.
   Replacement is one undoable op, preserves project format, and represents
-  unavailable media as timed gaps. `export.chapters {path?}` (markers → YouTube/podcast chapter list — pair
+  unavailable media as timed gaps. Replace probes media EOF and refuses source
+  out-points beyond it, except exact Cut frame-rounding drift of at most 50 ms;
+  that case clamps to EOF with `otio_time_clamped`. Retrim a larger or nonmatching
+  out-point explicitly. `export.chapters {path?}` (markers → YouTube/podcast chapter list — pair
   with `edit.mark_scenes`), `export.transcript {format?, timestamps?, path?}`
   (readable script of the final cut for show notes).
 - **Extract to Assets (reusable media out of THIS project):**
@@ -1305,7 +1328,11 @@ exporter (add a layer over a span → render it → save the clip).
   Find/Generate subtabs, and editing drawers. Read its exact enum from
   `GET /api/verbs`. These commands are CONFIRMED: `ok:true` means the exact UI
   client committed a later observable state revision and, for `ui.open`, the
-  registered selector exists. Unknown/unavailable targets, missing selections,
+  registered selector exists. Right tools also require their actual body to
+  finish painting. A blocked/failed body returns `applied:false` and a recovery
+  selector; read `ui.state.right.body_status` and use the explicit recovery
+  control rather than treating the selected tab as a loaded tool.
+  Unknown/unavailable targets, missing selections,
   already-current no-ops, disconnects, and timeouts fail explicitly.
   `ui.state` returns `shellx-cut/ui-state/2` with active workspace/tabs,
   overlays/dialogs, available surface ids, selection, playhead, and path-safe

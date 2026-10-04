@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ShellX Cut",
-  "version": "0.6.114",
+  "version": "0.6.115",
   "identifier": "lv.shellx.cut",
   "build": {
     "frontendDist": "../fallback"
@@ -85,6 +85,16 @@
       "../../../schema/verbs.json": "agent-docs/schema/verbs.json",
       "../../../docs/public/FEATURE_SURFACE_CONTRACT.md": "agent-docs/docs/public/FEATURE_SURFACE_CONTRACT.md",
       "../../../docs/public/SHELLX_MOTION_BOUNDARY.md": "agent-docs/docs/public/SHELLX_MOTION_BOUNDARY.md"
+    },
+    "linux": {
+      "deb": {
+        "recommends": [
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-plugins-bad",
+          "gstreamer1.0-plugins-ugly"
+        ]
+      }
     },
     "windows": {
       "webviewInstallMode": {

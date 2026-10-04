@@ -43,7 +43,7 @@ test('mounted queue holds the exact two edited profiles through one deferred pre
     if (name === 'render.queue') enqueued.push(route.request().postDataJSON())
     const result = name === 'jobs.list' ? { jobs: [] }
       : name === 'render.queue' ? { queue_id: 'q1', jobs: [] }
-      : name === 'jobs.status' ? { state: 'done', progress: 1, result: { count: 2, succeeded: 2, failed: 0, jobs: [{ ok: true }, { ok: true }] } }
+      : name === 'jobs.status' ? { job_id: 'q1', kind: 'render_queue', state: 'done', progress: 1, result: { count: 2, succeeded: 2, failed: 0, jobs: [{ ok: true }, { ok: true }] } }
       : {}
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result }) })
   })

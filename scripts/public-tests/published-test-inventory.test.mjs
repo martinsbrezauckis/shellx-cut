@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -87,6 +87,16 @@ test('published test inventory requires the POSIX media sampler instead of accep
   assert.throws(
     () => resolvePublishedPrerequisites(inventory, { environment: {}, probe: (command) => ({ ok: command !== 'ffprobe' }) }),
     new RegExp(`${PUBLISHED_TEST_INVENTORY_GUARD}: required prerequisite ffprobe is unavailable`),
+  )
+})
+
+test('published Judge resources reject an absent Windows validation helper', () => {
+  const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
+  const helper = resolve(ROOT, 'scripts/public-tests/restricted-claude-windows-validation.py')
+  verifyPublishedTestResources(inventory)
+  assert.throws(
+    () => verifyPublishedTestResources(inventory, (path) => path !== helper && existsSync(path)),
+    new RegExp(`${PUBLISHED_TEST_INVENTORY_GUARD}: declared resource is missing: scripts/public-tests/restricted-claude-windows-validation\\.py`),
   )
 })
 

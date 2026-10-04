@@ -20,9 +20,11 @@ use std::path::PathBuf;
 
 mod admission;
 mod estimate;
+mod partial;
 mod worker;
 use admission::{retire_orphaned_reservations, revalidate_snapshot, snapshot_assets};
 use estimate::{RebuildEstimate, SourceCheck};
+use partial::{partial_reservation_result, reserve_planned_outputs};
 use worker::execute_rebuild;
 
 const CACHE_REBUILD_ASSET_LIMIT: usize = 64;
@@ -92,6 +94,17 @@ impl ScheduleCounts {
 }
 
 pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
+    start_rebuild_with_reserver(state, args, reserve_rebuild_output).await
+}
+
+async fn start_rebuild_with_reserver<F>(
+    state: &AppState,
+    args: Value,
+    reserve: F,
+) -> Result<VerbResult, CutError>
+where
+    F: FnMut(&std::path::Path, CacheKind, &str, &str) -> Result<(), CutError>,
+{
     let args: RebuildArgs = serde_json::from_value(args).map_err(|_| {
         CutError::new(
             error_codes::INVALID_ARGS,
@@ -270,20 +283,17 @@ pub(crate) async fn start_rebuild(state: &AppState, args: Value) -> Result<VerbR
     // before any ledger or output changes.
     let job = state.jobs.create_durable("cache_rebuild")?;
     let job_id = job.job_id.clone();
-    for plan in &plans {
-        for (kind, action) in &plan.outputs {
-            if *action == OutputAction::Generate {
-                if let Err(error) = reserve_rebuild_output(
-                    &project_dir,
-                    *kind,
-                    &plan.asset.asset_id,
-                    &plan.asset.hash,
-                ) {
-                    state.jobs.fail(&job_id, error.clone());
-                    return Err(error);
-                }
-            }
-        }
+    if let Err(failure) = reserve_planned_outputs(&project_dir, &plans, reserve) {
+        let mut error = failure.error.with_suggested_action(
+            "check the failed cache rebuild job for pending outputs; restore or relink a changed source, or remove the asset, then retry cache rebuild",
+        );
+        let result = partial_reservation_result(&project_dir, &failure.targets);
+        error.message = format!(
+            "{}; rebuild stopped—check Jobs for pending cache outputs, then retry",
+            error.message
+        );
+        state.jobs.fail_with_result(&job_id, error.clone(), result);
+        return Err(error);
     }
     let active_assets = plans
         .iter()

@@ -45,12 +45,16 @@ export async function waitForCommittedState(
   previousRevision: number,
   predicate: (state: UiObservableState) => boolean,
   timeoutMs = 1_500,
+  stopWhen?: (state: UiObservableState) => boolean,
 ): Promise<UiObservableState | null> {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
     await waitForUiCommitTick()
     const state = stateRef.current
-    if (state.state_revision > previousRevision && predicate(state)) return state
+    if (state.state_revision > previousRevision) {
+      if (predicate(state)) return state
+      if (stopWhen?.(state)) return null
+    }
   }
   return null
 }

@@ -28,12 +28,14 @@ import {
 import { isTauri, pickExportOutput, pickFolder, pickOtio } from '../lib/tauri'
 import DirectorModal from '../director/DirectorModal'
 import RenderQueueModal from './RenderQueueModal'
+import type { RenderQueueOwner } from './useRenderQueueOwner'
 import OtioImportModal, { type OtioImportPreview } from './OtioImportModal'
 import { BrandMark, Icon } from '../icons'
 import ThemeToggle from '../components/ThemeToggle'
 import UpdateButton from './UpdateButton'
 import StoryboardOverlay from './StoryboardOverlay'
 import PreflightWarning from './PreflightWarning'
+import ExportWarningNotice, { type ExportWarningNoticeState } from './ExportWarningNotice'
 import { runVideoPreflightAction } from './videoPreflight'
 import SequenceSwitcher from './SequenceSwitcher'
 import { useTopbarDismissibleMenu } from './useTopbarDismissibleMenu'
@@ -63,6 +65,7 @@ import './topbar.css'
 
 export interface TopBarProps {
   project: Project | null
+  renderQueueOwner: RenderQueueOwner
   /** Open the music-bed drawer (drives audio.add_music). */
   onOpenMusic?: () => void
   /** Open the audio mixer drawer (level via edit.gain, mute/solo via flags). */
@@ -109,7 +112,7 @@ export interface TopBarProps {
 // live in lib/formatPresets. New projects auto-adopt the first video; these are
 // expert corrections, not quality choices required during project creation.
 
-export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, mode = 'edit', onMode, onOpenSetup, doctor = null, onOpenManual, manualOpen = false }: TopBarProps) {
+export default function TopBar({ project, renderQueueOwner, onOpenMusic, onOpenMixer, onOpenProjects, onOpenLibrary, onOpenClips, onOpenAutopilot, onOpenAssemble, onOpenRecipes, onOpenMask, onOpenTitle, onToggleComments, commentsOpen, openCommentCount = 0, onProjectChanged, onSequenceChanged, playheadMs = 0, mode = 'edit', onMode, onOpenSetup, doctor = null, onOpenManual, manualOpen = false }: TopBarProps) {
   // New project + Import moved OUT of the topbar: create lives in the
   // Projects left-tab (panels/Projects), import lives in the Assets tray + Library.
 
@@ -146,6 +149,12 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         ...(jobList.length > 4 ? [`+${jobList.length - 4} more running jobs`] : []),
       ].join('\n')
   const [note, setNote] = useState<string | null>(null) // transient verb feedback
+  const projectKey = project
+    ? JSON.stringify([project.project_identity?.origin_path_sha256 ?? null, project.project_identity?.project_name ?? project.name])
+    : 'no-project'
+  const [exportWarnings, setExportWarnings] = useState<{ projectKey: string; notice: ExportWarningNoticeState } | null>(null)
+  const exportAttempt = useRef(0)
+  const currentProjectKey = useRef<string | null>(projectKey)
   const [menuOpen, setMenuOpen] = useState(false)
   // Chosen export destination folder. Persisted in localStorage so it
   // sticks across sessions; re-asserted to the (session-global) server in
@@ -192,6 +201,15 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
     window.addEventListener('cut:export-output-dir', onExportDir)
     return () => window.removeEventListener('cut:export-output-dir', onExportDir)
   }, [])
+
+  useEffect(() => {
+    currentProjectKey.current = projectKey
+    setExportWarnings(null)
+    return () => {
+      exportAttempt.current += 1
+      currentProjectKey.current = null
+    }
+  }, [projectKey])
 
   useTopbarDismissibleMenu(renderRef, renderOptsOpen, setRenderOptsOpen)
 
@@ -361,6 +379,8 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
 
   const onExport = async (opt: (typeof EXPORT_OPTIONS)[number], explicitPath?: string) => {
     setMenuOpen(false)
+    const attempt = ++exportAttempt.current
+    setExportWarnings(null)
     const startExport = async () => {
       try {
         // A native Save As selection temporarily authorizes its parent in the
@@ -376,6 +396,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
             : opt.group === 'publish' || opt.id === 'video'
               ? opt.run(explicitPath, profile === 'auto' ? undefined : profile)
               : opt.run(explicitPath))
+        if (attempt !== exportAttempt.current || projectKey !== currentProjectKey.current) return
         if (r.ok) {
           // Async renders ('video' + platform publishes) return a job_id, not a
           // path → tell the user where the finished file + its Download button land.
@@ -388,6 +409,15 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
           } else {
             const path = (r.result as { path?: string })?.path
             flash(path ? `exported → ${path}` : 'exported')
+            if (opt.group === 'interchange' && r.warnings?.length) {
+              setExportWarnings({
+                projectKey,
+                notice: {
+                  filename: path ? path.split(/[\\/]/).filter(Boolean).at(-1) ?? null : null,
+                  warnings: r.warnings.map(({ code, message }) => ({ code, message })),
+                },
+              })
+            }
           }
         } else {
           // The engine's message names the fix (e.g. "run captions.generate
@@ -395,7 +425,9 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
           flash(`export failed: ${r.error?.message ?? r.error?.code ?? 'unknown'}`)
         }
       } catch (error) {
-        flash(`export failed: ${error instanceof Error ? error.message : 'server unreachable'}`)
+        if (attempt === exportAttempt.current && projectKey === currentProjectKey.current) {
+          flash(`export failed: ${error instanceof Error ? error.message : 'server unreachable'}`)
+        }
       }
     }
     if (exportNeedsFfmpeg(opt.id)) {
@@ -1064,6 +1096,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
             ))}
           </div>
         )}
+        {!menuOpen && exportWarnings?.projectKey === projectKey && <ExportWarningNotice {...exportWarnings.notice} />}
       </div>
 
       {/* Storyboard contact-sheet overlay — fixed-position modal (its DOM
@@ -1076,7 +1109,7 @@ export default function TopBar({ project, onOpenMusic, onOpenMixer, onOpenProjec
         <DirectorModal aspect={aspect} preset={reframePreset} onClose={() => setDirectorOpen(false)} />
       )}
       {/* Batch-delivery queue (render.queue) — opened from the Export menu. */}
-      {queueOpen && <RenderQueueModal onClose={() => { cancelPreflight(); setQueueOpen(false) }} onPreflight={runVideoPreflight} />}
+      {queueOpen && <RenderQueueModal owner={renderQueueOwner} onClose={() => { cancelPreflight(); setQueueOpen(false) }} onPreflight={runVideoPreflight} />}
       {otioPreview && (
         <OtioImportModal
           preview={otioPreview}

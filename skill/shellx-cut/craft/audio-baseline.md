@@ -72,8 +72,10 @@ for bed entrances/exits.
 - `silence_at_edges` failing = dead air at head/tail; trim it (see
   `craft/fix-failed-checks.md`).
 - A noisy floor (hiss, hum, room tone) is not fixable with gain — gain raises
-  the noise too. Use `edit.effect{type:"denoise"}` or `audio.cleanup_voice`, and
-  flag sources that still need specialist restoration at import time
+  the noise too. Choose the affected audio clip id from `project.state`, then
+  use `audio.cleanup_voice{clip:"audio-clip-id",strength:"medium"}`. A video's
+  audio is a separate clip on its audio track; always specify the clip here
+  to keep cleanup scoped to that source. Flag sources that still need specialist restoration at import time
   (perception loudness facts show a high floor), before anyone invests
   edit work in unusable audio.
 

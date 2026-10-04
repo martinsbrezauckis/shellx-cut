@@ -70,7 +70,7 @@
           }
         }
       },
-      "result": "Confirmed UI transition. Success is {applied:true, verb, request_id, requested:{panel}, state, surface, selector} only after the exact connected client commits the registry surface and its stable selector is present (timeline/preview are also focused). Unknown, unavailable, already-open/no-op, disconnected, or timed-out requests return ok:false; a UI rejection also carries result.applied:false plus the resulting state. The enum is generated from the shared UI surface registry used by human openers, ui.state, palette routes, selectors, and browser tests.",
+      "result": "Confirmed UI transition. Success is {applied:true, verb, request_id, requested:{panel}, state, surface, selector} only after the exact connected client commits the registry surface and its stable selector is present (timeline/preview are also focused; right tools additionally require a painted body marker). Blocked or failed right-tool bodies return applied:false promptly with the recovery selector. Unknown, unavailable, already-open/no-op, disconnected, or timed-out requests return ok:false; a UI rejection also carries result.applied:false plus the resulting state. The enum is generated from the shared UI surface registry used by human openers, ui.state, palette routes, selectors, and browser tests.",
       "behavior": {
         "mutation_class": "external_side_effect",
         "side_effects": {

@@ -431,6 +431,8 @@
 .assets__chip--on { color: #fff; background: var(--brand, #6366f1); border-color: var(--brand, #6366f1); }
 .assets__chip--attention { background: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); color: #141414; }
 .assets__chip--save { color: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); }
+.assets__bin-unavailable { display: inline-flex; align-items: center; gap: 6px; width: 100%; font-size: 11px; color: var(--amber, #f59e0b); }
+.assets__bin-unavailable button { border: 1px solid currentColor; border-radius: 999px; background: transparent; color: inherit; padding: 3px 7px; cursor: pointer; }
 .assets__bins { display: inline-flex; flex-wrap: wrap; gap: 3px; width: 100%; }
 .assets__bin { display: inline-flex; align-items: center; }
 .assets__bin-btn {

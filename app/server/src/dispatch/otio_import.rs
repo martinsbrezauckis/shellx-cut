@@ -7,6 +7,8 @@ use std::io::Read;
 
 mod media_paths;
 use media_paths::media_path;
+mod rounding;
+use rounding::{clamp_source_end_for_otio_rounding, raw_frame_ranges, RawFrameRange};
 
 #[cfg(test)]
 mod boundary_tests;
@@ -22,6 +24,7 @@ struct LoadedOtio {
     name: String,
     tracks: Vec<cut_export::otio::OtioTrack>,
     source_format: Option<Value>,
+    raw_frame_ranges: Vec<Vec<Option<RawFrameRange>>>,
 }
 
 #[derive(Clone)]
@@ -316,6 +319,7 @@ fn load_file(requested: &str) -> Result<LoadedOtio, CutError> {
         )
     })?;
     let tracks = cut_export::otio::parse_otio(text).map_err(super::export_formats::export_error)?;
+    let raw_frame_ranges = raw_frame_ranges(&raw);
     let source_format = match (
         raw.pointer("/metadata/shellx_cut/width")
             .and_then(Value::as_u64),
@@ -345,6 +349,7 @@ fn load_file(requested: &str) -> Result<LoadedOtio, CutError> {
             .to_string(),
         tracks,
         source_format,
+        raw_frame_ranges,
     })
 }
 
@@ -455,26 +460,6 @@ fn track_id(name: &str, kind: &str, index: usize, used: &mut BTreeSet<String>) -
     }
     used.insert(candidate.clone());
     candidate
-}
-
-/// OTIO stores time as rational frame values while Cut stores integer
-/// milliseconds. A Cut clip ending exactly at a non-frame-aligned media EOF can
-/// therefore round up by less than one source frame on export and come back a
-/// few milliseconds past the probe duration. Clamp only that serialization
-/// drift; unknown-rate or genuinely out-of-range clips remain hard failures.
-fn clamp_source_end_for_otio_rounding(
-    source_in: u64,
-    requested_end: u64,
-    media_duration: u64,
-    source_fps: Option<f64>,
-) -> Option<u64> {
-    if requested_end <= media_duration {
-        return Some(requested_end);
-    }
-    let fps = source_fps.filter(|fps| fps.is_finite() && *fps > 0.0 && *fps <= 240.0)?;
-    let frame_ms = (1000.0 / fps).ceil() as u64;
-    (source_in < media_duration && requested_end.saturating_sub(media_duration) <= frame_ms.max(1))
-        .then_some(media_duration)
 }
 
 pub(super) async fn import_otio(
@@ -614,7 +599,7 @@ pub(super) async fn import_otio(
         };
         let track_id = track_id(&track.name, kind, track_index, &mut used_track_ids);
         let mut items = Vec::new();
-        for clip in &track.clips {
+        for (clip_index, clip) in track.clips.iter().enumerate() {
             if clip.is_gap {
                 gaps += 1;
                 items.push(json!({"kind":"gap","duration_ms":clip.dur_ms}));
@@ -679,6 +664,12 @@ pub(super) async fn import_otio(
                     requested_source_end,
                     duration,
                     source_fps,
+                    loaded
+                        .raw_frame_ranges
+                        .get(track_index)
+                        .and_then(|ranges| ranges.get(clip_index))
+                        .copied()
+                        .flatten(),
                 )
                 .ok_or_else(|| {
                     CutError::new(
@@ -690,6 +681,9 @@ pub(super) async fn import_otio(
                             clip.src_in_ms,
                             requested_source_end
                         ),
+                    )
+                    .with_suggested_action(
+                        "retrim the source out-point to the probed media EOF, then preview and import again",
                     )
                 })?,
                 None => requested_source_end,
@@ -787,30 +781,6 @@ mod tests {
         assert_eq!(
             media_path("file:///%5C%5C%3F%5CC:%5CUsers%5CEditor%5Cclip.mov").unwrap(),
             PathBuf::from(r"C:\Users\Editor\clip.mov"),
-        );
-    }
-
-    #[test]
-    fn source_end_clamps_only_sub_frame_otio_rounding() {
-        assert_eq!(
-            clamp_source_end_for_otio_rounding(0, 58_167, 58_162, Some(30.0)),
-            Some(58_162)
-        );
-        assert_eq!(
-            clamp_source_end_for_otio_rounding(1_000, 2_000, 2_000, Some(30.0)),
-            Some(2_000)
-        );
-        assert_eq!(
-            clamp_source_end_for_otio_rounding(0, 58_202, 58_162, Some(30.0)),
-            None
-        );
-        assert_eq!(
-            clamp_source_end_for_otio_rounding(0, 58_167, 58_162, None),
-            None
-        );
-        assert_eq!(
-            clamp_source_end_for_otio_rounding(58_162, 58_167, 58_162, Some(30.0)),
-            None
         );
     }
 

@@ -13,6 +13,9 @@ import {
 
 export interface UiDomState {
   activeReviewTab: 'ops' | 'receipts' | 'qc' | 'scopes' | 'diff' | null
+  rightBodyTab: LayoutState['rightTab'] | null
+  rightBodyStatus: 'loaded' | 'loading' | 'blocked' | 'failed' | null
+  rightRecoverySelector: string | null
   dialogs: string[]
   /** Exact About version only when the visible text matches its DOM attribute. */
   aboutVersion: string | null
@@ -25,7 +28,13 @@ export interface UiObservableState {
   state_revision: number
   active_workspace: LayoutState['workspaceMode']
   left: { collapsed: boolean; active_tab: LayoutState['leftTab']; find_surface: LayoutState['findSurface']; generate_tab: GenerateWorkspaceTab }
-  right: { collapsed: boolean; pinned: boolean; active_tab: LayoutState['rightTab'] }
+  right: {
+    collapsed: boolean
+    pinned: boolean
+    active_tab: LayoutState['rightTab']
+    body_status: UiDomState['rightBodyStatus']
+    recovery_selector: string | null
+  }
   review: { active_tab: UiDomState['activeReviewTab'] }
   /** Additive v2 field for the About version visibly committed by the UI. */
   about: { displayed_version: UiDomState['aboutVersion'] }
@@ -89,6 +98,8 @@ function actionIsOpen(action: UiSurfaceAction, state: UiStateSource): boolean {
       return state.layout.workspaceMode === 'edit'
         && !state.layout.railCollapsed
         && state.layout.rightTab === action.tab
+        && state.dom.rightBodyTab === action.tab
+        && state.dom.rightBodyStatus === 'loaded'
     case 'review':
       return state.layout.workspaceMode === 'edit'
         && !state.layout.railCollapsed
@@ -126,6 +137,8 @@ export function createUiObservableState(source: UiStateSource): UiObservableStat
       collapsed: source.layout.railCollapsed,
       pinned: source.layout.railPinned,
       active_tab: source.layout.rightTab,
+      body_status: source.dom.rightBodyTab === source.layout.rightTab ? source.dom.rightBodyStatus : null,
+      recovery_selector: source.dom.rightBodyTab === source.layout.rightTab ? source.dom.rightRecoverySelector : null,
     },
     review: { active_tab: source.dom.activeReviewTab },
     about: { displayed_version: source.dom.aboutVersion },
@@ -185,8 +198,21 @@ export function readUiDomState(documentRef: UiDomDocument = document): UiDomStat
   const dialogs = UI_SURFACES
     .filter((entry) => !('action' in entry) && documentRef.querySelector(entry.selector))
     .map((entry) => entry.id)
+  const rightTab = documentRef.querySelector<HTMLElement>('[data-cut-right-tab][aria-selected="true"]')?.dataset.cutRightTab
+  const rightBodyStatus = rightTab
+    ? documentRef.querySelector(`[data-cut-panel-render-blocked="${rightTab}"]`) ? 'blocked'
+      : documentRef.querySelector(`[data-cut-panel-render-failed="${rightTab}"]`) ? 'failed'
+        : documentRef.querySelector(`[data-cut-right-body-loaded="${rightTab}"]`) ? 'loaded'
+          : 'loading'
+    : null
   return {
     activeReviewTab,
+    rightBodyTab: rightTab === 'properties' || rightTab === 'color' || rightTab === 'audio' || rightTab === 'chat'
+      ? rightTab : null,
+    rightBodyStatus,
+    rightRecoverySelector: rightBodyStatus === 'blocked' || rightBodyStatus === 'failed'
+      ? `[data-cut-panel-render-retry="${rightTab}"]`
+      : null,
     dialogs,
     aboutVersion: readRenderedAboutVersion(documentRef),
     uiSourceContentManifestSha256: readRenderedUiSourceContentManifest(documentRef),

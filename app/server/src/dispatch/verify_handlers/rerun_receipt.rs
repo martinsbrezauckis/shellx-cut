@@ -24,6 +24,9 @@ pub(super) fn selected_render_receipt_with_path(
     receipts: &Path,
     requested_id: &str,
 ) -> Result<(PathBuf, cut_core::RenderReceipt), CutError> {
+    // Persisted retry descriptors bypass the public render_id schema. Reject
+    // path syntax before any ID-derived lookup, including Windows UNC paths.
+    validate_receipt_id(requested_id)?;
     plain_receipt_dir(receipts)?;
     // Keep an explicitly selected symlink distinguishable from a missing
     // receipt. `resolve_receipt_path` intentionally rejects non-regular leaves

@@ -279,14 +279,25 @@ export function hasSetupAction(card: DoctorCard): boolean {
   )
 }
 
-/** Does this card have a one-click background-removal install? Both matte cards
- *  (kind:'matte' → id 'matte' = RVM free tier, 'matte_premium' = MatAnyone2)
- *  map to system.setup_matte when missing OR degraded. The tier is keyed off the
- *  card id by the caller (matte_premium → 'matanyone', else 'rvm'). readiness tri-state: NOT on
- *  'unknown' — an UNVERIFIED matte_premium (its CUDA probe timed out) is already
- *  installed, so "Install premium" would be wrong; it gets the Re-scan affordance. */
+export type PremiumMatteAvailability = 'missing' | 'ready' | 'hardware-unavailable' | 'unverified' | 'unavailable'
+
+/** Present the actual Premium card without treating every unavailable rung as absent. */
+export function premiumMatteAvailability(card: Pick<DoctorCard, 'status' | 'details'> | null | undefined): PremiumMatteAvailability {
+  if (!card) return 'unverified'
+  if (card.status === 'ok') return 'ready'
+  if (card.status === 'missing') return 'missing'
+  if (card.status === 'unknown') return 'unverified'
+  if (card.status === 'degraded' && card.details?.installed === true && card.details?.cuda_available === false) {
+    return 'hardware-unavailable'
+  }
+  return 'unavailable'
+}
+
+/** Premium installs only when confirmed missing; base RVM keeps its repair route. */
 export function hasMatteSetupAction(card: DoctorCard): boolean {
-  return card.kind === 'matte' && (card.status === 'missing' || card.status === 'degraded')
+  if (card.kind !== 'matte') return false
+  if (card.id === 'matte_premium') return premiumMatteAvailability(card) === 'missing'
+  return card.id === 'matte' && (card.status === 'missing' || card.status === 'degraded')
 }
 
 // ---------------------------------------------------------------------------

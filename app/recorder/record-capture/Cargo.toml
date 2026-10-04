@@ -46,6 +46,7 @@ hound = { version = "3", optional = true }
 # build.rs gates it to target_os=macos + feature capture-macos, so this is inert elsewhere.
 [build-dependencies]
 cc = "1"
+pkg-config = "0.3"
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -93,6 +94,7 @@ screencapturekit = { version = "8.0.1", optional = true, features = ["macos_15_0
 # Linux capture deps (ashpd = XDG portals, tokio = async runtime for the handshake).
 # enumflags2 must match ashpd's (0.7) for SourceType BitFlags type identity.
 [target.'cfg(target_os = "linux")'.dependencies]
+tempfile.workspace = true
 libc = "0.2"
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"], optional = true }
 enumflags2 = { version = "0.7", optional = true }

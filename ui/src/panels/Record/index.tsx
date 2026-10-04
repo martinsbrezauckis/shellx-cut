@@ -43,6 +43,7 @@ import {
   type CameraCapability,
 } from './CameraControl'
 import { useAppRecordingSession } from '../../app/RecordingSessionContext'
+import { useAppRecordingDelivery } from '../../app/RecordingDeliveryContext'
 import type { RecordingDraftView } from '../../app/useRecordingSession'
 import { doctorAllowsPortalDisplay, normalizeRecordingPresetForStart, type RecordingPreset } from '../../app/recordingPreset'
 import { useRecordingQuality } from './useRecordingQuality'
@@ -63,8 +64,6 @@ import {
   recordingWorkspaceAdmission,
   type RecordingWorkspaceAdmission,
 } from './recordingWorkspaceAdmission'
-import { useRecordingExport } from './useRecordingExport'
-import { useRawRecordingCopy } from './useRawRecordingCopy'
 import { addRawRecordingToTimeline } from './addRawRecordingToTimeline'
 import {
   clampCameraSize,
@@ -252,19 +251,12 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       setProfile(savedPresetRef.current.quality.profile)
     }
   }, [setOutputSize, setProfile])
-  const [lastCapture, setLastCapture] = useState<{ source: string; plan: string } | null>(null)
   const [lastRaw, setLastRaw] = useState<{ path: string; hasMic: boolean; hasSystem: boolean } | null>(null)
-  const [exportFmt, setExportFmt] = useState<'mp4' | 'gif'>('mp4')
   const [recordHotkeyCapability, setRecordHotkeyCapability] = useState<RecordHotkeyCapability | null>(null)
   const [stopRetryRequired, setStopRetryRequired] = useState(false)
-  const [exportNote, setExportNote] = useState('')
-  const { exportJob, exportClip, cancelExport } = useRecordingExport({
-    capture: lastCapture,
-    format: exportFmt,
-    outputPath: null,
-    setNote: setExportNote,
-  })
-  const rawCopy = useRawRecordingCopy(lastRaw?.path ?? null)
+  const delivery = useAppRecordingDelivery()
+  const { format: exportFmt, setFormat: setExportFmt, exportNote, setExportNote,
+    exportRunning, exportCancelable, exportClip, cancelExport, rawCopy } = delivery
   // Seconds elapsed in the finalize/bake phase, so the wait is not opaque.
   const [finalizeSec, setFinalizeSec] = useState(0)
   const [phase, setPhase] = useState<Phase>('idle')
@@ -333,7 +325,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     captureRef.current = active.captureId
     recordStartedAtRef.current = active.startedAt
     setSceneCaptureId(active.captureId)
-    setPhase(active.phase === 'recovery' ? 'error' : active.phase === 'countdown' || active.phase === 'starting' ? 'idle' : active.phase)
+    setPhase(active.resultProjectIdentity && !delivery.ownsResult ? 'idle'
+      : active.phase === 'recovery' ? 'error' : active.phase === 'countdown' || active.phase === 'starting' ? 'idle' : active.phase)
     if (active.phase === 'recording' || active.phase === 'finalizing' || active.phase === 'recovery' || active.phase === 'done') setRawCapture(active.raw)
     setStopRetryRequired(active.recoveryAction === 'retry_stop')
     setNote(active.message)
@@ -350,13 +343,13 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
     setCaptureCadence(active.cadence)
     if (active.quality) setQualityResolution(active.quality)
     else clearQualityResolution()
-    setLastCapture(active.source && active.plan ? { source: active.source, plan: active.plan } : null)
-    setLastRaw(active.rawPath ? { path: active.rawPath, hasMic: active.rawHasMic, hasSystem: active.rawHasSystem } : null)
+    setLastRaw(delivery.ownsResult && active.rawPath
+      ? { path: active.rawPath, hasMic: active.rawHasMic, hasSystem: active.rawHasSystem } : null)
     const admissionPhase = active.phase === 'countdown' || active.phase === 'starting'
       || active.phase === 'recording' || active.phase === 'finalizing' || active.phase === 'recovery'
       ? active.phase : 'idle'
     onWorkspaceAdmissionChange?.(recordingWorkspaceAdmission(admissionPhase))
-  }, [session.state, markSceneCaptureStarted, onWorkspaceAdmissionChange, recordingPause.acknowledgeStart, recordingPause.clearCapture, setQualityResolution, clearQualityResolution])
+  }, [session.state, delivery.ownsResult, markSceneCaptureStarted, onWorkspaceAdmissionChange, recordingPause.acknowledgeStart, recordingPause.clearCapture, setQualityResolution, clearQualityResolution])
   useEffect(() => {
     if (session.state.phase !== 'recording' || !session.state.startedAt) return
     const update = () => {
@@ -866,7 +859,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
       ) : <p className="rec__source-note">Video quality choices are unavailable on this machine.</p>}
     </>
   )
-  const hasCaptureResult = Boolean(session.state.rawPath) || session.state.phase === 'recovery'
+  const hasCaptureResult = Boolean(delivery.ownsResult && session.state.rawPath) || session.state.phase === 'recovery'
   const recordingLayoutLabel = `${sourceKind === 'window' ? 'Window' : 'Screen'}${studio.camera.enabled && !rawCapture ? ' + camera' : ''}`
   const resultDuration = session.state.startedAt && session.state.endedAt
     ? fmtElapsed(Math.max(0, Math.floor((session.state.endedAt - session.state.startedAt) / 1000)))
@@ -912,8 +905,10 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                 quality={qualityResolution}
                 hotkeyScope={recordHotkeyCapability?.scope === 'global' ? 'Global F9 registered' : 'F9 works while Cut is focused'}
                 exportFormat={exportFmt}
-                exportRunning={Boolean(exportJob)}
-                rawCopyRunning={Boolean(rawCopy.jobId)}
+                exportRunning={exportRunning}
+                exportCancelable={exportCancelable}
+                rawCopyRunning={rawCopy.running}
+                rawCopyCancelable={rawCopy.cancelable}
                 exportNote={exportNote}
                 rawCopyNote={rawCopy.note}
                 recoveryAction={session.state.recoveryAction}

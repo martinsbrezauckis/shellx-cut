@@ -6,12 +6,10 @@
 //! registry; arg shapes are the verb's responsibility (handlers parse with
 //! serde and return invalid_args with the parse error as cause).
 //!
-//! Current status: ALL verbs are wired against the committed core/media/perception
-//! signatures. Where a dependency crate fn is still `todo!()`, the call is
-//! guarded (`guard_call` / `run_blocking`) so the panic becomes a structured
-//! `unimplemented` error naming the missing dependency — the server NEVER
-//! panics on a verb, and each verb becomes live when its dependency is
-//! implemented (zero dispatcher changes needed).
+//! Dependency boundaries use `guard_call` and `run_blocking` to translate
+//! synchronous or blocking-task panics into structured errors. Unsupported
+//! operations remain explicit refusals; these guards do not establish runtime
+//! dependency availability or native qualification.
 //!
 //! Op-emission rules (public verb contract): every mutating verb funnels
 //! through cut-core's commit paths — `ProjectStore::apply` for core edit.*

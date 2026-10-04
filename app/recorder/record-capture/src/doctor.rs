@@ -1,15 +1,19 @@
 //! doctor.rs — capability detection (mirrors ShellX Cut's `system.doctor`).
 //!
-//! Reports `Card`s for the things live capture needs: ffmpeg, the screen-capture
-//! backend, the input hook, and webcam — each with status ok/missing/degraded/unknown and
-//! an actionable detail. Honest about what is COMPILED (feature/cfg gated) vs what
-//! is merely present at runtime. The UI/agent uses this to drive install/permission.
+//! Reports `Card`s for ffmpeg, screen capture, system audio, the input hook,
+//! and platform capture dependencies. Each has an actionable status and detail.
+//! The separate server camera capability owns device and permission readiness.
+//! These cards distinguish compiled capture support from runtime availability.
 
 use crate::{
     doctor_portal::LINUX_PORTAL_BACKEND_DETAIL, doctor_probe, doctor_process, doctor_system_audio,
 };
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+#[path = "doctor_gstreamer.rs"]
+mod doctor_gstreamer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
@@ -215,39 +219,12 @@ fn doctor_with_screen_card(screen_card: Card) -> Vec<Card> {
     let (in_status, in_detail) = input_backend();
     cards.push(Card::new("input_hook", "capture", in_status, in_detail));
 
-    cards.push(Card::new(
-        "webcam",
-        "capture",
-        "missing",
-        "camera capture is not available in this release",
-    ));
-
     // Linux capture needs the GStreamer pipewire plugin (the portal encode sink).
     #[cfg(all(target_os = "linux", feature = "capture-linux"))]
-    {
-        let gst = std::env::var("SHELLX_RECORD_GST").unwrap_or_else(|_| "gst-launch-1.0".into());
-        let mut gst_command = Command::new(&gst);
-        gst_command.arg("--version");
-        let has_gst = doctor_process::output(&mut gst_command, "probe GStreamer")
-            .is_some_and(|o| o.status.success());
-        let mut pipewire_command = Command::new("gst-inspect-1.0");
-        pipewire_command.arg("pipewiresrc");
-        let has_pw = doctor_process::output(&mut pipewire_command, "probe GStreamer PipeWire")
-            .is_some_and(|o| o.status.success());
-        let (s, d) = match (has_gst, has_pw) {
-            (true, true) => ("ok", "gst-launch-1.0 + pipewiresrc present".to_string()),
-            (true, false) => (
-                "degraded",
-                "gst present but pipewiresrc missing — install gstreamer1.0-pipewire".to_string(),
-            ),
-            _ => (
-                "missing",
-                "gst-launch-1.0 not found — install gstreamer1.0-tools + gstreamer1.0-pipewire"
-                    .to_string(),
-            ),
-        };
-        cards.push(Card::new("gstreamer", "tool", s, d));
+    cards.push(doctor_gstreamer::card());
 
+    #[cfg(all(target_os = "linux", feature = "capture-linux"))]
+    {
         // Input backend depends on session: X11 → rdevin (absolute); Wayland → evdev
         // (/dev/input), which needs `input`-group read access.
         let wayland = std::env::var("XDG_SESSION_TYPE")
@@ -294,10 +271,7 @@ mod tests {
         assert!(ids.contains(&"screen_capture"));
         assert!(ids.contains(&"system_audio"));
         assert!(ids.contains(&"input_hook"));
-        assert!(ids.contains(&"webcam"));
-        let webcam = cards.iter().find(|card| card.id == "webcam").unwrap();
-        assert_eq!(webcam.status, "missing");
-        assert!(webcam.detail.contains("not available"));
+        assert!(!ids.contains(&"webcam"));
         for c in &cards {
             assert!(["ok", "missing", "degraded", "unknown"].contains(&c.status.as_str()));
             assert!(!c.detail.is_empty());

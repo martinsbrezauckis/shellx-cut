@@ -20,10 +20,13 @@
 // Callers: App.tsx (mounted when open, with the selected clip id + playhead).
 // Deps: lib/client (verbs), ../drawer.css.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { callVerb, type Project } from '../../lib/client'
 import { useBlockingOverlay } from '../../components/overlay/useBlockingOverlay'
 import { matteSubjectSeed, matteResultFromReceipt, type MatteResult } from './contract'
+import { useMatteDoctor } from './useMatteDoctor'
+import { premiumMatteAvailability } from '../../lib/doctor'
+import { PremiumTierPanel } from './PremiumTierPanel'
 import '../drawer.css'
 
 export interface MatteDrawerProps {
@@ -33,14 +36,6 @@ export interface MatteDrawerProps {
   /** Current playhead (ms) — the default frame for the premium subject seed. */
   playheadMs: number
   onClose: () => void
-}
-
-/** One doctor card (subset). */
-interface DoctorCard {
-  id: string
-  status: string
-  details?: Record<string, unknown>
-  hint?: string | null
 }
 
 /** Is `clipId` a media clip in the project? (matte applies to media only.) */
@@ -54,35 +49,18 @@ function isMediaClip(project: Project | null, clipId: string | null): boolean {
   return false
 }
 
-/**
- * Outcome of the runtime probe (system.doctor), kept distinct so we never show a
- * confident "isn't set up" on an UNCERTAIN read (grok-class false status):
- *  - 'probing'  — the doctor call is in flight (first open / re-check).
- *  - 'error'    — the probe itself FAILED or was indeterminate: the RPC was !ok,
- *                 it threw, or the doctor succeeded but returned NO matte card.
- *                 We could not determine install state → offer Re-check, NOT install.
- *  - 'absent'   — the doctor SUCCEEDED and the matte card says not-installed
- *                 (status ≠ 'ok'). This is the only state that warrants the
- *                 install/requirements card.
- *  - 'ready'    — the doctor confirms the matte runtime is installed (status 'ok').
- */
-type ProbeState = 'probing' | 'error' | 'absent' | 'ready'
-
 export default function MatteDrawer({ project, clipId, playheadMs, onClose }: MatteDrawerProps) {
   const overlay = useBlockingOverlay<HTMLElement>(onClose)
-  // Requirements state (from system.doctor): is the RVM tier ready, is premium ready?
-  const [probeState, setProbeState] = useState<ProbeState>('probing')
-  const [premiumReady, setPremiumReady] = useState(false)
-  const [docHint, setDocHint] = useState<string | null>(null)
-  // Fix: the controls-view Premium tab is a dead no-op while premium is absent.
-  // Clicking it reveals an inline consent/install affordance (mirrors the
-  // requirements-card premium block) so premium stays installable AFTER the base
-  // tier is set up — without bypassing the non-commercial-license consent.
+  const projectOrigin = project?.project_identity?.origin_path_sha256 ?? null
+  const { probeState, premiumReady, premiumCard, docHint, probe, currentScope } = useMatteDoctor(projectOrigin)
+  const premiumAvailability = premiumMatteAvailability(premiumCard)
+  // The controls-view Premium tab reveals the current Doctor state. Confirmed
+  // missing Premium offers consent; hardware and probe problems offer guidance.
   const [showPremiumConsent, setShowPremiumConsent] = useState(false)
 
   // The runtime is usable when either tier is installed. Premium is a complete
   // matte path, not merely an add-on to the base RVM card.
-  const ready = probeState === 'ready' || premiumReady
+  const ready = probeState === 'ready' || (probeState === 'absent' && premiumReady)
 
   // Controls.
   const [model, setModel] = useState<'rvm' | 'matanyone'>('rvm')
@@ -97,43 +75,33 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
   const [installing, setInstalling] = useState<string | null>(null)
   const [result, setResult] = useState<MatteResult | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const installScopeEpoch = useRef(0)
+  useEffect(() => {
+    installScopeEpoch.current += 1
+    setInstalling(null)
+    setErr(null)
+    return () => { installScopeEpoch.current += 1 }
+  }, [projectOrigin])
 
   const hasClip = isMediaClip(project, clipId)
 
   useEffect(() => {
     if (premiumReady && probeState !== 'ready') setModel('matanyone')
-  }, [premiumReady, probeState])
-
-  // Probe the doctor for the matte cards (on open + on demand). Distinguishes a
-  // FAILED/indeterminate probe ('error' → Re-check) from a doctor that genuinely
-  // reports the runtime absent ('absent' → install card). See ProbeState.
-  const probe = useCallback(async () => {
-    try {
-      const r = await callVerb('system.doctor', {})
-      if (!r.ok) { setProbeState('error'); return } // probe failed — do NOT claim "not set up"
-      const cards = ((r.result as { cards?: DoctorCard[] }).cards) ?? []
-      const matte = cards.find((c) => c.id === 'matte')
-      const premium = cards.find((c) => c.id === 'matte_premium')
-      // Premium is a separate tier; reflect it whenever the doctor read succeeded.
-      setPremiumReady(premium?.status === 'ok')
-      if (!matte) {
-        // Doctor answered but said nothing about matte → indeterminate, not a
-        // confirmed absence (e.g. an older cutd, or a partial doctor read).
-        setProbeState('error')
-        return
-      }
-      setDocHint(matte.hint ?? null)
-      setProbeState(matte.status === 'ok' ? 'ready' : 'absent')
-    } catch {
-      setProbeState('error') // threw — same as a failed probe, not a confirmed absence
+    else if (!premiumReady && probeState === 'ready' && model === 'matanyone') {
+      setModel('rvm')
+      setShowPremiumConsent(true)
     }
-  }, [])
+  }, [premiumReady, probeState, model])
 
-  useEffect(() => { void probe() }, [probe])
+  // A new Doctor response can make a previously selected tier unavailable before
+  // the state-sync effect runs. Never submit that stale Premium choice.
+  const effectiveModel = model === 'matanyone' && !premiumReady ? 'rvm' : model
 
-  const pollSetupJob = useCallback(async (jobId: string) => {
+  const pollSetupJob = useCallback(async (jobId: string, current: () => boolean) => {
     for (let i = 0; i < 720; i += 1) {
+      if (!current()) return false
       const r = await callVerb('jobs.status', { job_id: jobId })
+      if (!current()) return false
       if (!r.ok) {
         const msg = r.error?.message ?? 'could not read setup job status'
         setErr(`setup failed: ${msg}`)
@@ -148,7 +116,7 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
       }
       await new Promise((resolve) => window.setTimeout(resolve, 1000))
     }
-    setErr('setup failed: timed out waiting for installer job')
+    if (current()) setErr('setup failed: timed out waiting for installer job')
     return false
   }, [])
 
@@ -156,6 +124,9 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
 
   // Install the base (RVM) or premium (MatAnyone2) runtime via system.setup_matte.
   const install = async (tier: 'rvm' | 'matanyone') => {
+    const installOrigin = projectOrigin
+    const installEpoch = installScopeEpoch.current
+    const current = () => installScopeEpoch.current === installEpoch && currentScope(installOrigin)
     setInstalling(tier)
     setErr(null)
     try {
@@ -163,21 +134,22 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
         ? { model: 'matanyone' as const, accept_noncommercial: true }
         : { model: 'rvm' as const }
       const r = await callVerb('system.setup_matte', args)
+      if (!current()) return
       if (!r.ok) {
         setErr(`${r.error?.code ?? 'failed'}: ${r.error?.message ?? 'setup failed'}`)
         return
       }
       const jobId = (r.result as { job_id?: string } | undefined)?.job_id
       if (jobId) {
-        const ok = await pollSetupJob(jobId)
+        const ok = await pollSetupJob(jobId, current)
         if (!ok) return
       }
       // Re-probe so the card flips ready when the model lands.
-      await probe()
+      if (current()) await probe(true)
     } catch {
-      setErr('server unreachable')
+      if (current()) setErr('server unreachable')
     } finally {
-      setInstalling(null)
+      if (current()) setInstalling(null)
     }
   }
 
@@ -188,11 +160,11 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
     setErr(null)
     setResult(null)
     try {
-      const args: Record<string, unknown> = { clip: clipId, model, quality, enabled }
+      const args: Record<string, unknown> = { clip: clipId, model: effectiveModel, quality, enabled }
       if (enabled) {
         args.mode = mode
         if (mode === 'replace') args.bg = { type: 'color', color: bgColor }
-        if (model === 'matanyone' && usePick) {
+        if (effectiveModel === 'matanyone' && usePick) {
           args.seed = matteSubjectSeed(project, clipId, playheadMs, pickX, pickY)
         }
       }
@@ -252,14 +224,14 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
               <button
                 className="cd-btn cd-btn--primary"
                 data-cut-matte-recheck
-                onClick={() => { setProbeState('probing'); void probe() }}
+                onClick={() => { void probe(true) }}
               >
                 Re-check
               </button>
               {err && <div className="cd-err" data-cut-matte-error role="alert">{err}</div>}
             </div>
           ) : !ready && probeState === 'absent' ? (
-            /* REQUIREMENTS CARD — the doctor CONFIRMED the runtime is absent; offer the 1-click install. */
+            /* REQUIREMENTS CARD — neither tier is ready. Each tier keeps its own Doctor status. */
             <div className="cd-result" data-cut-matte-requirements>
               <div className="cd-result-head">Background removal isn’t set up yet</div>
               <p className="cd-note">{docHint ?? 'AI background removal needs a small on-device model.'}</p>
@@ -272,21 +244,11 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
                 {installing === 'rvm' ? 'Installing…' : 'Install Background Removal (~14 MB)'}
               </button>
               <div style={{ height: 10 }} />
-              <div className="cd-result-head">Premium — MatAnyone2 (pick the subject)</div>
-              <p className="cd-note">
-                Cleaner edges + temporal stability + click-to-pick WHICH subject. NVIDIA GPU, ~135 MB,
-                <strong> non-commercial license (NTU S-Lab 1.0)</strong> — installing accepts it.
-              </p>
-              <button
-                className="cd-btn"
-                data-cut-matte-install-premium
-                disabled={installing !== null}
-                onClick={() => void install('matanyone')}
-              >
-                {installing === 'matanyone' ? 'Installing…' : 'Install Premium (accept non-commercial)'}
-              </button>
+              <PremiumTierPanel availability={premiumAvailability} hint={premiumCard?.hint ?? null}
+                installing={installing} error={err} context="requirements"
+                onInstall={() => void install('matanyone')} onRecheck={() => void probe(true)} />
               <div style={{ height: 10 }} />
-              <button className="cd-btn cd-btn--ghost" data-cut-matte-recheck onClick={() => void probe()}>
+              <button className="cd-btn cd-btn--ghost" data-cut-matte-recheck onClick={() => void probe(true)}>
                 Re-check
               </button>
               {err && <div className="cd-err" data-cut-matte-error role="alert">{err}</div>}
@@ -303,55 +265,27 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
                 <span className="cd-field-label">Model</span>
                 <div className="cd-seg" role="tablist" data-cut-matte-model>
                   <button
-                    role="tab" aria-selected={model === 'rvm'}
-                    className={`cd-seg-btn ${model === 'rvm' ? 'cd-seg-btn--on' : ''}`}
+                    role="tab" aria-selected={effectiveModel === 'rvm'}
+                    className={`cd-seg-btn ${effectiveModel === 'rvm' ? 'cd-seg-btn--on' : ''}`}
                     data-cut-matte-model-rvm onClick={() => setModel('rvm')}
                   >Standard (RVM)</button>
                   <button
-                    role="tab" aria-selected={model === 'matanyone'}
-                    className={`cd-seg-btn ${model === 'matanyone' ? 'cd-seg-btn--on' : ''}`}
+                    role="tab" aria-selected={effectiveModel === 'matanyone'}
+                    className={`cd-seg-btn ${effectiveModel === 'matanyone' ? 'cd-seg-btn--on' : ''}`}
                     data-cut-matte-model-premium
-                    // NOT disabled while absent — a disabled tab can't be clicked, which
-                    // left premium permanently uninstallable from the controls view. Stays
-                    // clickable to open the consent/install block; only blocked mid-install.
+                    // Keep unavailable Premium clickable for status and Re-check.
                     disabled={installing !== null}
-                    title={premiumReady ? 'MatAnyone2 premium' : 'Install the premium tier (non-commercial license)'}
+                    title={premiumReady ? 'MatAnyone2 premium' : 'Check Premium availability'}
                     onClick={() => { if (premiumReady) setModel('matanyone'); else setShowPremiumConsent(true) }}
-                  >Premium{premiumReady ? '' : ' (install)'}</button>
+                  >Premium{premiumReady ? '' : premiumAvailability === 'missing' ? ' (install)' : premiumAvailability === 'hardware-unavailable' ? ' (no GPU)' : ' (check)'}</button>
                 </div>
               </div>
 
-              {/* Premium install/consent — surfaced from the controls view when the
-                  Premium tab is clicked while the premium tier is absent. Mirrors the
-                  requirements-card premium block (same copy, same install handler, same
-                  explicit non-commercial-license acceptance) so the tier stays
-                  installable AFTER the base RVM tier is set up. */}
-              {!premiumReady && showPremiumConsent && (
-                <div className="cd-result" data-cut-matte-premium-consent>
-                  <div className="cd-result-head">Premium — MatAnyone2 (pick the subject)</div>
-                  <p className="cd-note">
-                    Cleaner edges + temporal stability + click-to-pick WHICH subject. NVIDIA GPU, ~135 MB,
-                    <strong> non-commercial license (NTU S-Lab 1.0)</strong> — installing accepts it.
-                  </p>
-                  <button
-                    className="cd-btn"
-                    data-cut-matte-install-premium
-                    disabled={installing !== null}
-                    onClick={() => void install('matanyone')}
-                  >
-                    {installing === 'matanyone' ? 'Installing…' : 'Install Premium (accept non-commercial)'}
-                  </button>
-                  <div style={{ height: 8 }} />
-                  <button
-                    className="cd-btn cd-btn--ghost"
-                    data-cut-matte-premium-recheck
-                    disabled={installing !== null}
-                    onClick={() => void probe()}
-                  >
-                    Re-check
-                  </button>
-                  {err && <div className="cd-err" data-cut-matte-error role="alert">{err}</div>}
-                </div>
+              {/* The same status panel shows consent only for confirmed missing Premium. */}
+              {!premiumReady && (showPremiumConsent || model === 'matanyone') && (
+                <PremiumTierPanel availability={premiumAvailability} hint={premiumCard?.hint ?? null}
+                  installing={installing} error={err} context="controls"
+                  onInstall={() => void install('matanyone')} onRecheck={() => void probe(true)} />
               )}
 
               {/* mode */}
@@ -400,7 +334,7 @@ export default function MatteDrawer({ project, clipId, playheadMs, onClose }: Ma
               </div>
 
               {/* premium subject seed (SAM2 click-to-pick, manual point) */}
-              {model === 'matanyone' && (
+              {effectiveModel === 'matanyone' && (
                 <div className="cd-field">
                   <label className="cd-check">
                     <input

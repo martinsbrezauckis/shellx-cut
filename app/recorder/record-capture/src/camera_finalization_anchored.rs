@@ -32,7 +32,7 @@ pub(crate) struct DirectoryIdentity;
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub(crate) struct AnchoredDirectory {
-    file: File,
+    pub(crate) file: File,
     identity: DirectoryIdentity,
 }
 

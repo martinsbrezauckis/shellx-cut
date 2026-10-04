@@ -4,18 +4,18 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 use std::sync::atomic::Ordering;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 use std::sync::mpsc;
 
 use record_capture::CaptureClock;
 use record_core::{error_codes, CameraArtifact, CameraTerminalState, RecordError};
 
 pub(super) struct CameraCaptureSidecar {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     worker: Option<std::thread::JoinHandle<record_core::Result<Option<CameraArtifact>>>>,
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     terminal_tx: Option<mpsc::SyncSender<CameraTerminalState>>,
 }
 
@@ -30,7 +30,7 @@ impl CameraCaptureSidecar {
         let Some(device_id) = device_id else {
             return Ok(None);
         };
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         {
             let clock = clock.ok_or_else(|| {
                 camera_error(
@@ -74,12 +74,12 @@ impl CameraCaptureSidecar {
                 terminal_tx: Some(terminal_tx),
             }))
         }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
             let _ = (device_id, capture_id, capture_dir, clock, stop);
             Err(camera_error(
                 "camera capture is unavailable on this platform",
-                "record without Camera or use a Windows or macOS Cut installation",
+                "record without Camera or use a Cut build with native camera capture",
             ))
         }
     }
@@ -88,7 +88,7 @@ impl CameraCaptureSidecar {
         self,
         terminal: CameraTerminalState,
     ) -> record_core::Result<Option<CameraArtifact>> {
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         {
             let mut sidecar = self;
             // Send the only terminal authority before joining. If native Start
@@ -109,7 +109,7 @@ impl CameraCaptureSidecar {
                 )
             })?
         }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         {
             let _ = (self, terminal);
             Err(camera_error(
@@ -135,7 +135,7 @@ impl CameraCaptureSidecar {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn admit_camera_start(
     result: record_core::Result<record_capture::private_camera_owner::PrivateCameraUse>,
     stop: &AtomicBool,
@@ -163,7 +163,7 @@ fn admit_camera_start(
 
 impl Drop for CameraCaptureSidecar {
     fn drop(&mut self) {
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         {
             // Normal capture always consumes the sidecar through `finish`.
             // An early unwind still sends the same Cancelled authority and
@@ -178,7 +178,7 @@ impl Drop for CameraCaptureSidecar {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn await_terminal_command(
     terminal_rx: &mpsc::Receiver<CameraTerminalState>,
 ) -> record_core::Result<CameraTerminalState> {
@@ -190,7 +190,7 @@ fn await_terminal_command(
     })
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn camera_refusal(readiness: record_capture::CameraReadiness) -> RecordError {
     let detail = match readiness {
         record_capture::CameraReadiness::Missing { detail }
@@ -204,7 +204,7 @@ fn camera_refusal(readiness: record_capture::CameraReadiness) -> RecordError {
     camera_error("the selected camera could not start", &detail)
 }
 
-#[cfg(all(test, any(windows, target_os = "macos")))]
+#[cfg(all(test, any(windows, target_os = "macos", target_os = "linux")))]
 mod admission_tests {
     use super::*;
     use std::sync::atomic::Ordering;
@@ -236,7 +236,7 @@ fn camera_error(message: &str, cause: &str) -> RecordError {
         .with_action("check the Camera control in Recorder, then retry")
 }
 
-#[cfg(all(test, any(windows, target_os = "macos")))]
+#[cfg(all(test, any(windows, target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
 

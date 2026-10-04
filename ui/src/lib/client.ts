@@ -255,9 +255,9 @@ export interface VerbArgs {
 
   // the background-job contract: jobs domain replaces media.status; every job-creating verb
   // returns {job_id} polled here (WS job_progress events are the fast path).
-  'jobs.status': { job_id: string }
+  'jobs.status': { job_id: string; expected_origin_path_sha256?: string }
   'jobs.list': Record<string, never>
-  'jobs.cancel': { job_id: string }
+  'jobs.cancel': { job_id: string; expected_origin_path_sha256?: string }
   'jobs.retry': { job_id: string }
 
   // group_id: composite-action tag (store-level meta-arg) — a linked A/V
@@ -759,7 +759,7 @@ export interface VerbArgs {
   'screen_record.pause': { capture_id: string }
   'screen_record.resume': { capture_id: string }
   'screen_record.stop': { capture_id: string; autoedit?: boolean; mux_raw?: boolean; raw_path?: string; rationale?: string }
-  'screen_record.copy_raw': { source: string; path?: string }
+  'screen_record.copy_raw': { source: string; path?: string; expected_origin_path_sha256?: string }
   'screen_record.studio_event': {
     capture_id: string
     event: {
@@ -786,7 +786,7 @@ export interface VerbArgs {
   'voiceover.observe_playhead': { owner_session_id: string; owner_capability: string; request_id: string; request_fingerprint: string; bridge_epoch: number; playhead_ms: number }
   'screen_record.autoedit': { track: string; config?: Record<string, unknown>; webcam?: string; studio_events?: string }
   'screen_record.polish': { source: string; plan: string; track?: string; at_ms?: number; rationale?: string; raw?: boolean }
-  'screen_record.export': { source: string; plan: string; path?: string; format?: 'mp4' | 'gif'; gif_fps?: number; gif_width?: number }
+  'screen_record.export': { source: string; plan: string; path?: string; format?: 'mp4' | 'gif'; gif_fps?: number; gif_width?: number; expected_origin_path_sha256?: string }
   'assets.generate': {
     prompt: string
     provider: 'codex' | 'grok' | 'antigravity'
@@ -1025,10 +1025,11 @@ export interface VerbArgs {
   // current timeline out into N renders (each a render.final arg subset; `output`
   // aliases render.final's `path`), run SEQUENTIALLY through the same render.final
   // path. Returns {queue_id, count, jobs:[{idx, output}]}; per-entry job_ids +
-  // receipts land in the queue job result (jobs.status{queue_id}) as each completes.
+  // receipts land in the queue job result (jobs.status{job_id: queue_id}) as each completes.
   'render.queue': {
     jobs: Array<Partial<VerbArgs['render.final']> & { output?: string }>
     rationale?: string
+    expected_origin_path_sha256?: string
   }
 
   'export.frame': { at_ms: number; to_asset?: boolean; path?: string }
@@ -1131,6 +1132,7 @@ export function uiActorHeader(): string {
 export async function callVerb<N extends VerbName>(
   name: N,
   args: ControlledVerbArgs<N>,
+  signal?: AbortSignal,
 ): Promise<VerbResult<VerbResultPayload<N>>> {
   const res = await fetch(`${API_BASE}/api/verb/${name}`, {
     method: 'POST',
@@ -1139,6 +1141,7 @@ export async function callVerb<N extends VerbName>(
     // Agents calling REST directly omit the header → agent/rest default.
     headers: { 'content-type': 'application/json', 'x-cut-actor': uiActorHeader() },
     body: JSON.stringify(args ?? {}),
+    signal,
   })
   return (await res.json()) as VerbResult<VerbResultPayload<N>>
 }

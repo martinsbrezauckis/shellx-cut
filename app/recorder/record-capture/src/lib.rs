@@ -32,6 +32,8 @@ mod camera_finalization_identity;
 mod camera_finalization_owner;
 mod camera_finalization_paths;
 mod camera_finalization_publication;
+#[cfg(all(target_os = "linux", any(test, feature = "capture-linux")))]
+mod camera_finalization_stage;
 #[allow(
     dead_code,
     reason = "private camera-session spine awaits server wiring"
@@ -77,6 +79,10 @@ mod doctor_portal;
 mod doctor_probe;
 mod doctor_process;
 mod doctor_system_audio;
+#[cfg(all(target_os = "linux", feature = "capture-linux"))]
+mod linux_camera;
+#[cfg(target_os = "linux")]
+mod linux_camera_devices;
 mod source_lifecycle;
 // REC-REGION-01 first fixes the cross-host crop contract; the native backends
 // consume it in the next slice. Keep that bounded foundation compiled on native
@@ -281,7 +287,8 @@ pub mod private_windows_camera_owner;
 // the platform adapters and camera permission is never requested by Doctor.
 #[cfg(any(
     all(windows, feature = "capture-windows"),
-    all(target_os = "macos", feature = "capture-macos")
+    all(target_os = "macos", feature = "capture-macos"),
+    all(target_os = "linux", feature = "capture-linux")
 ))]
 #[doc(hidden)]
 pub mod private_camera_owner;

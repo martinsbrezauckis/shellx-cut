@@ -7,9 +7,9 @@
     "schema": "shellx-cut/verbs/1",
     "release_truth": {
       "schema": "shellx-cut/release-truth@1",
-      "version": "0.6.114",
+      "version": "0.6.115",
       "status": "candidate",
-      "published_version": "0.6.113"
+      "published_version": "0.6.114"
     },
     "mutation_controls": {
       "request_id": {

@@ -84,6 +84,9 @@ pub(super) fn export_richness_warnings(
     {
         dropped.insert("clip gain");
     }
+    if media().any(|c| matches!(c, cut_core::Clip::Media(m) if !m.mute_ranges.is_empty())) {
+        dropped.insert("clip mute ranges");
+    }
     if media().any(|c| {
         matches!(
             c,
@@ -136,6 +139,42 @@ pub(super) fn export_richness_warnings(
     }
     if !project.adjustments.is_empty() {
         dropped.insert("adjustment layers");
+    }
+
+    for track in project
+        .tracks
+        .iter()
+        .filter(|track| !track.clips.is_empty())
+    {
+        match track.kind {
+            cut_core::TrackKind::Video => {
+                if !track.visible {
+                    dropped.insert("hidden video tracks");
+                }
+                if track
+                    .blend_mode
+                    .as_deref()
+                    .is_some_and(|mode| !mode.is_empty() && mode != "normal")
+                {
+                    dropped.insert("video blend modes");
+                }
+            }
+            cut_core::TrackKind::Audio => {
+                if track.muted || track.solo {
+                    dropped.insert("muted or soloed audio");
+                }
+                if track.gain_db != 0.0 {
+                    dropped.insert("track gain");
+                }
+                if !track.gain_windows.is_empty() {
+                    dropped.insert("audio ducking");
+                }
+                if track.pan != 0.0 {
+                    dropped.insert("audio pan");
+                }
+            }
+            cut_core::TrackKind::Caption => {}
+        }
     }
 
     let overlay_tracks = project
@@ -196,8 +235,7 @@ pub(super) fn export_richness_warnings(
 /// serializers — structurally matches the known-good public fixtures and
 /// frame-quantizes every time value by construction). Caption tracks are NOT
 /// representable in the XML formats — surfaced as an in-band warning.
-/// export.otio{path?} — write the timeline as OpenTimelineIO JSON, the
-/// industry-standard interchange that round-trips with Resolve/Premiere/FCP. Mirrors
+/// export.otio{path?} — write the supported cut/track timing subset as OTIO JSON. Mirrors
 /// export.xml: snapshots the project, maps it to OTIO (cut_export::export_otio), and
 /// fences the output path. Caption tracks aren't representable in OTIO → a warning.
 pub(super) async fn export_otio(state: &AppState, args: Value) -> Result<VerbResult, CutError> {
@@ -293,9 +331,9 @@ pub(super) async fn export_xml(state: &AppState, args: Value) -> Result<VerbResu
 /// export.edl{path?, title?} — write the timeline as a CMX3600 EDL, the
 /// universal edit-decision-list interchange (Resolve/Premiere/Avid/FCP). Same
 /// frame-quantized timeline as export.xml/otio, so the cuts line up to the
-/// frame. EDL is a CUTS-ONLY format: transitions, effects, grades, per-clip
-/// gain and captions cannot be represented and are dropped — when the project
-/// carries any of those, a `richness_dropped` warning lists what was omitted so
+/// frame. EDL is a CUTS-ONLY format: rich playback state and captions cannot
+/// be represented and are dropped — when the project carries any of those,
+/// a `richness_dropped` warning lists what was omitted so
 /// the user is never silently surprised. Default <project>/exports/timeline.edl;
 /// caller path FENCED (the output-fencing contract).
 pub(super) async fn export_edl(state: &AppState, args: Value) -> Result<VerbResult, CutError> {

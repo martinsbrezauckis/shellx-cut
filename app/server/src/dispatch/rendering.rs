@@ -6,8 +6,14 @@ mod bundle_package;
 mod comparison;
 mod owned;
 mod process;
+#[cfg(test)]
+mod render_queue_transition_gate;
 use bundle_package::{assess_publish_package, optional_artifact_hash, publish_package_manifest};
 pub(crate) use comparison::render_compare;
+#[cfg(test)]
+pub(super) use render_queue_transition_gate::{
+    install_render_queue_transition_gate, RenderQueueTransitionGate,
+};
 
 /// Snapshot project + EDL + log head for render calls (no lock held while
 /// ffmpeg runs).
@@ -3337,7 +3343,7 @@ pub(super) async fn render_bundle(
 /// planned output path for the synchronous return.
 ///
 /// Returns {queue_id, count, jobs:[{idx, output}]} immediately. The queue job's
-/// result (jobs.status{queue_id}) fills in per-entry {idx, job_id, render_id,
+/// result (jobs.status{job_id: queue_id}) fills in per-entry {idx, job_id, render_id,
 /// output, ok, pass, receipt, error?} as each render completes — one poll shows
 /// the whole batch, and each render's job_id is then individually pollable
 /// (jobs.status). the background-job contract (a job-returning orchestrator). Requires an open project.
@@ -3351,8 +3357,11 @@ pub(super) async fn render_queue(
         #[serde(default)]
         jobs: Vec<Value>,
         rationale: Option<String>,
+        expected_origin_path_sha256: Option<String>,
     }
     let a: Args = parse_args(args)?;
+    let _transition = state.project_transition.lock().await;
+    crate::project_origin::admit(state, a.expected_origin_path_sha256.as_deref()).await?;
     if a.jobs.is_empty() {
         return Err(CutError::new(
             error_codes::INVALID_ARGS,
@@ -3424,6 +3433,8 @@ pub(super) async fn render_queue(
             .unwrap_or(Value::Null);
         slots.push(json!({"idx": idx, "output": output}));
         render_args.push(base);
+        #[cfg(test)]
+        render_queue_transition_gate::wait_after_first_preflight(a.rationale.as_deref(), idx).await;
     }
     let count = render_args.len();
 

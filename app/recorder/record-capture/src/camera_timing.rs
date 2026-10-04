@@ -23,6 +23,7 @@ impl CameraFrameObservation {
         not(any(
             all(windows, feature = "capture-windows"),
             all(target_os = "macos", feature = "capture-macos"),
+            all(target_os = "linux", feature = "capture-linux"),
             test
         )),
         allow(

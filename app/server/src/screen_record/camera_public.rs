@@ -6,12 +6,12 @@
 //! **Use camera** action.
 
 use cut_core::{error_codes, CutError};
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 use record_capture::{CameraDevice, CameraReadiness};
 use serde_json::{json, Value};
 
 pub(super) fn capability() -> Value {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
         match record_capture::private_camera_owner::devices() {
             Ok(devices) => {
@@ -24,6 +24,8 @@ pub(super) fn capability() -> Value {
                     "devices": rows,
                     "detail": if devices.is_empty() {
                         "No camera is currently connected."
+                    } else if cfg!(target_os = "linux") {
+                        "Choose a camera, then start recording. Cut opens and checks the selected device only at Start."
                     } else {
                         "Choose a camera, then start recording. Permission is requested only when needed."
                     },
@@ -36,16 +38,16 @@ pub(super) fn capability() -> Value {
             }),
         }
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     json!({
         "supported": false,
         "devices": [],
-        "detail": "Camera recording is currently available on Windows and macOS.",
+        "detail": "Camera recording is unavailable in this build.",
     })
 }
 
 pub(super) fn admit_selected(device_id: &str) -> Result<(), CutError> {
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     {
         let device_id = device_id.trim();
         let devices = record_capture::private_camera_owner::devices().map_err(record_error)?;
@@ -64,23 +66,23 @@ pub(super) fn admit_selected(device_id: &str) -> Result<(), CutError> {
             state => Err(readiness_error(device, &state)),
         }
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = device_id;
         Err(CutError::new(
             error_codes::UNIMPLEMENTED,
             "camera recording is unavailable on this platform",
-            "record without Camera or use a Windows or macOS Cut installation",
+            "record without Camera or use a Cut build with native camera capture",
         ))
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn readiness(device_id: &str) -> CameraReadiness {
     record_capture::private_camera_owner::readiness(device_id)
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn device_projection(device: &CameraDevice, readiness: CameraReadiness) -> Value {
     let (state, detail) = readiness_parts(&readiness);
     json!({
@@ -91,7 +93,7 @@ fn device_projection(device: &CameraDevice, readiness: CameraReadiness) -> Value
     })
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn readiness_error(device: &CameraDevice, readiness: &CameraReadiness) -> CutError {
     let (state, detail) = readiness_parts(readiness);
     CutError::new(
@@ -106,7 +108,7 @@ fn readiness_error(device: &CameraDevice, readiness: &CameraReadiness) -> CutErr
     })
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn readiness_parts(readiness: &CameraReadiness) -> (&'static str, String) {
     match readiness {
         CameraReadiness::Missing { detail } => ("missing", detail.clone()),
@@ -121,7 +123,7 @@ fn readiness_parts(readiness: &CameraReadiness) -> (&'static str, String) {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 fn record_error(error: record_core::RecordError) -> CutError {
     super::record_err(error)
 }

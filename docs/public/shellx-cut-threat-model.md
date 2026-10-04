@@ -1,10 +1,10 @@
 # ShellX Cut local-machine trust threat model
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
 
 ## Executive summary
 
-This v0.6.114 candidate contract covers the current source and the local
+This v0.6.115 candidate contract covers the current source and the local
 Debug API, WebSocket endpoint, and `cutd mcp` proxy. ShellX Cut supports **one personal workstation /
 one trusted interactive environment**. Its unauthenticated loopback listener is
 a whole-machine trust boundary, not same-user or per-process isolation. Under

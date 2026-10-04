@@ -133,6 +133,54 @@ fn source_render_receipt_names_are_refused() {
 }
 
 #[test]
+fn selected_receipt_accepts_a_matching_local_receipt_and_keeps_missing_explicit() {
+    let dir = tempfile::tempdir().unwrap();
+    let prepared = retry_prepared(dir.path());
+    let selected = selected_render_receipt(&prepared.receipts, "render_001").unwrap();
+    assert_eq!(selected.render_id, "render_001");
+    assert_eq!(selected.output_hash, prepared.receipt.output_hash);
+    let missing = selected_render_receipt(&prepared.receipts, "render_002").unwrap_err();
+    assert_eq!(missing.code, error_codes::NOT_FOUND);
+}
+
+#[test]
+fn selected_receipt_rejects_path_ids_before_receipt_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing_receipts = dir.path().join("missing-receipts");
+    for id in [
+        "",
+        "../outside",
+        "/absolute/outside",
+        r"\\attacker.invalid\share\render_001",
+        r"\\?\UNC\attacker.invalid\share\render_001",
+        r"C:\outside\render_001",
+        r"C:render_001",
+        "render%2F001",
+    ] {
+        let error = selected_render_receipt(&missing_receipts, id).unwrap_err();
+        assert_eq!(error.code, error_codes::INVALID_ARGS, "id {id:?}");
+        assert_eq!(error.cause, "render_id must be a receipt id, not a path");
+    }
+    assert!(!missing_receipts.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_receipt_rejects_an_absolute_id_before_inspecting_its_linked_leaf() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let receipts = dir.path().join("receipts");
+    std::fs::create_dir_all(&receipts).unwrap();
+    let outside = dir.path().join("outside.json");
+    symlink(dir.path().join("missing-target"), &outside).unwrap();
+    let id = dir.path().join("outside");
+    let error = selected_render_receipt(&receipts, id.to_str().unwrap()).unwrap_err();
+    assert_eq!(error.code, error_codes::INVALID_ARGS);
+    assert_eq!(error.cause, "render_id must be a receipt id, not a path");
+}
+
+#[test]
 fn selected_receipt_embedded_id_must_match_requested_identity() {
     let dir = tempfile::tempdir().unwrap();
     let receipts = dir.path().join("receipts");

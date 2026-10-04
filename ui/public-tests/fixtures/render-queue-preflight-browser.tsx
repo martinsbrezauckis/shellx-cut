@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import TopBar from '../../src/topbar'
+import { useRenderQueueOwner } from '../../src/topbar/useRenderQueueOwner'
 import type { Project } from '../../src/lib/client'
 import '../../src/theme.css'
 
@@ -12,6 +13,9 @@ const project = {
   assets: {}, tracks: [], markers: [], caption_styles: {}, checkpoints: [],
 } as Project
 
-createRoot(document.getElementById('root')!).render(
-  <div className="app" data-cut-app-root><TopBar project={project} /></div>,
-)
+function Fixture() {
+  const renderQueueOwner = useRenderQueueOwner(project, 0)
+  return <div className="app" data-cut-app-root><TopBar project={project} renderQueueOwner={renderQueueOwner} /></div>
+}
+
+createRoot(document.getElementById('root')!).render(<Fixture />)

@@ -74,6 +74,7 @@ const WEBDRIVER_TEST_BUILD_MARKER: &str = "shellx-cut/webdriver-test-enabled@1";
 #[cfg(desktop)]
 use tauri::Emitter;
 
+mod about_links;
 #[cfg(target_os = "macos")]
 mod macos_controller_owner;
 mod macos_region_bridge;
@@ -307,6 +308,19 @@ async fn reveal_registered_source(
             "The desktop shell could not reveal the registered source",
         )
     }))
+}
+
+/// Open only shell-owned About destinations in the OS default browser. The
+/// engine-served UI can name a destination and release version, never a URL,
+/// path, browser executable, or command line.
+#[tauri::command]
+fn open_about_link(
+    destination: about_links::AboutDestination,
+    version: Option<String>,
+) -> Result<(), String> {
+    let url = about_links::destination_url(destination, version.as_deref())?;
+    tauri_plugin_opener::open_url(&url, None::<&str>)
+        .map_err(|error| format!("The default browser could not open this link: {error}"))
 }
 
 /// Blocking half of the identity-only reveal. It is intentionally separate
@@ -833,6 +847,7 @@ fn grant_engine_origin_capability(
         // path inside the shell from current cutd state, then opens the native
         // file manager; the remote webview never receives the raw source path.
         .permission("allow-reveal-registered-source")
+        .permission("allow-open-about-link")
         // Preview fullscreen fallback for WKWebView/WebKitGTK. The remote UI
         // receives only this window mutation plus the matching read-back; it
         // cannot move, resize, close, hide, or otherwise control the shell.
@@ -1049,6 +1064,7 @@ pub fn run() {
             engine_status,
             tools_doctor,
             reveal_registered_source,
+            open_about_link,
             macos_region_bridge::start_macos_region_capture,
             windows_region_bridge::start_windows_region_capture,
             update_settings::get_update_preferences,

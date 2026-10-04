@@ -30,11 +30,17 @@ Ask one focused question per chat turn.
 
 ## Output
 
-Pass structured answers to `generate.storyboard.answers`:
+Call `generate.storyboard` with the original brief in `input` and the structured
+field answers in its `answers` argument. `policy:"plan"` returns the plan for
+review before timeline insertion:
 
 ```json
 {
-  "audience": {"value": "new customers", "source": "stated"},
-  "platform": {"value": "youtube", "source": "inferred"}
+  "input": "Create an onboarding video for new customers",
+  "policy": "plan",
+  "answers": {
+    "audience": {"value": "new customers", "source": "stated"},
+    "platform": {"value": "youtube", "source": "inferred"}
+  }
 }
 ```

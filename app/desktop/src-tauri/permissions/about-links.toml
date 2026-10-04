@@ -1,0 +1,7 @@
+# Only the selected Cut engine origin may ask the shell to open an About link.
+# The command accepts a fixed destination and optional release version; it
+# constructs the HTTPS URL in Rust and grants no arbitrary URL or file opener.
+[[permission]]
+identifier = "allow-open-about-link"
+description = "Allows the validated Cut UI to open one fixed About destination in the default browser."
+commands.allow = ["open_about_link"]

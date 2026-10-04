@@ -1,7 +1,7 @@
 {
   "name": "shellx-cut-ui",
   "private": true,
-  "version": "0.6.114",
+  "version": "0.6.115",
   "type": "module",
   "description": "ShellX Cut UI — Vite + React + TS app shell (UI contract). The UI is an API client, nothing more: all state via verbs/WS, zero local mutation.",
   "scripts": {

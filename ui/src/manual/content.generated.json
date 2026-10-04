@@ -1,6 +1,6 @@
 {
   "schema": "shellx-cut/manual-content@1",
-  "appVersion": "0.6.114",
+  "appVersion": "0.6.115",
   "featureCount": 201,
   "features": [
     {
@@ -49,7 +49,7 @@
       "group": "setup",
       "title": "Install a CLI agent",
       "where": "Settings",
-      "description": "Install at least one supported CLI agent before using AI planning, prompt Generate, storyboard Generate, or review assistance.",
+      "description": "Use your installed Claude Code, Codex, Grok, or Antigravity CLI for AI planning, prompt Generate, storyboard Generate, or review assistance. Keep the selected CLI current; Cut checks the capabilities required by each route rather than pinning a provider version.",
       "requirement": "Requires the selected CLI tool installed and signed in outside Cut.",
       "api": "system.doctor, system.mcp_test"
     },
@@ -59,7 +59,7 @@
       "group": "setup",
       "title": "Connect agent in Settings",
       "where": "Settings",
-      "description": "After installing the CLI agent, connect it in Cut so Generate, chat, and review workflows can call it.",
+      "description": "After installing and signing in to the CLI outside Cut, connect it in Settings so Generate, chat, and review workflows can call it. Leave the optional Model field empty to use that CLI's configured default; a supplied model name goes only to the selected provider.",
       "requirement": "Requires a working CLI agent command.",
       "api": "system.doctor, system.mcp_test, agent.chat"
     },
@@ -199,8 +199,8 @@
       "group": "header",
       "title": "Assemble AI",
       "where": "Header tools",
-      "description": "Ask an agent to assemble a rough cut from prompts, selected media, or storyboard intent. When a b-roll folder is needed, choose it with the desktop folder dialog; Cut shows only its final folder name rather than an editable local path.",
-      "requirement": "Requires a configured CLI agent and source media. Folder selection requires the desktop app.",
+      "description": "Choose Repurpose, Shorts, or From script to review source ranges first, then choose Add reviewed plan to timeline to commit one editable, normal-Undo action. Shorts also applies its reviewed crop and transcript captions when the project aspect matches. B-roll finds and places footage in a slot; when a folder is needed, use the desktop folder dialog, which shows only its final folder name.",
+      "requirement": "Requires a configured CLI agent and source media. A changed timeline or transcript requires a fresh reviewed plan. Shorts requires the requested project aspect before applying; change the format and plan again if it differs. Folder selection requires the desktop app.",
       "api": "assemble.repurpose, assemble.shorts, assemble.from_script, assemble.broll"
     },
     {
@@ -579,7 +579,7 @@
       "group": "header",
       "title": "Assemble prompt",
       "where": "Assemble AI menu",
-      "description": "Describe the rough cut you want the agent to assemble.",
+      "description": "Choose Repurpose to find highlights, or From script to match script lines to footage. Review the proposed source ranges before adding them to the timeline.",
       "requirement": "Requires a configured CLI agent.",
       "api": "assemble.from_script, assemble.repurpose"
     },
@@ -589,7 +589,7 @@
       "group": "header",
       "title": "Source clips",
       "where": "Assemble AI menu",
-      "description": "Choose source clips for an assembled draft.",
+      "description": "Choose imported source footage for the reviewed plan, or find and place footage in a B-roll slot. Local B-roll folders use the desktop folder picker.",
       "requirement": "Requires imported media.",
       "api": "assemble.broll, media.search"
     },
@@ -599,8 +599,8 @@
       "group": "header",
       "title": "Build draft",
       "where": "Assemble AI menu",
-      "description": "Build a rough timeline draft from the selected sources and prompt.",
-      "requirement": "Requires source clips and a configured CLI agent.",
+      "description": "Review the Repurpose or Shorts plan, then choose Add reviewed plan to timeline to add its ranges as one editable Undo action. Shorts applies its crop and transcript captions only when the project already has the requested aspect.",
+      "requirement": "Requires source clips, a configured CLI agent, and a current reviewed plan. Changed timeline or transcript evidence requires a new review.",
       "api": "assemble.repurpose, assemble.shorts"
     },
     {
@@ -689,7 +689,7 @@
       "group": "top",
       "title": "Export menu",
       "where": "Top bar",
-      "description": "Choose delivery targets, output presets, and platform-oriented export paths.",
+      "description": "Choose delivery targets, output presets, and platform-oriented export paths. After a successful interchange export, read the warning list for edits the format could not carry.",
       "requirement": "Requires a renderable timeline.",
       "api": "render.final, export.publish, export.xml, render.queue"
     },
@@ -990,7 +990,7 @@
       "title": "Edit in Motion",
       "where": "Timeline and Inspector",
       "description": "Open the selected linked Motion package in ShellX Motion without exposing the package or return-request paths. ShellX Motion publishes a new immutable ready revision only after its render is verified.",
-      "requirement": "Requires a selected Motion-linked clip and an installed or configured ShellX Motion editor.",
+      "requirement": "Existing connection route; not qualified in v0.6.114. Requires a selected Motion-linked clip and an installed or configured ShellX Motion editor.",
       "api": "motion.link.edit"
     },
     {
@@ -1000,7 +1000,7 @@
       "title": "Refresh linked Motion render",
       "where": "Timeline and Inspector",
       "description": "Adopt the newest verified Canvas return for the same package, motion identity, and authored source revision, replacing pixels in the existing Cut clip without changing its editorial identity.",
-      "requirement": "Run Edit in Motion and complete a verified Canvas render first. A mismatch or failed render leaves the last good Cut clip untouched.",
+      "requirement": "Existing connection route; not qualified in v0.6.114. Run Edit in Motion and complete a verified Canvas render first. A mismatch or failed render leaves the last good Cut clip untouched.",
       "api": "motion.link.refresh, project.undo"
     },
     {
@@ -1010,7 +1010,7 @@
       "title": "Track and stabilize linked footage",
       "where": "Inspector",
       "description": "Choose manifest-declared footage and a visual target, analyze a point or planar region, apply ordinary Motion transform keyframes, verify the attachment, or detach back to the exact prior keyframes.",
-      "requirement": "Requires a Motion-linked package with footage and a target visual layer. Refresh remains explicit after applying or detaching.",
+      "requirement": "Existing connection route; not qualified in v0.6.114. Requires a Motion-linked package with footage and a target visual layer. Refresh remains explicit after applying or detaching.",
       "api": "motion.link.tracking.inventory, motion.link.tracking.request, motion.link.tracking.apply, motion.link.tracking.verify, motion.link.tracking.detach"
     },
     {
@@ -1665,7 +1665,7 @@
     },
     {
       "id": "cut.record.studio",
-      "label": "Studio preview",
+      "label": "Source preview and settings",
       "group": "record",
       "title": "Record workspace",
       "where": "Focused Record workspace",
@@ -1675,7 +1675,7 @@
     },
     {
       "id": "cut.record.scenes",
-      "label": "Recording scenes",
+      "label": "Camera layout",
       "group": "record",
       "title": "Camera layout",
       "where": "Record workspace",
@@ -1685,7 +1685,7 @@
     },
     {
       "id": "cut.record.scene_timer",
-      "label": "Recording timer",
+      "label": "On-video timer",
       "group": "record",
       "title": "On-video timer",
       "where": "Record workspace",
@@ -1710,7 +1710,7 @@
       "title": "Camera take",
       "where": "Record workspace",
       "description": "Turn Camera on in Polished mode and choose one current device. Cut records it as a separate editable take instead of baking it into the screen source.",
-      "requirement": "In Polished mode, Camera is available on Windows/macOS when Doctor lists a current device. No connected camera or unavailable discovery leaves Camera disabled while screen recording stays available. Start still requires the OS to admit the selected camera and deliver a real first frame. Linux currently shows Camera unavailable. Raw mode keeps Camera off.",
+      "requirement": "In Polished mode, Camera is available when the current Doctor lists a supported native camera build and a device. A Linux build can support camera capture while listing no connected device. No device or unavailable discovery leaves Camera disabled while screen recording stays available. After Start opens the screen clock, the native owner checks the selected device, required Linux plugins when applicable, and a real first frame; the Start acknowledgement alone is not camera-media proof. Raw mode keeps Camera off.",
       "api": "screen_record.doctor camera, screen_record.start {camera_id}"
     },
     {
@@ -1765,7 +1765,7 @@
     },
     {
       "id": "cut.record.raw_streams",
-      "label": "Raw streams",
+      "label": "Recording details",
       "group": "record",
       "title": "Raw streams",
       "where": "Record workspace",
@@ -1785,7 +1785,7 @@
     },
     {
       "id": "cut.record.raw_mode",
-      "label": "Raw capture mode",
+      "label": "Raw MP4",
       "group": "record",
       "title": "Raw MP4",
       "where": "Record workspace",
@@ -1795,7 +1795,7 @@
     },
     {
       "id": "cut.record.autoedit",
-      "label": "Auto-edit recording",
+      "label": "Polished clip in Edit",
       "group": "record",
       "title": "Polished clip in Edit",
       "where": "Record workspace",
@@ -1890,7 +1890,7 @@
       "title": "Edit a linked clip in Motion",
       "where": "Timeline, Inspector, and ShellX Motion",
       "description": "Select a Motion-linked clip, choose Edit in Motion, make rich source changes in ShellX Motion, render the copy-on-write revision, return to Cut, and refresh the same clip. Cut rechecks package identity, authored revision, receipt identity, and media hash before replacing the linked render.",
-      "requirement": "Requires ShellX Motion and a current linked package. Refresh is explicit; stale or mismatched handbacks never replace the last good render.",
+      "requirement": "Existing connection route; not qualified in v0.6.114. Only read-only Motion discovery is qualified; connection qualification and managed installation, repair, update, and removal remain deferred. Requires ShellX Motion and a current linked package. Refresh is explicit; stale or mismatched handbacks never replace the last good render.",
       "api": "motion.link.edit, motion.link.refresh, motion.link.relink, project.undo"
     },
     {
@@ -2000,7 +2000,7 @@
       "title": "Observe a Motion render",
       "where": "Debug API or MCP",
       "description": "Choose a job_id before starting a blocking Motion-backed render, then query that same id from another request without exposing another project's jobs or Motion runtime paths.",
-      "requirement": "Requires an open Cut project and a current ShellX Motion CLI. Poll no faster than pollAfterMs and stop when it disappears.",
+      "requirement": "Existing connection route; not qualified in v0.6.114. Requires an open Cut project and a current ShellX Motion CLI. Poll no faster than pollAfterMs and stop when it disappears.",
       "api": "motion.template_to_cut, motion.script_to_cut, motion.link.refresh, motion.job.get, motion.job.list"
     },
     {

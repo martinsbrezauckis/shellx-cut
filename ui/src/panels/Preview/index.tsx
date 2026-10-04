@@ -395,10 +395,9 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // re-binding (same configRef pattern as the Timeline gestures). `video`
   // carries the active clip placement so the rVFC clock maps presented source
   // time → timeline position without re-subscribing each frame.
-  const voiceoverPlayback = useVoiceoverPlayback({ playheadMs, durationMs, rate, onSeek, setRate })
+  const { playback: voiceoverPlayback, outUnconfirmed } = useVoiceoverPlayback({ playheadMs, durationMs, rate, onSeek, setRate })
   const cfg = useRef({ playheadMs, durationMs, frameMs, onSeek, rate, video, voiceoverPlayback })
   cfg.current = { playheadMs, durationMs, frameMs, onSeek, rate, video, voiceoverPlayback }
-
   // --- playback clock --------------------------------------------------------
   // FREE-RUN (forward 1×, <video> mounted): the element plays itself, hardware-
   // decoded + vsync-timed; we read the presented frame back via rVFC when it is
@@ -811,6 +810,7 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
         }}
       />
       <div ref={monitorRef} className={`pv-monitor ${playing ? 'pv-monitor--playing' : ''}`} data-cut-monitor>
+        {outUnconfirmed && <div className="pv-voiceover-out-warning" data-cut-voiceover-out-unconfirmed role="status">Automatic stop could not be confirmed. Use Stop or Cancel on the voiceover track.</div>}
         {ffmpegMissing && (
           <div className="pv-setup" data-cut-preview-ffmpeg-setup role="status" aria-live="polite">
             <div className="pv-setup-copy">

@@ -237,10 +237,33 @@ static void sxc_quiesce_samples(SxcCameraHandle *handle) {
     dispatch_sync(handle.queue, ^{});
 }
 
+// Doctor and explicit Start must see the same device types. Query afresh on
+// each call so an unplugged selected UID cannot fall back to another camera.
+static NSArray<AVCaptureDevice *> *sxc_video_devices(void) {
+    NSMutableArray<AVCaptureDeviceType> *types =
+        [NSMutableArray arrayWithObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
+    if (@available(macOS 14.0, *)) {
+        [types addObject:AVCaptureDeviceTypeExternal];
+        [types addObject:AVCaptureDeviceTypeContinuityCamera];
+    } else {
+        // External was named ExternalUnknown before macOS 14. Keep USB cameras
+        // visible on the app's macOS 11-13 deployment range.
+        [types addObject:AVCaptureDeviceTypeExternalUnknown];
+    }
+    if (@available(macOS 13.0, *)) {
+        [types addObject:AVCaptureDeviceTypeDeskViewCamera];
+    }
+    AVCaptureDeviceDiscoverySession *session =
+        [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:types
+                                                              mediaType:AVMediaTypeVideo
+                                                               position:AVCaptureDevicePositionUnspecified];
+    return session.devices;
+}
+
 extern "C" size_t sxc_macos_camera_devices_json(char *buffer, size_t capacity) {
     @autoreleasepool {
         NSMutableArray *rows = [NSMutableArray array];
-        for (AVCaptureDevice *device in [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo]) {
+        for (AVCaptureDevice *device in sxc_video_devices()) {
             if (!device.uniqueID.length) continue;
             [rows addObject:@{
                 @"uid": device.uniqueID,
@@ -310,7 +333,7 @@ extern "C" void *sxc_macos_camera_start(const char *device_uid,
             return nullptr;
         }
         AVCaptureDevice *selected = nil;
-        for (AVCaptureDevice *device in [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo]) {
+        for (AVCaptureDevice *device in sxc_video_devices()) {
             if ([device.uniqueID isEqualToString:uid]) { selected = device; break; }
         }
         if (!selected) {

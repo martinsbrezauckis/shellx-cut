@@ -1,13 +1,12 @@
 # The debug API — REST, WebSocket, and MCP
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
 
 Role: the single-page operator reference for driving ShellX Cut from outside
 the UI — every endpoint, the security model, and MCP client setup. The verb
 catalog itself lives in `schema/verbs.json` (contract) and
 `skill/shellx-cut/reference.md` (the full per-verb argument reference).
-This reference describes the Debug API in v0.6.114 candidate source. v0.6.113
-remains the latest published release.
+This reference describes the v0.6.115 candidate Debug API; v0.6.114 is the latest published release.
 
 ## Starting the server
 
@@ -173,6 +172,12 @@ removed. Poll the returned `cache_rebuild` job with `jobs.status` and use
 `jobs.cancel` for cooperative stop. Cancellation or a restart leaves only the
 pending reservation, so a later identical rebuild can resume safely; source
 media, exports, captures, and receipts are untouched.
+If a later output reservation fails after an earlier owned cache file was
+retired, the request fails and the failed job's `jobs.status.result` reports
+verified pending asset/output identities and retired counts. An unavailable
+ownership readback is reported as unknown, without a restoration claim. Check
+Jobs, correct the cause or source identity, then retry the exact rebuild; the
+pending reservation is retained across restart.
 
 `project.cache_purge {plan_id, confirm:true}` consumes that one preview plan
 and returns a cancellable `cache_purge` job. The job takes an exclusive cache
@@ -293,7 +298,17 @@ verify that every served `/api/agent-doc/*path` file is
 byte-identical to the candidate source, preventing a stale or partial docs bundle.
 
 Long-running verbs return `{job_id}` immediately — poll `jobs.status`, list via
-`jobs.list`, abort via `jobs.cancel`. An engine-eligible failed default-output
+`jobs.list`, abort via `jobs.cancel`.
+For a project-owned UI job, pass `expected_origin_path_sha256` from
+`project.state.project_identity.origin_path_sha256` on status and cancel.
+Cut checks it before job lookup or cancellation, so a project switch cannot
+redirect a stale request to a reused job ID. The argument is optional for
+existing unscoped API callers and remains valid after a project rename.
+For app-owned `render.queue`, `screen_record.export`, and
+`screen_record.copy_raw` admissions, pass the same optional digest. A supplied
+digest is checked before output reservation or job creation; project switching
+is serialized through admission even when the argument is omitted.
+An engine-eligible failed default-output
 `screen_record.export` can start exactly one linked child through `jobs.retry`;
 it validates the active revision, source/EditPlan/capture-audio SHA-256 inputs,
 and a fresh default-output lease, then gives the queued renderer private
@@ -419,7 +434,12 @@ stable selectors and an explicit agent-control alternative.
 `ui.state {}` returns `shellx-cut/ui-state/2`: active workspace, left/right and
 Review tabs, overlays/dialogs, open/available/agent-openable surface ids,
 playhead, selection, export range, state revision, and path-safe project
-identity. While Settings > About is open, its optional
+identity. `right.body_status` reports `loaded`, `loading`, `blocked`, `failed`,
+or `null` when the right-tool body is closed. A blocked or failed body exposes
+`right.recovery_selector`; its selected tab remains visible but its surface id
+is omitted from `open_surface_ids`. `ui.open` confirms a right tool only after
+its body paints and returns `applied:false` with that recovery selector when
+the body is blocked or failed. While Settings > About is open, its optional
 `about.displayed_version` is the exact version whose visible text has committed;
 it is `null` while the doctor report is pending and absent on older connected UI
 clients. The server adds `connected:true` and `ui_clients`; after the last UI
@@ -618,11 +638,16 @@ that take; unmount, a replacement rehearsal, and ordinary Recording Start use
 the same cleanup boundary. Deletion failures retain private ownership and retry
 only through the bounded cleanup owner instead of exposing or orphaning bytes.
 
-On Windows and macOS, passive Doctor enumeration may advertise opaque camera
-choices without opening a device or prompting for permission. Camera use is
-explicit through `screen_record.start{camera_id}` and is limited to Auto-edit
-mode. Start revalidates the current opaque identity and admits it only after a
-real native first frame. Stop returns camera media only as a validated
+On Windows, macOS, and Linux builds with native camera capture, passive Doctor
+enumeration may advertise opaque camera choices without opening a device or
+prompting for permission. A Linux build may report support with no currently
+listed device; opening the selected V4L2 device and checking required GStreamer
+plugins occur only at Start. Camera use is explicit through
+`screen_record.start{camera_id}` and is limited to Auto-edit
+mode. Start revalidates the current opaque identity, then the screen-owned
+sidecar waits for its shared clock and a real native first frame. The Start
+acknowledgement alone does not prove that camera frames or output exist. Stop
+returns camera media only as a validated
 `CameraArtifact` with its capture id, relative video leaf, content hash, terminal
 state, and shared-clock range. The screen source and camera take remain separate
 editable assets; Cut never substitutes a different camera after permission,

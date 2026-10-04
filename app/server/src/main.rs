@@ -44,6 +44,7 @@ mod paste_attributes;
 mod perception_setup;
 mod plugins;
 mod project_materialization;
+mod project_origin;
 mod projects_index;
 mod provider_runtime;
 mod providers;

@@ -1,6 +1,6 @@
 # ShellX Cut Feature Inventory
 
-<!-- shellx-cut-release-truth: candidate; version=0.6.114; published=0.6.113 -->
+<!-- shellx-cut-release-truth: candidate; version=0.6.115; published=0.6.114 -->
 
 This feature view is bundled with installed ShellX Cut builds for users and
 agents discovering the application on a new machine.
@@ -9,9 +9,20 @@ For the exact machine-readable contract, use `schema/verbs.json`. For agent
 workflow details and full verb arguments, use `skill/shellx-cut/SKILL.md` and
 `skill/shellx-cut/reference.md`.
 
-## v0.6.114 candidate
+## v0.6.115 candidate
 
-v0.6.113 remains the latest published release.
+v0.6.114 remains the latest published release.
+
+- Linux Camera: Recording Studio gains a selectable camera source with explicit
+  device readiness and capture status.
+- Bugfixes: export, job status, project switching, and Voiceover recovery are
+  more reliable.
+
+Native installed qualification for v0.6.115 remains pending.
+
+## v0.6.114 published
+
+v0.6.114 remains the latest published release.
 
 - Recording Studio keeps the shared **Edit | Record** switch in the editor
   header while giving capture a focused workspace. Capture readiness, source
@@ -54,12 +65,12 @@ v0.6.113 remains the latest published release.
   source checkout, PATH binary, or npm package is not presented as a managed
   installation.
 
-These are candidate-source capabilities. Native installed qualification and
-the final release matrix remain separate from this source inventory.
+These capabilities belong to the published v0.6.114 release. This feature
+inventory describes supported behavior; release qualification is recorded separately.
 
 ## v0.6.113 published
 
-v0.6.113 remains the latest published release.
+This section preserves v0.6.113 feature history; v0.6.114 is the latest published release.
 
 - Transcript is now a timeline-linked phrase and chapter list with exact
   start-end ranges and one shared time control for clips, captions, markers,
@@ -489,9 +500,15 @@ route to the same surface registry.
   `not_run` (never a fabricated plan); cutd validates every returned plan or
   storyboard against the local catalog before anything can be previewed or
   inserted.
-- The existing Motion bridge described below remains unqualified and outside
-  v0.6.114 connection testing. This release qualifies read-only Motion
-  discovery; connection qualification and managed integration remain deferred.
+
+### Optional Motion bridge (connection unqualified)
+
+Read-only discovery is the qualified v0.6.114 baseline. The entire bridge
+subsection below describes existing optional CLI integration, including Edit in
+Motion, refresh, tracking and round-trip routes. Connection qualification and
+managed distribution/lifecycle remain deferred; these descriptions do not
+establish a tested editing workflow for the current release.
+
 - Motion-backed Generate templates lower through `motion.template_to_cut` for
   package templates and `motion.script_to_cut` for scripted-video JSON, calling
   the local ShellX Motion CLI, returning preview receipt/artifact evidence, and
@@ -573,6 +590,8 @@ route to the same surface registry.
   transform keyframes, verify, or detach back to the exact prior keyframes.
   Package changes are copy-on-write and receipt/identity/race checked; the last
   good Cut render stays untouched until **Refresh render** is selected.
+### AI media generation
+
 - AI media generation remains separate through `assets.generate`, uses immutable
   content-addressed outputs with provenance/reuse metadata, and imports
   provider-backed media like any other asset. Up to four registered project
@@ -681,7 +700,16 @@ route to the same surface registry.
   audio, GIF, and platform publish presets. Desktop OTIO import is opened from
   Assets, runs a read-only track/media preflight, confirms a source hash, then
   replaces the active timeline in one replay-safe operation; offline clips
-  remain timed gaps.
+  remain timed gaps. Replace probes media EOF and refuses overlong source ranges,
+  except exact Cut frame-rounding drift of at most 50 ms, which clamps with a
+  warning; larger or nonmatching out-points require explicit retrimming.
+  Interchange carries cuts and media references with frame rounding.
+  `export.xml`, `export.otio`, and `export.edl` verb responses warn
+  when a format drops nondefault playback
+  state such as muted ranges, hidden tracks, or audio mix settings. Use a
+  rendered delivery when those edits must be preserved in the output. The
+  Export menu shows the complete warning list after a successful interchange
+  export, so a saved file is not mistaken for a lossless transfer.
 
 ## Recording
 

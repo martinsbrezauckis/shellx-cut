@@ -44,7 +44,7 @@
                automated release check.
                Keep it equal to app/desktop/src-tauri/tauri.conf.json `version` AND to the
                visible text on this span whenever the manual is updated for a release. -->
-          <span class="manual-version" data-app-version="0.6.114" data-release-status="candidate" data-published-version="0.6.113">0.6.114</span>
+          <span class="manual-version" data-app-version="0.6.115" data-release-status="candidate" data-published-version="0.6.114">0.6.115</span>
         </div>
         <input
           class="manual-search"
@@ -251,9 +251,9 @@
 
         <details class="manual-folder" open>
           <summary>Recording Studio</summary>
-          <button class="manual-node" data-feature-id="cut.record.studio">Studio preview</button>
-          <button class="manual-node" data-feature-id="cut.record.scenes">Recording scenes</button>
-          <button class="manual-node" data-feature-id="cut.record.scene_timer">Recording timer</button>
+          <button class="manual-node" data-feature-id="cut.record.studio">Source preview and settings</button>
+          <button class="manual-node" data-feature-id="cut.record.scenes">Camera layout</button>
+          <button class="manual-node" data-feature-id="cut.record.scene_timer">On-video timer</button>
           <button class="manual-node" data-feature-id="cut.record.pause_resume">Pause and resume</button>
           <button class="manual-node" data-feature-id="cut.record.camera_enable">Camera take</button>
           <button class="manual-node" data-feature-id="cut.record.camera_visible">Show or hide camera</button>
@@ -261,10 +261,10 @@
           <button class="manual-node" data-feature-id="cut.record.camera_size">Camera size</button>
           <button class="manual-node" data-feature-id="cut.record.camera_shape">Camera shape</button>
           <button class="manual-node" data-feature-id="cut.record.background">Background</button>
-          <button class="manual-node" data-feature-id="cut.record.raw_streams">Raw streams</button>
+          <button class="manual-node" data-feature-id="cut.record.raw_streams">Recording details</button>
           <button class="manual-node" data-feature-id="cut.record.hotkeys">Recording hotkeys</button>
-          <button class="manual-node" data-feature-id="cut.record.raw_mode">Raw capture mode</button>
-          <button class="manual-node" data-feature-id="cut.record.autoedit">Auto-edit recording</button>
+          <button class="manual-node" data-feature-id="cut.record.raw_mode">Raw MP4</button>
+          <button class="manual-node" data-feature-id="cut.record.autoedit">Polished clip in Edit</button>
           <button class="manual-node" data-feature-id="cut.record.studio_event_api">Studio event API</button>
         </details>
 
@@ -353,42 +353,54 @@
 
         <section class="manual-section" id="recording-studio">
           <p class="manual-eyebrow">Recording Studio</p>
-          <h2>Record your screen, and keep the raw streams.</h2>
+          <h2>Record with F9, keep the original, then edit.</h2>
           <div class="manual-surface" data-manual-surface="recording" aria-label="ShellX Cut Recording Studio surface">
             <img
-              src="../assets/cut/cut-recording-studio-current.png?v=73b4fd9f-record"
-              alt="ShellX Cut Record workspace with an explicit desktop-session readiness notice, source and audio settings, raw-stream controls, and a safely disabled Start recording control"
+              src="../assets/cut/cut-recording-studio-current.png?v=8cb84317-record"
+              alt="ShellX Cut Record workspace: screen and sound on the left, real-source preview in the centre, camera and recording settings on the right, and Start recording at the bottom"
             />
             <div class="manual-highlight" data-manual-highlight="recording" data-label="Recording Studio" aria-hidden="true" hidden></div>
           </div>
           <div class="manual-grid">
             <article class="manual-card">
-              <h3>Check readiness, then choose a source</h3>
-              <p>Open <strong>Record</strong> from the shared <strong>Edit | Record</strong> switch. Read the compact Capture readiness result, open its technical checks if needed, then choose a display or, on Windows and macOS, an application window. Linux uses the system picker to choose a display when Start opens it. Use <strong>Refresh sources</strong> after a display, app, or device changes; Start stays unavailable while Cut checks the current setup.</p>
+              <h3>Choose screen and sound</h3>
+              <p>Open <strong>Record</strong> from the <strong>Edit | Record</strong> switch. The left side selects a display or, on Windows and macOS, an application window, microphone input, system audio and recording mode. Linux opens its system screen-sharing picker when capture starts. Use <strong>Refresh sources</strong> after a display or device changes. <strong>Test microphone</strong> and <strong>Test system audio</strong> check sound without saving a recording.</p>
             </article>
             <article class="manual-card">
-              <h3>Keep composition controls out of the picture</h3>
-              <p>In Auto-edit mode, use <strong>Actions</strong>, right-click the composition preview, or press <kbd>Shift</kbd>+<kbd>F10</kbd> to adjust the same guarded camera and background setup. The camera preview opens its own menu for its placement and shape. Raw capture and an active take keep unavailable changes disabled.</p>
+              <h3>Raw or Polished</h3>
+              <p><strong>Raw</strong> keeps the original capture. <strong>Polished</strong> also adds an editable clip with cursor smoothing, zoom-to-cursor and framing to the open project. Turn on <strong>Show keystrokes</strong> beneath Polished if you want them in the demo; it is off by default. Both modes save the unchanged original MP4 automatically when you stop.</p>
             </article>
             <article class="manual-card">
-              <h3>Camera stays editable</h3>
-              <p>In Auto-edit mode, turn Camera on when Doctor lists a current Windows/macOS device, then set its position, size, and shape. With no connected camera or unavailable discovery, Camera stays disabled while screen recording remains available. Cut keeps the finalized camera as a separate editable take instead of baking it into the screen source.</p>
+              <h3>Use the right-side settings</h3>
+              <p>Choose <strong>Camera</strong>, <strong>Background</strong>, <strong>Video timer</strong>, <strong>Capture timing</strong> or <strong>Video quality</strong>. That section's controls appear directly below the buttons. You can switch sections without losing draft settings. Current Record choices also stay available when you return to Edit and start with F9.</p>
             </article>
             <article class="manual-card">
-              <h3>Switch named scenes while recording</h3>
-              <p>Choose Screen or Presenter PiP from the compact scene strip. Cut saves each live switch on the recording clock before the interface marks it saved; Presenter PiP waits for an admitted camera.</p>
+              <h3>Choose your camera layout</h3>
+              <p>In Polished mode, enable <strong>Camera</strong>, choose a device from the current Doctor list, then select any of the four corners, <strong>Circle</strong> or <strong>Rounded rectangle</strong>, and the size. Your placement stays selected until <strong>Reset camera layout</strong>. Cut saves camera video as a separate editable take. Windows, macOS, and Linux builds with native camera capture may list a device; a supported build can still list none. After the screen starts, the camera owner checks the exact device and a real first frame. The Start acknowledgement alone is not a camera recording. If the selected camera fails, that take stops without silently choosing another camera or switching to screen-only. Turn Camera off to start a separate screen-only take.</p>
             </article>
             <article class="manual-card">
-              <h3>One timer for the whole take</h3>
-              <p>Use Off, Elapsed, or Countdown for the capture. Pause, resume, reset, restart, and end remain timed scene events rather than baked pixels.</p>
+              <h3>Preview real captured pixels</h3>
+              <p>Use the source preview below the picture to choose and inspect the actual display or window before Start. <strong>Rehearse</strong> makes a disposable video-only test without adding a recording or timeline clip. During capture, the preview shows live frames from that recording. If the source becomes unavailable, Cut reports that state and keeps Stop usable. Whole-display capture includes Cut when it is visible; minimize Cut or cover it with the app you are demonstrating to keep it out of the picture.</p>
             </article>
             <article class="manual-card">
-              <h3>Metadata, not baked pixels</h3>
-              <p>Live Studio changes are saved as timed events so auto-edit can replay background choices and markers into the polished clip.</p>
+              <h3>F9 works without opening Record</h3>
+              <p>With Cut open, press <kbd>F9</kbd> to start or stop using your current Record settings, or your saved settings if you have not opened Record. Cut does not switch to Record or bring its window forward just to start. It uses the open project, or creates a recording project automatically when none is open. When the OS global shortcut is available, F9 also works with Cut minimized and another app focused. Cut shows when only the focused shortcut is available. <kbd>F12</kbd> adds a marker during recording.</p>
             </article>
             <article class="manual-card">
-              <h3>Raw stream checks</h3>
-              <p>After capture, Cut reports screen, optional camera, mic, system audio, and Studio metadata so the recording can be diagnosed or reused. Only a validated finalized camera take is reported.</p>
+              <h3>Save first, export afterward</h3>
+              <p>Stop saves the unchanged original MP4 to the default export folder in both modes. Polished also adds the editable clip to your project. Afterward, <strong>Export MP4</strong> or <strong>Export GIF</strong> chooses a destination for the polished result; <strong>Save a copy</strong> copies the original, and Raw offers <strong>Add to timeline</strong>. <strong>Export folder settings</strong> changes the default folder. There is no Save location picker before recording.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Two different countdowns</h3>
+              <p><strong>Capture timing</strong> controls the delay before Start and whether capture ends after a chosen length or runs until Stop. <strong>Video timer</strong> adds an overlay: Off, Count up or Count down, with a custom <code>HH:MM:SS</code> duration and quick minute choices. Its Pause, Resume, Reset, Restart and End buttons affect the visible timer only. Reaching zero does not stop capture.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Quality and capture Pause</h3>
+              <p>Choose frame rate and quality in <strong>Video quality</strong>. An advanced custom frame rate accepts a whole number from 1 to 240 only after <strong>Apply</strong> or Enter; invalid input keeps the previous rate. Capture <strong>Pause &amp; resume</strong> is a separate, opt-in macOS capability for an exact display at a whole-number frame rate. That mode excludes Camera, scenes, keystrokes, window capture and quality options. Other platforms explain when Pause is unavailable.</p>
+            </article>
+            <article class="manual-card">
+              <h3>Recording details and recovery</h3>
+              <p>After Stop, the area below the preview reports the recorded streams, pointer information and shortcut status. If Stop fails, Cut checks whether that exact capture is still active before offering <strong>Retry Stop</strong>; uncertain or ended capture is reported explicitly. Do not assume that an error means the take has saved.</p>
             </article>
             <article class="manual-card">
               <h3>Long recording safety</h3>
@@ -403,8 +415,8 @@
               <p>On macOS 14.2 or newer, Cut records system audio through a Core Audio process tap alongside ScreenCaptureKit. The first recording may request Screen Recording and Audio Capture separately; approve both, restart Cut if macOS asks, and retry. A successful take includes <code>system.wav</code>.</p>
             </article>
             <article class="manual-card">
-              <h3>Hotkeys</h3>
-              <p>F9 starts or stops recording and F12 adds a marker. Camera visibility and placement shortcuts operate only when the Auto-edit take has an admitted camera.</p>
+              <h3>Permissions and unavailable controls</h3>
+              <p>The OS may request screen, microphone, camera or system-audio permission for the feature you choose. Allow the requested access and reopen Cut if the OS requires it. An unavailable device or capability shows its reason; it does not become enabled just because another recording option is ready.</p>
             </article>
           </div>
         </section>
@@ -437,9 +449,16 @@
             <article class="manual-card">
               <h3>CLI agents</h3>
               <p>
-                Needed for AI planning, Generate prompt and storyboard planning,
-                review assistance, translation workflows, and live agent chat.
+                Use your installed Claude Code, Codex, Grok or Antigravity CLI
+                and sign in through its normal command outside Cut. Keep one
+                current command on your normal PATH. Cut checks the capabilities
+                needed for a request rather than requiring a specific provider
+                version. Leave Model empty to use that CLI's configured default.
               </p>
+            </article>
+            <article class="manual-card">
+              <h3>Background removal</h3>
+              <p>Standard background removal (RVM) works on CPU and can use CoreML on Mac or CUDA on NVIDIA hardware. Premium subject selection requires NVIDIA/CUDA readiness and acceptance of its non-commercial model licence. A usable Apple Silicon Premium choice is deferred; use Standard on Mac in this release.</p>
             </article>
             <article class="manual-card">
               <h3>Offline work</h3>
@@ -457,7 +476,7 @@
           <div class="manual-grid">
             <article class="manual-card">
               <h3>Import and organize</h3>
-              <p>Create or open a project, import media, check Media Health, filter the asset list, and add clips to the base timeline at the playhead.</p>
+              <p>Create or open a project, import local video, audio or image files, check Media Health, filter the asset list, and add clips to the base timeline at the playhead. Use supported self-contained editing formats; playlists, manifests and embedded network references are rejected.</p>
             </article>
             <article class="manual-card">
               <h3>Base track and overlays</h3>
@@ -476,6 +495,10 @@
               <p>Preview the recipe before running it. The pass transcribes, finds pauses and retakes, removes fillers conservatively, and tightens pacing without forcing a render.</p>
             </article>
             <article class="manual-card">
+              <h3>Assemble an editable cut</h3>
+              <p>Choose <strong>Repurpose</strong>, <strong>Shorts</strong> or <strong>From script</strong> in Assemble, review the proposed source ranges, then choose <strong>Add reviewed plan to timeline</strong>. The result stays editable and is added as one Undo action. Shorts applies its reviewed crop and transcript captions only when the project's aspect matches. If the timeline or transcript changes, make a fresh plan before applying it.</p>
+            </article>
+            <article class="manual-card">
               <h3>Sequence Index</h3>
               <p>Open Find and choose Sequence Index to search clips and markers across every sequence. Filter by kind, track, offline media, gaps, effects, or hidden, locked, and muted tracks; compact badges expose the matching state. Open a row to switch and seek, or copy the currently shown path-light rows as spreadsheet-safe CSV for QC handoff.</p>
             </article>
@@ -484,8 +507,8 @@
               <p>Use registered project assets as references, label variations, compare takes, choose a result, and insert or replace from verified project history. Cancelled placeholders remain available for an explicit retry.</p>
             </article>
             <article class="manual-card">
-              <h3>Edit linked Motion clips</h3>
-              <p>Open a linked package with Edit in Motion, render a verified copy-on-write revision in Canvas, then refresh the same Cut clip. Identity or revision mismatches leave the last good render untouched.</p>
+              <h3>Motion discovery and deferred connection</h3>
+              <p>Settings can discover an existing Motion installation and show its status. Only that read-only discovery is qualified in v0.6.114. The existing Edit in Motion, refresh, tracking and round-trip routes remain unqualified; managed installation and connection work is deferred. Do not treat those routes as a tested editing workflow for this release.</p>
             </article>
             <article class="manual-card">
               <h3>Agent Chat changes</h3>
@@ -493,7 +516,7 @@
             </article>
             <article class="manual-card">
               <h3>Record and polish</h3>
-              <p>Open Record, choose screen, mic, and system audio, then stop to keep raw streams and build a polished clip on the timeline.</p>
+              <p>Choose Raw or Polished and your screen and sound settings once. F9 can then start and stop from Edit or another focused app when the global shortcut is available. Both modes save the original MP4; Polished also adds an editable clip to the current project, or an automatically created recording project. Choose optional export destinations after Stop.</p>
             </article>
             <article class="manual-card">
               <h3>Review and export</h3>
