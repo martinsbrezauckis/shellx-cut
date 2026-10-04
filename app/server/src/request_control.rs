@@ -29,6 +29,16 @@ pub(crate) fn prepare(
             controlled: false,
         });
     };
+    // Out observes an already admitted voiceover session. Its request_id is
+    // domain correlation, not a second durable mutation sharing Start's retry
+    // key. The coordinator authenticates the owner, fingerprint, and epoch.
+    if name == "voiceover.observe_playhead" {
+        return Ok(PreparedRequest {
+            args,
+            actor,
+            controlled: false,
+        });
+    }
     let request_id = take_string(object, "request_id")?;
     let expected_revision = take_string(object, "expected_revision")?;
     let Some(request_id) = request_id else {

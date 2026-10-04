@@ -188,3 +188,122 @@ async fn concurrent_mutations_from_one_revision_commit_only_once() {
         1
     );
 }
+
+#[tokio::test]
+async fn voiceover_out_request_identity_survives_real_dispatch_preparation() {
+    let state = AppState::new();
+    // No microphone is opened: reaching the active-owner refusal proves that
+    // real registry + shared request preparation + coordinator parsing retained
+    // the correlation identity, rather than reporting a phantom missing field.
+    for session in ["a".repeat(22), "b".repeat(22)] {
+        let result = dispatch(
+            &state,
+            "voiceover.observe_playhead",
+            json!({
+                "owner_session_id": session,
+                "owner_capability": "c".repeat(43),
+                "request_id": "voiceover-out-request-1",
+                "request_fingerprint": "a".repeat(64),
+                "bridge_epoch": 1,
+                "playhead_ms": 9985,
+            }),
+            test_actor(),
+        )
+        .await;
+        assert!(!result.ok);
+        let error = result.error.unwrap();
+        assert_eq!(error.code, error_codes::NOT_FOUND, "{error:?}");
+        assert_eq!(error.message, "no active voiceover take");
+    }
+}
+
+#[tokio::test]
+async fn voiceover_out_dispatch_still_refuses_missing_and_malformed_identity() {
+    let state = AppState::new();
+    for identity in [None, Some(json!(42))] {
+        let mut args = json!({
+            "owner_session_id": "b".repeat(22),
+            "owner_capability": "c".repeat(43),
+            "request_fingerprint": "a".repeat(64),
+            "bridge_epoch": 1,
+            "playhead_ms": 9985,
+        });
+        if let Some(identity) = identity {
+            args["request_id"] = identity;
+        }
+        let result = dispatch(&state, "voiceover.observe_playhead", args, test_actor()).await;
+        assert!(!result.ok);
+        assert_eq!(result.error.unwrap().code, error_codes::INVALID_ARGS);
+    }
+}
+
+#[test]
+fn voiceover_out_preparation_preserves_domain_identity_without_new_retry_metadata() {
+    let args = json!({
+        "request_id": "voiceover-out-request-1",
+        "owner_session_id": "a".repeat(22),
+        "owner_capability": "c".repeat(43),
+        "request_fingerprint": "a".repeat(64),
+        "bridge_epoch": 1,
+        "playhead_ms": 9985,
+    });
+    let actor = test_actor();
+    let prepared =
+        crate::request_control::prepare("voiceover.observe_playhead", args.clone(), actor.clone())
+            .unwrap();
+    assert!(!prepared.controlled);
+    assert_eq!(prepared.args, args);
+    assert_eq!(prepared.actor, actor);
+    for verb in ["edit.add_marker", "voiceover.start"] {
+        let prepared = crate::request_control::prepare(
+            verb,
+            json!({"request_id":"retry-1", "expected_revision":"op_000001"}),
+            test_actor(),
+        )
+        .unwrap();
+        assert!(prepared.controlled);
+        assert!(prepared.args.get("request_id").is_none());
+        assert!(prepared.args.get("expected_revision").is_none());
+        let request = prepared.actor.request.unwrap();
+        assert_eq!(request.request_id, "retry-1");
+        assert_eq!(request.expected_revision.as_deref(), Some("op_000001"));
+    }
+}
+
+#[tokio::test]
+async fn voiceover_out_domain_id_does_not_replay_or_conflict_with_a_durable_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let created = create_project(&state, root.path()).await;
+    assert!(created.ok);
+    let marker_args = json!({
+        "request_id": "voiceover-out-request-1",
+        "expected_revision": created.project_revision.unwrap(),
+        "at_ms": 1,
+        "label": "durable collision witness",
+    });
+    let marker = dispatch(&state, "edit.add_marker", marker_args.clone(), test_actor()).await;
+    assert!(marker.ok, "{:?}", marker.error);
+    let observed = dispatch(
+        &state,
+        "voiceover.observe_playhead",
+        json!({
+            "request_id": "voiceover-out-request-1",
+            "owner_session_id": "b".repeat(22),
+            "owner_capability": "c".repeat(43),
+            "request_fingerprint": "a".repeat(64),
+            "bridge_epoch": 1,
+            "playhead_ms": 9985,
+        }),
+        test_actor(),
+    )
+    .await;
+    let error = observed.error.unwrap();
+    assert_eq!(error.code, error_codes::NOT_FOUND, "{error:?}");
+    assert_eq!(error.message, "no active voiceover take");
+    let retry = dispatch(&state, "edit.add_marker", marker_args, test_actor()).await;
+    assert_eq!(
+        retry, marker,
+        "Out must not replace another durable retry receipt"
+    );
+}
