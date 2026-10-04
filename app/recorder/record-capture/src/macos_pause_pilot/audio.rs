@@ -117,7 +117,8 @@ pub(super) fn bounded_audio_samples(
     channels: u16,
     available_samples: usize,
 ) -> Result<usize, ()> {
-    if sample_rate == 0 || channels == 0 || available_samples % usize::from(channels) != 0 {
+    if sample_rate == 0 || channels == 0 || !available_samples.is_multiple_of(usize::from(channels))
+    {
         return Err(());
     }
     let packet_start = raw_start_ms.checked_add(first_packet_offset_ms).ok_or(())?;
