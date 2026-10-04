@@ -6,7 +6,7 @@ use super::*;
 fn owned_concat_rejects_a_cached_segment_containing_nested_concat() {
     let sample =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/assets/first-edit-sample.mp4");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::atomic_output::private_test_tempdir();
     let referenced_media = temp.path().join("private.mp4");
     std::fs::copy(&sample, &referenced_media).unwrap();
     let replaced_segment = temp.path().join("seg_cached.mp4");

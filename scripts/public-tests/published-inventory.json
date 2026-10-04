@@ -1,6 +1,6 @@
 {
   "schema": "shellx-cut/published-test-inventory@1",
-  "version": "0.6.114",
+  "version": "0.6.115",
   "contract": {
     "node_test_count": 11,
     "ui_library_test_count": 39

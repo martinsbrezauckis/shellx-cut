@@ -786,7 +786,7 @@ mod tests {
         let png = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../branding/shellx-cut-icon.png");
         assert!(ffprobe_json(&png).is_ok(), "local PNG must remain readable");
 
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::atomic_output::private_test_tempdir();
         let playlist = temp.path().join("embedded.m3u8");
         std::fs::write(&playlist, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1.0,\nhttp://127.0.0.1:9/segment.ts\n#EXT-X-ENDLIST\n").unwrap();
         let error = ffprobe_json(&playlist).expect_err("nested HTTP must be denied");

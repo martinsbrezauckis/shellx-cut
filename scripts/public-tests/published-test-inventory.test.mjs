@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -61,7 +61,7 @@ function fixture(t, { tests = ['scripts/public-tests/fixture.test.mjs'], resourc
 
 test('published test inventory names the exact public CI scope and every declared resource', () => {
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
-  assert.equal(inventory.version, '0.6.114')
+  assert.equal(inventory.version, JSON.parse(readFileSync(resolve(ROOT, 'ui/package.json'), 'utf8')).version)
   assert.deepEqual(inventory.contract, { node_test_count: 11, ui_library_test_count: 39 })
   assert.deepEqual(inventory.tests.map((entry) => entry.path), [
     'scripts/public-tests/cross-host-media.test.mjs',
