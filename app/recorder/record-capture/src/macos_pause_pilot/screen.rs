@@ -205,21 +205,20 @@ impl MacosPauseScreenOwner for RequiredMacosPauseScreenOwner {
             .clone()
             .zip(preview_generation)
             .map(|(preview, generation)| (preview, generation, Instant::now()));
-        if self.readiness.is_some() || observer_preview.is_some() {
-            if crate::macos_readiness::attach_first_screen_frame_observer(
+        if (self.readiness.is_some() || observer_preview.is_some())
+            && crate::macos_readiness::attach_first_screen_frame_observer(
                 &mut stream,
                 self.readiness.clone(),
                 observer_preview,
             )
             .is_err()
-            {
-                if self.readiness.is_some() {
-                    return Err(MacosPauseStartError::NativeStartFailed);
-                }
-                // Preview alone remains optional; public readiness does not.
-                if let Some((preview, generation)) = preview.clone().zip(preview_generation) {
-                    preview.mark_readback_unavailable(generation);
-                }
+        {
+            if self.readiness.is_some() {
+                return Err(MacosPauseStartError::NativeStartFailed);
+            }
+            // Preview alone remains optional; public readiness does not.
+            if let Some((preview, generation)) = preview.clone().zip(preview_generation) {
+                preview.mark_readback_unavailable(generation);
             }
         }
         if stream.add_recording_output(output.output()).is_err() || stream.start_capture().is_err()
