@@ -34,6 +34,8 @@ fn owned_leaf_read_only_transition_updates_expected_identity() {
     // This test owns the leaf. Restore its permission and close the
     // directory handles before checking cleanup of the owned tempdir.
     let mut permissions = stage.file.metadata().unwrap().permissions();
+    // Windows-only fixture cleanup clears the read-only file attribute, not ACLs.
+    #[allow(clippy::permissions_set_readonly_false)]
     permissions.set_readonly(false);
     stage.file.set_permissions(permissions).unwrap();
     drop(stage);

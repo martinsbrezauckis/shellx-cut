@@ -330,7 +330,20 @@ fn export_user_cancel_terminates_and_reaps_a_hanging_ffmpeg_child() {
             "fixture export did not start its hanging child"
         );
         let started = std::time::Instant::now();
-        assert!(state.jobs.abort(&job_id).await.unwrap());
+        // A bounded cancellation attempt may still be draining its blocking worker.
+        // Retry only that documented response, within the existing fixture deadline.
+        let cancelled = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match state.jobs.abort(&job_id).await {
+                    Err(error) if error.code == "job_cancel_pending" => continue,
+                    result => break result,
+                }
+            }
+        })
+        .await
+        .expect("jobs.cancel should finish reaping its child within three seconds")
+        .unwrap();
+        assert!(cancelled);
         assert!(
             started.elapsed() < Duration::from_secs(3),
             "jobs.cancel should wait only until its child is reaped"

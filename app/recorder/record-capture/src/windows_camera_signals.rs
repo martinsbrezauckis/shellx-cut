@@ -323,13 +323,11 @@ impl IMFCaptureEngineOnSampleCallback_Impl for SampleCallback_Impl {
     fn OnSample(&self, sample: windows::core::Ref<IMFSample>) -> windows::core::Result<()> {
         let sample = sample.ok()?;
         unsafe {
-            let sample_time = sample.GetSampleTime().map_err(|error| {
-                self.signals.note_sample_getter_error("time", &error);
-                error
+            let sample_time = sample.GetSampleTime().inspect_err(|error| {
+                self.signals.note_sample_getter_error("time", error);
             })?;
-            let duration = sample.GetSampleDuration().map_err(|error| {
-                self.signals.note_sample_getter_error("duration", &error);
-                error
+            let duration = sample.GetSampleDuration().inspect_err(|error| {
+                self.signals.note_sample_getter_error("duration", error);
             })?;
             self.signals.on_sample(sample_time, duration);
         }
