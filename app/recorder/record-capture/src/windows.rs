@@ -464,9 +464,7 @@ impl Capture for WindowsCapture {
                         if let Some(preview) = preview_on_close.as_ref() {
                             preview.clear_current_generation();
                         }
-                        let result = control
-                            .stop()
-                            .map_err(|error| cap_err("finalize WGC checkpoint", error));
+                        let result = crate::windows_wgc_handler::stop_with_held_sample(control);
                         timing.control_stopped(Instant::now(), result.is_ok());
                         if let Err(error) = timing.persist() {
                             eprintln!("WGC timing observation could not be retained: {error}");

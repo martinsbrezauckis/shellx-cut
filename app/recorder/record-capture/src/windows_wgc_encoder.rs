@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use windows::core::HSTRING;
 use windows::Foundation::{TimeSpan, TypedEventHandler};
@@ -24,7 +25,7 @@ use windows::System::Threading::{ThreadPool, WorkItemHandler, WorkItemOptions, W
 use windows_capture::{d3d11::SendDirectX, frame::Frame};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
-type Sample = (SendDirectX<IDirect3DSurface>, i64);
+type Sample = (SendDirectX<IDirect3DSurface>, i64, Option<i64>);
 
 pub(crate) struct WgcVideoEncoder {
     sender: Option<mpsc::SyncSender<Sample>>,
@@ -34,12 +35,17 @@ pub(crate) struct WgcVideoEncoder {
     requested: i64,
     scheduling_failure: Arc<Mutex<Option<windows::core::Error>>>,
     clock: crate::windows_wgc_sample_clock::WgcSampleClock,
+    last_accepted: Option<(SendDirectX<IDirect3DSurface>, i64, Instant)>,
+    terminal_sample_duration: i64,
     width: u32,
     height: u32,
 }
 
 impl WgcVideoEncoder {
     pub(crate) fn new(width: u32, height: u32, fps: u32, path: &Path) -> Result<Self, Error> {
+        if fps == 0 {
+            return Err("WGC video frame rate must be positive".into());
+        }
         let (descriptor, profile) = encoding_properties(width, height, fps)?;
         let source = MediaStreamSource::CreateFromDescriptor(&descriptor)?;
         source.SetBufferTime(TimeSpan { Duration: 300_000 })?;
@@ -73,13 +79,20 @@ impl WgcVideoEncoder {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .recv();
                     let delivered = match sample {
-                        Ok((surface, timestamp)) => MediaStreamSample::CreateFromDirect3D11Surface(
-                            &surface.0,
-                            TimeSpan {
-                                Duration: timestamp,
-                            },
-                        )
-                        .and_then(|sample| sample_request.SetSample(&sample)),
+                        Ok((surface, timestamp, duration)) => {
+                            MediaStreamSample::CreateFromDirect3D11Surface(
+                                &surface.0,
+                                TimeSpan {
+                                    Duration: timestamp,
+                                },
+                            )
+                            .and_then(|sample| {
+                                if let Some(duration) = duration {
+                                    sample.SetDuration(TimeSpan { Duration: duration })?;
+                                }
+                                sample_request.SetSample(&sample)
+                            })
+                        }
                         Err(_) => sample_request.SetSample(None),
                     };
                     // Always release the async request, including API errors.
@@ -133,12 +146,25 @@ impl WgcVideoEncoder {
             requested,
             scheduling_failure,
             clock: Default::default(),
+            last_accepted: None,
+            terminal_sample_duration: (10_000_000 / i64::from(fps)).max(1),
             width,
             height,
         })
     }
 
     pub(crate) fn send_frame(&mut self, frame: &Frame<'_>) -> Result<(), Error> {
+        let native = frame.timestamp()?.Duration;
+        let surface = crate::windows_wgc_surface::snapshot(frame, self.width, self.height)?;
+        self.send_snapshot(surface, native, Instant::now())
+    }
+
+    fn send_snapshot(
+        &mut self,
+        surface: IDirect3DSurface,
+        native: i64,
+        accepted_at: Instant,
+    ) -> Result<(), Error> {
         if let Some(error) = self
             .scheduling_failure
             .lock()
@@ -150,18 +176,68 @@ impl WgcVideoEncoder {
         if self.worker.as_ref().is_some_and(JoinHandle::is_finished) {
             return Err("WGC video encoder terminated before capture close".into());
         }
-        let native = frame.timestamp()?.Duration;
         let timestamp = self.clock.timestamp(native)?;
         // Keep the native elapsed clock. No frame-count-derived timestamps or
         // forced durations may compress sparse callbacks or capture stalls.
-        let surface = crate::windows_wgc_surface::snapshot(frame, self.width, self.height)?;
         crate::windows_wgc_sample_queue::offer(
             self.sender
                 .as_ref()
                 .ok_or("WGC video encoder already closed")?,
-            (SendDirectX::new(surface), timestamp),
+            (SendDirectX::new(surface.clone()), timestamp, None),
         )?;
+        // This is another reference to the queued immutable GPU texture, not
+        // a second GPU copy. Only the latest accepted surface stays owned.
+        self.last_accepted = Some((SendDirectX::new(surface), timestamp, accepted_at));
         Ok(())
+    }
+
+    /// Called only after the native capture control joined successfully. A
+    /// still desktop gets one final same-pixel sample at the observed Stop
+    /// boundary, before EOS; failed Stop and source loss use ordinary close.
+    pub(crate) fn finish_after_control_stop(
+        mut self,
+        stop_at: Instant,
+    ) -> Result<Option<u64>, Error> {
+        let held_ms = self.append_held_sample(stop_at)?;
+        self.close()?;
+        Ok(held_ms)
+    }
+
+    fn append_held_sample(&mut self, stop_at: Instant) -> Result<Option<u64>, Error> {
+        let Some((surface, last_timestamp, accepted_at)) = self.last_accepted.take() else {
+            return Ok(None);
+        };
+        let elapsed = stop_at.saturating_duration_since(accepted_at);
+        let elapsed_100ns = i64::try_from(elapsed.as_nanos() / 100)
+            .map_err(|_| "WGC held pixel interval overflow")?;
+        // An ordinary final frame already spans one requested frame period.
+        // Avoid an extra queue entry at normal cadence, especially when the
+        // bounded queue is full at Stop.
+        if elapsed_100ns <= self.terminal_sample_duration {
+            return Ok(None);
+        }
+        let timestamp = crate::windows_wgc_sample_clock::WgcSampleClock::held_timestamp(
+            last_timestamp,
+            elapsed_100ns,
+        )?;
+        if let Some(error) = self
+            .scheduling_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            return Err(error.clone().into());
+        }
+        if self.worker.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Err("WGC video encoder terminated before held sample".into());
+        }
+        crate::windows_wgc_sample_queue::offer(
+            self.sender
+                .as_ref()
+                .ok_or("WGC video encoder already closed")?,
+            (surface, timestamp, Some(self.terminal_sample_duration)),
+        )?;
+        Ok(Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)))
     }
 
     pub(crate) fn finish(mut self) -> Result<(), Error> {
@@ -236,19 +312,5 @@ fn encoding_properties(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uncompressed_descriptor_and_hevc_profile_use_requested_rate() -> Result<(), Error> {
-        crate::windows_runtime::pin_process_mta()?;
-        for fps in [24, 25, 30, 60] {
-            let (descriptor, profile) = encoding_properties(1920, 1080, fps)?;
-            for properties in [descriptor.EncodingProperties()?, profile.Video()?] {
-                assert_eq!(properties.FrameRate()?.Numerator()?, fps);
-                assert_eq!(properties.FrameRate()?.Denominator()?, 1);
-            }
-        }
-        Ok(())
-    }
-}
+#[path = "windows_wgc_encoder_tests.rs"]
+mod tests;

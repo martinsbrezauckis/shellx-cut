@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use record_core::Result;
 use windows_capture::{
-    capture::{Context, GraphicsCaptureApiHandler},
+    capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
     frame::Frame,
     graphics_capture_api::InternalCaptureControl,
 };
@@ -19,6 +19,24 @@ use crate::{
     region_geometry::NativePixelCrop, windows::cap_err, windows_wgc_run::WgcNativeControl,
     windows_wgc_timing::WgcTimingRecorder, CaptureReadiness, CaptureSourceLifecycle,
 };
+
+pub(crate) fn stop_with_held_sample(
+    control: CaptureControl<Handler, <Handler as GraphicsCaptureApiHandler>::Error>,
+) -> Result<()> {
+    // Native stop posts WM_QUIT and joins without calling on_closed. Retain
+    // the callback owner through that join and use this pre-join observation
+    // as the final pixel boundary. A failed native Stop cannot append a hold.
+    let callback = control.callback();
+    let stop_at = Instant::now();
+    control
+        .stop()
+        .map_err(|error| cap_err("finalize WGC checkpoint", error))?;
+    let finished = callback
+        .lock()
+        .finish_after_control_stop(stop_at)
+        .map_err(|error| cap_err("finalize WGC checkpoint", error));
+    finished
+}
 
 pub(crate) struct LiveWgcControl {
     pub(crate) close: Option<Box<dyn FnOnce() -> Result<()> + Send>>,
@@ -64,6 +82,27 @@ pub(crate) struct Handler {
     timing: Option<WgcTimingRecorder>,
     active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
     preview_started: Instant,
+}
+
+impl Handler {
+    pub(crate) fn finish_after_control_stop(
+        &mut self,
+        stop_at: Instant,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // A source-close callback may already have consumed the encoder. It
+        // must never be recast as a successful owned still-pixel Stop.
+        if let Some(encoder) = self.encoder.take() {
+            let finished = encoder.finish_after_control_stop(stop_at);
+            if let Some(timing) = &self.timing {
+                timing.encoder_finished(Instant::now(), finished.is_ok());
+                if let Ok(Some(held_ms)) = finished.as_ref() {
+                    timing.held_pixel_duration(*held_ms);
+                }
+            }
+            finished?;
+        }
+        Ok(())
+    }
 }
 
 impl GraphicsCaptureApiHandler for Handler {

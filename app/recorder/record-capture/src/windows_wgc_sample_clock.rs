@@ -19,6 +19,21 @@ impl WgcSampleClock {
         self.last = Some(native);
         Ok(elapsed)
     }
+
+    /// Map an observed still-pixel interval onto the same native sample clock.
+    /// The caller supplies the last accepted sample's elapsed timestamp and
+    /// callback observation; no callback count or requested rate enters this.
+    pub(crate) fn held_timestamp(
+        last_timestamp: i64,
+        elapsed_100ns: i64,
+    ) -> Result<i64, &'static str> {
+        if elapsed_100ns <= 0 {
+            return Err("WGC held pixel interval must be positive");
+        }
+        last_timestamp
+            .checked_add(elapsed_100ns)
+            .ok_or("WGC held pixel timestamp overflow")
+    }
 }
 
 #[cfg(test)]
@@ -55,5 +70,18 @@ mod tests {
         assert_eq!(clock.timestamp(i64::MIN), Ok(0));
         assert!(clock.timestamp(i64::MAX).is_err());
         assert_eq!(clock.timestamp(i64::MIN + 1), Ok(1));
+    }
+
+    #[test]
+    fn one_native_frame_can_end_at_observed_static_stop_time() {
+        let mut clock = WgcSampleClock::default();
+        let first = clock.timestamp(5_112_895_216_850).unwrap();
+        assert_eq!(first, 0);
+        assert_eq!(
+            WgcSampleClock::held_timestamp(first, 145_791_450),
+            Ok(145_791_450)
+        );
+        assert!(WgcSampleClock::held_timestamp(first, 0).is_err());
+        assert!(WgcSampleClock::held_timestamp(i64::MAX, 1).is_err());
     }
 }

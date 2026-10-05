@@ -28,6 +28,9 @@ struct WgcTimingSummary {
     schema: &'static str,
     requested_fps: u32,
     accepted_frames: u64,
+    /// Same-pixel time explicitly closed by the owned Stop sample. This is
+    /// separate from the number of real WGC callbacks above.
+    held_pixel_duration_ms: Option<u64>,
     first: Option<FrameTiming>,
     last: Option<FrameTiming>,
     native_timestamp_regressions: u64,
@@ -56,6 +59,7 @@ impl WgcTimingRecorder {
                 schema: "shellx-cut/wgc-timing-observation/1",
                 requested_fps,
                 accepted_frames: 0,
+                held_pixel_duration_ms: None,
                 first: None,
                 last: None,
                 native_timestamp_regressions: 0,
@@ -114,6 +118,13 @@ impl WgcTimingRecorder {
         summary.encoder_finish_ok = Some(ok);
     }
 
+    pub(crate) fn held_pixel_duration(&self, duration_ms: u64) {
+        self.summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .held_pixel_duration_ms = Some(duration_ms);
+    }
+
     pub(crate) fn control_stopped(&self, at: Instant, ok: bool) {
         let mut summary = self
             .summary
@@ -121,6 +132,9 @@ impl WgcTimingRecorder {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         summary.control_stop_return_elapsed_ns = Some(self.elapsed_ns(at));
         summary.control_stop_ok = Some(ok);
+        if !ok {
+            summary.held_pixel_duration_ms = None;
+        }
     }
 
     /// WGC's encoder makes a constant-rate file from sparse native frames. At
@@ -300,6 +314,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&timing.sidecar).unwrap()).unwrap();
         assert_eq!(value["acceptedFrames"], 3);
+        assert!(value["heldPixelDurationMs"].is_null());
         assert_eq!(value["first"]["native_timestamp_100ns"], 1_000_000);
         assert_eq!(value["last"]["capture_clock_elapsed_ns"], 133_000_000);
         assert_eq!(value["nativeTimestampRegressions"], 1);
@@ -310,6 +325,22 @@ mod tests {
             timing.persist().is_err(),
             "a segment diagnostic is never overwritten"
         );
+    }
+
+    #[test]
+    fn failed_control_stop_cannot_retain_a_held_pixel_claim() {
+        let root = tempfile::tempdir().unwrap();
+        let origin = Instant::now();
+        let timing = WgcTimingRecorder::new(origin, 30, &root.path().join("._failed.d/s.mp4"));
+        timing.accepted_frame(1_000_000, origin);
+        timing.held_pixel_duration(15_000);
+        timing.control_stopped(origin + Duration::from_secs(15), false);
+        timing.persist().unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&timing.sidecar).unwrap()).unwrap();
+        assert_eq!(value["acceptedFrames"], 1);
+        assert!(value["heldPixelDurationMs"].is_null());
+        assert_eq!(value["controlStopOk"], false);
     }
 
     #[test]
