@@ -719,11 +719,18 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
         use tokio::sync::Notify;
 
         let dir = tempfile::tempdir().unwrap();
-    let dir_path = dir.path().canonicalize().unwrap();
+        let dir_path = dir.path().canonicalize().unwrap();
         let chosen = tempfile::tempdir().unwrap();
         let chosen_path = chosen.path().canonicalize().unwrap();
         let later = tempfile::tempdir().unwrap();
         let later_path = later.path().canonicalize().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&chosen_path, &later_path] {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
         let media = dir_path.join("clip.mp4");
         assert!(std::process::Command::new("ffmpeg")
             .args([

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use record_core::Result;
 
-use super::{error, DRAIN_MS};
+use super::{error, DRAIN_MS, FIRST_FRAME_MS};
 
 #[repr(C)]
 pub(super) struct NativeCameraRunOpaque {
@@ -31,6 +31,7 @@ unsafe extern "C" {
     pub(super) fn sxc_linux_camera_stop(
         run: *mut NativeCameraRunOpaque,
         timeout_ms: u32,
+        max_frame_gap_ms: u32,
     ) -> libc::c_int;
     pub(super) fn sxc_linux_camera_retired(run: *mut NativeCameraRunOpaque) -> libc::c_int;
     pub(super) fn sxc_linux_camera_diagnosis(
@@ -44,6 +45,8 @@ unsafe extern "C" {
     ) -> libc::c_int;
     #[cfg(test)]
     pub(super) fn sxc_linux_camera_test_empty() -> *mut NativeCameraRunOpaque;
+    #[cfg(test)]
+    pub(super) fn sxc_linux_camera_test_timestamp_contract() -> libc::c_int;
     pub(super) fn sxc_linux_camera_free(run: *mut NativeCameraRunOpaque);
     pub(super) fn sxc_linux_camera_count(run: *mut NativeCameraRunOpaque) -> u32;
     pub(super) fn sxc_linux_camera_interval(
@@ -84,7 +87,7 @@ impl NativeRun {
     }
 
     pub(super) fn retire(&mut self) -> Result<bool> {
-        let status = unsafe { sxc_linux_camera_stop(self.ptr(), DRAIN_MS) };
+        let status = unsafe { sxc_linux_camera_stop(self.ptr(), DRAIN_MS, FIRST_FRAME_MS) };
         let retired = unsafe { sxc_linux_camera_retired(self.ptr()) != 0 };
         if !retired {
             return Err(error("stop Linux camera", "native writers did not retire"));

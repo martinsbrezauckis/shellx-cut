@@ -140,8 +140,13 @@ fn actual_gstreamer_zero_frame_source_refuses_and_retires() {
     let pointer = NonNull::new(pointer).expect("core GStreamer fakesrc/fakesink must be installed");
     let first = unsafe { sxc_linux_camera_first(pointer.as_ptr(), 200) };
     assert_ne!(first, 0, "zero-buffer source cannot prove a camera frame");
-    let stop = unsafe { sxc_linux_camera_stop(pointer.as_ptr(), 200) };
+    let stop = unsafe { sxc_linux_camera_stop(pointer.as_ptr(), 200, FIRST_FRAME_MS) };
     assert_ne!(stop, 0, "zero-buffer source cannot become sealed media");
     assert_ne!(unsafe { sxc_linux_camera_retired(pointer.as_ptr()) }, 0);
     unsafe { sxc_linux_camera_free(pointer.as_ptr()) };
+}
+
+#[test]
+fn native_probe_handles_eos_frame_race_but_rejects_regression_and_stale_stop() {
+    assert_eq!(unsafe { sxc_linux_camera_test_timestamp_contract() }, 0);
 }

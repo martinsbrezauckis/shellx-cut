@@ -106,13 +106,16 @@ static GstPadProbeReturn observe(GstPad *pad, GstPadProbeInfo *info, gpointer us
         return GST_PAD_PROBE_DROP;
     }
     SxcInterval sample = { base + running, base + running + GST_BUFFER_DURATION(buffer) };
-    /* Nominal frame DURATION can overlap the next jittered V4L2 PTS. Reject
-       regressing PTS, not legitimate inter-frame scheduling variation. */
-    if (run->intervals->len &&
-        sample.start <= g_array_index(run->intervals, SxcInterval, run->intervals->len - 1).start) {
-        run->bad = TRUE;
-        g_mutex_unlock(&run->mutex);
-        return GST_PAD_PROBE_DROP;
+    /* Some V4L2 devices repeat their first PTS. Never encode the duplicate;
+       later increasing native timestamps remain eligible. Regressions fail. */
+    if (run->intervals->len) {
+        guint64 previous = g_array_index(run->intervals, SxcInterval,
+                                         run->intervals->len - 1).start;
+        if (sample.start <= previous) {
+            if (sample.start < previous) run->bad = TRUE;
+            g_mutex_unlock(&run->mutex);
+            return GST_PAD_PROBE_DROP;
+        }
     }
     if (!run->width) {
         GstCaps *caps = gst_pad_get_current_caps(pad);
@@ -256,9 +259,26 @@ int sxc_linux_camera_first(SxcCameraRun *run, guint timeout_ms) {
     return opened ? 1 : 2;
 }
 
+/* A fully stalled stream must not seal as one frame after a long recording.
+   Call under the observation mutex at Stop request, before EOS can deliver
+   further buffers and encoder drain consumes additional time. */
+static gboolean fresh_last_interval(SxcCameraRun *run, GstClockTime stop_time,
+                                    guint max_frame_gap_ms) {
+    if (!GST_CLOCK_TIME_IS_VALID(stop_time) || !run->intervals->len) return FALSE;
+    SxcInterval last = g_array_index(run->intervals, SxcInterval,
+                                     run->intervals->len - 1);
+    return last.start <= stop_time && last.end >= last.start &&
+        (last.end >= stop_time || stop_time - last.end <=
+         (GstClockTime)max_frame_gap_ms * GST_MSECOND);
+}
+
 /* On failure the caller must retain this pointer; no callback/userdata is released. */
-int sxc_linux_camera_stop(SxcCameraRun *run, guint timeout_ms) {
+int sxc_linux_camera_stop(SxcCameraRun *run, guint timeout_ms, guint max_frame_gap_ms) {
     if (!run || run->stopped) return -1;
+    g_mutex_lock(&run->mutex);
+    GstClockTime stop_time = run->clock ? gst_clock_get_time(run->clock) : GST_CLOCK_TIME_NONE;
+    gboolean fresh_at_stop = fresh_last_interval(run, stop_time, max_frame_gap_ms);
+    g_mutex_unlock(&run->mutex);
     GstBus *bus = gst_element_get_bus(run->pipeline);
     gboolean sent = gst_element_send_event(run->pipeline, gst_event_new_eos());
     GstMessage *message = sent ? gst_bus_timed_pop_filtered(bus,
@@ -273,7 +293,7 @@ int sxc_linux_camera_stop(SxcCameraRun *run, guint timeout_ms) {
     if (run->pad && run->probe_id) { gst_pad_remove_probe(run->pad, run->probe_id); run->probe_id = 0; }
     if (run->source) g_signal_handlers_disconnect_by_data(run->source, run);
     g_mutex_lock(&run->mutex);
-    gboolean valid = run->opened && !run->bad && run->intervals->len > 0;
+    gboolean valid = run->opened && !run->bad && fresh_at_stop;
     g_mutex_unlock(&run->mutex);
     return eos && valid ? 0 : -1;
 }
@@ -317,6 +337,65 @@ int sxc_linux_camera_clock_pair(SxcCameraRun *run, guint64 *gst, guint64 *mono) 
     if (hi < lo || hi - lo > 1000000ULL) return -1;
     *mono = lo + (hi - lo) / 2;
     return 0;
+}
+
+/* Internal ABI regression: exercise the actual pre-encoder timestamp probe
+   without opening a V4L2 device or creating a media artifact. */
+static GstPadProbeReturn test_sample(SxcCameraRun *run, GstClockTime pts) {
+    GstBuffer *buffer = gst_buffer_new();
+    GST_BUFFER_PTS(buffer) = pts;
+    GST_BUFFER_DURATION(buffer) = GST_SECOND / 30;
+    GstPadProbeInfo info = { 0 };
+    info.type = GST_PAD_PROBE_TYPE_BUFFER;
+    info.data = buffer;
+    GstPadProbeReturn result = observe(NULL, &info, run);
+    gst_buffer_unref(buffer);
+    return result;
+}
+
+int sxc_linux_camera_test_timestamp_contract(void) {
+    if (!gst_init_check(NULL, NULL, NULL)) return -1;
+    SxcCameraRun run = { 0 };
+    g_mutex_init(&run.mutex);
+    run.intervals = g_array_new(FALSE, FALSE, sizeof(SxcInterval));
+    run.pipeline = gst_pipeline_new("camera-timestamp-test");
+    if (!run.pipeline) { g_array_free(run.intervals, TRUE); g_mutex_clear(&run.mutex); return -1; }
+    gst_element_set_base_time(run.pipeline, 1000 * GST_SECOND);
+    gst_segment_init(&run.segment, GST_FORMAT_TIME);
+    run.has_segment = TRUE;
+    run.opened = TRUE;
+    run.width = 640; run.height = 480; run.fps_num = 30; run.fps_den = 1;
+    int result = 0;
+    if (test_sample(&run, 0) != GST_PAD_PROBE_OK || run.intervals->len != 1 || run.bad)
+        result = 1;
+    if (test_sample(&run, 0) != GST_PAD_PROBE_DROP || run.intervals->len != 1 || run.bad)
+        result = 2;
+    if (test_sample(&run, GST_SECOND / 30) != GST_PAD_PROBE_OK ||
+        run.intervals->len != 2 || run.bad) result = 3;
+    if (!fresh_last_interval(&run, 1000 * GST_SECOND + 2 * GST_SECOND, 2000) ||
+        fresh_last_interval(&run, 1000 * GST_SECOND + 15 * GST_SECOND, 2000) ||
+        fresh_last_interval(&run, GST_CLOCK_TIME_NONE, 2000)) result = 4;
+    /* EOS may deliver a valid frame later than the Stop-request clock. The
+       already fresh snapshot remains valid, while the later frame still has
+       to pass the native timestamp observer. */
+    gboolean fresh_at_stop = fresh_last_interval(&run, 1000 * GST_SECOND + GST_SECOND, 2000);
+    if (test_sample(&run, 2 * GST_SECOND) != GST_PAD_PROBE_OK ||
+        run.intervals->len != 3 || run.bad || !fresh_at_stop ||
+        fresh_last_interval(&run, 1000 * GST_SECOND + GST_SECOND, 2000)) result = 7;
+    gboolean stale_at_stop = fresh_last_interval(&run, 1000 * GST_SECOND + 15 * GST_SECOND, 2000);
+    if (test_sample(&run, 14 * GST_SECOND) != GST_PAD_PROBE_OK ||
+        run.intervals->len != 4 || run.bad || stale_at_stop ||
+        !fresh_last_interval(&run, 1000 * GST_SECOND + 15 * GST_SECOND, 2000) ||
+        fresh_last_interval(&run, GST_CLOCK_TIME_NONE, 2000)) result = 8;
+    if (test_sample(&run, GST_SECOND / 60) != GST_PAD_PROBE_DROP || !run.bad ||
+        run.intervals->len != 4) result = 5;
+    run.bad = FALSE;
+    if (test_sample(&run, GST_CLOCK_TIME_NONE) != GST_PAD_PROBE_DROP || !run.bad ||
+        run.intervals->len != 4) result = 6;
+    gst_object_unref(run.pipeline);
+    g_array_free(run.intervals, TRUE);
+    g_mutex_clear(&run.mutex);
+    return result;
 }
 
 /* Internal ABI test seam: a real GStreamer source that emits EOS, no buffers. */
