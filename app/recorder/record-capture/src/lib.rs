@@ -455,22 +455,6 @@ pub fn private_windows_region_selection_is_current(
     )
 }
 
-/// Construct the private Windows Camera runtime for one already-reserved
-/// capture directory. This is intentionally not a general camera API: it is
-/// unavailable to server verbs and UI until installed Windows proof admits a
-/// separate owner. Native device identities stay inside `windows_camera`.
-#[cfg(all(windows, feature = "capture-windows"))]
-#[doc(hidden)]
-#[allow(
-    dead_code,
-    reason = "private Windows camera construction awaits its reviewed server owner"
-)]
-pub(crate) fn private_windows_camera_runtime(
-    capture_directory: &std::path::Path,
-) -> record_core::Result<camera_runtime::CameraRuntime> {
-    windows_camera::private_runtime(capture_directory)
-}
-
 /// One physical display the user can pick as the capture target.
 ///
 /// Returned by [`list_monitors`] so the UI / agent can offer a monitor PICKER on a

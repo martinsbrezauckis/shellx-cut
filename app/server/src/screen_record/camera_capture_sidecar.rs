@@ -236,9 +236,60 @@ fn camera_error(message: &str, cause: &str) -> RecordError {
         .with_action("check the Camera control in Recorder, then retry")
 }
 
+/// Retain the joined camera failure even when a screen or audio error wins
+/// terminal precedence. Logging never changes the public capture result.
+pub(super) fn log_failure(log_path: &Path, error: &RecordError) {
+    use std::io::Write;
+
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(
+            log,
+            "camera capture failed [{}]: {} — {}",
+            error.code, error.message, error.cause
+        );
+    }
+}
+
 #[cfg(all(test, any(windows, target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_failure_is_appended_without_losing_existing_capture_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("record.log");
+        std::fs::write(&log, "screen capture started\n").unwrap();
+        let error = camera_error(
+            "camera initialization failed",
+            "Initialized HRESULT=0x80070490",
+        );
+
+        log_failure(&log, &error);
+
+        let retained = std::fs::read_to_string(&log).unwrap();
+        assert!(retained.starts_with("screen capture started\n"));
+        assert!(retained.contains("camera capture failed [capture]: camera initialization failed"));
+        assert!(retained.contains("Initialized HRESULT=0x80070490"));
+    }
+
+    #[test]
+    fn unavailable_diagnostic_log_does_not_replace_the_camera_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = camera_error(
+            "camera record stop failed",
+            "RecordStopped HRESULT=0x80004005",
+        );
+        let expected = error.clone();
+        let result: record_core::Result<Option<CameraArtifact>> = Err(error);
+
+        let observed = result.inspect_err(|error| log_failure(dir.path(), error));
+
+        assert_eq!(observed.unwrap_err(), expected);
+    }
 
     #[test]
     fn terminal_handoff_preserves_the_screen_terminal_state() {

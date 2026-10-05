@@ -10,9 +10,10 @@ use windows::Win32::Media::MediaFoundation::{IMFByteStream, MFCreateMFByteStream
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FileDispositionInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
     SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, CREATE_NEW, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_NAME_NORMALIZED,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ, OPEN_EXISTING,
 };
 use windows::Win32::System::Com::IStream;
 
@@ -137,7 +138,7 @@ impl WindowsNoReplaceCameraStage {
         Ok((byte_stream, stream))
     }
 
-    pub(super) fn make_read_only(&self) -> Result<()> {
+    pub(super) fn make_read_only(&mut self) -> Result<()> {
         self.verify_anchored_handles()?;
         let metadata = self.file.metadata().map_err(|error| {
             finalization_error("inspect anchored Windows camera leaf", &error.to_string())
@@ -147,20 +148,14 @@ impl WindowsNoReplaceCameraStage {
         self.file.set_permissions(permissions).map_err(|error| {
             finalization_error("protect anchored Windows camera leaf", &error.to_string())
         })?;
-        if !self
-            .file
-            .metadata()
-            .map_err(|error| {
-                finalization_error("reinspect anchored Windows camera leaf", &error.to_string())
-            })?
-            .permissions()
-            .readonly()
-        {
+        let current = identity_for_file(&self.file, "reinspect anchored Windows camera leaf")?;
+        if !is_owned_read_only_transition(self.leaf, current) {
             return Err(finalization_error(
-                "Windows camera output remains writable",
-                "the exact leaf did not retain read-only protection",
+                "Windows camera leaf identity changed during protection",
+                "the exact leaf must gain read-only protection without other identity or attribute changes",
             ));
         }
+        self.leaf = current;
         Ok(())
     }
 
@@ -268,6 +263,22 @@ fn verify_leaf(identity: &FileIdentity) -> Result<()> {
     Ok(())
 }
 
+fn is_owned_read_only_transition(before: FileIdentity, after: FileIdentity) -> bool {
+    let readonly = FILE_ATTRIBUTE_READONLY.0;
+    let normal = FILE_ATTRIBUTE_NORMAL.0;
+    let forbidden = FILE_ATTRIBUTE_DIRECTORY.0 | FILE_ATTRIBUTE_REPARSE_POINT.0;
+    before.volume == after.volume
+        && before.index == after.index
+        && before.attributes & forbidden == 0
+        && after.attributes & forbidden == 0
+        && before.attributes & readonly == 0
+        && after.attributes & readonly != 0
+        && before.attributes & !(readonly | normal) == after.attributes & !(readonly | normal)
+        // NORMAL is a standalone marker and Windows removes it when READONLY
+        // is added. Never accept a new NORMAL bit or retain it alongside READONLY.
+        && after.attributes & normal == 0
+}
+
 fn identity_for_file(file: &File, stage: &str) -> Result<FileIdentity> {
     identity_for_handle(raw_handle(file), stage)
 }
@@ -303,3 +314,7 @@ fn final_path(handle: windows::Win32::Foundation::HANDLE, stage: &str) -> Result
 fn raw_handle(handle: &impl AsRawHandle) -> windows::Win32::Foundation::HANDLE {
     windows::Win32::Foundation::HANDLE(handle.as_raw_handle() as *mut _)
 }
+
+#[cfg(test)]
+#[path = "camera_finalization_windows_stage_tests.rs"]
+mod tests;

@@ -17,7 +17,11 @@ use windows::Win32::System::Com::{IAgileObject, IAgileObject_Impl};
 use super::camera_error;
 use crate::CameraFrameObservation;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[path = "windows_camera_sample.rs"]
+mod sample;
+use sample::{record_sample, SampleAnchor};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EventKind {
     Initialized,
     PreviewStarted,
@@ -31,13 +35,23 @@ struct EventFlags {
     preview_started: Option<bool>,
     record_started: Option<bool>,
     record_stopped: Option<bool>,
+    record_stopped_hresult: Option<u32>,
     accepting_samples: bool,
     device_lost: bool,
     fatal_error: bool,
+    first_failure: Option<String>,
     first_sample: Option<SampleAnchor>,
     observations: Vec<CameraFrameObservation>,
     first_native_start_hns: Option<i64>,
+    last_native_start_hns: Option<i64>,
     last_native_end_hns: Option<i64>,
+}
+
+pub(super) struct StopSignalSnapshot {
+    pub(super) record_stopped: Option<bool>,
+    pub(super) record_stopped_hresult: Option<u32>,
+    pub(super) fatal_error: bool,
+    pub(super) first_failure: Option<String>,
 }
 
 pub(super) struct CaptureSignals {
@@ -69,12 +83,22 @@ impl CaptureSignals {
             state.record_started = Some(succeeded);
         } else if kind == MF_CAPTURE_ENGINE_RECORD_STOPPED {
             state.record_stopped = Some(succeeded);
+            state.record_stopped_hresult = Some(status.0 as u32);
+            // End admission under the event lock, before notifying the
+            // waiting owner. A preview callback can continue after recording.
+            state.accepting_samples = false;
         } else if kind == MF_CAPTURE_ENGINE_CAMERA_STREAM_BLOCKED || kind == MF_CAPTURE_ENGINE_ERROR
         {
+            state.first_failure.get_or_insert_with(|| {
+                format!("mf_event:kind={kind:?}:status=0x{:08x}", status.0 as u32)
+            });
             state.device_lost = true;
             state.fatal_error = true;
         }
         if !succeeded {
+            state.first_failure.get_or_insert_with(|| {
+                format!("mf_event:kind={kind:?}:status=0x{:08x}", status.0 as u32)
+            });
             state.fatal_error = true;
         }
         self.wake.notify_all();
@@ -92,18 +116,28 @@ impl CaptureSignals {
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.device_lost {
-            return Err(device_lost_error());
+            return Err(event_error(
+                "Media Foundation reported Windows camera device loss",
+                kind,
+                state.first_failure.as_deref(),
+            ));
         }
         match event_result(&state, kind) {
             Some(true) => Ok(()),
             Some(false) => Err(event_error(
                 "Media Foundation completed the requested camera operation with an error",
+                kind,
+                state.first_failure.as_deref(),
             )),
             None if timeout_result.timed_out() => Err(event_error(
                 "Media Foundation did not complete the requested camera operation before timeout",
+                kind,
+                state.first_failure.as_deref(),
             )),
             None => Err(event_error(
                 "Media Foundation reported a camera failure before the requested operation completed",
+                kind,
+                state.first_failure.as_deref(),
             )),
         }
     }
@@ -159,15 +193,17 @@ impl CaptureSignals {
         if !state.accepting_samples || state.fatal_error {
             return;
         }
-        if record_sample(
+        let previous_end = state.last_native_end_hns;
+        if let Err(reason) = record_sample(
             &mut state,
             self.screen_origin,
             delivered_at,
             sample_time_hns,
             sample_duration_hns,
-        )
-        .is_err()
-        {
+        ) {
+            state.first_failure.get_or_insert_with(|| {
+                format!("sample_interval:{reason}:time={sample_time_hns}:duration={sample_duration_hns}:previous_end={previous_end:?}")
+            });
             state.fatal_error = true;
         }
         self.wake.notify_all();
@@ -180,21 +216,25 @@ impl CaptureSignals {
             .device_lost
     }
 
-    pub(super) fn fatal_error(&self) -> bool {
+    fn note_sample_getter_error(&self, getter: &'static str, error: &windows::core::Error) {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fatal_error
+            .first_failure
+            .get_or_insert_with(|| format!("sample_getter:{getter}:hresult={:?}", error.code()));
     }
 
-    pub(super) fn event_succeeded(&self, kind: EventKind) -> bool {
-        event_result(
-            &self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            kind,
-        ) == Some(true)
+    pub(super) fn stop_snapshot(&self) -> StopSignalSnapshot {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        StopSignalSnapshot {
+            record_stopped: state.record_stopped,
+            record_stopped_hresult: state.record_stopped_hresult,
+            fatal_error: state.fatal_error,
+            first_failure: state.first_failure.clone(),
+        }
     }
 
     pub(super) fn sample_span_hns(&self) -> Result<i64> {
@@ -235,8 +275,18 @@ fn event_result(flags: &EventFlags, kind: EventKind) -> Option<bool> {
     }
 }
 
-fn event_error(cause: &str) -> record_core::RecordError {
-    camera_error("wait for Windows Camera Capture Engine event", cause)
+fn event_error(
+    cause: &str,
+    requested: EventKind,
+    first_failure: Option<&str>,
+) -> record_core::RecordError {
+    camera_error(
+        "wait for Windows Camera Capture Engine event",
+        format!(
+            "{cause}; requested={requested:?}; first_failure={}",
+            first_failure.unwrap_or("none")
+        ),
+    )
 }
 
 fn device_lost_error() -> record_core::RecordError {
@@ -244,71 +294,6 @@ fn device_lost_error() -> record_core::RecordError {
         "wait for Windows Camera Capture Engine event",
         "Media Foundation reported Windows camera device loss",
     )
-}
-
-struct SampleAnchor {
-    native_start_hns: i64,
-    projected_start: Instant,
-}
-
-fn record_sample(
-    state: &mut EventFlags,
-    screen_origin: Instant,
-    delivered_at: Instant,
-    sample_time_hns: i64,
-    sample_duration_hns: i64,
-) -> std::result::Result<(), ()> {
-    if sample_time_hns < 0 || sample_duration_hns <= 0 {
-        return Err(());
-    }
-    let native_end_hns = sample_time_hns.checked_add(sample_duration_hns).ok_or(())?;
-    if state
-        .last_native_end_hns
-        .is_some_and(|previous| sample_time_hns < previous || native_end_hns <= previous)
-    {
-        return Err(());
-    }
-    let anchor = state.first_sample.get_or_insert(SampleAnchor {
-        native_start_hns: sample_time_hns,
-        projected_start: ceil_screen_millisecond(screen_origin, delivered_at)?,
-    });
-    let started_at = map_native_time(anchor, sample_time_hns)?;
-    let ended_at = map_native_time(anchor, native_end_hns)?;
-    if ended_at <= started_at {
-        return Err(());
-    }
-    state
-        .observations
-        .push(CameraFrameObservation::new(started_at, ended_at));
-    state.first_native_start_hns.get_or_insert(sample_time_hns);
-    state.last_native_end_hns = Some(native_end_hns);
-    Ok(())
-}
-
-fn ceil_screen_millisecond(
-    screen_origin: Instant,
-    delivered_at: Instant,
-) -> std::result::Result<Instant, ()> {
-    let elapsed = delivered_at
-        .checked_duration_since(screen_origin)
-        .unwrap_or_default();
-    let whole_ms = u64::try_from(elapsed.as_millis()).map_err(|_| ())?;
-    let rounded_ms = whole_ms
-        .checked_add(u64::from(!elapsed.subsec_nanos().is_multiple_of(1_000_000)))
-        .ok_or(())?;
-    screen_origin
-        .checked_add(Duration::from_millis(rounded_ms))
-        .ok_or(())
-}
-
-fn map_native_time(anchor: &SampleAnchor, native_hns: i64) -> std::result::Result<Instant, ()> {
-    let delta_hns = native_hns.checked_sub(anchor.native_start_hns).ok_or(())?;
-    let delta = Duration::from_nanos(delta_hns.unsigned_abs().checked_mul(100).ok_or(())?);
-    if delta_hns >= 0 {
-        anchor.projected_start.checked_add(delta).ok_or(())
-    } else {
-        anchor.projected_start.checked_sub(delta).ok_or(())
-    }
 }
 
 #[implement(IMFCaptureEngineOnEventCallback, IAgileObject)]
@@ -338,8 +323,15 @@ impl IMFCaptureEngineOnSampleCallback_Impl for SampleCallback_Impl {
     fn OnSample(&self, sample: windows::core::Ref<IMFSample>) -> windows::core::Result<()> {
         let sample = sample.ok()?;
         unsafe {
-            self.signals
-                .on_sample(sample.GetSampleTime()?, sample.GetSampleDuration()?);
+            let sample_time = sample.GetSampleTime().map_err(|error| {
+                self.signals.note_sample_getter_error("time", &error);
+                error
+            })?;
+            let duration = sample.GetSampleDuration().map_err(|error| {
+                self.signals.note_sample_getter_error("duration", &error);
+                error
+            })?;
+            self.signals.on_sample(sample_time, duration);
         }
         Ok(())
     }

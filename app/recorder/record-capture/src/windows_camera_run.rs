@@ -9,9 +9,9 @@ use windows::core::{IUnknown, Interface};
 use windows::Win32::Media::MediaFoundation::{
     CLSID_MFCaptureEngine, CLSID_MFCaptureEngineClassFactory, IMFAttributes, IMFByteStream,
     IMFCaptureEngine, IMFCaptureEngineClassFactory, IMFCaptureEngineOnEventCallback,
-    IMFCaptureEngineOnSampleCallback, IMFCapturePreviewSink,
+    IMFCaptureEngineOnSampleCallback, IMFCapturePreviewSink, MFCreateAttributes,
     MF_CAPTURE_ENGINE_PREFERRED_SOURCE_STREAM_FOR_VIDEO_PREVIEW,
-    MF_CAPTURE_ENGINE_SINK_TYPE_PREVIEW,
+    MF_CAPTURE_ENGINE_SINK_TYPE_PREVIEW, MF_CAPTURE_ENGINE_USE_VIDEO_DEVICE_ONLY,
 };
 use windows::Win32::System::Com::{CoCreateInstance, IStream, CLSCTX_INPROC_SERVER};
 
@@ -91,10 +91,27 @@ impl NativeCameraRun {
                 .activation
                 .cast()
                 .map_err(|error| windows_error("bind selected Windows camera", error))?;
+            // Camera artifacts are video-only. Microphone and system audio
+            // have separate owners; NULL attributes would also select and
+            // initialize an unrelated default audio capture device.
+            let mut attributes = None;
+            MFCreateAttributes(&mut attributes, 1)
+                .map_err(|error| windows_error("create Windows camera engine attributes", error))?;
+            let attributes = attributes.ok_or_else(|| {
+                camera_error(
+                    "configure Windows camera engine",
+                    "attribute store is unavailable",
+                )
+            })?;
+            attributes
+                .SetUINT32(&MF_CAPTURE_ENGINE_USE_VIDEO_DEVICE_ONLY, 1)
+                .map_err(|error| {
+                    windows_error("select video-only Windows camera capture", error)
+                })?;
             engine
                 .Initialize(
                     &event_callback,
-                    None::<&IMFAttributes>,
+                    &attributes,
                     None::<&IUnknown>,
                     &video_source,
                 )
@@ -189,93 +206,10 @@ impl NativeCameraRun {
             })
         }
     }
-
-    pub(super) fn stop(mut self) -> Result<StoppedCameraRun> {
-        let stop_result = self
-            .engine
-            .as_ref()
-            .ok_or_else(|| {
-                camera_error(
-                    "stop Windows camera recording",
-                    "Capture Engine is unavailable before stop",
-                )
-            })
-            .and_then(|engine| unsafe {
-                engine
-                    .StopRecord(true, true)
-                    .map_err(|error| windows_error("stop Windows camera recording", error))
-            });
-        if stop_result.is_ok() {
-            let _ = self
-                .signals
-                .wait_for(EventKind::RecordStopped, CAPTURE_EVENT_TIMEOUT);
-        }
-        self.signals.stop_accepting_samples();
-        let device_lost = self.signals.device_lost();
-        let observations = self.signals.take_observations();
-        let sample_span_hns = if observations.is_empty() {
-            None
-        } else {
-            self.signals.sample_span_hns().ok()
-        };
-        let native_stop_succeeded = stop_result.is_ok()
-            && self.signals.event_succeeded(EventKind::RecordStopped)
-            && !self.signals.fatal_error();
-        let close_error = self.release_native();
-        if let Some(error) = close_error {
-            return Err(error);
-        }
-        if !native_stop_succeeded {
-            if device_lost {
-                return Ok(StoppedCameraRun {
-                    device_lost,
-                    observations,
-                    seal: None,
-                });
-            }
-            return Err(camera_error(
-                "stop Windows camera recording",
-                "Camera Capture Engine did not confirm a successful record stop",
-            ));
-        }
-        let seal = match (observations.is_empty(), sample_span_hns, self.stage.take()) {
-            (false, Some(span_hns), Some(stage)) => {
-                Some(finalize_windows_no_replace(stage, span_hns)?)
-            }
-            (false, None, _) => {
-                return Err(camera_error(
-                    "finalize Windows camera recording",
-                    "accepted camera frames have no exact native 100-nanosecond span",
-                ));
-            }
-            (_, _, _) => None,
-        };
-        Ok(StoppedCameraRun {
-            device_lost,
-            observations,
-            seal,
-        })
-    }
-
-    fn release_native(&mut self) -> Option<record_core::RecordError> {
-        let close_error = self.output.take().and_then(|output| unsafe {
-            output
-                .Close()
-                .err()
-                .map(|error| windows_error("close Windows camera recording output", error))
-        });
-        if let Some(engine) = self.engine.as_ref() {
-            let _ = unsafe { engine.StopPreview() };
-        }
-        // This ordering is intentional: no Capture Engine or callback can
-        // retain the byte stream when the MF and COM leases later drop.
-        drop(self.engine.take());
-        drop(self.events.take());
-        drop(self.samples.take());
-        drop(self.writer_stream.take());
-        close_error
-    }
 }
+
+#[path = "windows_camera_stop.rs"]
+mod stop;
 
 fn release_start_failure(
     engine: IMFCaptureEngine,

@@ -6,6 +6,7 @@
 //! redirect the hash or Media Foundation measurement.
 
 use std::io::{Read, Seek, SeekFrom};
+use std::time::Duration;
 
 use record_core::{error_codes, CameraMediaFacts, RecordError, Result};
 use sha2::{Digest, Sha256};
@@ -16,14 +17,22 @@ use windows::Win32::Media::MediaFoundation::{
 
 use super::{CameraMediaSeal, WindowsNoReplaceCameraStage};
 
+#[path = "camera_finalization_windows_clock.rs"]
+mod clock;
+#[path = "camera_finalization_windows_timescale.rs"]
+mod timescale;
+
 /// Measure, hash, and protect the one retained `CREATE_NEW` leaf after
 /// `MF_CAPTURE_ENGINE_RECORD_STOPPED`. `expected_duration_hns` is the exact
-/// 100-nanosecond interval accepted from the native sample callback timeline;
-/// millisecond artifact facts are only its deterministic floor projection.
+/// 100-nanosecond interval accepted from the native sample callback timeline.
+/// A quantized file must retain every accepted frame and match the adjacent
+/// ticks of that interval in its own verified track timebase. Artifact and
+/// session facts both use the measured file's deterministic floor projection.
 pub(crate) fn finalize_windows_no_replace(
     mut stage: WindowsNoReplaceCameraStage,
     expected_duration_hns: i64,
-) -> Result<CameraMediaSeal> {
+    expected_frame_count: u64,
+) -> Result<(CameraMediaSeal, Duration)> {
     if expected_duration_hns <= 0 {
         return Err(finalization_error(
             "finalize Windows camera output",
@@ -31,11 +40,30 @@ pub(crate) fn finalize_windows_no_replace(
         ));
     }
     stage.verify_anchored_handles()?;
-    let measured = measure_mp4(&stage)?;
-    if measured.duration_hns != expected_duration_hns {
+    let mut timing_file = stage.duplicate_file()?;
+    let timing_bytes = timing_file
+        .metadata()
+        .map_err(|error| {
+            finalization_error("inspect Windows camera timing metadata", &error.to_string())
+        })?
+        .len();
+    let timescale =
+        timescale::video_timescale(&mut timing_file, timing_bytes).map_err(|error| {
+            finalization_error("read Windows camera track timebase", &error.to_string())
+        })?;
+    let measured = measure_mp4(&stage, timescale)?;
+    if measured.frame_count != expected_frame_count
+        || (measured.duration_hns != expected_duration_hns
+            && !measured
+                .duration_ticks
+                .is_some_and(|ticks| clock::span_matches(expected_duration_hns, ticks, timescale)))
+    {
         return Err(finalization_error(
             "finalize Windows camera output",
-            "decoded final-file sample-end span differs from the accepted native 100-nanosecond span",
+            &format!(
+                "decoded final-file sample-end span differs from the accepted native 100-nanosecond span; expected_hns={expected_duration_hns}; measured_hns={}; expected_frames={expected_frame_count}; decoded_frames={}; track_timescale={timescale}; fps={}/{}",
+                measured.duration_hns, measured.frame_count, measured.fps_num, measured.fps_den
+            ),
         ));
     }
     let (sha256, bytes) = hash_anchored_file(&stage)?;
@@ -67,6 +95,16 @@ pub(crate) fn finalize_windows_no_replace(
         duration_ms,
         sha256,
     };
+    let encoded_duration = u64::try_from(measured.duration_hns)
+        .ok()
+        .and_then(|hns| hns.checked_mul(100))
+        .map(Duration::from_nanos)
+        .ok_or_else(|| {
+            finalization_error(
+                "project finalized Windows camera interval",
+                "encoded sample span exceeds the shared clock range",
+            )
+        })?;
     CameraMediaSeal::validate_finalizer_inputs(&stage.artifact_id, &stage.video, &media, bytes)?;
     let seal = CameraMediaSeal::from_finalizer(
         stage.artifact_id.clone(),
@@ -75,7 +113,7 @@ pub(crate) fn finalize_windows_no_replace(
         bytes,
     );
     stage.mark_finalized();
-    Ok(seal)
+    Ok((seal, encoded_duration))
 }
 
 fn hash_anchored_file(stage: &WindowsNoReplaceCameraStage) -> Result<(String, u64)> {
@@ -138,12 +176,13 @@ struct MeasuredMp4 {
     fps_den: u32,
     frame_count: u64,
     duration_hns: i64,
+    duration_ticks: Option<u64>,
 }
 
 /// Decode the closed MP4 from a byte stream over the retained leaf. The span
 /// is `last sample end - first sample start` in Media Foundation's native
 /// 100-nanosecond units, never wall-clock callback arrival time.
-fn measure_mp4(stage: &WindowsNoReplaceCameraStage) -> Result<MeasuredMp4> {
+fn measure_mp4(stage: &WindowsNoReplaceCameraStage, timescale: u32) -> Result<MeasuredMp4> {
     let (byte_stream, _reader_stream) = stage.source_reader_stream()?;
     // SAFETY: the byte stream wraps a duplicate of the one exact reserved leaf
     // and reader creation/measurement are synchronous in this finalizer.
@@ -181,6 +220,8 @@ fn measure_mp4(stage: &WindowsNoReplaceCameraStage) -> Result<MeasuredMp4> {
         let mut frame_count = 0_u64;
         let mut first_start_hns: Option<i64> = None;
         let mut final_end_hns: Option<i64> = None;
+        let mut first_start_ticks: Option<u64> = None;
+        let mut final_end_ticks: Option<u64> = None;
         loop {
             let mut flags = 0_u32;
             let mut timestamp_hns = 0_i64;
@@ -216,6 +257,20 @@ fn measure_mp4(stage: &WindowsNoReplaceCameraStage) -> Result<MeasuredMp4> {
                         "decoded sample end exceeded the supported Media Foundation range",
                     )
                 })?;
+                if timescale <= 10_000_000 {
+                    let ticks = clock::sample_ticks(timestamp_hns, timescale)
+                        .zip(clock::sample_ticks(duration_hns, timescale))
+                        .filter(|(_, duration)| *duration != 0)
+                        .and_then(|(start, duration)| start.checked_add(duration).map(|end| (start, end)))
+                        .ok_or_else(|| finalization_error(
+                            "anchored Windows camera MP4 has invalid track timing",
+                            "sample timestamp or duration does not represent an exact container track tick",
+                        ))?;
+                    first_start_ticks =
+                        Some(first_start_ticks.map_or(ticks.0, |first| first.min(ticks.0)));
+                    final_end_ticks =
+                        Some(final_end_ticks.map_or(ticks.1, |last| last.max(ticks.1)));
+                }
                 first_start_hns =
                     Some(first_start_hns.map_or(timestamp_hns, |first| first.min(timestamp_hns)));
                 final_end_hns = Some(final_end_hns.map_or(end_hns, |last| last.max(end_hns)));
@@ -247,6 +302,10 @@ fn measure_mp4(stage: &WindowsNoReplaceCameraStage) -> Result<MeasuredMp4> {
             fps_den,
             frame_count,
             duration_hns,
+            duration_ticks: first_start_ticks
+                .zip(final_end_ticks)
+                .and_then(|(first, last)| last.checked_sub(first))
+                .filter(|duration| *duration != 0),
         })
     }
 }

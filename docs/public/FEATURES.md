@@ -796,9 +796,10 @@ establish a tested editing workflow for the current release.
   active. Only `voiceover_start_retry_rejected` proves no matching active owner
   remained and lets the UI discard its non-secret retry identity. Cancel, zero
   samples, and an unusable terminal add no edit.
-- Recording Studio can explicitly add one current Windows/macOS camera in
-  Auto-edit mode when Doctor lists a device. No connected camera or unavailable
-  discovery leaves Camera disabled while normal screen recording stays available.
+- Recording Studio can explicitly add one current Windows, macOS, or compiled
+  Linux camera in Auto-edit mode when Doctor lists a device. No connected camera
+  or unavailable discovery leaves Camera disabled while normal screen recording
+  stays available.
   Doctor exposes only opaque, expiring choices with safe labels; Start revalidates
   the chosen device, waits for a real first frame, and refuses missing permission,
   a busy device, or no-frame delivery without substituting another camera. The

@@ -711,7 +711,8 @@ where
                 let camera_artifact = camera_capture_sidecar::CameraCaptureSidecar::finish_for_screen(
                     camera_sidecar,
                     captured.is_ok(),
-                );
+                )
+                .inspect_err(|error| camera_capture_sidecar::log_failure(&log_path, error));
                 system_audio_capture::finalize_worker(system_audio_worker, &log_path)
                     .and(captured)
                     .and_then(|(mut out, prepublished_project)| {

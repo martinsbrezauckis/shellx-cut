@@ -1,9 +1,8 @@
 //! Private Windows camera adapter backed by Media Foundation Capture Engine.
 //!
-//! This module deliberately has no Cut server verb, UI registration, Doctor
-//! card, or public device identity. The only entry point returns the existing
-//! crate-private `CameraRuntime`, which still needs a later reviewed recording
-//! owner and installed Windows proof before any user-facing admission.
+//! Device discovery and the native recording owner feed the shared camera API.
+//! Recording runs use the existing `CameraRuntime` after their owner reserves
+//! the capture directory; server verbs and UI controls live in their own modules.
 
 #[path = "windows_camera_devices.rs"]
 mod windows_camera_devices;
