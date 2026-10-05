@@ -6,6 +6,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=src/linux_camera_native.c");
+    println!("cargo:rerun-if-changed=src/linux_camera_native_test_support.h");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
         && std::env::var("CARGO_FEATURE_CAPTURE_LINUX").is_ok()
     {
