@@ -293,7 +293,7 @@ mod tests {
 
     fn corner_texture(device: &ID3D11Device, size: (u32, u32)) -> Result<ID3D11Texture2D, Error> {
         let mut pixels = vec![0u8; (size.0 * size.1 * 4) as usize];
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
         let origins = [
@@ -412,7 +412,7 @@ mod tests {
                 assert_eq!(&pixels[i..i + 4], &color);
             }
             assert_eq!(&pixels[0..4], &[0, 0, 0, 255]);
-            assert!(pixels.chunks_exact(4).all(|p| p[3] == 255));
+            assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
             if let Some((surface, expected)) = previous {
                 assert_eq!(
                     read_pixels(&device, &context, &surface)?,

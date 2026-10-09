@@ -80,6 +80,21 @@ pub(crate) fn mux_raw_sources(
             ]);
         }
         (Some(mic), Some(system)) => {
+            let video_duration_ms = cut_media::probe(source)?
+                .duration_ms
+                .filter(|duration_ms| *duration_ms > 0)
+                .ok_or_else(|| {
+                    CutError::new(
+                        error_codes::FFMPEG,
+                        "raw source video has no measurable duration",
+                        "cannot bound the mixed recording audio to its source video",
+                    )
+                })?;
+            let video_duration = format!(
+                "{}.{:03}",
+                video_duration_ms / 1_000,
+                video_duration_ms % 1_000
+            );
             cmd.args([
                 "-protocol_whitelist",
                 cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
@@ -88,11 +103,6 @@ pub(crate) fn mux_raw_sources(
                 "-i",
             ])
             .arg(mic);
-            let offset = system_offset_ms.unwrap_or(0);
-            if offset != 0 {
-                cmd.arg("-itsoffset")
-                    .arg(format!("{:.3}", offset as f64 / 1_000.0));
-            }
             cmd.args([
                 "-protocol_whitelist",
                 cut_media::ffmpeg::LOCAL_INPUT_PROTOCOLS,
@@ -101,9 +111,15 @@ pub(crate) fn mux_raw_sources(
                 "-i",
             ])
             .arg(system);
+            let filter = format!(
+                "[1:a]aresample=48000[m];[2:a]aresample=48000,adelay={}:all=1[s];\
+                 [m][s]amix=inputs=2:duration=longest:normalize=0,\
+                 apad=whole_dur={video_duration},atrim=duration={video_duration}[a]",
+                system_offset_ms.unwrap_or(0)
+            );
             cmd.args([
                 "-filter_complex",
-                "[1:a]aresample=48000[m];[2:a]aresample=48000[s];[m][s]amix=inputs=2:duration=longest:normalize=0,apad[a]",
+                &filter,
                 "-map",
                 "0:v:0",
                 "-map",
@@ -114,7 +130,6 @@ pub(crate) fn mux_raw_sources(
                 "aac",
                 "-ar",
                 "48000",
-                "-shortest",
             ]);
         }
     }

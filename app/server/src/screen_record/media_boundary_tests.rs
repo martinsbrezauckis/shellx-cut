@@ -113,6 +113,53 @@ fn raw_mux_keeps_every_captured_video_packet_when_audio_ends_first() {
         }
     }
 
+    fn assert_mixed_audio(output: &Path) {
+        let decoded = std::process::Command::new(cut_media::toolpath::ffmpeg())
+            .args(["-v", "error", "-i"])
+            .arg(output)
+            .args([
+                "-map", "0:a:0", "-ar", "48000", "-ac", "1", "-f", "s16le", "-",
+            ])
+            .output()
+            .unwrap();
+        assert!(decoded.status.success(), "mixed audio must decode");
+        assert_eq!(decoded.stdout.len() % 2, 0);
+        let samples: Vec<f64> = decoded
+            .stdout
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f64)
+            .collect();
+        assert!(
+            samples.len() >= 48000 * 38 / 100,
+            "audio must span video tail"
+        );
+        let tone = |start_ms: usize, end_ms: usize, frequency: f64| {
+            let window = &samples[start_ms * 48..end_ms * 48];
+            let (real, imaginary) =
+                window
+                    .iter()
+                    .enumerate()
+                    .fold((0.0, 0.0), |(real, imaginary), (index, sample)| {
+                        let phase = std::f64::consts::TAU * frequency * index as f64 / 48000.0;
+                        (
+                            real + sample * phase.cos(),
+                            imaginary + sample * phase.sin(),
+                        )
+                    });
+            2.0 * real.hypot(imaginary) / window.len() as f64 / 32768.0
+        };
+        assert!(tone(3, 20, 440.0) > 0.07, "mic must start at zero");
+        assert!(tone(3, 20, 660.0) < 0.035, "system offset must survive mix");
+        assert!(tone(60, 120, 440.0) > 0.07, "mic must remain full-level");
+        assert!(tone(60, 120, 660.0) > 0.07, "system must remain full-level");
+        assert!(tone(180, 220, 440.0) < 0.035, "mic must end naturally");
+        assert!(tone(180, 220, 660.0) > 0.07, "system must continue");
+        assert!(tone(310, 370, 440.0) < 0.02, "audio tail must be silent");
+        assert!(tone(310, 370, 660.0) < 0.02, "audio tail must be silent");
+    }
+
     super::align_ffmpeg_env();
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source.mp4");
@@ -141,10 +188,44 @@ fn raw_mux_keeps_every_captured_video_packet_when_audio_ends_first() {
             Some(25),
         ),
         ("longer-audio", Some(long_mic.as_path()), None, None),
+        (
+            "both-longer-audio",
+            Some(long_mic.as_path()),
+            Some(system.as_path()),
+            Some(25),
+        ),
     ] {
         let output = dir.path().join(format!("{name}.mp4"));
         super::mux_raw_sources(&source, mic_input, system_input, offset_ms, &output).unwrap();
         assert_copied_video(&source_packets, &output);
+        if name == "both" {
+            assert_mixed_audio(&output);
+        }
+        if name == "both-longer-audio" {
+            let probe = std::process::Command::new(cut_media::toolpath::ffprobe())
+                .args([
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                ])
+                .arg(&output)
+                .output()
+                .unwrap();
+            assert!(probe.status.success());
+            let duration: f64 = String::from_utf8_lossy(&probe.stdout)
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(
+                (0.38..0.45).contains(&duration),
+                "long mixed audio must end with the video, got {duration}s"
+            );
+        }
     }
 
     // The separate raw export route also stream-copies video with mic audio.
