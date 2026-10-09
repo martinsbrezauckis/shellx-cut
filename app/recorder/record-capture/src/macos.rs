@@ -2,8 +2,8 @@
 //!
 //! Compiled ONLY for `cfg(target_os = "macos")` + the `capture-macos` feature.
 //! - SCREEN: ScreenCaptureKit direct-to-file capture. Its stream configuration
-//!   respects `CaptureConfig.capture_cursor`; normal recordings default to a
-//!   synthetic polished cursor while still captures may request the OS cursor.
+//!   respects `CaptureConfig.capture_cursor` for displays; window capture keeps
+//!   the OS cursor because its input geometry cannot support a synthetic cursor.
 //! - INPUT: the shared rdevin hook (see input.rs).
 //!
 //! PERMISSIONS (TCC): the host process needs Screen Recording (for the capture)
@@ -29,7 +29,7 @@ use crate::macos_finalization::stop_audio_at_video_boundary;
 use crate::macos_region_capture::verified_region_output_size;
 use crate::macos_system_tap::{SystemAudioResult, SystemAudioTap};
 use crate::{
-    checkpoint::Checkpoints, input, macos_checkpoint::SegmentOutput, surface_coordinates, Capture,
+    checkpoint::Checkpoints, macos_checkpoint::SegmentOutput, surface_coordinates, Capture,
     CaptureConfig, CaptureOutput, MonitorInfo, WindowInfo,
 };
 
@@ -290,8 +290,15 @@ impl Capture for MacCapture {
         // The active SCRecordingOutput stream stays video-only. The target
         // owner builds the exact display/window filter without opening a
         // second ScreenCaptureKit stream for controller state or metering.
-        let (filter, requested_w, requested_h, surface, stream_config, region_output) =
-            crate::macos_capture_target::prepare_capture_target(cfg, fps)?;
+        let (
+            filter,
+            requested_w,
+            requested_h,
+            surface,
+            stream_config,
+            region_output,
+            window_clicks,
+        ) = crate::macos_capture_target::prepare_capture_target(cfg, fps)?;
 
         let preview = cfg.active_preview.clone();
         if let Some(preview) = preview.as_ref() {
@@ -322,7 +329,11 @@ impl Capture for MacCapture {
         let source_stop = stop.clone();
         let callback_readiness = cfg.readiness.clone();
         let callback_preview = preview.clone();
+        let callback_window_clicks = window_clicks.clone();
         let delegate = StreamCallbacks::new().on_error(move |error| {
+            if let Some(window_clicks) = callback_window_clicks.as_ref() {
+                window_clicks.source_closed();
+            }
             let _source_lost = selected_window
                 && source_lifecycle.as_ref().is_some_and(|lifecycle| {
                     selected_window_source_lost(&error)
@@ -343,13 +354,14 @@ impl Capture for MacCapture {
             source_stop.store(true, Ordering::Release);
         });
         let mut stream = SCStream::new_with_delegate(&filter, &stream_config, delegate);
-        crate::macos_readiness::attach_first_screen_frame_observer(
+        crate::macos_readiness::attach_screen_frame_observer(
             &mut stream,
             cfg.readiness.clone(),
             preview
                 .clone()
                 .zip(preview_generation)
                 .map(|(preview, generation)| (preview, generation, Instant::now())),
+            window_clicks.clone(),
         )
         .map_err(|error| cap_err("attach ScreenCaptureKit frame observer", error))?;
         let mut checkpoints = Checkpoints::open(cfg.checkpoint.as_ref())?;
@@ -366,24 +378,18 @@ impl Capture for MacCapture {
         stream
             .add_recording_output(recording.output())
             .map_err(|e| cap_err("attach recording output", format!("{e:?}")))?;
+        // SCK can synchronously deliver its first pixel-bearing Window sample
+        // during start_capture. Arm that owner before requesting capture and
+        // reuse this actual origin for every later input/audio/checkpoint stamp.
+        let window_start = crate::macos_input::arm_window_start(window_clicks.as_ref(), cfg);
         stream
             .start_capture()
             .map_err(|e| cap_err("start ScreenCaptureKit capture", format!("{e:?}")))?;
-        // Open the shared clock only after SCK accepted the output.  Mic/input
-        // are deliberately non-blocking, but their timestamps must use this
-        // same origin as the later checkpoint facts and external audio worker.
-        let start = cfg
-            .clock
-            .as_ref()
-            .map(crate::CaptureClock::start)
-            .unwrap_or_else(Instant::now);
-        let mut input = Some(match input::InputListener::start(start, cfg.capture_keys) {
-            Ok(listener) => listener,
-            Err(error) => {
-                let _ = stream.stop_capture();
-                return Err(error);
-            }
-        });
+        // Display/Region retain their post-acceptance clock policy. Window
+        // input does not open until start_capture successfully accepts output.
+        let (start, listener) =
+            crate::macos_input::start(&mut stream, cfg, window_clicks.clone(), window_start)?;
+        let mut input = Some(listener);
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
             let mic_path = format!("{out_dir}/mic.wav");
@@ -604,7 +610,14 @@ impl Capture for MacCapture {
         };
         let (cursor, mut clicks, scrolls, keys) = sealed_input;
         let coordinates = if cfg.window.is_some() {
-            surface_coordinates::unavailable_window_rdevin_input(cursor, &mut clicks, scrolls)
+            match window_clicks.as_ref() {
+                Some(owner) => owner.finish(duration_ms, (w, h), &mut clicks),
+                None => surface_coordinates::unavailable_window_rdevin_input(
+                    cursor,
+                    &mut clicks,
+                    scrolls,
+                ),
+            }
         } else {
             surface_coordinates::map_rdevin_input(surface, w, h, cursor, &mut clicks, scrolls)
         };

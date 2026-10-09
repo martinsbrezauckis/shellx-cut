@@ -265,8 +265,8 @@ impl Capture for LinuxCapture {
                 capture_keys,
                 sw,
                 sh,
+                cfg.readiness.as_ref(),
             )?);
-
             let mic_handle = if audio_wanted {
                 let ready = Arc::new(AtomicBool::new(false));
                 let mic_path = format!("{out_dir_async}/mic.wav");

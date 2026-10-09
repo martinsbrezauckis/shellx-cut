@@ -205,6 +205,14 @@ impl WgcTimingRecorder {
             .accepted_frames
     }
 
+    pub(crate) fn first_accepted_native_timestamp_100ns(&self) -> Option<i64> {
+        self.summary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .first
+            .map(|first| first.native_timestamp_100ns)
+    }
+
     /// A zero-frame tail can be replaced only after the native control has
     /// joined and reported a successful Stop. A failed close remains terminal.
     pub(crate) fn control_stop_succeeded(&self) -> bool {

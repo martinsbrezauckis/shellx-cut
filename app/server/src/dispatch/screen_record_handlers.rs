@@ -425,6 +425,7 @@ pub(super) async fn screen_record_stop(
         "clicks": clicks,
         "cursor_samples": cursor_samples,
         "cursor_correlation": cursor_correlation,
+        "input_hook": crate::screen_record::input_hook_startup::project_observation(&proj),
         // RAW MODE: the standalone raw recording (null unless mux_raw:true) + which
         // sound sources it folded in, so the UI can tell the user exactly what was saved.
         "raw_path": raw_path,
@@ -745,6 +746,8 @@ pub(super) async fn screen_record_polish(
     let camera_placement = camera_foundation::place_camera_artifact(
         state,
         &actor,
+        clip_id.as_deref(),
+        &asset_id,
         camera_artifact
             .as_ref()
             .map(|camera| (camera.video_path.as_path(), &camera.artifact)),

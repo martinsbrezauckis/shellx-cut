@@ -27,10 +27,9 @@ use super::{
 };
 use crate::{
     checkpoint::Checkpoints,
-    windows::{
-        cap_err, monitor_surface, observe_wgc_start, wgc_monitor_range, WindowsCheckpointPublisher,
-    },
+    windows::{cap_err, monitor_surface, observe_wgc_start, wgc_monitor_range},
     windows_wgc_handler::{EncFlags, Handler, LiveWgcControl},
+    windows_wgc_publisher::WindowsCheckpointPublisher,
     windows_wgc_run::{WgcAcceptedCapture, WgcControlFactory, WgcRunOwner, WgcStartedControl},
     CheckpointConfig,
 };
@@ -76,6 +75,8 @@ impl WgcControlFactory<WcMonitor> for WindowsPausePilotWgcFactory {
             Some(range),
         )?;
         let flags = EncFlags {
+            timed_clock: None,
+            window_clicks: None,
             w: width,
             h: height,
             fps: self.fps,
@@ -154,6 +155,7 @@ pub(super) fn start_private(
                     checkpoints,
                     include_native_startup: false,
                     timing: None,
+                    qpc_origin: None,
                 },
             ))
         },

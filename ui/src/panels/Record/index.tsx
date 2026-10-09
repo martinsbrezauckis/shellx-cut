@@ -1,3 +1,4 @@
+import { RecordingInputHookWarning } from './RecordingInputHookWarning'
 // panels/Record — full-surface capture: Doctor → start → stop → optional polish.
 // It defaults to an open-ended F9-stoppable recording; duration choices are caps.
 // Selected monitor/window identities pass through the verb unchanged for native revalidation.
@@ -54,6 +55,7 @@ import {
 } from './recordingUiModel'
 import {
   probedAverageCadenceLabel,
+  probedRecordingDurationMs,
   requestedCadenceLabel,
   type RecordingCadence,
 } from './recordingCadence'
@@ -861,9 +863,8 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
   )
   const hasCaptureResult = Boolean(delivery.ownsResult && session.state.rawPath) || session.state.phase === 'recovery'
   const recordingLayoutLabel = `${sourceKind === 'window' ? 'Window' : 'Screen'}${studio.camera.enabled && !rawCapture ? ' + camera' : ''}`
-  const resultDuration = session.state.startedAt && session.state.endedAt
-    ? fmtElapsed(Math.max(0, Math.floor((session.state.endedAt - session.state.startedAt) / 1000)))
-    : fmtElapsed(elapsed)
+  const recordedDurationMs = probedRecordingDurationMs(session.state.cadence)
+  const resultDuration = recordedDurationMs === null ? null : fmtElapsed(Math.round(recordedDurationMs / 1000))
   return (
     <section
       className="rec"
@@ -891,7 +892,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
             <div className="rec__preview-column">
             {hasCaptureResult ? (
               <RecordingResultPanel
-                outcome={session.state.phase === 'done' ? 'saved' : session.state.phase === 'recovery' ? 'recovery' : 'partial'}
+                outcome={session.state.phase === 'done' ? 'saved' : session.state.phase === 'finalizing' ? 'processing' : session.state.phase === 'recovery' ? 'recovery' : 'partial'}
                 raw={session.state.raw}
                 message={session.state.message}
                 duration={resultDuration}
@@ -900,6 +901,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
                 hasMic={session.state.rawHasMic}
                 hasSystem={session.state.rawHasSystem}
                 streams={session.state.rawStreams}
+                inputHook={session.state.inputHook}
                 cursorCorrelation={session.state.cursorCorrelation}
                 cadence={probedAverageCadenceLabel(session.state.cadence)}
                 quality={qualityResolution}
@@ -925,6 +927,7 @@ export default function Record({ project, onClipAdded, onOpenOutputSettings, onO
               />
             ) : (
               <>
+            {session.state.captureId && <RecordingInputHookWarning input={session.state.inputHook} saved={false} />}
             <StudioPreview
               studio={studio}
               phase={displayPhase}

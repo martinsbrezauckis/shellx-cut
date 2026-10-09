@@ -88,6 +88,20 @@ fn set_error(state: &mut State, error: impl Into<String>) {
     }
 }
 
+fn system_audio_properties(sink: &str) -> pw::properties::PropertiesBox {
+    let mut properties = properties! {
+        *pw::keys::MEDIA_TYPE => "Audio",
+        *pw::keys::MEDIA_CATEGORY => "Capture",
+        *pw::keys::MEDIA_ROLE => "Screen",
+        *pw::keys::NODE_LATENCY => "1024/48000",
+        // An input stream names a sink only when it requests the sink monitor.
+        // Without this property, WirePlumber may select the default microphone.
+        "stream.capture.sink" => "true",
+    };
+    properties.insert("target.object", sink);
+    properties
+}
+
 /// Capture the default PipeWire sink monitor to a 48 kHz stereo WAV.
 ///
 pub fn capture_system_pipewire(
@@ -163,13 +177,7 @@ fn capture_system_pipewire_with_optional_level(
             writer: Some(writer),
             error: None,
         }));
-        let mut properties = properties! {
-            *pw::keys::MEDIA_TYPE => "Audio",
-            *pw::keys::MEDIA_CATEGORY => "Capture",
-            *pw::keys::MEDIA_ROLE => "Screen",
-            *pw::keys::NODE_LATENCY => "1024/48000",
-        };
-        properties.insert("target.object", sink);
+        let properties = system_audio_properties(&sink);
         let stream = pw::stream::StreamBox::new(&core, "shellx-cut-system-audio", properties)
             .map_err(|error| capture_error("create PipeWire system-audio stream", error))?;
 

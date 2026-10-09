@@ -1907,8 +1907,8 @@ fn output_geometry_match_source_respects_crop_and_ignores_audio() {
 }
 
 /// Loudness normalization (render.final `normalize_loudness`): a target
-/// appends a single-pass loudnorm to the mixed audio (→ anorm); no target =
-/// byte-identical default audio graph (no loudnorm).
+/// appends a single-pass loudnorm before the final EDL audio bound; no target
+/// leaves loudnorm out while still bounding the completed mix.
 #[test]
 fn loudnorm_applied_only_when_target_set() {
     use cut_core::{Asset, Clip, MediaClip, Project, ProjectSettings};
@@ -1993,6 +1993,7 @@ fn loudnorm_applied_only_when_target_set() {
         "default must not normalize:\n{}",
         g0.filter
     );
+    assert_eq!(g0.audio_out.as_deref(), Some("aedl"));
 
     // Social-bundle target -14 LUFS keeps 0.5 dB of peak headroom before
     // encoding. The output-fact receipt still checks the encoded file at -1.0.
@@ -2006,7 +2007,13 @@ fn loudnorm_applied_only_when_target_set() {
         "target → loudnorm:\n{}",
         g.filter
     );
-    assert_eq!(g.audio_out.as_deref(), Some("anorm"));
+    assert_eq!(g.audio_out.as_deref(), Some("aedl"));
+    let loudnorm = g.filter.find("loudnorm=I=-14:TP=-1.5:LRA=11").unwrap();
+    let bound = g.filter.find("[anorm]aresample=48000").unwrap();
+    assert!(
+        loudnorm < bound,
+        "loudnorm must precede the final sample bound"
+    );
 }
 
 #[test]

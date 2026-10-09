@@ -223,9 +223,42 @@ pub struct UnicodeInfo {
 
 /// An input event received from the OS.
 #[derive(Debug, Clone, PartialEq)]
+pub struct NativePointerSample {
+    pub x: f64,
+    pub y: f64,
+    /// Native event age at callback delivery, not a polled cursor position.
+    pub age_ms: u32,
+}
+
+impl NativePointerSample {
+    #[cfg(any(windows, test))]
+    pub(crate) fn windows_payload(x: i32, y: i32, event_ms: u32, observed_ms: u32) -> Self {
+        Self {
+            x: f64::from(x),
+            y: f64::from(y),
+            age_ms: observed_ms.wrapping_sub(event_ms),
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_pointer_tests {
+    use super::NativePointerSample;
+    #[test]
+    fn actual_payload_keeps_negative_desktop_position_and_wrapping_event_age() {
+        let point = NativePointerSample::windows_payload(-1200, 640, u32::MAX - 4, 3);
+        assert_eq!((point.x, point.y, point.age_ms), (-1200.0, 640.0, 8));
+        let old = NativePointerSample::windows_payload(1, 2, 10, 500);
+        assert_eq!(old.age_ms, 490);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// The time at which the event was received.
     pub time: SystemTime,
+    /// Actual native pointer payload when the passive backend supplies it.
+    pub native_pointer: Option<NativePointerSample>,
     /// For keyboard events, information about the input Unicode character.
     pub unicode: Option<UnicodeInfo>,
     /// Rust-encoded representation of the input.

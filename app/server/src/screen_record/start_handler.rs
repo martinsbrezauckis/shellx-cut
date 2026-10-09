@@ -274,6 +274,7 @@ pub(crate) async fn readiness_status_handler(args: Value) -> Result<VerbResult, 
         "terminal": terminal,
         "state": state,
         "audio_meters": audio_meters,
+        "input_hook": control.input_hook_startup(),
         "source_lifecycle": source_lifecycle_status(status, source_lifecycle),
         "controller_placement": {
             "state": controller_placement.state.as_str(),
@@ -327,6 +328,13 @@ mod readiness_status_tests {
             }
         );
 
+        assert_eq!(pending["input_hook"]["state"], "unobserved");
+        readiness.publish_input_hook_startup(record_capture::InputHookStartup {
+            state: record_capture::InputHookStartupState::Unavailable,
+            backend: record_capture::InputHookBackend::RdevinWindows,
+            reason: Some(record_capture::InputHookStartupReason::StartupFailed),
+            capture_keys: true,
+        });
         readiness.mark_first_screen_frame_delivered();
         let ready = readiness_status_handler(json!({"capture_id": capture_id}))
             .await
@@ -335,6 +343,8 @@ mod readiness_status_tests {
             .unwrap();
         assert_eq!(ready["state"], "ready");
         assert_eq!(ready["ready"], true);
+        assert_eq!(ready["input_hook"]["state"], "unavailable");
+        assert_eq!(ready["input_hook"]["capture_keys"], true);
         assert_eq!(ready["terminal"], false);
         assert_eq!(ready["source_lifecycle"]["state"], "unavailable");
 

@@ -153,7 +153,55 @@ fn publish(app: &AppHandle, capability: Capability) {
 }
 
 pub(crate) fn capability(state: &RecordHotkeyState) -> Capability {
-    state.capability.lock().unwrap().clone()
+    #[cfg(target_os = "linux")]
+    let runtime = state.runtime.lock().unwrap();
+    #[cfg(target_os = "linux")]
+    let listener_stopped = runtime
+        .service
+        .as_ref()
+        .is_none_or(|service| !service.is_alive());
+    let published = state.capability.lock().unwrap().clone();
+    #[cfg(target_os = "linux")]
+    drop(runtime);
+    #[cfg(target_os = "linux")]
+    {
+        effective_gnome_capability(published, listener_stopped)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        published
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stopped_gnome_capability(reason: &str) -> Capability {
+    Capability::gnome(
+        "disabled",
+        false,
+        Some(format!(
+            "Global F9 callback stopped ({reason}); F9 still works while ShellX Cut is focused. Enable global F9 again to retry."
+        )),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn unavailable_gnome_capability(reason: &str) -> Capability {
+    Capability::gnome(
+        "disabled",
+        false,
+        Some(format!(
+            "Global F9 is unavailable ({reason}); F9 still works while ShellX Cut is focused."
+        )),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn effective_gnome_capability(published: Capability, listener_stopped: bool) -> Capability {
+    if listener_stopped && published.backend == "gnome_custom_keybinding" && published.enabled {
+        stopped_gnome_capability("native listener is no longer running")
+    } else {
+        published
+    }
 }
 
 #[tauri::command]
@@ -169,15 +217,39 @@ fn enable_gnome(
     state: &RecordHotkeyState,
     startup: bool,
 ) -> Result<Capability, String> {
-    if state.runtime.lock().unwrap().service.is_some() {
+    let already_alive = state
+        .runtime
+        .lock()
+        .unwrap()
+        .service
+        .as_ref()
+        .is_some_and(gnome::Service::is_alive);
+    if already_alive {
         return Ok(capability(state));
+    }
+    // A failed worker retains its owned socket until Service is dropped. Its
+    // existing GNOME binding may then be adopted by the normal configure path.
+    let failed_service = state.runtime.lock().unwrap().service.take();
+    let retrying_failed_service = failed_service.is_some();
+    drop(failed_service);
+    if retrying_failed_service {
+        publish(
+            app,
+            unavailable_gnome_capability("retrying native listener setup"),
+        );
     }
     let preference_enabled = if startup {
         None
     } else {
         read_preference(&preference_path(app)?)
     };
-    let service = gnome::Service::configure(app)?;
+    let service = match gnome::Service::configure(app) {
+        Ok(service) => service,
+        Err(reason) => {
+            publish(app, unavailable_gnome_capability(&reason));
+            return Err(reason);
+        }
+    };
     if !startup && preference_enabled != Some(true) {
         if let Err(error) = write_preference(app, true) {
             let _ = gnome::remove_exact_owned_binding();
@@ -193,7 +265,17 @@ fn enable_gnome(
                 .to_string(),
         ),
     );
-    state.runtime.lock().unwrap().service = Some(service);
+    let mut runtime = state.runtime.lock().unwrap();
+    runtime.service = Some(service);
+    let capability = if runtime
+        .service
+        .as_ref()
+        .is_some_and(gnome::Service::is_alive)
+    {
+        capability
+    } else {
+        stopped_gnome_capability("native listener exited during setup")
+    };
     publish(app, capability.clone());
     Ok(capability)
 }
@@ -321,6 +403,21 @@ pub(super) fn mark_gnome_observed(app: &AppHandle) {
     );
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn mark_gnome_callback_stopped(app: &AppHandle, reason: String) {
+    let state = app.state::<RecordHotkeyState>();
+    let runtime = state.runtime.lock().unwrap();
+    // The error may race startup or a later manual retry. Only the currently
+    // owned, failed service may downgrade the published capability.
+    if runtime
+        .service
+        .as_ref()
+        .is_some_and(|service| !service.is_alive())
+    {
+        publish(app, stopped_gnome_capability(&reason));
+    }
+}
+
 /// Shut down only the listener this process owns. A normal next launch attempts
 /// configuration again unless the user explicitly saved the disabled preference.
 pub(crate) fn release_runtime(app: &AppHandle) {
@@ -405,6 +502,42 @@ mod tests {
         );
         assert_eq!(parse_preference(&encode("foreign", false)), None);
         assert_eq!(parse_preference(b"not-json"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stopped_gnome_listener_cannot_still_report_configured_or_observed() {
+        for state in ["configured", "observed"] {
+            let published = Capability::gnome(state, true, None);
+            let alive = effective_gnome_capability(published.clone(), false);
+            assert_eq!(alive.state, state);
+            assert!(alive.enabled);
+
+            let stopped = effective_gnome_capability(published, true);
+            assert_eq!(stopped.state, "disabled");
+            assert_eq!(stopped.scope, "focused_only");
+            assert!(!stopped.enabled);
+            assert!(stopped.can_enable);
+            assert!(stopped.reason.unwrap().contains("Enable global F9 again"));
+        }
+        let native = effective_gnome_capability(Capability::native_registered(), true);
+        assert_eq!(native.state, "registered");
+        assert!(native.enabled);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_enabled_gnome_capability_requires_an_owned_listener() {
+        for published in ["configured", "observed"] {
+            let state = RecordHotkeyState {
+                capability: Mutex::new(Capability::gnome(published, true, None)),
+                runtime: Mutex::new(Runtime { service: None }),
+            };
+            let actual = capability(&state);
+            assert_eq!(actual.state, "disabled", "stale {published} without listener");
+            assert!(!actual.enabled);
+            assert_eq!(actual.scope, "focused_only");
+        }
     }
 
     #[test]

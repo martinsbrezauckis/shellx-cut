@@ -70,7 +70,7 @@ export default function RecordingTopBar({
       <span className="tb-spacer" />
 
       {backDisabled && backReason && (
-        <span id="cut-record-back-reason" className="tb-recording-back-reason" data-cut-record-back-reason role="status">
+        <span id="cut-record-back-reason" className="tb-recording-back-reason" data-cut-record-back-reason role="status" title={backReason}>
           {backReason}
         </span>
       )}

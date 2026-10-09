@@ -78,6 +78,9 @@ features = ["highsierra"]
 [target.'cfg(target_os = "macos")'.dependencies.dispatch]
 version = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies.foreign-types]
+version = "0.3"
+
 [target.'cfg(target_os = "windows")'.dependencies.better_default]
 version = "1.0.5"
 

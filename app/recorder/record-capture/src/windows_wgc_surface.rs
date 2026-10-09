@@ -2,9 +2,13 @@
 
 use windows::core::Interface;
 use windows::Graphics::DirectX::Direct3D11::IDirect3DSurface;
-use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_BOX};
+use windows::Win32::Graphics::Direct3D11::{
+    ID3D11Texture2D, D3D11_BIND_RENDER_TARGET, D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+};
 use windows::Win32::Graphics::Dxgi::IDXGISurface;
-use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11SurfaceFromDXGISurface;
+use windows::Win32::System::WinRT::Direct3D11::{
+    CreateDirect3D11SurfaceFromDXGISurface, IDirect3DDxgiInterfaceAccess,
+};
 use windows_capture::frame::Frame;
 
 pub(crate) fn snapshot(
@@ -64,6 +68,32 @@ pub(crate) fn snapshot(
         // MediaStreamSource's consumer context, as the previous encoder did.
         frame.device_context().Flush();
         let dxgi: IDXGISurface = texture.cast()?;
+        CreateDirect3D11SurfaceFromDXGISurface(&dxgi)?.cast()
+    }
+}
+
+/// Retain pixels independently before Media Foundation receives the original.
+/// Another COM reference alone does not establish exclusive resource ownership.
+pub(crate) fn retained_copy(surface: &IDirect3DSurface) -> windows::core::Result<IDirect3DSurface> {
+    let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+    // SAFETY: both resources belong to the source texture's own D3D device.
+    // The copy is submitted before either surface is offered to the consumer.
+    unsafe {
+        let source: ID3D11Texture2D = access.GetInterface()?;
+        let device = source.GetDevice()?;
+        let context = device.GetImmediateContext()?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        source.GetDesc(&mut desc);
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.CPUAccessFlags = 0;
+        desc.MiscFlags = 0;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET.0 as u32;
+        let mut retained = None;
+        device.CreateTexture2D(&desc, None, Some(&mut retained))?;
+        let retained = retained.ok_or_else(windows::core::Error::empty)?;
+        context.CopyResource(&retained, &source);
+        context.Flush();
+        let dxgi: IDXGISurface = retained.cast()?;
         CreateDirect3D11SurfaceFromDXGISurface(&dxgi)?.cast()
     }
 }

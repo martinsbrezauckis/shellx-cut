@@ -4,8 +4,9 @@
 //! `receipts/<asset>.words.json`, produced by Parakeet-TDT / onnx-asr (NOT whisper;
 //! schema is engine-agnostic). We do NO transcription here — Cut owns STT. We just
 //! group words into short on-screen lines and look up the active one per frame.
-//! Best-effort: any read/parse error yields zero lines (captions never crash a render).
+//! An explicitly requested unusable transcript fails the render before output.
 
+use record_core::{error_codes, RecordError, Result};
 use serde::Deserialize;
 use std::io::Read;
 
@@ -32,41 +33,50 @@ pub struct CaptionLine {
 }
 
 /// Load a word-span transcript and group it into caption lines, breaking on
-/// `max_chars` or a long pause (> 900 ms). Returns [] on any error.
-pub fn load_lines(path: &str, max_chars: usize) -> Vec<CaptionLine> {
+/// `max_chars` or a long pause (> 900 ms). Valid empty words return no lines;
+/// unreadable or malformed transcripts fail the requested caption render.
+pub fn load_lines(path: &str, max_chars: usize) -> Result<Vec<CaptionLine>> {
     load_lines_with_limit(path, max_chars, MAX_TRANSCRIPT_JSON_BYTES)
 }
 
-fn load_lines_with_limit(path: &str, max_chars: usize, max_bytes: u64) -> Vec<CaptionLine> {
+fn load_lines_with_limit(path: &str, max_chars: usize, max_bytes: u64) -> Result<Vec<CaptionLine>> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) => {
-            eprintln!("warning: captions requested but transcript '{path}' could not be read ({e}) — rendering without captions");
-            return Vec::new();
+            return Err(transcript_error(
+                error_codes::IO,
+                format!("transcript '{path}' could not be opened: {e}"),
+            ));
         }
     };
     let mut bytes = Vec::new();
     if let Err(e) = file.take(max_bytes + 1).read_to_end(&mut bytes) {
-        // Best-effort: don't crash the render, but DON'T fail silently either —
-        // captions were requested, so surface that they were skipped.
-        eprintln!("warning: captions requested but transcript '{path}' could not be read ({e}) — rendering without captions");
-        return Vec::new();
+        return Err(transcript_error(
+            error_codes::IO,
+            format!("transcript '{path}' could not be read: {e}"),
+        ));
     }
     if bytes.len() as u64 > max_bytes {
-        eprintln!(
-            "warning: captions transcript '{path}' exceeds the {} MiB limit — rendering without captions",
-            max_bytes / (1024 * 1024)
-        );
-        return Vec::new();
+        return Err(transcript_error(
+            error_codes::INVALID_ARGS,
+            format!("transcript '{path}' exceeds the {max_bytes}-byte limit"),
+        ));
     }
     let t = match serde_json::from_slice::<Transcript>(&bytes) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("warning: captions transcript '{path}' is not valid word-span JSON ({e}) — rendering without captions");
-            return Vec::new();
+            return Err(transcript_error(
+                error_codes::INVALID_ARGS,
+                format!("transcript '{path}' is not valid word-span JSON: {e}"),
+            ));
         }
     };
-    group(&t.words, max_chars)
+    Ok(group(&t.words, max_chars))
+}
+
+fn transcript_error(code: &str, cause: String) -> RecordError {
+    RecordError::new(code, "Requested captions could not be rendered", cause)
+        .with_action("choose a readable word transcript or turn captions off, then export again")
 }
 
 fn group(words: &[WordSpan], max_chars: usize) -> Vec<CaptionLine> {
@@ -146,16 +156,40 @@ mod tests {
     }
 
     #[test]
-    fn bad_path_is_empty_not_fatal() {
-        assert!(load_lines("/no/such/file.json", 30).is_empty());
+    fn missing_requested_transcript_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.words.json");
+        let error = load_lines(path.to_str().unwrap(), 30).unwrap_err();
+        assert_eq!(error.code, record_core::error_codes::IO);
+        assert!(error.suggested_action.is_some());
     }
 
     #[test]
-    fn oversized_transcript_is_empty_not_fatal() {
+    fn malformed_requested_transcript_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("words.json");
+        std::fs::write(&path, b"{not words}").unwrap();
+        let error = load_lines(path.to_str().unwrap(), 30).unwrap_err();
+        assert_eq!(error.code, record_core::error_codes::INVALID_ARGS);
+        assert!(error.suggested_action.is_some());
+    }
+
+    #[test]
+    fn oversized_requested_transcript_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("words.json");
         std::fs::write(&path, b"12345").unwrap();
 
-        assert!(load_lines_with_limit(path.to_str().unwrap(), 30, 4).is_empty());
+        let error = load_lines_with_limit(path.to_str().unwrap(), 30, 4).unwrap_err();
+        assert_eq!(error.code, record_core::error_codes::INVALID_ARGS);
+        assert!(error.suggested_action.is_some());
+    }
+
+    #[test]
+    fn valid_empty_words_has_no_caption_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.words.json");
+        std::fs::write(&path, br#"{"words":[]}"#).unwrap();
+        assert!(load_lines(path.to_str().unwrap(), 30).unwrap().is_empty());
     }
 }

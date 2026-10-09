@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import {
   API_BASE,
   callVerb,
@@ -46,6 +46,21 @@ function unavailableReason(startAllowed: boolean | null, startError: string | nu
   if (startError) return startError
   if (startAllowed === false) return 'Screen capture is not ready on this machine.'
   return null
+}
+
+/** Own Space before the browser controls so inline and fullscreen toggle once. */
+export function recordingRehearsalPlaybackKey(event: KeyboardEvent<HTMLVideoElement>): void {
+  const video = event.currentTarget
+  if (event.key !== ' ' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+    || event.defaultPrevented || event.target !== video || video.ownerDocument.activeElement !== video) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (event.type !== 'keydown' || event.repeat) return
+  if (video.paused) {
+    // A discarded take or blocked browser play request must not reject globally.
+    // Actual media failures still use the video's existing onError surface.
+    void video.play().catch(() => {})
+  } else video.pause()
 }
 
 /**
@@ -185,6 +200,8 @@ export function RecordingRehearsal({
             controls
             autoPlay
             playsInline
+            onKeyDownCapture={recordingRehearsalPlaybackKey}
+            onKeyUpCapture={recordingRehearsalPlaybackKey}
             onError={() => setState({ kind: 'error', detail: 'The native take completed, but this browser could not play its temporary video.' })}
           />
           <button

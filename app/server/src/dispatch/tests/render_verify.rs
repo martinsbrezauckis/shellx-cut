@@ -808,17 +808,27 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
             if explicit {
                 delivery["output"] = json!(chosen_path.join("selected.mp4"));
             }
+            let deliveries = if explicit {
+                vec![delivery]
+            } else {
+                vec![delivery.clone(), delivery]
+            };
             let response = dispatch(
                 &state,
                 "render.queue",
-                json!({"jobs":[delivery]}),
+                json!({"jobs":deliveries}),
                 test_actor(),
             )
             .await;
             assert!(response.ok, "{:?}", response.error);
             let result = response.result.unwrap();
-            let planned = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
-            assert_eq!(planned.parent(), Some(chosen_path.as_path()));
+            if explicit {
+                let planned = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
+                assert_eq!(planned.parent(), Some(chosen_path.as_path()));
+            } else {
+                assert!(result["jobs"][0]["output"].is_null());
+                assert!(result["jobs"][1]["output"].is_null(), "a second dry_run must not claim the first child output");
+            }
             let queue_id = result["queue_id"].as_str().unwrap();
             set_session_output_dir(None); // the native picker restores its old default
             set_session_output_dir(Some(later_path.clone())); // another normal folder choice
@@ -846,13 +856,17 @@ fn render_queue_delayed_children_keep_admitted_output_authorization() {
             .await
             .unwrap();
             let result = terminal.result.unwrap();
-            assert_eq!(result["succeeded"], 1, "{result}");
+            assert_eq!(result["succeeded"], if explicit { 1 } else { 2 }, "{result}");
             assert_eq!(result["failed"], 0, "{result}");
-            let child_id = result["jobs"][0]["job_id"].as_str().unwrap();
-            assert_eq!(state.jobs.get(child_id).unwrap().state, JobState::Done);
-            let output = std::path::PathBuf::from(result["jobs"][0]["output"].as_str().unwrap());
-            assert_eq!(output.parent(), Some(chosen_path.as_path()));
-            assert!(output.is_file());
+            let mut outputs = std::collections::HashSet::new();
+            for child in result["jobs"].as_array().unwrap() {
+                let child_id = child["job_id"].as_str().unwrap();
+                assert_eq!(state.jobs.get(child_id).unwrap().state, JobState::Done);
+                let output = std::path::PathBuf::from(child["output"].as_str().unwrap());
+                assert_eq!(output.parent(), Some(chosen_path.as_path()));
+                assert!(output.is_file());
+                assert!(outputs.insert(output), "queue children must retain separate outputs");
+            }
             let later_default = crate::output_paths::fence_output_path(
                 &project,
                 None,

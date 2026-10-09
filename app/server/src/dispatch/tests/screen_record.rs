@@ -6,6 +6,141 @@ use cut_core::{error_codes, CutError, VerbResult};
 use serde_json::json;
 
 #[tokio::test]
+async fn two_stop_autoedits_keep_the_first_returned_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let project_dir = dir.path().join("stop_takes.cutproj");
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"stop_takes", "dir":project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let cache = crate::screen_record::screen_record_cache_dir(&project_dir).unwrap();
+    let mut returned = Vec::new();
+    for (capture_id, click_x) in [("stop-first", 40.0), ("stop-second", 240.0)] {
+        let capture_dir = cache.join(capture_id);
+        std::fs::create_dir_all(&capture_dir).unwrap();
+        let source = capture_dir.join("source.mp4");
+        std::fs::write(&source, b"source").unwrap();
+        std::fs::write(
+            capture_dir.join("project.json"),
+            serde_json::to_vec(&json!({
+                "source_video": source,
+                "settings": {"fps": 30.0},
+                "events": {
+                    "duration_ms": 3000, "screen_w": 320, "screen_h": 180,
+                    "monitors": [], "cursor": [], "scrolls": [], "keys": [],
+                    "clicks": [{"t_ms": 1000, "x": click_x, "y": 90.0,
+                                "button": "left", "down": true}]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let stopped = dispatch(
+            &state,
+            "screen_record.stop",
+            json!({"capture_id": capture_id, "autoedit": true}),
+            test_actor(),
+        )
+        .await;
+        assert!(stopped.ok, "{:?}", stopped.error);
+        let path = std::path::PathBuf::from(stopped.result.unwrap()["plan"].as_str().unwrap());
+        returned.push((path.clone(), std::fs::read(path).unwrap()));
+    }
+    assert_ne!(returned[0].0, returned[1].0);
+    assert_ne!(returned[0].1, returned[1].1);
+    assert_eq!(std::fs::read(&returned[0].0).unwrap(), returned[0].1);
+}
+
+#[tokio::test]
+async fn autoedit_retains_each_take_and_changed_options_in_one_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let project_dir = dir.path().join("take_plans.cutproj");
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"take_plans", "dir":project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let cache = crate::screen_record::screen_record_cache_dir(&project_dir).unwrap();
+
+    let mut retained = Vec::new();
+    for (capture_id, click_x) in [("first-take", 40.0), ("second-take", 240.0)] {
+        let capture_dir = cache.join(capture_id);
+        std::fs::create_dir_all(&capture_dir).unwrap();
+        let events = capture_dir.join("events.json");
+        std::fs::write(
+            &events,
+            serde_json::to_vec(&json!({
+                "duration_ms": 3000, "screen_w": 320, "screen_h": 180,
+                "monitors": [], "cursor": [], "scrolls": [], "keys": [],
+                "clicks": [{"t_ms": 1000, "x": click_x, "y": 90.0,
+                            "button": "left", "down": true}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let run = |config: serde_json::Value| {
+            dispatch(
+                &state,
+                "screen_record.autoedit",
+                json!({"track": events, "config": config}),
+                test_actor(),
+            )
+        };
+        let first = run(json!({"max_zoom": 2.0})).await;
+        assert!(first.ok, "{:?}", first.error);
+        let result = first.result.unwrap();
+        assert!(!result["summary"].as_str().unwrap().contains(".autoedit-"));
+        let path = std::path::PathBuf::from(result["plan"].as_str().unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        let repeated = run(json!({"max_zoom": 2.0})).await;
+        assert!(repeated.ok, "{:?}", repeated.error);
+        assert_eq!(repeated.result.unwrap()["plan"], path.display().to_string());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        retained.push((path, bytes));
+    }
+    assert_ne!(retained[0].0, retained[1].0);
+    assert_ne!(retained[0].1, retained[1].1);
+    assert_eq!(std::fs::read(&retained[0].0).unwrap(), retained[0].1);
+
+    let changed = dispatch(
+        &state,
+        "screen_record.autoedit",
+        json!({"track": cache.join("first-take/events.json"),
+               "config": {"max_zoom": 3.0}}),
+        test_actor(),
+    )
+    .await;
+    assert!(changed.ok, "{:?}", changed.error);
+    let changed_path = std::path::PathBuf::from(changed.result.unwrap()["plan"].as_str().unwrap());
+    assert_ne!(changed_path, retained[0].0);
+    assert_eq!(std::fs::read(&retained[0].0).unwrap(), retained[0].1);
+
+    std::fs::write(&changed_path, b"occupied-plan").unwrap();
+    let occupied = dispatch(
+        &state,
+        "screen_record.autoedit",
+        json!({"track": cache.join("first-take/events.json"),
+               "config": {"max_zoom": 3.0}}),
+        test_actor(),
+    )
+    .await;
+    assert!(
+        !occupied.ok,
+        "a published identity must reject changed bytes"
+    );
+    assert_eq!(std::fs::read(&changed_path).unwrap(), b"occupied-plan");
+}
+
+#[tokio::test]
 async fn recovery_status_is_project_scoped_paginated_and_path_safe() {
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new();
@@ -528,6 +663,7 @@ async fn screen_record_stop_returns_webcam_studio_events_and_raw_streams() {
             "source_video": source.display().to_string(),
             "webcam_video": webcam.display().to_string(),
             "audio": mic.display().to_string(),
+            "input_hook": {"state":"unavailable", "backend":"rdevin_windows", "reason":"startup_failed", "capture_keys":true},
             "events": {
                 "duration_ms": 1000, "screen_w": 320, "screen_h": 180,
                 "cursor": [], "clicks": [], "scrolls": [], "keys": [],
@@ -585,6 +721,9 @@ async fn screen_record_stop_returns_webcam_studio_events_and_raw_streams() {
         "cursor-coordinate provenance must reach the stop receipt"
     );
     assert_eq!(result["cursor_correlation"]["max_metadata_age_ms"], 100);
+    assert_eq!(result["input_hook"]["state"], "unavailable");
+    assert_eq!(result["input_hook"]["reason"], "startup_failed");
+    assert_eq!(result["input_hook"]["capture_keys"], true);
 }
 
 #[tokio::test]

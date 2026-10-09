@@ -649,8 +649,10 @@ sidecar waits for its shared clock and a real native first frame. The Start
 acknowledgement alone does not prove that camera frames or output exist. Stop
 returns camera media only as a validated
 `CameraArtifact` with its capture id, relative video leaf, content hash, terminal
-state, and shared-clock range. The screen source and camera take remain separate
-editable assets; Cut never substitutes a different camera after permission,
+state, and shared-clock range. Cut retains the camera take separately on a
+hidden track. Its layout is set during recording and baked into the polished
+clip, so editing the retained take does not update the bubble. Cut never
+substitutes a different camera after permission,
 busy-device, disappearance, or no-frame failure.
 
 `screen_record.doctor` also advertises the bounded Recording Scenes contract
@@ -669,6 +671,8 @@ later internal scene switches. A camera `reset` event with only `t_ms`,
 `source:"camera"`, and `kind:"reset"` restores the active frozen scene layout
 without changing camera visibility or the recording timer. This metadata
 changes the polished composition; the separate raw camera take stays intact.
+The resulting polished camera bubble is baked and does not follow later edits
+to the retained take.
 
 On Windows, `screen_record.start` calculates the exact compact WGC checkpoint output
 path before it creates a capture marker or starts a worker. A project whose checkpoint
@@ -835,8 +839,9 @@ higher nominal codec rate cannot duplicate frames and lengthen the export.
 
 On GNOME Wayland, global evdev button events do not provide an absolute captured-frame
 position. Cut pairs each click only with the nearest `SPA_META_Cursor` sample on the
-same capture clock when it is at most 100 ms away, then transforms the compositor's
-monitor origin and logical size into negotiated frame pixels. On X11 and native monitor
+same capture clock when it is at most 100 ms away. SPA positions are already
+monitor-local video pixels; Cut validates them against negotiated frame bounds
+and uses them directly. On X11 and native monitor
 capture on Windows/macOS, rdevin global desktop points likewise become exact only after
 the selected portal/native monitor origin and coordinate size are transformed into the
 final encoded output frame. Linux waits for `source.mp4` dimensions rather than
@@ -847,11 +852,18 @@ transitions never seed auto-zoom. A capture with no button transitions is
 `unavailable`, rather than a vacuous exact claim. This lets a client distinguish a
 truthful degraded cursor track from precise capture.
 
-Windows Graphics Capture and macOS ScreenCaptureKit window recording currently expose
-only a launch-time window rectangle to this backend, not timestamped geometry samples
-on the capture clock. Because a selected window can move or resize, Cut reports its
-rdevin cursor/click/scroll positions as `unavailable` rather than reusing that stale
-rectangle; monitor capture remains eligible for the validated exact transform.
+Windows Graphics Capture and macOS ScreenCaptureKit Window clicks map a fresh
+native button payload only through admitted same-owner accepted frame geometry.
+Missing, stale, changed, minimized, closed or unmatched frames remain unavailable
+and do not seed click-driven effects. Valid mapped clicks can seed highlights and
+automatic zoom. Exact click mapping does not establish full resized-window output
+coverage or arbitrary move/DPI correctness.
+Window recordings retain one native cursor in Raw and Polished frames without a
+duplicate synthetic cursor track; synthetic smoothing and constant-size styling
+remain unavailable.
+Monitor recordings retain the synthetic polished cursor path. Existing recordings
+with neither captured cursor pixels nor a cursor track cannot recover that cursor
+by re-polishing.
 
 On Windows 10 build 20348 or newer, `system_audio:true` uses native process
 loopback without opening the physical render driver. The captured WAV contains

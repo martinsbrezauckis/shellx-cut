@@ -26,6 +26,135 @@ fn video(path: &Path, color: &str) {
 }
 
 #[test]
+fn raw_mux_keeps_every_captured_video_packet_when_audio_ends_first() {
+    fn audio(path: &Path, duration: &str, frequency: &str) {
+        assert!(std::process::Command::new(cut_media::toolpath::ffmpeg())
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                &format!("sine=frequency={frequency}:sample_rate=48000:duration={duration}"),
+                "-c:a",
+                "pcm_s16le",
+            ])
+            .arg(path)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    fn video_packets(path: &Path) -> Vec<(f64, f64, String)> {
+        let output = std::process::Command::new(cut_media::toolpath::ffprobe())
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_packets",
+                "-show_data_hash",
+                "sha256",
+                "-show_entries",
+                "packet=pts_time,dts_time,data_hash",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "ffprobe failed for {}",
+            path.display()
+        );
+        let facts: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        facts["packets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|packet| {
+                (
+                    packet["pts_time"].as_str().unwrap().parse().unwrap(),
+                    packet["dts_time"].as_str().unwrap().parse().unwrap(),
+                    packet["data_hash"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_copied_video(source: &[(f64, f64, String)], output: &Path) {
+        let copied = video_packets(output);
+        assert_eq!(
+            copied.len(),
+            source.len(),
+            "{} lost video packets",
+            output.display()
+        );
+        for (index, (before, after)) in source.iter().zip(&copied).enumerate() {
+            assert_eq!(
+                before.2,
+                after.2,
+                "video packet {index} changed in {}",
+                output.display()
+            );
+            // MP4 muxers may rebase the stream, but must preserve packet cadence.
+            assert!(
+                ((before.0 - source[0].0) - (after.0 - copied[0].0)).abs() < 0.001,
+                "video packet {index} PTS changed in {}",
+                output.display()
+            );
+            assert!(
+                ((before.1 - source[0].1) - (after.1 - copied[0].1)).abs() < 0.001,
+                "video packet {index} DTS changed in {}",
+                output.display()
+            );
+        }
+    }
+
+    super::align_ffmpeg_env();
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.mp4");
+    let mic = dir.path().join("mic.wav");
+    let system = dir.path().join("system.wav");
+    let long_mic = dir.path().join("long-mic.wav");
+    video(&source, "blue");
+    audio(&mic, "0.16", "440");
+    audio(&system, "0.24", "660");
+    audio(&long_mic, "0.8", "880");
+    let source_packets = video_packets(&source);
+    assert_eq!(
+        source_packets.len(),
+        10,
+        "fixture must exercise the video tail"
+    );
+
+    for (name, mic_input, system_input, offset_ms) in [
+        ("no-audio", None, None, None),
+        ("mic-only", Some(mic.as_path()), None, None),
+        ("system-only", None, Some(system.as_path()), Some(25)),
+        (
+            "both",
+            Some(mic.as_path()),
+            Some(system.as_path()),
+            Some(25),
+        ),
+        ("longer-audio", Some(long_mic.as_path()), None, None),
+    ] {
+        let output = dir.path().join(format!("{name}.mp4"));
+        super::mux_raw_sources(&source, mic_input, system_input, offset_ms, &output).unwrap();
+        assert_copied_video(&source_packets, &output);
+    }
+
+    // The separate raw export route also stream-copies video with mic audio.
+    let control = ProcessControl::bounded(Duration::from_secs(10), || false);
+    let export = dir.path().join("raw-export.mp4");
+    super::mux_raw_with_control(&source, Some(&mic), &export, &control).unwrap();
+    assert_copied_video(&source_packets, &export);
+}
+
+#[test]
 fn recorder_local_formats_block_playlists_in_probe_grab_camera_raw_and_gif() {
     super::align_ffmpeg_env();
     let dir = tempfile::tempdir().unwrap();

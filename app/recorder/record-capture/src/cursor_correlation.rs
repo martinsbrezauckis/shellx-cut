@@ -1,9 +1,9 @@
 //! Wayland click-to-cursor correlation in one explicit capture clock.
 //!
 //! evdev reports button timing but only relative pointer deltas. PipeWire's
-//! `SPA_META_Cursor` reports the absolute compositor position. This module maps
-//! that compositor-space metadata to the captured frame pixels and only promotes a
-//! click to `Exact` when its nearest sample is fresh enough.
+//! `SPA_META_Cursor` reports a position in the PipeWire video's local pixels.
+//! This module validates that position against the negotiated frame and only
+//! promotes a click to `Exact` when its nearest sample is fresh enough.
 
 use record_core::{
     ClickPositionQuality, ClickSample, CursorCoordinateSource, CursorCoordinateState,
@@ -19,7 +19,7 @@ pub(crate) const MAX_CURSOR_METADATA_AGE_MS: u64 = 100;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CursorMetadataSample {
     pub t_ms: u64,
-    /// `SPA_META_Cursor.position` in compositor coordinate space.
+    /// `SPA_META_Cursor.position` in video-local pixels.
     pub x: f64,
     pub y: f64,
 }
@@ -49,17 +49,6 @@ impl PortalCursorGeometry {
         })
     }
 
-    fn frame_transform(self, frame_width: u32, frame_height: u32) -> Option<FrameTransform> {
-        (frame_width > 0 && frame_height > 0).then_some(FrameTransform {
-            origin_x: self.origin_x,
-            origin_y: self.origin_y,
-            logical_width: self.logical_width,
-            logical_height: self.logical_height,
-            scale_x: f64::from(frame_width) / self.logical_width,
-            scale_y: f64::from(frame_height) / self.logical_height,
-        })
-    }
-
     fn capture_surface(self) -> Option<CaptureSurface> {
         CaptureSurface::new(
             self.origin_x,
@@ -71,37 +60,38 @@ impl PortalCursorGeometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct FrameTransform {
-    origin_x: f64,
-    origin_y: f64,
-    logical_width: f64,
-    logical_height: f64,
-    scale_x: f64,
-    scale_y: f64,
+struct FrameBounds {
+    width: f64,
+    height: f64,
 }
 
-impl FrameTransform {
+impl FrameBounds {
+    fn new(width: u32, height: u32) -> Option<Self> {
+        (width > 0 && height > 0).then_some(Self {
+            width: f64::from(width),
+            height: f64::from(height),
+        })
+    }
+
     fn apply(self, sample: CursorMetadataSample) -> Option<CursorSample> {
-        let local_x = sample.x - self.origin_x;
-        let local_y = sample.y - self.origin_y;
-        if !(local_x.is_finite()
-            && local_y.is_finite()
-            && (0.0..self.logical_width).contains(&local_x)
-            && (0.0..self.logical_height).contains(&local_y))
+        if !(sample.x.is_finite()
+            && sample.y.is_finite()
+            && (0.0..self.width).contains(&sample.x)
+            && (0.0..self.height).contains(&sample.y))
         {
             return None;
         }
         Some(CursorSample {
             t_ms: sample.t_ms,
-            x: local_x * self.scale_x,
-            y: local_y * self.scale_y,
+            x: sample.x,
+            y: sample.y,
         })
     }
 }
 
 /// The negotiated PipeWire video dimensions are physical frame pixels, while the
-/// portal geometry is compositor-space. Keeping both values makes fractional scale
-/// and non-zero monitor origins explicit rather than silently assuming 1:1 pixels.
+/// portal geometry is compositor-space. SPA cursor metadata is already in the
+/// former; portal geometry is retained separately for the rdevin input path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipewireCursorCapture {
     pub metadata: Vec<CursorMetadataSample>,
@@ -214,20 +204,20 @@ pub(crate) fn correlate_clicks(
             "PipeWire cursor metadata was unavailable for this capture",
         );
     };
-    let Some(transform) = portal_geometry
-        .and_then(|geometry| geometry.frame_transform(pipewire.frame_width, pipewire.frame_height))
+    let Some(frame_bounds) =
+        portal_geometry.and_then(|_| FrameBounds::new(pipewire.frame_width, pipewire.frame_height))
     else {
         return approximate_output(
             clicks,
             fallback_cursor,
             fallback_scrolls,
-            "the portal did not provide a usable monitor coordinate transform",
+            "the portal did not provide valid monitor geometry or PipeWire frame dimensions",
         );
     };
     let mut cursor: Vec<_> = pipewire
         .metadata
         .into_iter()
-        .filter_map(|sample| transform.apply(sample))
+        .filter_map(|sample| frame_bounds.apply(sample))
         .collect();
     cursor.sort_unstable_by_key(|sample| sample.t_ms);
     if cursor.is_empty() {

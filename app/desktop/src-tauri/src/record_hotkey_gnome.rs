@@ -30,10 +30,21 @@ impl Service {
         ensure_schema(ROOT_SCHEMA)?;
         ensure_schema(ENTRY_SCHEMA)?;
         let callback_app = app.clone();
-        let service = socket::Service::start(move || {
-            super::mark_gnome_observed(&callback_app);
-            let _ = callback_app.emit("cut:record-hotkey", ());
-        })?;
+        let failure_app = app.clone();
+        let service = socket::Service::start(
+            move || {
+                super::mark_gnome_observed(&callback_app);
+                let _ = callback_app.emit("cut:record-hotkey", ());
+            },
+            move |reason| {
+                let notify_app = failure_app.clone();
+                if let Err(error) = failure_app.run_on_main_thread(move || {
+                    super::mark_gnome_callback_stopped(&notify_app, reason);
+                }) {
+                    eprintln!("[shellx-cut] could not publish stopped Global F9 callback: {error}");
+                }
+            },
+        )?;
         if let Err(error) = configure_exact_owned_binding() {
             drop(service);
             return Err(error);

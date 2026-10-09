@@ -1,0 +1,5 @@
+.rec-input-warning {
+  display: block; padding: 10px 12px; border: 1px solid rgba(245, 196, 81, .3);
+  border-radius: 9px; color: #f5c451; background: rgba(245, 196, 81, .07);
+  font: var(--fs-ui-sm, 12px)/1.45 var(--sans); overflow-wrap: anywhere;
+}

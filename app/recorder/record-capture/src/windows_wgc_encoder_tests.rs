@@ -1,4 +1,5 @@
 use super::*;
+use crate::windows_wgc_encoder_profile::encoding_properties;
 use windows::core::Interface;
 use windows::Win32::Graphics::Direct3D11::{D3D11_BIND_RENDER_TARGET, D3D11_TEXTURE2D_DESC};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};

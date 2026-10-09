@@ -49,7 +49,11 @@ cc = "1"
 pkg-config = "0.3"
 
 [dev-dependencies]
+rdevin = { path = "../rdevin" }
 tempfile.workspace = true
+record-engine.workspace = true
+record-render.workspace = true
+tiny-skia.workspace = true
 
 # windows-capture (WGC) only exists on the windows target.
 [target.'cfg(windows)'.dependencies]
@@ -68,12 +72,14 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Performance",
     "Win32_Devices_FunctionDiscovery",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_System_Threading",

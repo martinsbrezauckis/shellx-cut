@@ -1,4 +1,4 @@
-use crate::rdevin::Event;
+use crate::rdevin::{Event, NativePointerSample};
 use crate::windows::common::{convert, get_scan_code};
 use crate::OwnedListenerJoinError;
 use lazy_static::lazy_static;
@@ -13,9 +13,9 @@ use winapi::shared::minwindef::{DWORD, LPARAM, LRESULT, WPARAM};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::processthreadsapi::GetCurrentThreadId;
 use winapi::um::winuser::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
-    SetWindowsHookExA, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, MSG, PKBDLLHOOKSTRUCT,
-    PMOUSEHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, GetPhysicalCursorPos, PeekMessageW,
+    PostThreadMessageW, SetWindowsHookExA, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, MSG,
+    MSLLHOOKSTRUCT, PKBDLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP,
 };
 
 const OWNED_STOP_MESSAGE: u32 = WM_APP + 0x412;
@@ -170,11 +170,13 @@ unsafe fn dispatch(
     param: WPARAM,
     lpdata: LPARAM,
     extra_data: impl FnOnce(isize) -> ULONG_PTR,
+    native_pointer: Option<(i32, i32, u32)>,
 ) -> LRESULT {
     if code == HC_ACTION {
         let (event_type, platform_code) = convert(param, lpdata);
         if let Some(event_type) = event_type {
-            let event = Event {
+            let mut event = Event {
+                native_pointer: None,
                 event_type,
                 time: SystemTime::now(),
                 unicode: None,
@@ -184,6 +186,11 @@ unsafe fn dispatch(
                 extra_data: extra_data(lpdata),
             };
             if let Some(callback) = OWNED_CALLBACK.lock().unwrap().as_mut() {
+                // Compute age at delivery after conversion and callback admission,
+                // so any queue/lock delay remains part of the freshness bound.
+                event.native_pointer = native_pointer.map(|(x, y, time)| {
+                    NativePointerSample::windows_payload(x, y, time, GetTickCount())
+                });
                 callback(event);
             }
         }
@@ -193,13 +200,38 @@ unsafe fn dispatch(
 }
 
 unsafe extern "system" fn mouse_callback(code: i32, param: usize, lpdata: isize) -> isize {
-    dispatch(code, param, lpdata, |data| unsafe {
-        (*(data as PMOUSEHOOKSTRUCT)).dwExtraInfo
-    })
+    // The callback payload is MSLLHOOKSTRUCT (not the ordinary mouse-hook struct).
+    let point = (code == HC_ACTION).then(|| {
+        let mouse = unsafe { &*(lpdata as *const MSLLHOOKSTRUCT) };
+        (mouse.pt.x, mouse.pt.y, mouse.time)
+    });
+    dispatch(
+        code,
+        param,
+        lpdata,
+        |data| unsafe { (*(data as *const MSLLHOOKSTRUCT)).dwExtraInfo },
+        point,
+    )
 }
 
 unsafe extern "system" fn keyboard_callback(code: i32, param: usize, lpdata: isize) -> isize {
-    dispatch(code, param, lpdata, |data| unsafe {
-        (*(data as PKBDLLHOOKSTRUCT)).dwExtraInfo
-    })
+    dispatch(
+        code,
+        param,
+        lpdata,
+        |data| unsafe { (*(data as PKBDLLHOOKSTRUCT)).dwExtraInfo },
+        None,
+    )
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetTickCount() -> u32;
+}
+
+/// Passive physical desktop position, not an injected MouseMove or cursor setter.
+pub(crate) fn current_pointer_position() -> Option<(f64, f64)> {
+    let mut point = winapi::shared::windef::POINT { x: 0, y: 0 };
+    (unsafe { GetPhysicalCursorPos(&mut point) } != 0)
+        .then_some((f64::from(point.x), f64::from(point.y)))
 }

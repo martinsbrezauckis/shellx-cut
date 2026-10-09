@@ -144,6 +144,16 @@ export default function MixerDrawer({
   // it adds no sound and is fully headless-verifiable. (Video tracks don't feed the
   // engine audio mix, so they get no live meter.)
   const ctxRef = useRef<AudioContext | null>(null)
+  const meterMountedRef = useRef(true)
+  useEffect(() => {
+    meterMountedRef.current = true
+    return () => {
+      meterMountedRef.current = false
+      const ctx = ctxRef.current
+      ctxRef.current = null
+      if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})
+    }
+  }, [])
   const [stems, setStems] = useState<Map<string, { channels: Float32Array[]; sampleRate: number }>>(
     new Map(),
   )
@@ -183,6 +193,7 @@ export default function MixerDrawer({
     const abort = new AbortController()
     const ids = trackKey ? trackKey.split(',') : []
     const run = async () => {
+      if (!meterMountedRef.current || cancelled) return
       if (!ids.length) {
         setStems(new Map())
         stemsForOp.current = measurementKey
@@ -198,6 +209,7 @@ export default function MixerDrawer({
       const ctx = ctxRef.current
       const next = new Map<string, { channels: Float32Array[]; sampleRate: number }>()
       for (const id of ids) {
+        if (cancelled || !meterMountedRef.current || currentMeasurementKey.current !== measurementKey) return
         try {
           const r = await callVerb('export.audio', {
             format: 'wav',
@@ -219,6 +231,7 @@ export default function MixerDrawer({
           ).then((x) => x.arrayBuffer())
           if (cancelled || currentMeasurementKey.current !== measurementKey) return
           const audio = await ctx.decodeAudioData(ab)
+          if (cancelled || !meterMountedRef.current || currentMeasurementKey.current !== measurementKey) return
           const channels: Float32Array[] = []
           for (let c = 0; c < audio.numberOfChannels; c++) channels.push(audio.getChannelData(c))
           if (!cancelled && currentMeasurementKey.current === measurementKey) next.set(id, { channels, sampleRate: audio.sampleRate })

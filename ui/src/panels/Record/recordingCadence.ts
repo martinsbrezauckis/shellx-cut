@@ -32,6 +32,13 @@ function validCadence(cadence: RecordingCadence | null): cadence is RecordingCad
     && validRate(cadence.backend_requested)
 }
 
+/** Length of the finalized source video, measured by the recorder's media probe. */
+export function probedRecordingDurationMs(cadence: RecordingCadence | null): number | null {
+  if (!validCadence(cadence)) return null
+  const duration = cadence.probed_media?.duration_ms
+  return duration !== undefined && Number.isSafeInteger(duration) && duration > 0 ? duration : null
+}
+
 /** Preserve terminating decimal requests in editor-friendly form; keep all
  * other measured rates as their exact numerator/denominator evidence. */
 export function formatRecordingFrameRate(rate: RecordingFrameRate | undefined): string | null {

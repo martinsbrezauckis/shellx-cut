@@ -35,29 +35,49 @@ pub(crate) struct Service {
     socket_identity: SocketIdentity,
     _lock: SocketLock,
     stop: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl Service {
-    pub(crate) fn start<F>(callback: F) -> Result<Self, String>
+    pub(crate) fn start<F, E>(callback: F, on_failure: E) -> Result<Self, String>
     where
         F: Fn() + Send + 'static,
+        E: Fn(String) + Send + 'static,
     {
-        Self::start_in(runtime_root()?, callback, |listener, stop, callback| {
-            thread::Builder::new()
-                .name("shellx-cut-record-hotkey".to_string())
-                .spawn(move || serve(listener, stop, callback))
-        })
+        Self::start_in(
+            runtime_root()?,
+            callback,
+            on_failure,
+            |listener, stop, alive, callback, on_failure| {
+                thread::Builder::new()
+                    .name("shellx-cut-record-hotkey".to_string())
+                    .spawn(move || serve(listener, stop, alive, callback, on_failure))
+            },
+        )
     }
 
-    fn start_in<F, S>(root: PathBuf, callback: F, spawn: S) -> Result<Self, String>
+    fn start_in<F, E, S>(
+        root: PathBuf,
+        callback: F,
+        on_failure: E,
+        spawn: S,
+    ) -> Result<Self, String>
     where
         F: Fn() + Send + 'static,
-        S: FnOnce(UnixListener, Arc<AtomicBool>, F) -> std::io::Result<JoinHandle<()>>,
+        E: Fn(String) + Send + 'static,
+        S: FnOnce(
+            UnixListener,
+            Arc<AtomicBool>,
+            Arc<AtomicBool>,
+            F,
+            E,
+        ) -> std::io::Result<JoinHandle<()>>,
     {
         let (listener, socket_path, socket_identity, lock) = bind_owned_socket_in(&root)?;
         let stop = Arc::new(AtomicBool::new(false));
-        let worker = match spawn(listener, stop.clone(), callback) {
+        let alive = Arc::new(AtomicBool::new(true));
+        let worker = match spawn(listener, stop.clone(), alive.clone(), callback, on_failure) {
             Ok(worker) => worker,
             Err(error) => {
                 remove_owned_socket(&socket_path, socket_identity);
@@ -69,8 +89,17 @@ impl Service {
             socket_identity,
             _lock: lock,
             stop,
+            alive,
             worker: Some(worker),
         })
+    }
+
+    pub(crate) fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+            && self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| !worker.is_finished())
     }
 }
 
@@ -97,12 +126,32 @@ pub(crate) fn forward_fixed_event() -> Result<(), String> {
         .map_err(|error| format!("could not forward Global F9: {error}"))
 }
 
-fn serve<F>(listener: UnixListener, stop: Arc<AtomicBool>, callback: F)
-where
+fn serve<F, E>(
+    listener: UnixListener,
+    stop: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
+    callback: F,
+    on_failure: E,
+) where
     F: Fn(),
+    E: Fn(String),
+{
+    serve_with_accept(|| listener.accept(), stop, alive, callback, on_failure);
+}
+
+fn serve_with_accept<F, E, A>(
+    mut accept: A,
+    stop: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
+    callback: F,
+    on_failure: E,
+) where
+    F: Fn(),
+    E: Fn(String),
+    A: FnMut() -> std::io::Result<(UnixStream, std::os::unix::net::SocketAddr)>,
 {
     while !stop.load(Ordering::Acquire) {
-        match listener.accept() {
+        match accept() {
             Ok((mut stream, _)) => {
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
                 let mut byte = [0_u8; 1];
@@ -119,6 +168,8 @@ where
             Err(_) if stop.load(Ordering::Acquire) => break,
             Err(error) => {
                 eprintln!("[shellx-cut] Global F9 callback stopped: {error}");
+                alive.store(false, Ordering::Release);
+                on_failure(error.to_string());
                 break;
             }
         }
@@ -390,7 +441,10 @@ mod tests {
         let error = match Service::start_in(
             root.clone(),
             || {},
-            |_listener, _stop, _callback| Err(std::io::Error::other("synthetic thread failure")),
+            |_| {},
+            |_listener, _stop, _alive, _callback, _on_failure| {
+                Err(std::io::Error::other("synthetic thread failure"))
+            },
         ) {
             Err(error) => error,
             Ok(_) => panic!("the synthetic worker start must fail"),
@@ -414,8 +468,10 @@ mod tests {
             move || {
                 callback_calls.fetch_add(1, Ordering::SeqCst);
             },
-            |listener, stop, callback| {
-                thread::Builder::new().spawn(move || serve(listener, stop, callback))
+            |_| {},
+            |listener, stop, alive, callback, on_failure| {
+                thread::Builder::new()
+                    .spawn(move || serve(listener, stop, alive, callback, on_failure))
             },
         )
         .unwrap();
@@ -434,7 +490,100 @@ mod tests {
             thread::sleep(Duration::from_millis(25));
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(service.is_alive());
         drop(service);
+        remove_root(&root);
+    }
+
+    #[test]
+    fn unexpected_accept_failure_retires_and_releases_the_owned_listener_for_retry() {
+        let root = private_root();
+        let reason = Arc::new(std::sync::Mutex::new(None));
+        let reported = reason.clone();
+        let service = Service::start_in(
+            root.clone(),
+            || panic!("no shortcut callback should run after failed accept"),
+            move |error| *reported.lock().unwrap() = Some(error),
+            |_listener, stop, alive, callback, on_failure| {
+                thread::Builder::new().spawn(move || {
+                    serve_with_accept(
+                        || Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
+                        stop,
+                        alive,
+                        callback,
+                        on_failure,
+                    )
+                })
+            },
+        )
+        .unwrap();
+        for _ in 0..20 {
+            if service.worker.as_ref().unwrap().is_finished() && reason.lock().unwrap().is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!service.is_alive());
+        assert!(service.worker.as_ref().unwrap().is_finished());
+        assert!(reason
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .contains("Too many open files"));
+        drop(service);
+        let retry = Service::start_in(
+            root.clone(),
+            || {},
+            |_| {},
+            |listener, stop, alive, callback, on_failure| {
+                thread::Builder::new()
+                    .spawn(move || serve(listener, stop, alive, callback, on_failure))
+            },
+        )
+        .unwrap();
+        assert!(retry.is_alive());
+        drop(retry);
+        remove_root(&root);
+    }
+
+    #[test]
+    fn a_stopped_owned_listener_cannot_leave_the_published_capability_enabled() {
+        use super::super::super::{capability, Capability, RecordHotkeyState, Runtime};
+
+        let root = private_root();
+        let service = Service::start_in(
+            root.clone(),
+            || {},
+            |_| {},
+            |_listener, _stop, _alive, _callback, _on_failure| thread::Builder::new().spawn(|| {}),
+        )
+        .unwrap();
+        for _ in 0..20 {
+            if service.worker.as_ref().unwrap().is_finished() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(service.worker.as_ref().unwrap().is_finished());
+
+        let state = RecordHotkeyState {
+            capability: std::sync::Mutex::new(Capability::gnome("configured", true, None)),
+            runtime: std::sync::Mutex::new(Runtime {
+                service: Some(service),
+            }),
+        };
+        for published in ["configured", "observed"] {
+            *state.capability.lock().unwrap() = Capability::gnome(published, true, None);
+            let actual = capability(&state);
+            assert_eq!(
+                actual.state, "disabled",
+                "stale {published} after worker exit"
+            );
+            assert!(!actual.enabled);
+            assert_eq!(actual.scope, "focused_only");
+        }
+        drop(state);
         remove_root(&root);
     }
 }

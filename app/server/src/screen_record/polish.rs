@@ -101,13 +101,10 @@ pub(crate) async fn screen_record_autoedit(
     } else {
         None
     };
-    let stem = track_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("events");
-    let out = cache.join(format!("{stem}.plan.json"));
+    let stage = super::plan_output::PlanStage::new(&cache)?;
+    let out = stage.path();
     let config = parse_autoedit_config(a.config)?;
-    let mut summary = autoedit(&track_path, &out, &config)?;
+    let mut summary = autoedit(&track_path, out, &config)?;
     let webcam_path = if let Some(webcam) = a.webcam.as_deref() {
         Some(resolve_existing_project_file(
             &dir,
@@ -129,14 +126,14 @@ pub(crate) async fn screen_record_autoedit(
         None
     };
     if let Some(receipt) = scene_receipt.as_ref() {
-        let mut plan = load_plan(&out)?;
+        let mut plan = load_plan(out)?;
         super::scene_projection_start::apply_to_edit_plan(
             &mut plan,
             receipt,
             scene_camera.as_ref(),
         )?;
         super::cache_output::write(
-            &out,
+            out,
             &serde_json::to_vec_pretty(&plan).map_err(|e| {
                 CutError::new(
                     error_codes::IO,
@@ -164,7 +161,7 @@ pub(crate) async fn screen_record_autoedit(
         } else {
             crate::screen_record_studio::StudioEventLog::default()
         };
-        let mut plan = load_plan(&out)?;
+        let mut plan = load_plan(out)?;
         studio_event_count = crate::screen_record_studio::apply_studio_events_to_plan(
             &mut plan,
             webcam_path.as_ref().map(|path| path.display().to_string()),
@@ -172,7 +169,7 @@ pub(crate) async fn screen_record_autoedit(
             &log,
         )?;
         super::cache_output::write(
-            &out,
+            out,
             &serde_json::to_vec_pretty(&plan).map_err(|e| {
                 CutError::new(
                     error_codes::IO,
@@ -195,6 +192,7 @@ pub(crate) async fn screen_record_autoedit(
             summary = format!("{summary}; {studio_event_count} Studio camera event(s)");
         }
     }
+    let out = stage.publish(&track_path)?;
     let effective_camera_clock = scene_camera
         .as_ref()
         .map(|camera| camera.artifact.clock)
@@ -494,6 +492,8 @@ pub fn mux_raw_with_control(
             "copy",
             "-c:a",
             "aac",
+            "-af",
+            "apad",
             "-shortest",
         ]);
     } else {

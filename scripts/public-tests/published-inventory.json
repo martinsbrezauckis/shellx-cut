@@ -2,8 +2,8 @@
   "schema": "shellx-cut/published-test-inventory@1",
   "version": "0.6.115",
   "contract": {
-    "node_test_count": 11,
-    "ui_library_test_count": 39
+    "node_test_count": 12,
+    "ui_library_test_count": 40
   },
   "prerequisites": [
     {
@@ -78,6 +78,11 @@
       "path": "scripts/public-tests/third-party-notice.test.mjs",
       "resources": ["scripts/public-tests/third-party-notice.test.mjs", "NOTICE", "app/desktop/src-tauri/tauri.conf.json", "app/desktop/src-tauri/src/tools.rs", "app/server/src/fetch.rs", "app/perception/py/blaze_face_short_range.tflite", "app/perception/py/face_detection_yunet_2023mar.onnx"],
       "requires": []
+    },
+    {
+      "path": "scripts/public-tests/windows-capture-lifecycle-contract.test.mjs",
+      "resources": ["scripts/public-tests/windows-capture-lifecycle-contract.test.mjs", "app/recorder/record-capture/Cargo.toml", "app/Cargo.lock", "app/recorder/record-capture/src/windows_runtime.rs", "app/recorder/record-capture/src/windows_probe.rs", "app/recorder/record-capture/src/windows.rs", "app/recorder/record-capture/src/macos_capture_target.rs", "app/recorder/record-capture/src/macos.rs", "app/recorder/record-capture/src/surface_coordinates.rs"],
+      "requires": []
     }
   ],
   "ui_library_tests": {
@@ -115,6 +120,7 @@
       "record-pause-lifetime.test.ts",
       "record-scene-lifetime.test.ts",
       "recording-workspace-admission.test.ts",
+      "render-queue-preflight.test.ts",
       "render-queue-terminal.test.ts",
       "source-navigation.test.ts",
       "source-overwrite-targets.test.ts",

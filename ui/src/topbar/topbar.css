@@ -1013,7 +1013,13 @@
   border: 1px solid transparent;
 }
 .tb-recording-back-reason {
+  /* Keep long lifecycle messages inside their flex slot at every width. */
+  flex: 0 1 260px;
+  min-width: 0;
   max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ink-2);
   font: 600 var(--fs-ui-xs) / 1.25 var(--sans);
 }
@@ -1034,11 +1040,7 @@
     height: auto;
   }
   .tb--recording .tb-recording-back-reason {
-    flex: 0 1 190px;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    flex-basis: 190px;
   }
   .tb--recording .tb-nav-label { display: none; }
 }

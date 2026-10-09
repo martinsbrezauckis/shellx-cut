@@ -18,6 +18,7 @@ import { monitorAudioResyncTarget } from './audioSync'
 import { activeVideo, previewFrameMs, RVFC_SUPPORTED, videoFrameCallbacks } from './model'
 import { PreviewFrameError, PreviewOfflineOverlays, PreviewOfflineStage, usePreviewOfflineMedia } from './PreviewOffline'
 import { usePreviewExportActions } from './usePreviewExportActions'
+import { usePreviewAudioMeter } from './usePreviewAudioMeter'
 import { usePreviewViewOptions } from './usePreviewViewOptions'
 import { previewPlaybackCleanupPosition, previewPlaybackClockPosition, useVoiceoverPlayback } from './useVoiceoverPlayback'
 import { GuideOverlay } from './GuideOverlay'
@@ -40,11 +41,6 @@ import {
   shouldUseLivePreviewSurface,
 } from './composite'
 import './preview.css'
-declare global {
-  interface Window {
-    webkitAudioContext?: typeof AudioContext
-  }
-}
 export interface PreviewProps {
   project: Project | null
   doctor?: DoctorReport | null
@@ -136,45 +132,9 @@ export default function Preview({ project, doctor = null, playheadMs, onSeek, he
   // in-flight read 404 — caught by console-clean). Alternating _monitor_a/_b.mp3
   // means a re-render never overwrites the file the element is currently reading.
   const mixBuf = useRef<'a' | 'b'>('a')
-  // --- master output meter (Audio Monitoring v2a) ---------------------------
-  // Tap a Web Audio AnalyserNode off the SAME <audio> that plays the export mix,
-  // so the meter reads the EXACT export level (WYSIWYG — no JS re-mix). A
-  // MediaElementAudioSourceNode can be created only ONCE per element AND it
-  // REROUTES the element's audio through the graph, so we build it lazily inside
-  // the <audio>'s onPlay (a gesture-unlocked moment → the AudioContext can resume
-  // and the element keeps making sound). If Web Audio is unavailable / capture is
-  // blocked, we never capture the element, so v1 playback is unaffected (no meter).
-  const meterCtxRef = useRef<AudioContext | null>(null)
-  const meterSrcRef = useRef<MediaElementAudioSourceNode | null>(null)
-  const [meterAnalyser, setMeterAnalyser] = useState<AnalyserNode | null>(null)
+  const { meterAnalyser, setupMeter } = usePreviewAudioMeter(audioRef)
   const ffmpegMissing = isFfmpegMissing(doctor)
   const openVideoToolsSetup = useCallback(openVideoToolsSettings, [])
-  const setupMeter = useCallback(() => {
-    if (meterCtxRef.current) {
-      void meterCtxRef.current.resume().catch(() => {})
-      return
-    }
-    const el = audioRef.current
-    if (!el) return
-    const Ctx = window.AudioContext || window.webkitAudioContext
-    if (!Ctx) return
-    try {
-      const ctx = new Ctx()
-      const src = ctx.createMediaElementSource(el)
-      const an = ctx.createAnalyser()
-      an.fftSize = 1024
-      an.smoothingTimeConstant = 0.4
-      src.connect(an)
-      an.connect(ctx.destination)
-      meterCtxRef.current = ctx
-      meterSrcRef.current = src
-      setMeterAnalyser(an)
-      void ctx.resume().catch(() => {})
-    } catch {
-      // createMediaElementSource threw (already captured / cross-origin / no Web
-      // Audio) — the element was NOT rerouted, so it still plays normally; just no meter.
-    }
-  }, [])
   useEffect(() => {
     const onShow = () => setComposed(true)
     document.addEventListener('cut:show-composed', onShow)

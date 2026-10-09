@@ -19,6 +19,17 @@ pub(crate) fn parse_windows_window_id(value: &str) -> Option<(usize, u32)> {
     (parts.next().is_none() && hwnd != 0 && pid != 0).then_some((hwnd, pid))
 }
 
+/// Bind the opaque identity to the HWND already admitted by the source picker.
+/// Never re-enumerate a second transient native snapshot or admit a different item.
+#[cfg(any(windows, test))]
+pub(crate) fn admitted_windows_window_identity(
+    id: &str,
+    admitted_hwnd: usize,
+) -> Option<(usize, u32)> {
+    let identity = parse_windows_window_id(id)?;
+    (identity.0 == admitted_hwnd).then_some(identity)
+}
+
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn macos_window_id(window_id: u32) -> String {
     format!("{MACOS_PREFIX}:{window_id}")
@@ -50,6 +61,25 @@ mod tests {
             None
         );
         assert_eq!(parse_windows_window_id("Fixture Window"), None);
+    }
+
+    #[test]
+    fn click_owner_binds_already_admitted_window_and_refuses_mismatch() {
+        let id = windows_window_id(0x1234_abcd, 4312);
+        assert_eq!(
+            admitted_windows_window_identity(&id, 0x1234_abcd),
+            Some((0x1234_abcd, 4312))
+        );
+        assert_eq!(admitted_windows_window_identity(&id, 0x5678), None);
+        assert_eq!(admitted_windows_window_identity(&id, 0), None);
+        assert_eq!(
+            admitted_windows_window_identity("windows-hwnd-v1:1234:0", 0x1234),
+            None
+        );
+        assert_eq!(
+            admitted_windows_window_identity("Fixture Window", 0x1234),
+            None
+        );
     }
 
     #[test]

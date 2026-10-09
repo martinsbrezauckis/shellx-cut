@@ -20,9 +20,12 @@
 use serde::{Deserialize, Serialize};
 
 use record_core::{
-    ClickFx, CursorSample, CursorStyle, Ease, EditPlan, EventTrack, KeyCastEvent, KeySample,
-    ZoomKey, ZoomTrack,
+    ClickFx, ClickPositionQuality, CursorSample, CursorStyle, Ease, EditPlan, EventTrack,
+    KeyCastEvent, KeySample, ZoomKey, ZoomTrack,
 };
+
+#[cfg(test)]
+mod cursor_tests;
 
 /// Tunables for the auto-edit heuristics. Defaults are a sensible demo feel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,7 +94,7 @@ pub fn autoedit(events: &EventTrack, cfg: &EngineConfig) -> EditPlan {
     );
     plan.zoom = build_zoom(events, cfg);
     plan.cursor = CursorStyle {
-        smoothed: smooth_cursor(&events.cursor, cfg.cursor_window),
+        smoothed: cursor_with_exact_clicks(events, cfg.cursor_window),
         ..CursorStyle::default()
     };
     plan.clicks = build_clicks(events);
@@ -248,31 +251,70 @@ pub fn build_zoom(events: &EventTrack, cfg: &EngineConfig) -> ZoomTrack {
     track
 }
 
-/// Moving-average de-jitter of the cursor path. Preserves sample count + times.
+/// Moving-average de-jitter within a short observed motion interval. A sparse
+/// event track has no evidence that the cursor moved during a long quiet gap.
 pub fn smooth_cursor(cursor: &[CursorSample], window: usize) -> Vec<CursorSample> {
     let n = cursor.len();
     if n <= 2 || window <= 1 {
         return cursor.to_vec();
     }
+    const SMOOTH_RADIUS_MS: u64 = 100;
+    // Matches the renderer's maximum gap for observed continuous motion.
+    const MAX_INTERPOLATED_GAP_MS: u64 = 200;
     let half = window / 2;
     (0..n)
         .map(|i| {
+            if i == 0
+                || i == n - 1
+                || cursor[i].t_ms.saturating_sub(cursor[i - 1].t_ms) > MAX_INTERPOLATED_GAP_MS
+                || cursor[i + 1].t_ms.saturating_sub(cursor[i].t_ms) > MAX_INTERPOLATED_GAP_MS
+            {
+                return cursor[i];
+            }
             let start = i.saturating_sub(half);
             let end = i.saturating_add(half).min(n - 1);
-            let samples = &cursor[start..=end];
             let (mut sx, mut sy) = (0.0f64, 0.0f64);
-            for sample in samples {
+            let mut count = 0usize;
+            for sample in &cursor[start..=end] {
+                if sample.t_ms.abs_diff(cursor[i].t_ms) > SMOOTH_RADIUS_MS {
+                    continue;
+                }
                 sx += sample.x;
                 sy += sample.y;
+                count += 1;
             }
-            let count = samples.len() as f64;
             CursorSample {
                 t_ms: cursor[i].t_ms,
-                x: sx / count,
-                y: sy / count,
+                x: sx / count as f64,
+                y: sy / count as f64,
             }
         })
         .collect()
+}
+
+fn cursor_with_exact_clicks(events: &EventTrack, window: usize) -> Vec<CursorSample> {
+    let mut cursor = smooth_cursor(&events.cursor, window);
+    if cursor.is_empty() {
+        return cursor;
+    }
+    for click in events
+        .clicks
+        .iter()
+        .filter(|click| click.down && click.position_quality == ClickPositionQuality::Exact)
+    {
+        let sample = CursorSample {
+            t_ms: click.t_ms,
+            x: click.x,
+            y: click.y,
+        };
+        let after_equal = cursor.partition_point(|point| point.t_ms <= click.t_ms);
+        if after_equal > 0 && cursor[after_equal - 1].t_ms == click.t_ms {
+            cursor[after_equal - 1] = sample;
+        } else {
+            cursor.insert(after_equal, sample);
+        }
+    }
+    cursor
 }
 
 /// Click-downs → ripple highlight effects, in fraction-of-frame coordinates.
@@ -491,8 +533,10 @@ mod tests {
         ];
         let smoothed = smooth_cursor(&cursor, usize::MAX);
         assert_eq!(smoothed.len(), cursor.len());
-        assert!(smoothed.iter().all(|sample| sample.x == 10.0));
-        assert!(smoothed.iter().all(|sample| sample.y == 20.0));
+        assert_eq!(smoothed[0], cursor[0]);
+        assert_eq!(smoothed[1].x, 10.0);
+        assert_eq!(smoothed[1].y, 20.0);
+        assert_eq!(smoothed[2], cursor[2]);
     }
 
     #[test]
@@ -539,6 +583,17 @@ mod tests {
     }
 
     #[test]
+    fn native_cursor_window_clicks_still_drive_zoom_and_ripples_without_second_cursor() {
+        let mut events = fixtures::generate("click-walkthrough").unwrap();
+        events.cursor.clear();
+        let plan = autoedit(&events, &cfg());
+        assert!(plan.cursor.smoothed.is_empty());
+        assert_eq!(plan.clicks.len(), events.click_downs().count());
+        assert!(!plan.clicks.is_empty());
+        assert!(plan.zoom.keys.iter().any(|key| key.scale > 1.0));
+    }
+
+    #[test]
     fn autoedit_assembles_full_plan() {
         let ev = fixtures::generate("click-walkthrough").unwrap();
         let plan = autoedit(&ev, &cfg());
@@ -546,7 +601,13 @@ mod tests {
         assert_eq!(plan.source_h, ev.screen_h);
         assert_eq!(plan.fps, cfg().out_fps);
         assert!(!plan.zoom.keys.is_empty());
-        assert_eq!(plan.cursor.smoothed.len(), ev.cursor.len());
+        assert!(plan.cursor.smoothed.len() >= ev.cursor.len());
+        // Exact click positions can add knots between captured cursor samples;
+        // the original samples must still be present in their recorded order.
+        let mut plan_samples = plan.cursor.smoothed.iter();
+        for raw in &ev.cursor {
+            assert!(plan_samples.any(|sample| sample.t_ms == raw.t_ms));
+        }
         assert_eq!(plan.clicks.len(), 6);
         assert!(plan.frame.enabled);
     }

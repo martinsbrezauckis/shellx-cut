@@ -45,6 +45,9 @@ pub(crate) fn mux_raw_sources(
                 "copy",
                 "-c:a",
                 "aac",
+                // Keep copied video through its final packet when audio ends first.
+                "-af",
+                "apad",
                 "-shortest",
             ]);
         }
@@ -71,6 +74,8 @@ pub(crate) fn mux_raw_sources(
                 "copy",
                 "-c:a",
                 "aac",
+                "-af",
+                "apad",
                 "-shortest",
             ]);
         }
@@ -98,7 +103,7 @@ pub(crate) fn mux_raw_sources(
             .arg(system);
             cmd.args([
                 "-filter_complex",
-                "[1:a]aresample=48000[m];[2:a]aresample=48000[s];[m][s]amix=inputs=2:duration=longest:normalize=0[a]",
+                "[1:a]aresample=48000[m];[2:a]aresample=48000[s];[m][s]amix=inputs=2:duration=longest:normalize=0,apad[a]",
                 "-map",
                 "0:v:0",
                 "-map",

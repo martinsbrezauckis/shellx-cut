@@ -13,6 +13,7 @@ import type { RecordingSourceKind } from '../panels/Record/regionPickerModel'
 import type { RecordingOutputSize, RecordingQualityProfile } from '../panels/Record/recordingQuality'
 import { RecordingCountdownGuard, countdownRemainingSeconds, type RecordingCountdownSeconds } from '../panels/Record/recordingCountdown'
 import { firstUseRecordingPreset, loadRecordingPreset, normalizeRecordingPresetForStart, saveRecordingPreset, sameProjectIdentity, validateRecordingPreset, type RecordingPreset } from './recordingPreset'
+import { recordingInputHook, UNOBSERVED_INPUT_HOOK, type RecordingInputHook } from '../panels/Record/recordingInputHook'
 import { RecordingToggleGate, classifyStopFailure, stopArgs } from './recordingSessionModel'
 
 export type RecordingPhase = 'idle' | 'countdown' | 'starting' | 'recording' | 'finalizing' | 'recovery' | 'done' | 'error'
@@ -36,6 +37,7 @@ export interface RecordingSessionState {
   countdownRemaining: number
   startResult: RecordingStartResult | null
   rawStreams: StudioRawStreams | null
+  inputHook: RecordingInputHook
   cursorCorrelation: CursorCorrelation | null
   cadence: RecordingCadence | null
   quality: unknown
@@ -69,7 +71,7 @@ const INITIAL: RecordingSessionState = {
   phase: 'idle', captureId: null, resultCaptureId: null, resultProjectIdentity: null,
   projectName: null, raw: false, rawPath: null,
   source: null, plan: null, clipId: null, startedAt: null, endedAt: null, message: '', indicatorWarning: null, countdownRemaining: 0,
-  recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, cursorCorrelation: null, cadence: null, quality: null, rawHasMic: false, rawHasSystem: false,
+  recoveryAction: null, initialStudioWarning: null, startResult: null, rawStreams: null, inputHook: UNOBSERVED_INPUT_HOOK, cursorCorrelation: null, cadence: null, quality: null, rawHasMic: false, rawHasSystem: false,
 }
 const UNKNOWN_START = 'The recorder returned an incomplete Start response. Recording ownership is unknown; restart Cut before another capture.'
 
@@ -190,7 +192,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       publish({ phase: 'starting', message: 'Checking current source, devices, and permissions…', raw: preset.raw,
         rawPath: null, source: null, plan: null, resultCaptureId: null, resultProjectIdentity: null,
         clipId: null, endedAt: null, recoveryAction: null, initialStudioWarning: null, startResult: null,
-        rawStreams: null, cursorCorrelation: null, cadence: null, quality: null })
+        rawStreams: null, inputHook: UNOBSERVED_INPUT_HOOK, cursorCorrelation: null, cadence: null, quality: null })
       // A fallback project may take time to create. Recheck the source again
       // immediately before Start, including on first use.
       const doctor = await callVerb('screen_record.doctor', {})
@@ -369,7 +371,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         return
       }
       terminal = true
-      const result = reply.result as { capture_id?: string; raw_path?: string | null; source?: string; plan?: string; raw_streams?: StudioRawStreams; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence; quality?: unknown; raw_has_mic?: boolean; raw_has_system?: boolean }
+      const result = reply.result as { capture_id?: string; raw_path?: string | null; source?: string; plan?: string; raw_streams?: StudioRawStreams; input_hook?: unknown; cursor_correlation?: CursorCorrelation; cadence?: RecordingCadence; quality?: unknown; raw_has_mic?: boolean; raw_has_system?: boolean }
       const warning = await indicator('end_recording_indicator', id)
       captureRef.current = null
       activePresetRef.current = null
@@ -384,7 +386,7 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
       publish({ rawPath: result.raw_path, source: result.source ?? null, plan: result.plan ?? null,
         resultCaptureId: id, resultProjectIdentity: projectIdentityRef.current ? { ...projectIdentityRef.current } : null,
         captureId: null, recoveryAction: null, indicatorWarning: warning, endedAt: Date.now(),
-        rawStreams: result.raw_streams ?? null, cursorCorrelation: result.cursor_correlation ?? null, cadence: result.cadence ?? null, quality: result.quality ?? null,
+        rawStreams: result.raw_streams ?? null, inputHook: recordingInputHook(result.input_hook), cursorCorrelation: result.cursor_correlation ?? null, cadence: result.cadence ?? null, quality: result.quality ?? null,
         rawHasMic: Boolean(result.raw_has_mic), rawHasSystem: Boolean(result.raw_has_system) })
       if (preset.raw) {
         publish({ phase: 'done', message: 'Raw MP4 saved to the recording project’s default export folder.' })
@@ -427,9 +429,11 @@ export function useRecordingSession({ project, onEnsureProject, onResult }: {
         const reply = await callVerb('screen_record.status', { capture_id: id })
         if (captureRef.current !== id || busyRef.current) return
         if (reply.ok) {
-          const result = reply.result as { capture_id?: string; terminal?: boolean }
-          if (result.capture_id === id && result.terminal === true) void stop()
-          else if (result.capture_id !== id) publish({ phase: 'recovery', message: 'Recorder status returned a different capture ID. Inspect Recording Recovery.' })
+          const result = reply.result as { capture_id?: string; terminal?: boolean; input_hook?: unknown }
+          if (result.capture_id === id) {
+            publish({ inputHook: recordingInputHook(result.input_hook) })
+            if (result.terminal === true) void stop()
+          } else if (result.capture_id !== id) publish({ phase: 'recovery', message: 'Recorder status returned a different capture ID. Inspect Recording Recovery.' })
         } else if (reply.error?.code === 'not_found') await checkCaptureStatus(id, 'The native capture ended before Stop returned an output.')
       } finally { checking = false }
     }

@@ -126,9 +126,9 @@ fn stale_or_missing_metadata_stays_approximate() {
 }
 
 #[test]
-fn fractional_scale_and_multimonitor_origin_map_to_frame_pixels() {
+fn native_fractional_scale_spa_position_is_already_in_video_pixels() {
     let mut clicks = [click(50)];
-    correlate_clicks(
+    let output = correlate_clicks(
         wayland_mode(),
         &mut clicks,
         vec![],
@@ -136,8 +136,37 @@ fn fractional_scale_and_multimonitor_origin_map_to_frame_pixels() {
         Some(PipewireCursorCapture {
             metadata: vec![CursorMetadataSample {
                 t_ms: 50,
-                x: -800.0,
-                y: 580.0,
+                // Retained native GTK (1921.777, 676.699) on a 3072x1728
+                // logical monitor produced this SPA position on 3840x2160 video.
+                x: 2402.0,
+                y: 846.0,
+            }],
+            frame_width: 3840,
+            frame_height: 2160,
+            capture_start_ms: 0,
+            capture_end_ms: 0,
+        }),
+        PortalCursorGeometry::from_portal(Some((0, 0)), Some((3072, 1728))),
+        None,
+    );
+    assert_eq!((clicks[0].x, clicks[0].y), (2402.0, 846.0));
+    assert_eq!((output.cursor[0].x, output.cursor[0].y), (2402.0, 846.0));
+    assert_eq!(clicks[0].position_quality, ClickPositionQuality::Exact);
+}
+
+#[test]
+fn nonzero_portal_origin_is_not_subtracted_from_video_local_spa_position() {
+    let mut clicks = [click(50)];
+    let output = correlate_clicks(
+        wayland_mode(),
+        &mut clicks,
+        vec![],
+        vec![],
+        Some(PipewireCursorCapture {
+            metadata: vec![CursorMetadataSample {
+                t_ms: 50,
+                x: 1200.0,
+                y: 720.0,
             }],
             frame_width: 3840,
             frame_height: 2160,
@@ -148,6 +177,77 @@ fn fractional_scale_and_multimonitor_origin_map_to_frame_pixels() {
         None,
     );
     assert_eq!((clicks[0].x, clicks[0].y), (1200.0, 720.0));
+    assert_eq!((output.cursor[0].x, output.cursor[0].y), (1200.0, 720.0));
+    assert_eq!(clicks[0].position_quality, ClickPositionQuality::Exact);
+}
+
+#[test]
+fn spa_cursor_requires_finite_coordinates_inside_the_negotiated_video() {
+    for (x, y, accepted) in [
+        (0.0, 0.0, true),
+        (3839.0, 2159.0, true),
+        (3840.0, 846.0, false),
+        (2402.0, 2160.0, false),
+        (-1.0, 846.0, false),
+        (f64::NAN, 846.0, false),
+        (2402.0, f64::INFINITY, false),
+    ] {
+        let mut clicks = [click(50)];
+        let output = correlate_clicks(
+            wayland_mode(),
+            &mut clicks,
+            vec![],
+            vec![],
+            Some(PipewireCursorCapture {
+                metadata: vec![CursorMetadataSample { t_ms: 50, x, y }],
+                frame_width: 3840,
+                frame_height: 2160,
+                capture_start_ms: 0,
+                capture_end_ms: 0,
+            }),
+            PortalCursorGeometry::from_portal(Some((0, 0)), Some((3072, 1728))),
+            None,
+        );
+        assert_eq!(
+            clicks[0].position_quality == ClickPositionQuality::Exact,
+            accepted
+        );
+        assert_eq!(output.cursor.len(), usize::from(accepted));
+    }
+}
+
+#[test]
+fn missing_or_invalid_frame_dimensions_cannot_claim_exact_cursor_position() {
+    for (frame_width, frame_height) in [(0, 2160), (3840, 0)] {
+        let mut clicks = [click(50)];
+        let output = correlate_clicks(
+            wayland_mode(),
+            &mut clicks,
+            vec![],
+            vec![],
+            Some(PipewireCursorCapture {
+                metadata: vec![CursorMetadataSample {
+                    t_ms: 50,
+                    x: 2402.0,
+                    y: 846.0,
+                }],
+                frame_width,
+                frame_height,
+                capture_start_ms: 0,
+                capture_end_ms: 0,
+            }),
+            PortalCursorGeometry::from_portal(Some((0, 0)), Some((3072, 1728))),
+            None,
+        );
+        assert_eq!(
+            clicks[0].position_quality,
+            ClickPositionQuality::Approximate
+        );
+        assert_eq!(
+            output.status.source,
+            CursorCoordinateSource::WaylandEvdevRelative
+        );
+    }
 }
 
 #[test]

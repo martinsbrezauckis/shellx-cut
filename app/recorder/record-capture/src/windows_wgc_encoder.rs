@@ -14,10 +14,7 @@ use windows::Foundation::{TimeSpan, TypedEventHandler};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DSurface;
 use windows::Media::Core::{
     MediaStreamSample, MediaStreamSource, MediaStreamSourceSampleRequestedEventArgs,
-    MediaStreamSourceStartingEventArgs, VideoStreamDescriptor,
-};
-use windows::Media::MediaProperties::{
-    MediaEncodingProfile, MediaEncodingSubtypes, VideoEncodingProperties, VideoEncodingQuality,
+    MediaStreamSourceStartingEventArgs,
 };
 use windows::Media::Transcoding::MediaTranscoder;
 use windows::Storage::{FileAccessMode, StorageFile};
@@ -35,18 +32,36 @@ pub(crate) struct WgcVideoEncoder {
     requested: i64,
     scheduling_failure: Arc<Mutex<Option<windows::core::Error>>>,
     clock: crate::windows_wgc_sample_clock::WgcSampleClock,
+    timed_origin: Option<(Instant, crate::windows_wgc_clock_origin::QpcCaptureOrigin)>,
     last_accepted: Option<(SendDirectX<IDirect3DSurface>, i64, Instant)>,
     terminal_sample_duration: i64,
     width: u32,
     height: u32,
+    window_fitter: Option<crate::windows_wgc_window_fit::WindowFrameFitter>,
 }
 
 impl WgcVideoEncoder {
+    #[cfg(test)]
     pub(crate) fn new(width: u32, height: u32, fps: u32, path: &Path) -> Result<Self, Error> {
+        Self::new_with_clock(width, height, fps, path, None)
+    }
+
+    pub(crate) fn new_with_clock(
+        width: u32,
+        height: u32,
+        fps: u32,
+        path: &Path,
+        timed_clock: Option<(
+            Instant,
+            crate::windows_wgc_clock_origin::QpcCaptureOrigin,
+            i64,
+        )>,
+    ) -> Result<Self, Error> {
         if fps == 0 {
             return Err("WGC video frame rate must be positive".into());
         }
-        let (descriptor, profile) = encoding_properties(width, height, fps)?;
+        let (descriptor, profile) =
+            crate::windows_wgc_encoder_profile::encoding_properties(width, height, fps)?;
         let source = MediaStreamSource::CreateFromDescriptor(&descriptor)?;
         source.SetBufferTime(TimeSpan { Duration: 300_000 })?;
         let starting = source.Starting(&TypedEventHandler::<
@@ -145,18 +160,54 @@ impl WgcVideoEncoder {
             starting,
             requested,
             scheduling_failure,
-            clock: Default::default(),
+            clock: timed_clock.map_or_else(Default::default, |(_, _, boundary)| {
+                crate::windows_wgc_sample_clock::WgcSampleClock::with_reserved_boundary(boundary)
+            }),
+            timed_origin: timed_clock.map(|(start, origin, _)| (start, origin)),
             last_accepted: None,
             terminal_sample_duration: (10_000_000 / i64::from(fps)).max(1),
             width,
             height,
+            window_fitter: None,
         })
     }
 
-    pub(crate) fn send_frame(&mut self, frame: &Frame<'_>) -> Result<(), Error> {
+    pub(crate) fn send_frame(&mut self, frame: &Frame<'_>) -> Result<bool, Error> {
         let native = frame.timestamp()?.Duration;
         let surface = crate::windows_wgc_surface::snapshot(frame, self.width, self.height)?;
         self.send_snapshot(surface, native, Instant::now())
+    }
+
+    /// Window-only: return the exact fit only after immutable sample admission.
+    pub(crate) fn send_window_frame(
+        &mut self,
+        frame: &Frame<'_>,
+    ) -> Result<Option<crate::window_frame_fit::WindowFrameFit>, Error> {
+        let fit = crate::window_frame_fit::WindowFrameFit::new(
+            (frame.width(), frame.height()),
+            (self.width, self.height),
+        )
+        .ok_or("invalid full-window fit dimensions")?;
+        let native = frame.timestamp()?.Duration;
+        let (surface, fit) = if fit.is_identity() {
+            (
+                crate::windows_wgc_surface::snapshot(frame, self.width, self.height)?,
+                fit,
+            )
+        } else {
+            if self.window_fitter.is_none() {
+                self.window_fitter = Some(crate::windows_wgc_window_fit::WindowFrameFitter::new(
+                    frame.device(),
+                )?);
+            }
+            self.window_fitter
+                .as_mut()
+                .ok_or("window fitter unavailable")?
+                .snapshot(frame, (self.width, self.height))?
+        };
+        Ok(self
+            .send_snapshot(surface, native, Instant::now())?
+            .then_some(fit))
     }
 
     fn send_snapshot(
@@ -164,7 +215,7 @@ impl WgcVideoEncoder {
         surface: IDirect3DSurface,
         native: i64,
         accepted_at: Instant,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         if let Some(error) = self
             .scheduling_failure
             .lock()
@@ -176,19 +227,22 @@ impl WgcVideoEncoder {
         if self.worker.as_ref().is_some_and(JoinHandle::is_finished) {
             return Err("WGC video encoder terminated before capture close".into());
         }
-        let timestamp = self.clock.timestamp(native)?;
+        let Some(timestamp) = self.clock.admit_timestamp(native)? else {
+            return Ok(false);
+        };
+        let retained = crate::windows_wgc_surface::retained_copy(&surface)?;
         // Keep the native elapsed clock. No frame-count-derived timestamps or
         // forced durations may compress sparse callbacks or capture stalls.
         crate::windows_wgc_sample_queue::offer(
             self.sender
                 .as_ref()
                 .ok_or("WGC video encoder already closed")?,
-            (SendDirectX::new(surface.clone()), timestamp, None),
+            (SendDirectX::new(surface), timestamp, None),
         )?;
-        // This is another reference to the queued immutable GPU texture, not
-        // a second GPU copy. Only the latest accepted surface stays owned.
-        self.last_accepted = Some((SendDirectX::new(surface), timestamp, accepted_at));
-        Ok(())
+        // Only the latest accepted independent copy remains owned. The queued
+        // resource can be consumed without changing the eventual held pixels.
+        self.last_accepted = Some((SendDirectX::new(retained), timestamp, accepted_at));
+        Ok(true)
     }
 
     /// Called only after the native capture control joined successfully. A
@@ -207,19 +261,15 @@ impl WgcVideoEncoder {
         let Some((surface, last_timestamp, accepted_at)) = self.last_accepted.take() else {
             return Ok(None);
         };
-        let elapsed = stop_at.saturating_duration_since(accepted_at);
-        let elapsed_100ns = i64::try_from(elapsed.as_nanos() / 100)
-            .map_err(|_| "WGC held pixel interval overflow")?;
+        let (timestamp, elapsed_100ns) =
+            self.clock
+                .held_at_stop(last_timestamp, accepted_at, stop_at, self.timed_origin)?;
         // An ordinary final frame already spans one requested frame period.
         // Avoid an extra queue entry at normal cadence, especially when the
         // bounded queue is full at Stop.
         if elapsed_100ns <= self.terminal_sample_duration {
             return Ok(None);
         }
-        let timestamp = crate::windows_wgc_sample_clock::WgcSampleClock::held_timestamp(
-            last_timestamp,
-            elapsed_100ns,
-        )?;
         if let Some(error) = self
             .scheduling_failure
             .lock()
@@ -237,7 +287,9 @@ impl WgcVideoEncoder {
                 .ok_or("WGC video encoder already closed")?,
             (surface, timestamp, Some(self.terminal_sample_duration)),
         )?;
-        Ok(Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)))
+        Ok(Some(
+            u64::try_from(elapsed_100ns / 10_000).unwrap_or(u64::MAX),
+        ))
     }
 
     pub(crate) fn finish(mut self) -> Result<(), Error> {
@@ -280,35 +332,6 @@ impl Drop for WgcVideoEncoder {
             let _ = self.close();
         }
     }
-}
-
-fn set_cadence(properties: &VideoEncodingProperties, fps: u32) -> windows::core::Result<()> {
-    properties.FrameRate()?.SetNumerator(fps)?;
-    properties.FrameRate()?.SetDenominator(1)
-}
-
-fn encoding_properties(
-    width: u32,
-    height: u32,
-    fps: u32,
-) -> windows::core::Result<(VideoStreamDescriptor, MediaEncodingProfile)> {
-    let input = VideoEncodingProperties::CreateUncompressed(
-        &MediaEncodingSubtypes::Bgra8()?,
-        width,
-        height,
-    )?;
-    // Both sides must describe the same requested timebase. Setting only
-    // the output rate lets the implicit input rate drive transcoding.
-    set_cadence(&input, fps)?;
-    let profile = MediaEncodingProfile::CreateMp4(VideoEncodingQuality::HD1080p)?;
-    profile.SetAudio(None)?;
-    let output = profile.Video()?;
-    output.SetSubtype(&MediaEncodingSubtypes::Hevc()?)?;
-    output.SetWidth(width)?;
-    output.SetHeight(height)?;
-    output.SetBitrate(15_000_000)?;
-    set_cadence(&output, fps)?;
-    Ok((VideoStreamDescriptor::Create(&input)?, profile))
 }
 
 #[cfg(test)]

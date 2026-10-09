@@ -12,7 +12,7 @@ export interface RenderQueueRow {
 export const newRenderQueueRow = (): RenderQueueRow => ({ output: '', preset: 'standard', aspect: 'project' })
 export interface RenderQueueResult extends RenderQueueTerminalResult {
   queue_id?: string
-  jobs?: Array<{ idx?: number; output?: string; job_id?: string; state?: string; ok?: boolean; error?: { code?: string; message?: string } }>
+  jobs?: Array<{ idx?: number; output?: string | null; job_id?: string; state?: string; ok?: boolean; error?: { code?: string; message?: string } }>
 }
 type Phase = 'form' | 'submitting' | 'submit_unknown' | 'running' | 'status_unknown' | 'done' | 'error'
 interface AdmittedQueue { id: string; projectKey: string }

@@ -66,6 +66,7 @@ pub fn convert(
     let kb: &mut Keyboard = (*keyboard).as_mut()?;
     let unicode = kb.add(&event_type);
     Some(Event {
+        native_pointer: None,
         event_type,
         time: SystemTime::now(),
         unicode,

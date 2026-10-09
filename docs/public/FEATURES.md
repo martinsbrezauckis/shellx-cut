@@ -17,6 +17,10 @@ v0.6.114 remains the latest published release.
   device readiness and capture status.
 - Bugfixes: export, job status, project switching, and Voiceover recovery are
   more reliable.
+- Export warnings offer an explicit Export anyway or Queue anyway choice for
+  intentional still footage.
+- Windows and macOS window recordings preserve the native mouse cursor.
+- Finishing-recording messages stay clear of the top-bar buttons.
 
 Native installed qualification for v0.6.115 remains pending.
 
@@ -79,10 +83,11 @@ This section preserves v0.6.113 feature history; v0.6.114 is the latest publishe
   opened.
 - Recording Studio adds separate **Display** and **Window** choices, a
   cancellable 3- or 5-second start countdown, an independently configurable
-  on-video timer, and camera recording as a separate editable
-  track when Doctor lists a current device on Windows or macOS. With no connected
-  camera or unavailable discovery, Camera stays disabled while screen recording
-  remains available. Supported macOS builds also offer durable **Pause & resume**
+  on-video timer, and a separate retained camera take when Doctor lists a current
+  device on Windows or macOS. The camera track is hidden, and its bubble is baked
+  into the polished clip; editing the retained take does not update that bubble.
+  With no connected camera or unavailable discovery, Camera stays disabled
+  while screen recording remains available. Supported macOS builds also offer durable **Pause & resume**
   for compatible display recordings.
 - Timeline Voiceover records into an unlocked audio track after a visible
   count-in, follows the playhead or selected In-Out range, supports Stop and
@@ -682,8 +687,9 @@ establish a tested editing workflow for the current release.
   saturation, white-balance, broadcast-range, and clipping warnings, and
   optionally generate vectorscope, waveform, and histogram image evidence.
 - Render, render queue, and video-like export actions run a preflight check before starting
-  the job. High-risk issues block the export, while lower-risk warnings can be
-  reviewed with collapsible details, continued, or opened in the manual at
+  the job. Quality warnings, including high-risk predictions, can be
+  reviewed with collapsible details and explicitly accepted with Export anyway
+  or Queue anyway. Missing media and video tools remain actual errors. Open the manual at
   `cut.export.preflight`. The default banner names user-facing issues such as
   black ending, black/frozen footage, silent export, tiny clips, and black
   borders; raw pregate detail stays under Details.
@@ -748,7 +754,13 @@ establish a tested editing workflow for the current release.
 - **After Stop** offers exactly Raw MP4 and Polished clip in Edit. Both save the
   unchanged original MP4 in the default export folder. Polished also adds an
   editable clip to the current project (including the project created at Start
-  when none was open) with zoom-to-cursor, cursor smoothing, and framing. Its
+  when none was open) with framing and, when source geometry is valid,
+  zoom-to-cursor and cursor smoothing. Windows/macOS window capture preserves
+  one native cursor in Raw and Polished output without a duplicate synthetic
+  cursor track; synthetic cursor styling remains unavailable. Fresh button input
+  matched to accepted same-owner frame geometry can drive click highlights and
+  zoom; missing or invalid geometry cannot. This does not establish full resized
+  window coverage or arbitrary move/DPI correctness. Its
   optional **Show keystrokes** setting starts off and sits
   beneath the mode choice; there is no second polish toggle or pre-record
   destination picker. Export or Save a copy chooses an optional destination
@@ -803,9 +815,11 @@ establish a tested editing workflow for the current release.
   Doctor exposes only opaque, expiring choices with safe labels; Start revalidates
   the chosen device, waits for a real first frame, and refuses missing permission,
   a busy device, or no-frame delivery without substituting another camera. The
-  finalized camera remains a separate editable take bound to the screen capture
-  clock, with position, size, visibility, and shape retained as replayable Studio
-  events.
+  finalized camera remains a separate take bound to the screen capture clock,
+  with position, size, visibility, and shape retained as replayable Studio events.
+  The camera layout is set for the recording. Polish retains the camera source
+  on a hidden track and bakes its bubble into the polished clip; changing the
+  retained take does not change that bubble.
 - Camera settings show four explicit corners, Circle or Rounded rectangle,
   size, and a separate **Reset camera layout** action. A chosen transform
   survives internal scene changes until Reset. The on-video timer offers Off,
@@ -864,8 +878,8 @@ establish a tested editing workflow for the current release.
   recoverable cached artifacts.
 - Raw stream discovery reports screen, camera, mic, system audio, and Studio
   metadata. A finalized camera take carries an integrity-checked `CameraArtifact`
-  and shared-clock range; Auto-edit lowers it to the existing editable camera
-  overlay rather than baking it into the screen source.
+  and shared-clock range. Auto-edit retains the source on a hidden camera track;
+  the polished clip contains the baked camera bubble.
 - Crash-resilient recordings write independently finalized, verified checkpoint
   segments. Restart recovery can salvage a playable `recovered.mp4` prefix with a
   receipt and explicit lost-tail bounds; it never promotes an open encoder MP4 or

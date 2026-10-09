@@ -51,3 +51,14 @@ fn valid_pipewire_packet_feeds_the_caller_owned_level() {
     assert_eq!(state.timing.first_packet_offset_ms(), Some(0));
     assert_eq!(level.snapshot().peak_dbfs, Some(0.0));
 }
+
+#[test]
+fn system_audio_input_explicitly_selects_the_named_sink_monitor() {
+    let sink = "alsa_output.test-owned.iec958-stereo";
+    let properties = super::system_audio_properties(sink);
+    assert_eq!(properties.get("media.type"), Some("Audio"));
+    assert_eq!(properties.get("media.category"), Some("Capture"));
+    assert_eq!(properties.get("target.object"), Some(sink));
+    assert_eq!(properties.get("stream.capture.sink"), Some("true"));
+    assert_eq!(properties.get("node.latency"), Some("1024/48000"));
+}

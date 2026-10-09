@@ -3339,10 +3339,12 @@ pub(super) async fn render_bundle(
 /// Each entry is otherwise a render.final arg subset, VALIDATED UP FRONT by a
 /// render.final dry_run per entry — a bad entry (unknown arg, bad
 /// profile/format/geometry) fails the WHOLE queue HERE, before a single encode
-/// starts, naming the offending index. The dry_run also resolves each entry's
-/// planned output path for the synchronous return.
+/// starts, naming the offending index. The dry_run resolves an explicitly
+/// selected output. Default names depend on receipt IDs reserved when each
+/// child actually starts, so the synchronous return leaves them null.
 ///
-/// Returns {queue_id, count, jobs:[{idx, output}]} immediately. The queue job's
+/// Returns {queue_id, count, jobs:[{idx, output}]} immediately (`output:null`
+/// for an implicit destination). The queue job's
 /// result (jobs.status{job_id: queue_id}) fills in per-entry {idx, job_id, render_id,
 /// output, ok, pass, receipt, error?} as each render completes — one poll shows
 /// the whole batch, and each render's job_id is then individually pollable
@@ -3380,7 +3382,8 @@ pub(super) async fn render_queue(
     // alias → render.final's `path`) and VALIDATE it via a render.final dry_run:
     // a bad entry (unknown arg, bad profile/format/geometry) fails the WHOLE queue
     // HERE — before a single encode runs — naming the offending idx. The dry_run
-    // also returns each entry's resolved output path for the synchronous return.
+    // also validates an explicit destination for the synchronous return.
+    // Every default dry_run sees the same next receipt ID without reserving it.
     let mut render_args: Vec<Value> = Vec::new();
     let mut slots: Vec<Value> = Vec::new();
     for (idx, entry) in a.jobs.iter().enumerate() {
@@ -3403,6 +3406,7 @@ pub(super) async fn render_queue(
             }
             m.insert("path".into(), out);
         }
+        let explicit_output = m.get("path").and_then(Value::as_str).is_some();
         let base = Value::Object(m);
         // dry_run validation: clone + force dry_run:true so render.final returns
         // the PLAN (resolved geometry + out_path) WITHOUT encoding.
@@ -3425,12 +3429,15 @@ pub(super) async fn render_queue(
             e.message = format!("render.queue job #{idx}: {}", e.message);
             return Err(e);
         }
-        let output = dr
-            .result
-            .as_ref()
-            .and_then(|r| r.get("out_path"))
-            .cloned()
-            .unwrap_or(Value::Null);
+        let output = if explicit_output {
+            dr.result
+                .as_ref()
+                .and_then(|r| r.get("out_path"))
+                .cloned()
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
         slots.push(json!({"idx": idx, "output": output}));
         render_args.push(base);
         #[cfg(test)]
@@ -3642,6 +3649,24 @@ pub(crate) fn read_receipt(
         )
     })
 }
+
+/// A timeline remedy counts only when its verb appended a durable project op.
+/// A successful no-op (for example, trim_edges without speech) is not a fix.
+fn autopilot_timeline_fix_applied(result: &VerbResult) -> bool {
+    result.ok && result.op_ids.as_ref().is_some_and(|ids| !ids.is_empty())
+}
+
+/// Count actual applied entries; dispatch failures remain in the report but
+/// must not inflate the human-facing applied-fix summary.
+fn autopilot_applied_fix_count(fixes_applied: &[Value]) -> usize {
+    fixes_applied
+        .iter()
+        .filter(|fix| fix.get("failed").is_none())
+        .count()
+}
+
+#[cfg(test)]
+mod autopilot_noop_tests;
 
 /// autopilot.run{goal?, comment_id?, policy?, max_fix_iters?} — the Receipted
 /// Autopilot (receipted workflow): render → verify → mechanically self-fix from the typed
@@ -3973,7 +3998,7 @@ pub(super) async fn autopilot_run(
                             json!({"clip": clip, "src_out_ms": snap, "rationale": "autopilot: snap cut to word edge"})
                         };
                         let r = dispatch_send(&st, "edit.trim", targs, actor.clone()).await;
-                        if r.ok {
+                        if autopilot_timeline_fix_applied(&r) {
                             applied += 1;
                             fixes_applied
                                 .push(json!({"check": fa.check, "via": "edit.trim", "clip": clip}));
@@ -3985,10 +4010,10 @@ pub(super) async fn autopilot_run(
                     // silently not apply. Dispatch with the bare {} they accept.
                     "edit.trim_edges" | "captions.reflow" => {
                         let r = dispatch_send(&st, &fa.fix_verb, json!({}), actor.clone()).await;
-                        if r.ok {
+                        if autopilot_timeline_fix_applied(&r) {
                             applied += 1;
                             fixes_applied.push(json!({"check": fa.check, "via": fa.fix_verb}));
-                        } else {
+                        } else if !r.ok {
                             // Surface a failed fix (honest — never a silent skip
                             // that reads as "nothing to fix").
                             fixes_applied.push(json!({"check": fa.check, "via": fa.fix_verb, "failed": r.error.map(|e| e.message)}));
@@ -4017,6 +4042,7 @@ pub(super) async fn autopilot_run(
         )
         .await;
         let diff_res = diff.result.unwrap_or(Value::Null);
+        let applied_fix_count = autopilot_applied_fix_count(&fixes_applied);
         let summary = if policy == "preview" {
             if last_plan.is_empty() {
                 "All checks already pass — nothing to fix.".to_string()
@@ -4029,15 +4055,15 @@ pub(super) async fn autopilot_run(
         } else if final_pass {
             format!(
                 "Done: {} fix(es) applied over {} pass(es), all checks pass.",
-                fixes_applied.len(),
+                applied_fix_count,
                 iters + 1
             )
         } else if unverified.is_some() {
             "Stopped: render completed but no receipt was produced, so checks are unverified.".to_string()
         } else if stalled {
-            format!("Stopped: applied {} fix(es) but the remaining checks did not improve (the mapped fix can't resolve them — needs a human or verify.judge).", fixes_applied.len())
+            format!("Stopped: applied {} fix(es) but the remaining checks did not improve (the mapped fix can't resolve them — needs a human or verify.judge).", applied_fix_count)
         } else {
-            format!("Stopped after {} pass(es): {} fix(es) applied, some checks still fail (see receipt).", iters, fixes_applied.len())
+            format!("Stopped after {} pass(es): {} fix(es) applied, some checks still fail (see receipt).", iters, applied_fix_count)
         };
         st.jobs.finish(
             &jid,

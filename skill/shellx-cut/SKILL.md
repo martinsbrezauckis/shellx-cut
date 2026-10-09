@@ -223,11 +223,15 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `rehearsal_start` / `rehearsal_discard` / `start` /
 >   `screen_record.status` / `screen_record.pause` / `screen_record.resume` / `stop` /
 >   `recovery_status` / `studio_event` / `autoedit` / `polish` / `export` (live screen/audio
->   capture, raw streams, auto-edit plan, content-addressed bake). On Windows,
+>   capture, raw streams, auto-edit plan, content-addressed bake). Use the
+>   returned `plan` path for polish/export. Each take or changed auto-edit result
+>   keeps its own plan; do not predict a shared cache filename. On Windows,
 >   macOS, and Linux native-camera builds, Doctor can advertise opaque camera
 >   choices for an explicit Auto-edit recording. The admitted camera is
->   finalized as a separate editable take with shared-clock evidence;
->   permission, busy-device, and no-frame failures never
+>   finalized as a separate retained take with shared-clock evidence. Its
+>   track is hidden, and the chosen camera bubble is baked into the polished
+>   clip; editing the retained take does not change that bubble. Permission,
+>   busy-device, and no-frame failures never
 >   fall back to another device. Preview Pause, Resume, Hide, and Stop each take
 >   the latest positive `generation` and matching opaque `lease_nonce` returned
 >   with that active lease by Start, Status, Frame, or a nonterminal Pause/Resume
@@ -250,6 +254,10 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   proves packets; Doctor opens no loopback/tap stream and cannot trigger the
 >   separate macOS Audio Capture prompt. This card does not gate screen-only
 >   recording.
+>   `input_hook` on Status/Stop reports per-take startup registration only.
+>   An observed optional startup failure warns that input-driven effects may
+>   be absent, while saved video remains usable (including its baked native
+>   Window cursor). Unknown/legacy/Wayland observations are not failures.
 >   Windows/macOS Doctor monitor rows include an opaque, versioned native `id`
 >   only when an exact identity is available. Pass it unchanged as
 >   `screen_record.start{monitor_id}`; Cut re-enumerates and matches it exactly
@@ -331,8 +339,12 @@ description: Use when editing video with ShellX Cut or its cutd server — video
 >   `screen_record.polish` error is processing failure, not a live capture.
 >   The Record outcome choice has only Raw MP4 and Polished clip in Edit. Both
 >   call Stop with `mux_raw:true`; Polished also requests `autoedit:true` and
->   inserts an editable polished clip with zoom-to-cursor, cursor smoothing,
->   and framing. Show keystrokes sits beneath Polished and starts off. The
+>   inserts an editable polished clip with framing and, when source geometry is
+>   valid, zoom-to-cursor and cursor smoothing. New Windows/macOS window captures
+>   retain the native cursor in Raw and Polished pixels; unavailable window input
+>   geometry does not support synthetic cursor styling or click-driven zoom.
+>   Monitor captures retain the synthetic polished cursor path.
+>   Show keystrokes sits beneath Polished and starts off. The
 >   selected-source setup preview is real native pixels; during capture read
 >   `screen_record.live_frame{capture_id}` only for the active owner. Show
 >   unavailable or stale state when frames stop, while keeping Stop available.
@@ -974,9 +986,11 @@ directory at `AppState` startup and after doctor re-scans, so captions and
 analysis jobs reuse the engine's selected/Homebrew/app-data video tools instead
 of depending on the sidecar process PATH.
 The human Render button and FFmpeg-backed export choices also run
-`verify.pregate {}` before starting output. High-risk preflight findings block
-the action; lower-risk warnings show a concise warning with collapsible details
-and a deliberate Continue button. The warning's Guide action opens the bundled
+`verify.pregate {}` before starting output. All quality predictions show a concise
+warning with collapsible details and an explicit Export anyway or Queue anyway
+choice, including high-risk findings such as intentional still screen footage.
+Missing media, FFmpeg, and output authorization failures remain actual errors.
+The warning's Guide action opens the bundled
 manual article `cut.export.preflight`; it does not open the preflight UI or
 start output. The stable online manual remains available while the compiled
 real-frontend manual is staged separately for interactive review.

@@ -8,7 +8,39 @@
 use record_core::{error_codes, EditPlan, RecordError, Result};
 use tiny_skia::{IntSize, Pixmap};
 
-use crate::{compose_frame, ffmpeg, output_size};
+use crate::{compose_frame, ffmpeg, output_size, Compositor};
+
+fn video_compositor<'a>(
+    plan: &'a EditPlan,
+    grab: impl FnOnce(u64) -> Result<(u32, u32, Vec<u8>)>,
+) -> Result<Compositor<'a>> {
+    if matches!(plan.background, record_core::Background::BlurScreen { .. }) {
+        let t = (plan.duration_ms / 4).min(plan.duration_ms.saturating_sub(1));
+        let (w, h, bytes) = grab(t).map_err(|error| {
+            RecordError::new(
+                &error.code,
+                "Blur Screen background could not be rendered",
+                format!("representative source frame at {t}ms: {error}"),
+            )
+            .with_action("retry the export, or choose another background and export again")
+        })?;
+        let frame = IntSize::from_wh(w, h)
+            .and_then(|size| Pixmap::from_vec(bytes, size))
+            .ok_or_else(|| {
+                RecordError::new(
+                    error_codes::FFMPEG,
+                    "Blur Screen background could not be rendered",
+                    format!(
+                        "representative source frame at {t}ms has invalid RGBA pixels ({w}x{h})"
+                    ),
+                )
+                .with_action("retry the export, or choose another background and export again")
+            })?;
+        Compositor::with_bg(plan, Some(&frame))
+    } else {
+        Compositor::new(plan)
+    }
+}
 
 /// Render the full polished video: decode `source_path`, compose every frame per
 /// `plan`, encode to `out_path` (MP4). Returns the frame count written.
@@ -71,19 +103,9 @@ pub fn render_video_audio_with_control_progress(
     })?;
     // Build the compositor ONCE (caches background + shadow + rounded mask). For a
     // BlurScreen background, grab a representative source frame to blur into the backdrop.
-    let comp = if matches!(plan.background, record_core::Background::BlurScreen { .. }) {
-        let t = (plan.duration_ms / 4).min(plan.duration_ms.saturating_sub(1));
-        match ffmpeg::grab_frame_with_control(source_path, t, control)
-            .ok()
-            .and_then(|(fw, fh, bytes)| {
-                IntSize::from_wh(fw, fh).and_then(|s| Pixmap::from_vec(bytes, s))
-            }) {
-            Some(f) => crate::Compositor::with_bg(plan, Some(&f)),
-            None => crate::Compositor::new(plan),
-        }
-    } else {
-        crate::Compositor::new(plan)
-    }?;
+    let comp = video_compositor(plan, |t| {
+        ffmpeg::grab_frame_with_control(source_path, t, control)
+    })?;
 
     // Stream the webcam alongside output frames. Keeping its entire raw track
     // would both truncate at the diagnostic pipe cap and grow with take length.
@@ -204,6 +226,251 @@ pub fn render_frame_png(
 
 #[cfg(test)]
 mod tests {
+    use record_core::{error_codes, Background, RecordError, Rgba};
+
+    #[test]
+    fn requested_blur_reports_representative_frame_failure() {
+        let mut plan = EditPlan::empty(80, 45, 1_000, 30.0);
+        plan.background = Background::BlurScreen { sigma: 8.0 };
+        let error = super::video_compositor(&plan, |t| {
+            assert_eq!(t, 250);
+            Err(RecordError::new(
+                error_codes::FFMPEG,
+                "ffmpeg grab failed",
+                "controlled frame read failure",
+            ))
+        })
+        .err()
+        .expect("selected Blur Screen cannot silently become neutral");
+        assert_eq!(error.code, error_codes::FFMPEG);
+        assert!(error.message.contains("Blur Screen"));
+        assert!(error.cause.contains("controlled frame read failure"));
+        assert!(error.suggested_action.is_some());
+    }
+
+    #[test]
+    fn requested_blur_reports_invalid_representative_pixels() {
+        let mut plan = EditPlan::empty(80, 45, 1_000, 30.0);
+        plan.background = Background::BlurScreen { sigma: 8.0 };
+        for frame in [(0, 45, vec![]), (80, 45, vec![255; 7])] {
+            let error = super::video_compositor(&plan, |_| Ok(frame.clone()))
+                .err()
+                .expect("invalid representative frame cannot become neutral");
+            assert_eq!(error.code, error_codes::FFMPEG);
+            assert!(error.message.contains("Blur Screen"));
+        }
+    }
+
+    #[test]
+    fn requested_blur_uses_source_pixels_and_ordinary_backgrounds_skip_grab() {
+        let mut plan = EditPlan::empty(80, 45, 1_000, 30.0);
+        plan.background = Background::BlurScreen { sigma: 8.0 };
+        let pixels = [240, 20, 10, 255].repeat(80 * 45);
+        let source = tiny_skia::Pixmap::from_vec(
+            pixels.clone(),
+            tiny_skia::IntSize::from_wh(80, 45).unwrap(),
+        )
+        .unwrap();
+        let blurred = super::video_compositor(&plan, |_| Ok((80, 45, pixels)))
+            .unwrap()
+            .frame(&source, 0);
+        let neutral = crate::Compositor::new(&plan).unwrap().frame(&source, 0);
+        assert_ne!(blurred.data(), neutral.data());
+        let corner = &blurred.data()[..4];
+        assert!(
+            corner[0] > corner[2],
+            "blurred backdrop should retain source red pixels"
+        );
+
+        for background in [
+            Background::Transparent,
+            Background::Solid {
+                color: Rgba::rgb(30, 40, 50),
+            },
+            Background::default(),
+        ] {
+            plan.background = background;
+            let ordinary =
+                super::video_compositor(&plan, |_| panic!("ordinary background must not grab"))
+                    .unwrap()
+                    .frame(&source, 0);
+            let expected = crate::Compositor::new(&plan).unwrap().frame(&source, 0);
+            assert_eq!(ordinary.data(), expected.data());
+        }
+    }
+
+    #[test]
+    fn blur_frame_grab_failure_returns_before_output_publication() {
+        if !ffmpeg_present() {
+            eprintln!("skip blur frame-grab boundary: ffmpeg unavailable");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("short.mp4");
+        let output = dir.path().join("wrong-background.mp4");
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let encoded = std::process::Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=80x46:r=10:d=0.2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            encoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&encoded.stderr)
+        );
+
+        let mut plan = EditPlan::empty(80, 46, 4_000, 10.0);
+        plan.background = Background::BlurScreen { sigma: 8.0 };
+        let error = super::render_video(source.to_str().unwrap(), &plan, output.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(error.code, error_codes::FFMPEG);
+        assert!(error.message.contains("Blur Screen"));
+        assert!(
+            !output.exists(),
+            "an export must not publish the neutral fallback"
+        );
+
+        let valid_output = dir.path().join("blurred.mp4");
+        plan.duration_ms = 200;
+        let frames = super::render_video(
+            source.to_str().unwrap(),
+            &plan,
+            valid_output.to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(frames > 0);
+        let (_, _, rendered) =
+            crate::ffmpeg::grab_frame(valid_output.to_str().unwrap(), 0).unwrap();
+        assert!(
+            rendered[0] > rendered[2],
+            "the blur backdrop must retain the red source pixels"
+        );
+    }
+
+    #[test]
+    fn explicit_image_background_refuses_video_before_output_publication() {
+        if !ffmpeg_present() {
+            eprintln!("skip image background export boundary: ffmpeg unavailable");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        let output = dir.path().join("polished.mp4");
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let encoded = std::process::Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=80x46:r=10:d=0.2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            encoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&encoded.stderr)
+        );
+
+        let mut plan = EditPlan::empty(80, 46, 200, 10.0);
+        plan.background = Background::Image {
+            path: "manual-background.png".into(),
+        };
+        let error = super::render_video(source.to_str().unwrap(), &plan, output.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(error.code, error_codes::UNIMPLEMENTED);
+        assert!(error.message.contains("Image background"));
+        assert!(error.suggested_action.is_some());
+        assert!(
+            !output.exists(),
+            "unsupported image must not publish output"
+        );
+
+        let png = dir.path().join("preview.png");
+        let error =
+            super::render_frame_png(source.to_str().unwrap(), &plan, 0, png.to_str().unwrap())
+                .unwrap_err();
+        assert_eq!(error.code, error_codes::UNIMPLEMENTED);
+        assert!(!png.exists(), "unsupported image must not publish preview");
+    }
+
+    #[test]
+    fn missing_requested_captions_refuse_video_and_png_before_publication() {
+        if !ffmpeg_present() {
+            eprintln!("skip caption export boundary: ffmpeg unavailable");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        let output = dir.path().join("polished.mp4");
+        let png = dir.path().join("preview.png");
+        let ffmpeg = std::env::var("SHELLX_RECORD_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let encoded = std::process::Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=80x46:r=10:d=0.2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            encoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&encoded.stderr)
+        );
+
+        let mut plan = EditPlan::empty(80, 46, 200, 10.0);
+        plan.captions = Some(record_core::CaptionStyle {
+            words_path: dir
+                .path()
+                .join("missing.words.json")
+                .to_string_lossy()
+                .into_owned(),
+            font_px: 22.0,
+            color: Rgba::WHITE,
+            box_color: Rgba::new(0, 0, 0, 200),
+        });
+        let error = super::render_video(source.to_str().unwrap(), &plan, output.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(error.code, error_codes::IO);
+        assert!(error.message.contains("captions"));
+        assert!(error.suggested_action.is_some());
+        assert!(!output.exists());
+
+        let error =
+            super::render_frame_png(source.to_str().unwrap(), &plan, 0, png.to_str().unwrap())
+                .unwrap_err();
+        assert_eq!(error.code, error_codes::IO);
+        assert!(!png.exists());
+    }
+
     #[test]
     fn unsafe_output_is_rejected_before_composition_or_media_access() {
         let source = tiny_skia::Pixmap::new(2, 2).unwrap();

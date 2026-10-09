@@ -809,7 +809,7 @@
       "group": "export",
       "title": "Preflight warnings",
       "where": "Export menu",
-      "description": "Cut checks for likely export problems before starting a video render. High-risk issues block export; advisory warnings can continue.",
+      "description": "Cut checks for likely quality problems before starting a video render. Review the warnings, then choose Export anyway or Queue anyway if the result is intentional. Missing media or video tools still need to be fixed.",
       "requirement": "Requires a renderable timeline.",
       "api": "verify.pregate"
     },
@@ -820,7 +820,7 @@
       "title": "Black ending",
       "where": "Preflight warnings",
       "description": "The timeline continues after the last video clip, so the export would end on black frames.",
-      "requirement": "Trim the tail, shorten audio, or add picture before exporting.",
+      "requirement": "Trim the tail, shorten audio, or add picture, or export anyway if the black ending is intentional.",
       "api": "verify.pregate empty_tail"
     },
     {
@@ -829,8 +829,8 @@
       "group": "export",
       "title": "Black or frozen footage",
       "where": "Preflight warnings",
-      "description": "A clip contains black or frozen frames in the edited range.",
-      "requirement": "Trim around the dead frames or replace the shot.",
+      "description": "A clip contains black or still frames in the edited range. Still footage can be intentional in a screen recording.",
+      "requirement": "Trim or replace unwanted footage, or choose Export anyway to keep intentional still footage.",
       "api": "verify.pregate black_or_frozen"
     },
     {
@@ -1709,7 +1709,7 @@
       "group": "record",
       "title": "Camera take",
       "where": "Record workspace",
-      "description": "Turn Camera on in Polished mode and choose one current device. Cut records it as a separate editable take instead of baking it into the screen source.",
+      "description": "Turn Camera on in Polished mode and choose one current device. Cut retains the separate camera source on a hidden track. Its layout is set during recording and baked into the polished clip; editing the retained take does not update the bubble.",
       "requirement": "In Polished mode, Camera is available when the current Doctor lists a supported native camera build and a device. A Linux build can support camera capture while listing no connected device. No device or unavailable discovery leaves Camera disabled while screen recording stays available. After Start opens the screen clock, the native owner checks the selected device, required Linux plugins when applicable, and a real first frame; the Start acknowledgement alone is not camera-media proof. Raw mode keeps Camera off.",
       "api": "screen_record.doctor camera, screen_record.start {camera_id}"
     },
@@ -1719,7 +1719,7 @@
       "group": "record",
       "title": "Show or hide camera",
       "where": "Record workspace",
-      "description": "The Studio preview shows whether the separate camera take will appear in the polished composition. Visibility changes remain editable, timed Studio metadata.",
+      "description": "The Studio preview shows whether the camera will appear in the polished composition. Visibility changes are timed Studio metadata used when that composition is baked.",
       "requirement": "Requires Camera to be enabled for this Polished recording.",
       "api": "screen_record.studio_event {source:\"camera\", kind:\"visibility\"}"
     },
@@ -1739,7 +1739,7 @@
       "group": "record",
       "title": "Camera size",
       "where": "Record workspace",
-      "description": "Adjust the camera overlay size while keeping the captured camera video as its own editable source.",
+      "description": "Choose the camera bubble size for this recording. Cut retains the captured camera video separately, but later edits to that take do not change the baked bubble.",
       "requirement": "Requires Camera to be enabled.",
       "api": "screen_record.studio_event {source:\"camera\", kind:\"transform\", size}"
     },
@@ -1769,7 +1769,7 @@
       "group": "record",
       "title": "Raw streams",
       "where": "Record workspace",
-      "description": "After a capture, Cut reports the raw screen, optional camera, microphone, system audio, and Studio metadata so you can diagnose or reuse exactly what was finalized. The camera remains a separate editable take. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen, camera, and microphone capture can still report their own terminal outcomes.",
+      "description": "After a capture, Cut reports the raw screen, optional camera, microphone, system audio, and Studio metadata so you can diagnose or reuse exactly what was finalized. The separate camera take is retained on a hidden track; the polished bubble is baked. On Windows 10 build 20348 or newer, system audio uses endpoint-independent process loopback; if security software blocks it, screen, camera, and microphone capture can still report their own terminal outcomes.",
       "requirement": "Requires a completed capture. A new Windows build may need one audio-capture approval from security software.",
       "api": "screen_record.stop raw_streams, camera_artifact"
     },

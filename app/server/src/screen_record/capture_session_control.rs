@@ -458,6 +458,10 @@ impl CaptureSessionControl {
         self.state.source_lifecycle.clone()
     }
 
+    pub(crate) fn input_hook_startup(&self) -> record_capture::InputHookStartup {
+        self.state.readiness.input_hook_startup()
+    }
+
     pub(crate) fn readiness_status(&self) -> CaptureReadinessStatus {
         self.state.readiness.status()
     }

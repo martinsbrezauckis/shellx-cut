@@ -18,6 +18,9 @@ const DEFAULT_DELAY_MS: &str = "SHELLX_CUT_TEST_GENERATION_DEFAULT_DELAY_MS";
 const EXTRA_DELAY_TRIGGER: &str = "SHELLX_CUT_TEST_GENERATION_EXTRA_DELAY_TRIGGER";
 const EXTRA_DELAY_MS: &str = "SHELLX_CUT_TEST_GENERATION_EXTRA_DELAY_MS";
 
+const PROBE_LOG: &str = "SHELLX_CUT_TEST_GENERATION_PROBE_LOG";
+const PROBE_DELAY_MS: &str = "SHELLX_CUT_TEST_GENERATION_PROBE_DELAY_MS";
+
 const STUB_SOURCE: &str = r#"
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -73,6 +76,10 @@ fn main() {
         return;
     }
     if args.iter().any(|arg| arg == "--help") {
+        if let Some(path) = env_path("SHELLX_CUT_TEST_GENERATION_PROBE_LOG") {
+            fs::write(path, "help").expect("write probe witness");
+        }
+        sleep_from_env("SHELLX_CUT_TEST_GENERATION_PROBE_DELAY_MS");
         println!("--print --output-format --disable-slash-commands --sandbox --log-file --print-timeout --model --new-project --dangerously-skip-permissions");
         return;
     }
@@ -144,6 +151,7 @@ pub(super) struct FakeGenerationCliConfig {
     invocation_log: Option<PathBuf>,
     default_delay_ms: u64,
     extra_delay: Option<(String, u64)>,
+    delayed_probe: Option<PathBuf>,
 }
 
 impl FakeGenerationCliConfig {
@@ -155,6 +163,7 @@ impl FakeGenerationCliConfig {
             invocation_log: None,
             default_delay_ms: 0,
             extra_delay: None,
+            delayed_probe: None,
         }
     }
 
@@ -166,7 +175,13 @@ impl FakeGenerationCliConfig {
             invocation_log: None,
             default_delay_ms: 0,
             extra_delay: None,
+            delayed_probe: None,
         }
+    }
+
+    pub(super) fn with_delayed_probe(mut self, witness: PathBuf) -> Self {
+        self.delayed_probe = Some(witness);
+        self
     }
 
     pub(super) fn with_variation(mut self, trigger: &str, fixture: PathBuf) -> Self {
@@ -248,6 +263,13 @@ impl FakeGenerationCli {
         cli.set_optional_string(REQUIRE_REFERENCE_TRIGGER, config.require_reference_trigger);
         cli.set_optional_path(INVOCATION_LOG, config.invocation_log);
         cli.set(DEFAULT_DELAY_MS, config.default_delay_ms.to_string());
+        let probe_delay = if config.delayed_probe.is_some() {
+            30_000
+        } else {
+            0
+        };
+        cli.set_optional_path(PROBE_LOG, config.delayed_probe);
+        cli.set(PROBE_DELAY_MS, probe_delay.to_string());
         if let Some((trigger, delay_ms)) = config.extra_delay {
             cli.set(EXTRA_DELAY_TRIGGER, trigger);
             cli.set(EXTRA_DELAY_MS, delay_ms.to_string());

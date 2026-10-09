@@ -1024,8 +1024,9 @@ export interface VerbArgs {
   // BATCH DELIVERY: a batch render queue. Fan the ONE
   // current timeline out into N renders (each a render.final arg subset; `output`
   // aliases render.final's `path`), run SEQUENTIALLY through the same render.final
-  // path. Returns {queue_id, count, jobs:[{idx, output}]}; per-entry job_ids +
-  // receipts land in the queue job result (jobs.status{job_id: queue_id}) as each completes.
+  // path. Returns {queue_id, count, jobs:[{idx, output}]}; output is null for
+  // an implicit destination until the child reserves its render ID. Per-entry
+  // job_ids, actual output paths and receipts land in jobs.status.
   'render.queue': {
     jobs: Array<Partial<VerbArgs['render.final']> & { output?: string }>
     rationale?: string

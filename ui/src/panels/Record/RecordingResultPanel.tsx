@@ -1,17 +1,20 @@
+import { RecordingInputHookWarning } from './RecordingInputHookWarning'
+import { UNOBSERVED_INPUT_HOOK, type RecordingInputHook } from './recordingInputHook'
 import { cursorCorrelationLabel, type CursorCorrelation, type StudioRawStreams } from './studioTypes'
 import type { RecordingQualityResolution } from './recordingQuality'
 import './recordingResultPanel.css'
 
 interface RecordingResultPanelProps {
-  outcome: 'saved' | 'partial' | 'recovery'
+  outcome: 'saved' | 'processing' | 'partial' | 'recovery'
   raw: boolean
   message: string
-  duration: string
+  duration: string | null
   rawSaved: boolean
   polishedClipSaved: boolean
   hasMic: boolean
   hasSystem: boolean
   streams: StudioRawStreams | null
+  inputHook?: RecordingInputHook
   cursorCorrelation: CursorCorrelation | null
   cadence: string
   quality: RecordingQualityResolution | null
@@ -39,7 +42,7 @@ interface RecordingResultPanelProps {
 /** Post-Stop facts and actions. Paths stay in the native owner, not ordinary DOM. */
 export function RecordingResultPanel({
   outcome, raw, message, duration, rawSaved, polishedClipSaved, hasMic, hasSystem,
-  streams, cursorCorrelation, cadence, quality, hotkeyScope, exportFormat, exportRunning,
+  streams, inputHook = UNOBSERVED_INPUT_HOOK, cursorCorrelation, cadence, quality, hotkeyScope, exportFormat, exportRunning,
   rawCopyRunning, rawCopyCancelable, exportCancelable, exportNote, rawCopyNote, recoveryAction, onFormat, onExport,
   onCancelExport, onSaveRawCopy, onCancelRawCopy, onAddRawToTimeline,
   onOpenEdit, onNewRecording, onOpenOutputSettings, onRecovery,
@@ -47,21 +50,23 @@ export function RecordingResultPanel({
   const saved = outcome === 'saved'
   const title = saved
     ? raw ? 'Unedited raw MP4 saved' : 'Editable clip added to current project'
-    : outcome === 'recovery' ? 'Stop needs attention' : 'Recording needs attention'
+    : outcome === 'processing' ? 'Finishing your recording'
+      : outcome === 'recovery' ? 'Stop needs attention' : 'Recording needs attention'
   const streamNames = streams
     ? [streams.screen && 'Screen', streams.camera && 'Camera', streams.mic && 'Microphone',
       streams.system && 'Computer sound', streams.studio_events && 'Studio changes'].filter(Boolean).join(' · ')
     : 'Stream details unavailable'
 
   return (
-    <section className="rec-result" data-cut-rec-result={outcome} role="status">
+    <section className="rec-result" data-cut-rec-result={outcome} role="status" aria-busy={outcome === 'processing'}>
       <div className={`rec-result__hero rec-result__hero--${outcome}`}>
-        <span className="rec-result__icon" aria-hidden="true">{saved ? '✓' : '!'}</span>
+        <span className="rec-result__icon" aria-hidden="true">{saved ? '✓' : outcome === 'processing' ? '…' : '!'}</span>
         <h2>{title}</h2>
         <p>{message}</p>
       </div>
+      <RecordingInputHookWarning input={inputHook} saved={rawSaved} />
       <div className="rec-result__facts" aria-label="Recording result">
-        <span><strong>Duration</strong> · about {duration}</span>
+        <span data-cut-rec-result-duration><strong>Recorded video</strong> · {duration === null ? 'length unavailable' : `about ${duration}`}</span>
         <span><strong>Raw MP4</strong> · {rawSaved ? 'saved in the default export folder' : 'not confirmed saved'}</span>
         <span><strong>Current project</strong> · {polishedClipSaved ? 'polished editable clip added' : raw ? 'unchanged until Add to timeline' : 'clip not confirmed'}</span>
         {quality && <span data-cut-rec-result-dimensions><strong>Video</strong> · {quality.width} × {quality.height}</span>}
@@ -132,7 +137,7 @@ export function RecordingResultPanel({
       {outcome !== 'recovery' && (
         <div className="rec-result__next">
           {polishedClipSaved && onOpenEdit && <button type="button" className="rec__export-btn" data-cut-action="record-open-edit" onClick={onOpenEdit}>Open clip in Edit</button>}
-          <button type="button" className="rec__export-btn" data-cut-action="record-new-take" onClick={onNewRecording}>New recording</button>
+          <button type="button" className="rec__export-btn" data-cut-action="record-new-take" disabled={outcome === 'processing'} onClick={onNewRecording}>New recording</button>
         </div>
       )}
     </section>

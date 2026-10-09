@@ -96,8 +96,9 @@ pub(crate) fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Optio
     pb.finish()
 }
 
-/// Fill the background of `pm` per the plan's `Background`. Image and
-/// BlurScreen use a neutral fallback when no decoded source frame is supplied.
+/// Fill the background of `pm` per the plan's `Background`. The compositor
+/// rejects Image before this helper runs; BlurScreen uses a neutral backdrop
+/// when no representative source frame is supplied.
 pub(crate) fn fill_background(pm: &mut Pixmap, bg: &Background) {
     let w = pm.width() as f32;
     let h = pm.height() as f32;
@@ -137,7 +138,7 @@ pub(crate) fn fill_background(pm: &mut Pixmap, bg: &Background) {
                 None => pm.fill(color(*from)),
             }
         }
-        // Image and blur-screen backgrounds use a neutral fallback at this layer.
+        // Image is rejected by the compositor; BlurScreen can fall back here.
         Background::Image { .. } | Background::BlurScreen { .. } => {
             pm.fill(Color::from_rgba8(24, 26, 34, 255));
         }
@@ -323,7 +324,8 @@ pub(crate) fn draw_ripple(pm: &mut Pixmap, cx: f32, cy: f32, p: f32, base_r: f32
     }
 }
 
-/// Linear-interpolate a cursor sample list at time `t_ms` (screen pixels).
+/// Interpolate observed motion, but hold the last known position across a
+/// long gap rather than predicting an unseen move toward a later click.
 pub(crate) fn cursor_sample_at(
     samples: &[record_core::CursorSample],
     t_ms: u64,
@@ -345,6 +347,10 @@ pub(crate) fn cursor_sample_at(
     }
     let a = samples[i];
     let b = samples[i + 1];
+    const MAX_INTERPOLATED_GAP_MS: u64 = 200;
+    if b.t_ms.saturating_sub(a.t_ms) > MAX_INTERPOLATED_GAP_MS {
+        return Some((a.x, a.y));
+    }
     let span = (b.t_ms - a.t_ms).max(1) as f64;
     let f = (t_ms - a.t_ms) as f64 / span;
     Some((a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f))
@@ -355,4 +361,92 @@ pub(crate) fn cursor_sample_at(
 /// Invalid source or derived dimensions return `invalid_args` before allocation.
 pub fn output_size(plan: &EditPlan) -> record_core::Result<(u32, u32)> {
     plan.checked_output_size()
+}
+
+#[cfg(test)]
+mod cursor_timeline_tests {
+    use super::cursor_sample_at;
+    use record_core::CursorSample;
+
+    #[test]
+    fn sparse_monitor_path_holds_seed_until_click_and_pins_both_clicks() {
+        let samples = [
+            CursorSample {
+                t_ms: 18,
+                x: 1395.2,
+                y: 1284.6,
+            },
+            CursorSample {
+                t_ms: 2420,
+                x: 720.0,
+                y: 1233.6,
+            },
+            CursorSample {
+                t_ms: 2549,
+                x: 720.0,
+                y: 1233.6,
+            },
+            CursorSample {
+                t_ms: 5403,
+                x: 1680.0,
+                y: 1462.4,
+            },
+            CursorSample {
+                t_ms: 5536,
+                x: 1680.0,
+                y: 1462.4,
+            },
+        ];
+        assert_eq!(cursor_sample_at(&samples, 125), Some((1395.2, 1284.6)));
+        assert_eq!(cursor_sample_at(&samples, 2419), Some((1395.2, 1284.6)));
+        assert_eq!(cursor_sample_at(&samples, 2420), Some((720.0, 1233.6)));
+        assert_eq!(cursor_sample_at(&samples, 2505), Some((720.0, 1233.6)));
+        assert_eq!(cursor_sample_at(&samples, 5402), Some((720.0, 1233.6)));
+        assert_eq!(cursor_sample_at(&samples, 5403), Some((1680.0, 1462.4)));
+        assert_eq!(cursor_sample_at(&samples, 5488), Some((1680.0, 1462.4)));
+    }
+
+    #[test]
+    fn dense_observed_motion_still_interpolates() {
+        let samples = [
+            CursorSample {
+                t_ms: 0,
+                x: 100.0,
+                y: 100.0,
+            },
+            CursorSample {
+                t_ms: 40,
+                x: 120.0,
+                y: 110.0,
+            },
+        ];
+        assert_eq!(cursor_sample_at(&samples, 20), Some((110.0, 105.0)));
+    }
+
+    #[test]
+    fn duplicate_timestamp_uses_the_final_sample() {
+        let samples = [
+            CursorSample {
+                t_ms: 0,
+                x: 10.0,
+                y: 10.0,
+            },
+            CursorSample {
+                t_ms: 40,
+                x: 20.0,
+                y: 20.0,
+            },
+            CursorSample {
+                t_ms: 40,
+                x: 22.0,
+                y: 23.0,
+            },
+            CursorSample {
+                t_ms: 80,
+                x: 30.0,
+                y: 30.0,
+            },
+        ];
+        assert_eq!(cursor_sample_at(&samples, 40), Some((22.0, 23.0)));
+    }
 }

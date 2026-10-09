@@ -182,6 +182,16 @@ mod scene_live_coordinator_tests;
 mod surface_coordinates;
 #[cfg(test)]
 mod surface_coordinates_tests;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod window_click_coordinates;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod window_click_worker;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod window_frame_fit;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_window_fit;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_window_clicks;
 
 // Shared Wayland coordinate transform + click/metadata matching. Kept separate
 // from the portal backend so its timing and scale rules stay deterministic in tests.
@@ -192,12 +202,14 @@ mod cursor_correlation_tests;
 
 // Shared rdevin input hook — compiled when any live-capture backend is active.
 #[cfg(any(
+    test,
     all(windows, feature = "capture-windows"),
     all(target_os = "macos", feature = "capture-macos"),
     all(target_os = "linux", feature = "capture-linux")
 ))]
 mod input;
 #[cfg(any(
+    test,
     all(windows, feature = "capture-windows"),
     all(target_os = "macos", feature = "capture-macos"),
     all(target_os = "linux", feature = "capture-linux")
@@ -239,6 +251,10 @@ pub mod windows_pause_pilot;
 // The private WGC run owner is platform-neutral enough to exercise its control
 // ordering on the host test target; only the live adapter below is Windows-only.
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod windows_wgc_clock_origin;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
+mod windows_wgc_factory;
+#[cfg(any(test, all(windows, feature = "capture-windows")))]
 mod windows_wgc_run;
 #[cfg(test)]
 mod windows_wgc_run_tests;
@@ -251,6 +267,8 @@ mod windows;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_gpu_crop;
 #[cfg(all(windows, feature = "capture-windows"))]
+mod windows_input;
+#[cfg(all(windows, feature = "capture-windows"))]
 mod windows_monitor_target;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_picker;
@@ -261,7 +279,11 @@ mod windows_runtime;
 #[cfg(all(windows, feature = "capture-windows"))]
 mod windows_wgc_encoder;
 #[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_encoder_profile;
+#[cfg(all(windows, feature = "capture-windows"))]
 mod windows_wgc_handler;
+#[cfg(all(windows, feature = "capture-windows"))]
+mod windows_wgc_publisher;
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
 mod windows_wgc_sample_clock;
 #[cfg(any(test, all(windows, feature = "capture-windows")))]
@@ -314,6 +336,10 @@ mod macos_camera_native;
 mod macos_checkpoint;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_finalization;
+#[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
+mod macos_frame_status;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_input;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_monitor_target;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
@@ -322,6 +348,10 @@ mod macos_readiness;
 mod macos_region_capture;
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_system_tap;
+#[cfg(all(target_os = "macos", feature = "capture-macos"))]
+mod macos_window_clicks;
+#[cfg(any(test, all(target_os = "macos", feature = "capture-macos")))]
+mod macos_window_coordinates;
 
 #[cfg(all(target_os = "macos", feature = "capture-macos"))]
 mod macos_probe;
@@ -644,6 +674,11 @@ pub fn live_capture() -> Option<Box<dyn Capture>> {
     }
 }
 
+mod input_hook_startup;
+pub use input_hook_startup::{
+    InputHookBackend, InputHookStartup, InputHookStartupReason, InputHookStartupState,
+};
+
 use record_core::{
     error_codes, CameraArtifact, CaptureOutputSize, CaptureQualityProfile, CaptureQualityRequest,
     CaptureQualityResolution, EventTrack, RecordError, Result, Settings,
@@ -871,7 +906,10 @@ impl Default for CaptureConfig {
 /// native backend, reserving an output, or starting a process is not media
 /// delivery.
 #[derive(Debug, Clone)]
-pub struct CaptureReadiness(std::sync::Arc<std::sync::atomic::AtomicU8>);
+pub struct CaptureReadiness(
+    std::sync::Arc<std::sync::atomic::AtomicU8>,
+    input_hook_startup::InputHookStartupHandle,
+);
 
 /// The public, read-only projection of [`CaptureReadiness`]. `ready` is an
 /// admission fact, so it is false after terminalization even if a real frame
@@ -905,11 +943,24 @@ impl CaptureReadinessState {
 
 impl Default for CaptureReadiness {
     fn default() -> Self {
-        Self(std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)))
+        Self(
+            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            input_hook_startup::InputHookStartupHandle::default(),
+        )
     }
 }
 
 impl CaptureReadiness {
+    /// Publish observed optional input-hook startup without changing video admission.
+    pub fn publish_input_hook_startup(&self, observation: InputHookStartup) {
+        self.1.publish(observation);
+    }
+
+    /// Native startup acknowledgment only; no input-delivery or coordinate guarantee.
+    pub fn input_hook_startup(&self) -> InputHookStartup {
+        self.1.get()
+    }
+
     const AWAITING: u8 = 0;
     const READY: u8 = 1;
     const TERMINAL_BEFORE_FRAME: u8 = 2;

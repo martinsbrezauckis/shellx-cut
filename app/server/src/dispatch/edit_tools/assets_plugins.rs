@@ -2414,6 +2414,18 @@ async fn assets_generate_run(
         )
         .await
         {
+            // The probe returns string diagnostics; the managed job retains
+            // its typed cancellation reason independently of that diagnostic.
+            if let Some(cancellation) = crate::jobs::current_job_cancellation().reason() {
+                state
+                    .jobs
+                    .cancel_from_worker(generation_job_id, cancellation);
+                return Err(CutError::new(
+                    "job_cancelled",
+                    format!("generation cancelled ({})", cancellation.label()),
+                    "the owning background job stopped the capability probe",
+                ));
+            }
             return degrade(format!(
                 "the 'agy' CLI does not meet ShellX Cut's safe non-interactive contract: {reason}"
             ));

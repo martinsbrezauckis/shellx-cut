@@ -35,6 +35,8 @@ enum CameraOwner {
 pub(super) async fn place_camera_artifact(
     state: &AppState,
     actor: &Actor,
+    screen_clip_id: Option<&str>,
+    screen_asset_id: &str,
     camera: Option<(&Path, &record_core::CameraArtifact)>,
 ) -> Result<CameraPlacement, CutError> {
     let Some((video_path, artifact)) = camera else {
@@ -49,6 +51,14 @@ pub(super) async fn place_camera_artifact(
             project_dir,
             reusable_asset_id,
         } => {
+            let (screen_start, screen_end) =
+                screen_clip_interval(state, screen_clip_id, screen_asset_id).await?;
+            let camera_window = camera_placement_window(
+                screen_start,
+                screen_end,
+                artifact.clock.first_frame_offset_ms,
+                artifact.media.duration_ms,
+            )?;
             let asset_id = if let Some(asset_id) = reusable_asset_id {
                 asset_id
             } else {
@@ -63,6 +73,13 @@ pub(super) async fn place_camera_artifact(
                 .await?
             };
 
+            let Some((camera_start, camera_duration)) = camera_window else {
+                return Ok(CameraPlacement {
+                    asset_id: Some(asset_id),
+                    ..CameraPlacement::default()
+                });
+            };
+
             ensure_camera_track(state, actor, &track_id).await?;
             let inserted = Box::pin(dispatch(
                 state,
@@ -70,8 +87,8 @@ pub(super) async fn place_camera_artifact(
                 json!({
                     "asset": asset_id,
                     "track": track_id,
-                    "at_ms": artifact.clock.first_frame_offset_ms,
-                    "src_range_ms": [0, artifact.media.duration_ms],
+                    "at_ms": camera_start,
+                    "src_range_ms": [0, camera_duration],
                     "ripple": false,
                     "rationale": "auto: screen_record.polish synchronized camera placement",
                 }),
@@ -103,6 +120,99 @@ pub(super) async fn place_camera_artifact(
             })
         }
     }
+}
+
+/// Return only camera source milliseconds overlapping this placed screen clip.
+/// An empty intersection keeps the complete camera asset without a zero-length
+/// timeline clip. All positions stay on the project's millisecond timeline.
+fn camera_placement_window(
+    screen_start: u64,
+    screen_end: u64,
+    first_frame_offset_ms: u64,
+    media_duration_ms: u64,
+) -> Result<Option<(u64, u64)>, CutError> {
+    let camera_start = screen_start
+        .checked_add(first_frame_offset_ms)
+        .ok_or_else(|| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "camera placement exceeds the project timeline",
+                "screen placement plus measured camera offset overflowed milliseconds",
+            )
+        })?;
+    let duration = screen_end
+        .saturating_sub(camera_start)
+        .min(media_duration_ms);
+    Ok((duration > 0).then_some((camera_start, duration)))
+}
+
+#[cfg(test)]
+mod placement_window_tests {
+    use super::camera_placement_window;
+
+    #[test]
+    fn camera_source_is_bounded_to_actual_screen_clip_not_full_artifact() {
+        assert_eq!(
+            camera_placement_window(0, 8_917, 1_291, 14_400).unwrap(),
+            Some((1_291, 7_626))
+        );
+        assert_eq!(
+            camera_placement_window(2_000, 10_917, 1_291, 14_400).unwrap(),
+            Some((3_291, 7_626))
+        );
+        assert_eq!(
+            camera_placement_window(0, 8_917, 1_291, 2_000).unwrap(),
+            Some((1_291, 2_000))
+        );
+        assert_eq!(
+            camera_placement_window(0, 8_917, 8_917, 14_400).unwrap(),
+            None
+        );
+        assert_eq!(
+            camera_placement_window(0, 8_917, 9_000, 14_400).unwrap(),
+            None
+        );
+        assert_eq!(
+            camera_placement_window(0, 8_917, 8_916, 14_400).unwrap(),
+            Some((8_916, 1))
+        );
+        assert!(camera_placement_window(u64::MAX, u64::MAX, 1, 1).is_err());
+    }
+}
+
+/// The imported polished clip, rather than the raw edit plan or requested
+/// insertion offset, owns the camera's timeline interval.
+async fn screen_clip_interval(
+    state: &AppState,
+    clip_id: Option<&str>,
+    asset_id: &str,
+) -> Result<(u64, u64), CutError> {
+    let guard = state.project.read().await;
+    let store = guard.as_ref().ok_or_else(no_project)?;
+    // The renderer's projection includes crossfade pullback and speed-ramp
+    // subsegments that summing nominal clip durations would miss.
+    let edl = cut_core::edl_from_project(&store.project);
+    let mut intervals = edl.segments.iter().filter(|segment| {
+        segment.track_kind == cut_core::TrackKind::Video
+            && segment.clip_id.as_deref() == clip_id
+            && segment.asset.as_deref() == Some(asset_id)
+    });
+    let first = intervals.next().ok_or_else(|| {
+        CutError::new(
+            error_codes::CONFLICT,
+            "polished screen clip is unavailable for camera placement",
+            "camera placement requires the exact imported screen asset and clip id",
+        )
+    })?;
+    Ok(intervals.fold(
+        (first.timeline_in_ms, first.timeline_out_ms),
+        |(start, end), segment| {
+            (
+                start.min(segment.timeline_in_ms),
+                end.max(segment.timeline_out_ms),
+            )
+        },
+    ))
 }
 
 /// One stable, collision-resistant identity for the exact `(capture, artifact)`

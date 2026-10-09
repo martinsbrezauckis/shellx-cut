@@ -21,3 +21,5 @@ pub enum ListenError {
 }
 
 pub(crate) use crate::windows::owned::OwnedListener;
+
+pub(crate) use crate::windows::owned::current_pointer_position;

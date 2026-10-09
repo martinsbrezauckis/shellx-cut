@@ -10,7 +10,7 @@ interface PreflightWarningProps {
 }
 
 const severityLabel = (severity: PregateRisk['severity']) => {
-  if (severity === 'high') return 'Fix first'
+  if (severity === 'high') return 'Warning'
   if (severity === 'med') return 'Review'
   return 'Note'
 }
@@ -18,12 +18,12 @@ const severityLabel = (severity: PregateRisk['severity']) => {
 const RISK_COPY: Record<string, { title: string; guidance: string; guide: string }> = {
   empty_tail: {
     title: 'Black ending',
-    guidance: 'The timeline continues after the last video. Trim the tail, shorten audio, or add picture before exporting.',
+    guidance: 'The timeline continues after the last video. Trim the tail, shorten audio, or add picture, or export anyway if the black ending is intentional.',
     guide: 'cut.export.preflight.black_tail',
   },
   black_or_frozen: {
     title: 'Black or frozen footage',
-    guidance: 'A clip contains dead frames in the edited range. Trim around that part or replace the shot.',
+    guidance: 'A clip contains black or still frames. Still footage can be intentional in a screen recording. Trim or replace unwanted footage, or export anyway.',
     guide: 'cut.export.preflight.dead_frames',
   },
   slideshow_risk: {
@@ -66,19 +66,17 @@ const formatRange = (risk: PregateRisk) => {
 export default function PreflightWarning({ report, actionLabel, onCancel, onContinue, overModal = false }: PreflightWarningProps) {
   const risks = report.risks ?? []
   const uninstrumented = report.uninstrumented_assets ?? []
-  const blocked = report.pass === false || risks.some((risk) => risk.severity === 'high')
+  const continueLabel = actionLabel === 'rendering queued deliveries' ? 'Queue anyway' : 'Export anyway'
   const guideFeature = risks.map((risk) => riskCopyFor(risk).guide).find(Boolean) ?? 'cut.export.preflight'
-  const summary =
-    report.summary
-    || (blocked
-      ? `Cut found an export issue before ${actionLabel}.`
-      : `Cut found warnings before ${actionLabel}.`)
+  // Pregate predicts quality; actual tool, media, and output failures remain
+  // enforced by the export action. A user can deliberately keep a still screen.
+  const summary = `Cut found quality warnings before ${actionLabel}. Review them, or continue if the result is intentional.`
 
   return (
     <section
-      className={`tb-pregate${blocked ? ' tb-pregate--blocked' : ''}${overModal ? ' tb-pregate--over-modal' : ''}`}
+      className={`tb-pregate${overModal ? ' tb-pregate--over-modal' : ''}`}
       data-cut-pregate-warning
-      data-cut-pregate-blocked={blocked ? 'true' : 'false'}
+      data-cut-pregate-blocked="false"
       role="dialog"
       aria-modal="false"
       aria-label="Render preflight warning"
@@ -87,7 +85,7 @@ export default function PreflightWarning({ report, actionLabel, onCancel, onCont
         <span className="tb-pregate-kicker">Preflight</span>
         <button type="button" className="tb-pregate-close" data-cut-pregate-close onClick={onCancel} aria-label="Close preflight warning">x</button>
       </div>
-      <h2>{blocked ? 'Fix before export' : 'Review before export'}</h2>
+      <h2>Review before export</h2>
       <p>{summary}</p>
       {(risks.length > 0 || uninstrumented.length > 0) && (
         <ul className="tb-pregate-risks">
@@ -120,6 +118,12 @@ export default function PreflightWarning({ report, actionLabel, onCancel, onCont
             <dt>Needs deeper check</dt>
             <dd>{uninstrumented.length}</dd>
           </div>
+          {report.summary && (
+            <div>
+              <dt>Check summary</dt>
+              <dd>{report.summary}</dd>
+            </div>
+          )}
           {risks.length > 0 && (
             <div>
               <dt>Risk details</dt>
@@ -138,7 +142,7 @@ export default function PreflightWarning({ report, actionLabel, onCancel, onCont
       </details>
       <div className="tb-pregate-actions">
         <button type="button" className="tb-btn tb-btn--secondary" data-cut-pregate-cancel onClick={onCancel}>
-          {blocked ? 'Close' : 'Cancel'}
+          Cancel
         </button>
         <button
           type="button"
@@ -156,11 +160,10 @@ export default function PreflightWarning({ report, actionLabel, onCancel, onCont
           type="button"
           className="tb-btn tb-btn--primary"
           data-cut-pregate-continue
-          disabled={blocked}
           onClick={onContinue}
-          title={blocked ? 'Resolve the high-risk preflight issues before exporting' : `Continue ${actionLabel}`}
+          title={continueLabel}
         >
-          Continue
+          {continueLabel}
         </button>
       </div>
     </section>

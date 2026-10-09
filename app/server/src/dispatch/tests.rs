@@ -50,6 +50,7 @@ mod assemble_broll_revision_transition;
 mod assemble_broll_search_transition;
 mod assemble_broll_transition;
 mod assets_fetch_transition;
+mod assets_probe_cancellation;
 mod caption_bulk;
 mod caption_track_resolution;
 mod captions_kinetic_regression;

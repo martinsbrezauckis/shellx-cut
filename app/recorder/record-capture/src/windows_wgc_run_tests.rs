@@ -6,6 +6,7 @@ use std::time::Instant;
 use record_core::{error_codes, RecordError, Result, Settings};
 use record_recovery::{Checkpoint, CheckpointFacts};
 
+use super::windows_wgc_factory::TimedWgcFactory;
 use super::windows_wgc_run::{
     SealedScreenRun, WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher,
     WgcControlFactory, WgcNativeControl, WgcRunOwner, WgcStartObservation, WgcStartedControl,
@@ -59,6 +60,7 @@ struct FakePublisher {
     next: u64,
     reject_publication: bool,
     include_native_startup: bool,
+    measured_media_start_ms: Option<u64>,
 }
 
 impl WgcCheckpointPublisher for FakePublisher {
@@ -78,6 +80,15 @@ impl WgcCheckpointPublisher for FakePublisher {
         } else {
             observed_start_ms
         }
+    }
+
+    fn sealed_media_start_ms(
+        &self,
+        _sequence: u64,
+        reserved_start_ms: u64,
+        _end_ms: u64,
+    ) -> Result<u64> {
+        Ok(self.measured_media_start_ms.unwrap_or(reserved_start_ms))
     }
 
     fn verify_and_publish_new(
@@ -132,6 +143,14 @@ fn owner_with_startup(
     reject_publication: bool,
     include_native_startup: bool,
 ) -> (TestOwner, TestLog, TestLog) {
+    owner_with_media_start(reject_publication, include_native_startup, None)
+}
+
+fn owner_with_media_start(
+    reject_publication: bool,
+    include_native_startup: bool,
+    measured_media_start_ms: Option<u64>,
+) -> (TestOwner, TestLog, TestLog) {
     let log = Rc::new(RefCell::new(Vec::new()));
     let targets = Rc::new(RefCell::new(Vec::new()));
     let factory = FakeFactory {
@@ -143,12 +162,66 @@ fn owner_with_startup(
         next: 0,
         reject_publication,
         include_native_startup,
+        measured_media_start_ms,
     };
     (
         WgcRunOwner::new("monitor:exact-17".to_string(), factory, publisher),
         log,
         targets,
     )
+}
+
+#[test]
+fn measured_first_frame_gap_keeps_input_clock_and_terminal_end() {
+    let (mut owner, log, _) = owner_with_media_start(false, true, Some(560));
+    let identity = owner.begin(0, || started(463)).unwrap();
+    assert_eq!(identity.start_ms, 0); // Reservation and input clock stay at zero.
+    let sealed = owner
+        .stop(observed_after_close(log, 9063))
+        .unwrap()
+        .unwrap();
+    assert_sealed(&sealed, 1, 560, 9063);
+}
+
+#[test]
+fn measured_first_frame_cannot_cross_its_reserved_or_terminal_boundary() {
+    for invalid_start in [9_064, 0] {
+        let (mut owner, log, _) = owner_with_media_start(false, true, Some(invalid_start));
+        owner.begin(100, || started(463)).unwrap();
+        assert!(owner.stop(observed_after_close(log, 9_063)).is_err());
+        assert!(owner.is_stopped());
+    }
+}
+
+#[test]
+fn ordinary_factory_receives_each_exact_checkpoint_reservation() {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let reservations = Rc::new(RefCell::new(Vec::new()));
+    let observed = reservations.clone();
+    let control_log = log.clone();
+    let factory = TimedWgcFactory(move |target: &String, _staging: &Path, reserved_ms| {
+        observed.borrow_mut().push(reserved_ms);
+        Ok(WgcStartedControl::new(
+            FakeControl {
+                log: control_log.clone(),
+                target: target.clone(),
+            },
+            accepted(),
+        ))
+    });
+    let publisher = FakePublisher {
+        log: log.clone(),
+        next: 0,
+        reject_publication: false,
+        include_native_startup: true,
+        measured_media_start_ms: None,
+    };
+    let mut owner = WgcRunOwner::new("monitor:exact-17".to_string(), factory, publisher);
+    owner.begin(0, || started(10)).unwrap();
+    owner
+        .rollover_checkpoint(observed_after_close(log, 100), || 125, || started(130))
+        .unwrap();
+    assert_eq!(*reservations.borrow(), [0, 125]);
 }
 
 #[test]
@@ -184,6 +257,7 @@ fn assert_sealed(run: &SealedScreenRun, physical_generation: u64, start_ms: u64,
     assert_eq!(run.boundary.event_offset_ms, start_ms);
     assert_eq!(run.checkpoint.sequence, physical_generation - 1);
     assert_eq!(run.checkpoint.facts.start_ms, start_ms);
+    assert_eq!(run.checkpoint.facts.event_offset_ms, start_ms);
     assert_eq!(run.checkpoint.facts.end_ms, end_ms);
     assert_eq!(run.accepted, accepted());
 }

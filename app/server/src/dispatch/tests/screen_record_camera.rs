@@ -320,7 +320,11 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         test_actor(),
     )
     .await;
-    assert!(opened.ok, "camera project reopen failed: {:?}", opened.error);
+    assert!(
+        opened.ok,
+        "camera project reopen failed: {:?}",
+        opened.error
+    );
 
     let retried = dispatch(
         &reopened,
@@ -329,7 +333,11 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         test_actor(),
     )
     .await;
-    assert!(retried.ok, "camera polish retry failed: {:?}", retried.error);
+    assert!(
+        retried.ok,
+        "camera polish retry failed: {:?}",
+        retried.error
+    );
     let retried = retried.result.unwrap();
     assert_eq!(retried["camera_track_id"], camera_track_id);
     assert_eq!(retried["camera_asset_id"], first_camera_asset_id);
@@ -353,6 +361,139 @@ async fn screen_record_polish_places_camera_artifact_on_its_own_offset_track_cas
         1,
         "retry must not duplicate the durable camera clip"
     );
+}
+
+async fn screen_record_polish_camera_tail_cannot_extend_final_render_case() {
+    use sha2::{Digest, Sha256};
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let project_dir = dir.path().join("camera_tail.cutproj");
+    let created = dispatch(
+        &state,
+        "project.create",
+        json!({"name":"camera_tail","dir":project_dir}),
+        test_actor(),
+    )
+    .await;
+    assert!(created.ok, "{:?}", created.error);
+    let cap_dir = crate::screen_record::screen_record_cache_dir(&project_dir)
+        .unwrap()
+        .join("cap_camera_tail");
+    let camera_dir = cap_dir.join("camera");
+    std::fs::create_dir_all(&camera_dir).unwrap();
+    let source = cap_dir.join("source.mp4");
+    let camera = camera_dir.join("camera.mp4");
+    for (path, input) in [
+        (&source, "testsrc=size=640x360:rate=30:duration=3"),
+        (&camera, "testsrc2=size=320x240:rate=30:duration=3"),
+    ] {
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-nostats",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                input,
+                "-pix_fmt",
+                "yuv420p",
+                "-y",
+            ])
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "fixture video encoding failed");
+    }
+    let camera_hash = format!("{:x}", Sha256::digest(std::fs::read(&camera).unwrap()));
+    std::fs::write(
+        cap_dir.join("project.json"),
+        serde_json::to_vec(&json!({
+            "source_video": source.display().to_string(),
+            "camera_artifact": {
+                "schema": "shellx-record/camera-artifact/1",
+                "capture_id": "cap_camera_tail",
+                "artifact_id": "camera_tail",
+                "video": "camera/camera.mp4",
+                "clock": {"first_frame_offset_ms":1291,"end_frame_offset_ms":4291},
+                "media": {"width":320,"height":240,"fps_num":30,"fps_den":1,
+                          "frame_count":90,"duration_ms":3000,"sha256":camera_hash},
+                "terminal_state": "complete"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let plan_path = cap_dir.join("plan.json");
+    std::fs::write(
+        &plan_path,
+        serde_json::to_vec(&record_core::EditPlan::empty(640, 360, 3_000, 30.0)).unwrap(),
+    )
+    .unwrap();
+
+    let polished = dispatch(
+        &state,
+        "screen_record.polish",
+        json!({"source":source.display().to_string(),"plan":plan_path.display().to_string(),"raw":true}),
+        test_actor(),
+    )
+    .await;
+    assert!(polished.ok, "{:?}", polished.error);
+    let result = polished.result.unwrap();
+    let camera_asset_id = result["camera_asset_id"].as_str().unwrap();
+    let camera_clip_id = result["camera_clip_id"].as_str().unwrap();
+    let guard = state.project.read().await;
+    let project = &guard.as_ref().unwrap().project;
+    let imported_camera = &project.assets[camera_asset_id];
+    assert_eq!(imported_camera.path, camera.display().to_string());
+    assert_eq!(imported_camera.hash, format!("sha256:{camera_hash}"));
+    assert_eq!(
+        std::fs::read(&imported_camera.path).unwrap(),
+        std::fs::read(&camera).unwrap(),
+        "the complete measured camera file must remain available as an independent asset"
+    );
+    let camera_track = project
+        .track(result["camera_track_id"].as_str().unwrap())
+        .unwrap();
+    assert!(!camera_track.visible);
+    let camera_clip = camera_track
+        .clips
+        .iter()
+        .find_map(|clip| match clip {
+            cut_core::Clip::Media(media) if media.id == camera_clip_id => Some(media),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!((camera_clip.src_in_ms, camera_clip.src_out_ms), (0, 1_709));
+    assert_eq!(cut_core::edl_from_project(project).duration_ms, 3_000);
+    drop(guard);
+    let render_plan = dispatch(
+        &state,
+        "render.final",
+        json!({"dry_run":true}),
+        test_actor(),
+    )
+    .await;
+    assert!(render_plan.ok, "{:?}", render_plan.error);
+    assert_eq!(render_plan.result.unwrap()["output"]["duration_ms"], 3_000);
+}
+
+#[test]
+fn screen_record_polish_camera_tail_cannot_extend_final_render() {
+    let test = std::thread::Builder::new()
+        .name("screen-record-camera-tail-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(screen_record_polish_camera_tail_cannot_extend_final_render_case());
+        })
+        .expect("camera tail test thread must start");
+    test.join()
+        .expect("camera tail test thread must complete without panicking");
 }
 
 async fn close_camera_test_project_after_jobs_drain(state: &AppState, phase: &str) {

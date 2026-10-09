@@ -1,8 +1,8 @@
 //! input.rs — shared rdevin global input hook (Windows + macOS live capture).
 //!
 //! Both platform backends collect the SAME input event stream (cursor/click/
-//! scroll/key) via rdevin, so it lives here. `ButtonPress` carries no coordinates,
-//! so we track the last `MouseMove` position and stamp clicks/scrolls with it.
+//! scroll/key) via rdevin, so it lives here. Native button payloads can provide
+//! actual positions; backends without them retain the last real `MouseMove` fallback.
 //! Timestamps are our own monotonic clock (Instant) relative to capture start.
 //!
 //! `Input` is deliberately only the collected event data. Native listener
@@ -17,8 +17,8 @@ pub(crate) use crate::input_listener::InputListener;
 #[derive(Default)]
 pub struct Input {
     pub last: (f64, f64),
-    /// A button event carries no coordinates. Until rdevin delivered a real global
-    /// move, `last` is only its default and cannot identify a captured-frame point.
+    /// Until a real global move or fresh native button position was delivered,
+    /// `last` is only its default and cannot identify a captured-frame point.
     pub has_absolute_position: bool,
     pub cursor: Vec<CursorSample>,
     pub clicks: Vec<ClickSample>,

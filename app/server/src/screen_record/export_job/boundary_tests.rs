@@ -76,7 +76,6 @@ async fn imported_generated_plan_link_is_refused_before_autoedit_write() {
         .await
         .ok
     );
-    let cache = crate::screen_record::screen_record_cache_dir(&dir).unwrap();
     let track = dir.join("events.json");
     std::fs::write(
         &track,
@@ -84,16 +83,30 @@ async fn imported_generated_plan_link_is_refused_before_autoedit_write() {
             .unwrap(),
     )
     .unwrap();
-    std::os::unix::fs::symlink(&sentinel, cache.join("events.plan.json")).unwrap();
-    let result = crate::dispatch::dispatch(
+    let first = crate::dispatch::dispatch(
         &state,
         "screen_record.autoedit",
         json!({"track":track}),
-        actor,
+        actor.clone(),
     )
     .await;
-    assert!(!result.ok);
+    assert!(first.ok, "{:?}", first.error);
+    let plan = std::path::PathBuf::from(first.result.unwrap()["plan"].as_str().unwrap());
+    std::fs::remove_file(&plan).unwrap();
+    for target in [&sentinel, &outside.path().join("absent.json")] {
+        std::os::unix::fs::symlink(target, &plan).unwrap();
+        let result = crate::dispatch::dispatch(
+            &state,
+            "screen_record.autoedit",
+            json!({"track":track}),
+            actor.clone(),
+        )
+        .await;
+        assert!(!result.ok);
+        std::fs::remove_file(&plan).unwrap();
+    }
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside plan sentinel");
+    assert!(!outside.path().join("absent.json").exists());
 }
 
 #[cfg(unix)]

@@ -2,8 +2,9 @@
 //!
 //! Compiled ONLY for `cfg(windows)` + the `capture-windows` feature.
 //! - SCREEN: windows-capture (Windows Graphics Capture) → MP4 via its built-in
-//!   Media Foundation encoder (no ffmpeg). Cursor WITHOUT the OS cursor + WITHOUT
-//!   the capture border — we re-render a synthetic cursor in the polish pass.
+//!   Media Foundation encoder (no ffmpeg). Monitor capture omits the OS cursor
+//!   for synthetic polish; window capture keeps one native cursor while exact clicks
+//!   use separately attested physical window geometry.
 //! - INPUT: the shared rdevin hook (see input.rs).
 //!
 //! When running Windows capture tests from WSL, launch the built Windows app via
@@ -29,55 +30,19 @@ use windows_capture::{
     window::Window as WcWindow,
 };
 
+use crate::windows_wgc_factory::TimedWgcFactory;
 use crate::windows_wgc_handler::{EncFlags, Handler, LiveWgcControl};
+use crate::windows_wgc_publisher::WindowsCheckpointPublisher;
 use crate::{
     checkpoint::Checkpoints,
-    input,
     region_geometry::NativePixelCrop,
     surface_coordinates,
     windows_wgc_run::{
-        WgcAcceptedCapture, WgcCaptureRange, WgcCheckpointPublisher, WgcNativeControl, WgcRunOwner,
-        WgcStartObservation, WgcStartedControl,
+        WgcAcceptedCapture, WgcCaptureRange, WgcNativeControl, WgcRunOwner, WgcStartObservation,
+        WgcStartedControl,
     },
     Capture, CaptureConfig, CaptureOutput, MonitorInfo, WindowInfo,
 };
-
-pub(crate) struct WindowsCheckpointPublisher {
-    pub(crate) checkpoints: Checkpoints,
-    /// Ordinary WGC can encode frames during start_free_threaded. The private
-    /// pause pilot still uses the separate post-open observed-start contract.
-    pub(crate) include_native_startup: bool,
-    pub(crate) timing: Option<Arc<Mutex<Option<crate::windows_wgc_timing::WgcTimingRecorder>>>>,
-}
-
-impl WgcCheckpointPublisher for WindowsCheckpointPublisher {
-    fn reserve(&mut self, start_ms: u64) -> Result<(u64, std::path::PathBuf)> {
-        self.checkpoints.begin_windows_wgc(start_ms)
-    }
-
-    fn capture_start_ms(&self, reserved_start_ms: u64, observed_start_ms: u64) -> u64 {
-        if self.include_native_startup {
-            reserved_start_ms
-        } else {
-            observed_start_ms
-        }
-    }
-
-    fn verify_and_publish_new(
-        &mut self,
-        sequence: u64,
-        staging: &Path,
-        facts: record_recovery::CheckpointFacts,
-    ) -> Result<record_recovery::Checkpoint> {
-        let timing = self.timing.as_ref().and_then(|slot| {
-            slot.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-        });
-        self.checkpoints
-            .publish_windows_wgc(sequence, staging, facts, timing.as_ref())
-    }
-}
 
 fn even_capture_dimension(value: i32) -> Option<u32> {
     let even = u32::try_from(value).ok()? & !1;
@@ -240,9 +205,9 @@ impl Capture for WindowsCapture {
             };
             // yuv420p + the WGC encoder want even dimensions; the helper also
             // rejects 0/1 rather than rounding a one-pixel surface down to zero.
-            // WGC does not expose timestamped window rectangles from this encoder
-            // callback. A startup rect becomes stale on move/resize, so window
-            // pointer positions stay unavailable until that provenance exists.
+            // Startup dimensions only configure the encoded prefix. Click mapping
+            // separately checks fresh physical bounds and encoder-accepted content;
+            // synthetic window cursor samples remain unavailable.
             (Src::Window(win), ww, wh, None)
         } else {
             let monitor = if let Some(id) = cfg.monitor_id.as_deref() {
@@ -347,14 +312,13 @@ impl Capture for WindowsCapture {
         // long one lost its first ~8 s. The Record surface pre-warms the mic via `mic::warm`
         // so the first-frame audio race is handled up front; spawn and move on. No
         // input device → the mic thread returns Err → audio is None (handled at join).
-        let start = cfg
-            .clock
-            .as_ref()
-            .map(crate::CaptureClock::start)
-            .unwrap_or_else(Instant::now);
         // The owner seals immediately after WGC's measured final-video boundary;
         // any early capture error drops it and performs best-effort native cleanup.
-        let input = input::InputListener::start(start, cfg.capture_keys)?;
+        let window_hwnd = match src {
+            Src::Window(win) => Some(HWND(win.as_raw_hwnd())),
+            Src::Monitor(_) => None,
+        };
+        let (start, input, window_clicks) = crate::windows_input::start(cfg, window_hwnd, w, h)?;
         let mic_handle = if cfg.audio {
             let ready = Arc::new(AtomicBool::new(false));
             let mic_path = format!("{out_dir}/mic.wav");
@@ -394,11 +358,28 @@ impl Capture for WindowsCapture {
             range,
         )?;
         let mut selected_window_segment_started = false;
+        let qpc_origin = cfg
+            .checkpoint
+            .as_ref()
+            .map(|_| {
+                crate::windows_wgc_clock_origin::QpcCaptureOrigin::sample(start)
+                    .map_err(|error| cap_err("pair WGC and input clocks", error))
+            })
+            .transpose()?;
         let current_wgc_timing = Arc::new(Mutex::new(None));
         let factory_wgc_timing = current_wgc_timing.clone();
         let mut start_wgc = |target: &Src,
-                             destination: &Path|
+                             destination: &Path,
+                             reserved_start_ms: u64|
          -> Result<WgcStartedControl<LiveWgcControl>> {
+            let timed_clock = qpc_origin
+                .map(|origin| {
+                    origin
+                        .reserved_boundary_hns(reserved_start_ms)
+                        .map(|boundary| (start, origin, boundary))
+                        .map_err(|error| cap_err("reserve WGC native sample clock", error))
+                })
+                .transpose()?;
             let source_lifecycle = cfg.source_lifecycle.clone();
             let timing = crate::windows_wgc_timing::WgcTimingRecorder::new(start, fps, destination);
             *factory_wgc_timing
@@ -428,6 +409,8 @@ impl Capture for WindowsCapture {
                 source_lifecycle: source_lifecycle.clone(),
                 stop: stop.clone(),
                 timing: Some(timing.clone()),
+                timed_clock,
+                window_clicks: window_clicks.clone(),
                 active_preview: cfg.active_preview.as_ref().and_then(|preview| {
                     preview
                         .begin_segment()
@@ -448,7 +431,7 @@ impl Capture for WindowsCapture {
                 )),
                 Src::Window(win) => Handler::start_free_threaded(WcSettings::new(
                     win,
-                    CursorCaptureSettings::WithoutCursor,
+                    CursorCaptureSettings::WithCursor,
                     DrawBorderSettings::Default,
                     SecondaryWindowSettings::Default,
                     MinimumUpdateIntervalSettings::Default,
@@ -483,8 +466,9 @@ impl Capture for WindowsCapture {
                     checkpoints,
                     include_native_startup: true,
                     timing: Some(current_wgc_timing),
+                    qpc_origin,
                 };
-                let mut owner = WgcRunOwner::new(src, start_wgc, publisher);
+                let mut owner = WgcRunOwner::new(src, TimedWgcFactory(start_wgc), publisher);
                 let mut segment = owner.begin(0, || observe_wgc_start(start))?;
                 let duration_ms = loop {
                     let end_at = segment.start_ms.saturating_add(interval_ms).min(dur);
@@ -515,7 +499,7 @@ impl Capture for WindowsCapture {
                 (duration_ms, Some(owner.into_publisher().checkpoints))
             }
             None => {
-                let mut control = start_wgc(&src, Path::new(&path))?.control;
+                let mut control = start_wgc(&src, Path::new(&path), 0)?.control;
                 while !stop.load(Ordering::Relaxed) && start.elapsed() < Duration::from_millis(dur)
                 {
                     thread::sleep(Duration::from_millis(50));
@@ -539,7 +523,9 @@ impl Capture for WindowsCapture {
         };
 
         let (audio, microphone_outcome) = crate::microphone_result::finish(cfg.audio, mic_handle);
-        let coordinates = if cfg.window.is_some() {
+        let coordinates = if let Some(window_clicks) = window_clicks {
+            window_clicks.finish(duration_ms, &mut clicks)
+        } else if cfg.window.is_some() {
             surface_coordinates::unavailable_window_rdevin_input(cursor, &mut clicks, scrolls)
         } else {
             surface_coordinates::map_rdevin_input(surface, w, h, cursor, &mut clicks, scrolls)

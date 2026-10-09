@@ -8,6 +8,7 @@
 // Dependencies: lib/client (verbs), lib/events (WS), layout/* (dividers +
 // persisted sizes), topbar/, panels/*, statusbar/. Callers: main.tsx.
 
+import { RecordingInputHookWarning } from './panels/Record/RecordingInputHookWarning'
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
   callVerb,
@@ -821,6 +822,7 @@ export default function App() {
           role="status"
         >
           <span>{recordingSession.state.message}</span>
+          <RecordingInputHookWarning input={recordingSession.state.inputHook} saved={Boolean(recordingSession.state.rawPath)} />
           {recordingSession.state.indicatorWarning && <span> · {recordingSession.state.indicatorWarning}</span>}
           {(recordingSession.state.phase === 'recording' || recordingSession.state.phase === 'recovery') && (
             <button type="button" data-cut-action="record-session-stop" onClick={() => void (recordingSession.state.recoveryAction === 'check_status' ? recordingSession.refreshStopStatus() : recordingSession.stop())}>

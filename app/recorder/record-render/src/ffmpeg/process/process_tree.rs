@@ -25,10 +25,10 @@ pub(super) fn configure(command: &mut Command) -> io::Result<()> {
 #[cfg(windows)]
 pub(super) fn configure(command: &mut Command) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
     // A normal spawn then Job assignment lets an immediate grandchild escape.
-    command.creation_flags(CREATE_SUSPENDED);
+    command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
     Ok(())
 }
 

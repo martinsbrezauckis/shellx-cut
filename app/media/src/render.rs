@@ -2813,11 +2813,42 @@ fn build_graph(
     // extra 0.5 dB leaves headroom for peak growth during output encoding;
     // published output still has to pass the measured −1.0 dBTP receipt limit.
     // Single-pass is deterministic (no measured-* two-pass) and only
-    // runs when a target is set, so unnormalized renders stay byte-identical.
-    // Closes the measure(lufs check)→target loop.
+    // runs when a target is set; absent a target, no loudness normalization is
+    // added. Closes the measure(lufs check)→target loop.
     if let (Some(t), Some(a)) = (opts.loudness_target, audio_out.clone()) {
         writeln!(f, "[{a}]loudnorm=I={t}:TP=-1.5:LRA=11[anorm];").unwrap();
         audio_out = Some("anorm".to_string());
+    }
+
+    // Decoder frames, the longest-track mix, and loudnorm's 192 kHz output can
+    // extend beyond the EDL even when each source clip was trimmed. Conform the
+    // completed mix to the project rate before bounding its sample count. This
+    // graph feeds both the single-pass output and segmented video's final mux.
+    if let Some(a) = audio_out.as_deref() {
+        if rate == 0 {
+            return Err(CutError::new(
+                error_codes::INVALID_ARGS,
+                "project audio rate is zero",
+                "set a positive project audio sample rate before rendering",
+            ));
+        }
+        // A general EDL can end between video frames, unlike a speed-ramp slice;
+        // derive this budget from its actual millisecond endpoint, not the
+        // frame-grid helper used by ramp_timing. Round to the nearest sample.
+        let samples = (u128::from(edl.duration_ms) * u128::from(rate) + 500) / 1000;
+        let samples = i64::try_from(samples).map_err(|_| {
+            CutError::new(
+                error_codes::INVALID_ARGS,
+                "audio timeline is too long",
+                "EDL duration and project audio rate exceed FFmpeg's signed sample-count limit",
+            )
+        })?;
+        writeln!(
+            f,
+            "[{a}]aresample={rate},apad=pad_len={samples},atrim=end_sample={samples},asetpts=N/SR/TB[aedl];"
+        )
+        .unwrap();
+        audio_out = Some("aedl".to_string());
     }
 
     Ok(Graph {
@@ -4898,5 +4929,7 @@ pub fn extract_frame(
     Ok(std::fs::read(&out)?)
 }
 
+#[cfg(test)]
+mod audio_extent_tests;
 #[cfg(test)]
 mod tests;

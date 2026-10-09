@@ -58,6 +58,7 @@ impl WgcNativeControl for LiveWgcControl {
 /// Encoder flags handed to the WGC callback (its `new` builds the encoder).
 #[derive(Clone)]
 pub(crate) struct EncFlags {
+    pub(crate) window_clicks: Option<crate::windows_window_clicks::WindowClickCapture>,
     pub(crate) w: u32,
     pub(crate) h: u32,
     pub(crate) fps: u32,
@@ -67,12 +68,18 @@ pub(crate) struct EncFlags {
     pub(crate) source_lifecycle: Option<CaptureSourceLifecycle>,
     pub(crate) stop: Arc<AtomicBool>,
     pub(crate) timing: Option<WgcTimingRecorder>,
+    pub(crate) timed_clock: Option<(
+        Instant,
+        crate::windows_wgc_clock_origin::QpcCaptureOrigin,
+        i64,
+    )>,
     pub(crate) active_preview: Option<(crate::active_capture_preview::ActiveCapturePreview, u64)>,
 }
 
 /// `windows-capture` handler: frames enter the encoder and a closed exact
 /// window can conclude source loss before the outer wait loop exits.
 pub(crate) struct Handler {
+    window_clicks: Option<crate::windows_window_clicks::WindowClickCapture>,
     encoder: Option<crate::windows_wgc_encoder::WgcVideoEncoder>,
     crop: Option<NativePixelCrop>,
     crop_surface: Option<crate::windows_gpu_crop::GpuCropSurface>,
@@ -111,14 +118,16 @@ impl GraphicsCaptureApiHandler for Handler {
 
     fn new(ctx: Context<Self::Flags>) -> std::result::Result<Self, Self::Error> {
         let flags = ctx.flags;
-        let encoder = crate::windows_wgc_encoder::WgcVideoEncoder::new(
+        let encoder = crate::windows_wgc_encoder::WgcVideoEncoder::new_with_clock(
             flags.w,
             flags.h,
             flags.fps,
             std::path::Path::new(&flags.path),
+            flags.timed_clock,
         )?;
         Ok(Self {
             encoder: Some(encoder),
+            window_clicks: flags.window_clicks,
             crop: flags.crop,
             crop_surface: None,
             readiness: flags.readiness,
@@ -148,7 +157,23 @@ impl GraphicsCaptureApiHandler for Handler {
                         .map(|timestamp| (timestamp.Duration, Instant::now()))
                 })
                 .transpose()?;
-            encoder.send_frame(frame)?;
+            let geometry = self
+                .window_clicks
+                .as_ref()
+                .and_then(|clicks| clicks.geometry());
+            let accepted = if let Some(clicks) = self.window_clicks.as_ref() {
+                if let Some(fit) = encoder.send_window_frame(frame)? {
+                    clicks.accepted_frame(geometry, frame.width(), frame.height(), fit);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                encoder.send_frame(frame)?
+            };
+            if !accepted {
+                return Ok(());
+            }
             if let (Some(timing), Some((native_timestamp_100ns, callback_at))) =
                 (&self.timing, sample)
             {
@@ -167,6 +192,9 @@ impl GraphicsCaptureApiHandler for Handler {
     }
 
     fn on_closed(&mut self) -> std::result::Result<(), Self::Error> {
+        if let Some(clicks) = self.window_clicks.as_ref() {
+            clicks.source_closed();
+        }
         if let Some(timing) = &self.timing {
             timing.close_callback(Instant::now());
         }

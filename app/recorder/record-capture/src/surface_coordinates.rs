@@ -176,8 +176,7 @@ pub(crate) fn map_rdevin_input(
     }
 }
 
-/// Window capture needs timestamped window rectangles to map global input. Neither
-/// native backend currently supplies them on the capture clock, so a launch-time
+/// Fallback when selected-window event geometry cannot be attested. A launch-time
 /// rectangle is deliberately never reused after the window may have moved or resized.
 #[cfg(any(test, windows, target_os = "macos"))]
 pub(crate) fn unavailable_window_rdevin_input(

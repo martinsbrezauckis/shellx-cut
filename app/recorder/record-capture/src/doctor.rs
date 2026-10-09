@@ -179,13 +179,16 @@ fn input_backend() -> (&'static str, &'static str) {
         // rdevin works on X11; Wayland global input requires libei + the RemoteDesktop portal.
         (
             "ok",
-            "rdevin global input hook (X11; Wayland global input is unavailable)",
+            "input hook support compiled (X11 rdevin; Wayland evdev); capture startup unchecked",
         )
     } else if cfg!(any(
         all(windows, feature = "capture-windows"),
         all(target_os = "macos", feature = "capture-macos")
     )) {
-        ("ok", "rdevin global input hook")
+        (
+            "ok",
+            "input hook support compiled; capture startup unchecked",
+        )
     } else {
         (
             "missing",

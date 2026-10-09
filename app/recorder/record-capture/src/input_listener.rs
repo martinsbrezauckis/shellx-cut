@@ -12,6 +12,7 @@ use crate::input::{map_button, Input, InputSnapshot};
 
 const SEAL_WAIT: Duration = Duration::from_millis(250);
 const RETIRED_POLL: Duration = Duration::from_millis(100);
+type InputObserver = Box<dyn FnMut(&rdevin::Event, u64) + Send>;
 
 /// Sample state and its acceptance gate deliberately share one mutex. A native
 /// callback queued before sealing cannot append after `seal` acquires this lock.
@@ -46,7 +47,7 @@ pub(crate) struct InputListener<L: NativeInputListener = rdevin::OwnedListener> 
 
 impl InputListener<rdevin::OwnedListener> {
     pub(crate) fn start(start: Instant, capture_keys: bool) -> Result<Self> {
-        Self::start_with_policy(start, capture_keys, false)
+        Self::start_with_policy(start, capture_keys, false, None)
     }
 
     /// Start a listener that is mandatory for the caller's immutable stream
@@ -54,10 +55,24 @@ impl InputListener<rdevin::OwnedListener> {
     /// native hook into an empty successful input stream.
     #[cfg(all(windows, feature = "capture-windows"))]
     pub(crate) fn start_required(start: Instant, capture_keys: bool) -> Result<Self> {
-        Self::start_with_policy(start, capture_keys, true)
+        Self::start_with_policy(start, capture_keys, true, None)
     }
 
-    fn start_with_policy(start: Instant, capture_keys: bool, required: bool) -> Result<Self> {
+    #[cfg(any(windows, target_os = "macos"))]
+    pub(crate) fn start_observed(
+        start: Instant,
+        capture_keys: bool,
+        observer: impl FnMut(&rdevin::Event, u64) + Send + 'static,
+    ) -> Result<Self> {
+        Self::start_with_policy(start, capture_keys, false, Some(Box::new(observer)))
+    }
+
+    fn start_with_policy(
+        start: Instant,
+        capture_keys: bool,
+        required: bool,
+        mut observer: Option<InputObserver>,
+    ) -> Result<Self> {
         let state = Arc::new(Mutex::new(InputState {
             accepting: true,
             input: Input::default(),
@@ -65,47 +80,60 @@ impl InputListener<rdevin::OwnedListener> {
         let callback_state = state.clone();
         let native = rdevin::listen_owned(move |event| {
             let timestamp_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            append_if_accepting(&callback_state, |input| match event.event_type {
-                rdevin::EventType::MouseMove { x, y } => {
-                    input.last = (x, y);
-                    input.has_absolute_position = true;
-                    input.cursor.push(record_core::CursorSample {
-                        t_ms: timestamp_ms,
-                        x,
-                        y,
-                    });
+            append_if_accepting(&callback_state, |input| {
+                if let Some(observer) = observer.as_mut() {
+                    observer(&event, timestamp_ms);
                 }
-                rdevin::EventType::ButtonPress(button) => {
-                    push_click(input, timestamp_ms, map_button(button), true)
+                match event.event_type {
+                    rdevin::EventType::MouseMove { x, y } => {
+                        input.last = (x, y);
+                        input.has_absolute_position = true;
+                        input.cursor.push(record_core::CursorSample {
+                            t_ms: timestamp_ms,
+                            x,
+                            y,
+                        });
+                    }
+                    rdevin::EventType::ButtonPress(button) => push_click(
+                        input,
+                        timestamp_ms,
+                        map_button(button),
+                        true,
+                        event.native_pointer.as_ref(),
+                    ),
+                    rdevin::EventType::ButtonRelease(button) => push_click(
+                        input,
+                        timestamp_ms,
+                        map_button(button),
+                        false,
+                        event.native_pointer.as_ref(),
+                    ),
+                    rdevin::EventType::Wheel { delta_x, delta_y } => {
+                        let (x, y) = input.last;
+                        input.scrolls.push(record_core::ScrollSample {
+                            t_ms: timestamp_ms,
+                            x,
+                            y,
+                            dx: delta_x as f64,
+                            dy: delta_y as f64,
+                        });
+                    }
+                    rdevin::EventType::KeyPress(key) if capture_keys => {
+                        input.keys.push(record_core::KeySample {
+                            t_ms: timestamp_ms,
+                            key: format!("{key:?}"),
+                            down: true,
+                        });
+                    }
+                    rdevin::EventType::KeyRelease(key) if capture_keys => {
+                        input.keys.push(record_core::KeySample {
+                            t_ms: timestamp_ms,
+                            key: format!("{key:?}"),
+                            down: false,
+                        });
+                    }
+                    _ => {}
                 }
-                rdevin::EventType::ButtonRelease(button) => {
-                    push_click(input, timestamp_ms, map_button(button), false)
-                }
-                rdevin::EventType::Wheel { delta_x, delta_y } => {
-                    let (x, y) = input.last;
-                    input.scrolls.push(record_core::ScrollSample {
-                        t_ms: timestamp_ms,
-                        x,
-                        y,
-                        dx: delta_x as f64,
-                        dy: delta_y as f64,
-                    });
-                }
-                rdevin::EventType::KeyPress(key) if capture_keys => {
-                    input.keys.push(record_core::KeySample {
-                        t_ms: timestamp_ms,
-                        key: format!("{key:?}"),
-                        down: true,
-                    });
-                }
-                rdevin::EventType::KeyRelease(key) if capture_keys => {
-                    input.keys.push(record_core::KeySample {
-                        t_ms: timestamp_ms,
-                        key: format!("{key:?}"),
-                        down: false,
-                    });
-                }
-                _ => {}
             });
         });
         let native = match native {
@@ -121,11 +149,25 @@ impl InputListener<rdevin::OwnedListener> {
                 None
             }
         };
+        if native.is_some() {
+            // Admission precedes the OS read. A callback that already supplied a
+            // position wins; the initial sample is a passive read, never an event.
+            let point = rdevin::current_pointer_position();
+            let timestamp_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+            append_if_accepting(&state, |input| {
+                seed_initial_position(input, timestamp_ms, point)
+            });
+        }
         Ok(Self { state, native })
     }
 }
 
 impl<L: NativeInputListener> InputListener<L> {
+    /// The owned listener has acknowledged startup; event count is not evidence.
+    pub(crate) fn startup_observation(&self, capture_keys: bool) -> crate::InputHookStartup {
+        crate::InputHookStartup::rdevin(self.native.is_some(), capture_keys)
+    }
+
     /// Close acceptance, stop the native route, and accept a snapshot only once
     /// native teardown is observed. Failure retains ownership in a background
     /// reaper instead of risking a blocking Stop or a second global listener.
@@ -225,15 +267,77 @@ fn retain_until_exit<L: NativeInputListener>(native: L, reason: &'static str) {
     }
 }
 
-fn push_click(input: &mut Input, timestamp_ms: u64, button: record_core::MouseButton, down: bool) {
-    let (x, y) = input.last;
-    input.clicks.push(record_core::ClickSample {
+fn seed_initial_position(input: &mut Input, timestamp_ms: u64, point: Option<(f64, f64)>) {
+    if input.has_absolute_position {
+        return;
+    }
+    let Some((x, y)) = point.filter(|(x, y)| x.is_finite() && y.is_finite()) else {
+        return;
+    };
+    input.last = (x, y);
+    input.has_absolute_position = true;
+    input.cursor.push(record_core::CursorSample {
         t_ms: timestamp_ms,
+        x,
+        y,
+    });
+}
+
+fn push_click(
+    input: &mut Input,
+    timestamp_ms: u64,
+    button: record_core::MouseButton,
+    down: bool,
+    native: Option<&rdevin::NativePointerSample>,
+) {
+    let (t_ms, x, y, position_quality) = match native {
+        Some(point) => {
+            // A queued event from before this take does not belong to its timeline.
+            let Some(t_ms) = timestamp_ms.checked_sub(u64::from(point.age_ms)) else {
+                return;
+            };
+            let fresh = point.age_ms <= 100 && point.x.is_finite() && point.y.is_finite();
+            if fresh {
+                // This is a real button payload position, even without a preceding
+                // MouseMove. Window capture discards this synthetic cursor track.
+                input.last = (point.x, point.y);
+                input.has_absolute_position = true;
+                input.cursor.push(record_core::CursorSample {
+                    t_ms,
+                    x: point.x,
+                    y: point.y,
+                });
+            }
+            let (x, y) = if point.x.is_finite() && point.y.is_finite() {
+                (point.x, point.y)
+            } else {
+                (0.0, 0.0)
+            };
+            (
+                t_ms,
+                x,
+                y,
+                if fresh {
+                    ClickPositionQuality::Exact
+                } else {
+                    ClickPositionQuality::Unavailable
+                },
+            )
+        }
+        None => (
+            timestamp_ms,
+            input.last.0,
+            input.last.1,
+            click_quality(input),
+        ),
+    };
+    input.clicks.push(record_core::ClickSample {
+        t_ms,
         x,
         y,
         button,
         down,
-        position_quality: click_quality(input),
+        position_quality,
     });
 }
 
@@ -262,6 +366,10 @@ fn snapshot_before(input: &Input, duration_ms: u64) -> InputSnapshot {
     clicks.retain(|sample| sample.t_ms < duration_ms);
     scrolls.retain(|sample| sample.t_ms < duration_ms);
     keys.retain(|sample| sample.t_ms < duration_ms);
+    // Native payload time can precede callback delivery. Preserve chronological
+    // interpolation and stable press/release order at equal timestamps.
+    cursor.sort_by_key(|sample| sample.t_ms);
+    clicks.sort_by_key(|sample| sample.t_ms);
     (cursor, clicks, scrolls, keys)
 }
 

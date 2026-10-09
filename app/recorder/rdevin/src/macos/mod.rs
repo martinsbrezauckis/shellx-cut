@@ -20,3 +20,4 @@ pub enum ListenError {
 }
 
 pub(crate) use crate::macos::owned::OwnedListener;
+pub(crate) use common::current_pointer_position;

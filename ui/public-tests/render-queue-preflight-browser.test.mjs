@@ -36,6 +36,7 @@ test('mounted queue holds the exact two edited profiles through one deferred pre
   const errors = []
   page.on('pageerror', error => errors.push(String(error)))
   const pregates = []
+  const warning = { pass: false, summary: 'pregate FAIL — fix before spending the render', risks: [{ kind: 'black_or_frozen', severity: 'high', detail: '13066ms frozen of source', range_ms: [0, 29167] }, { kind: 'slideshow_risk', severity: 'med' }, { kind: 'silent_output', severity: 'med' }] }
   const enqueued = []
   await page.route('**/api/verb/**', async route => {
     const name = new URL(route.request().url()).pathname.split('/').at(-1)
@@ -52,6 +53,17 @@ test('mounted queue holds the exact two edited profiles through one deferred pre
   await page.locator('[data-cut-render-queue-open]').click()
   await page.locator('[data-cut-render-queue-row]').first().waitFor()
   const start = page.locator('[data-cut-render-queue-start]')
+  await start.click()
+  await page.waitForFunction(() => document.querySelector('[data-cut-render-queue-preflight-status]'))
+  assert.equal(pregates.length, 1)
+  await page.locator('[data-cut-render-queue-close]').click()
+  await pregates[0].fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: warning }) })
+  await page.waitForTimeout(100)
+  assert.equal(await page.locator('[data-cut-pregate-warning]').count(), 0, 'late high-risk result cannot revive a closed queue')
+  assert.equal(enqueued.length, 0, 'closed pending preflight submits no jobs')
+  await page.locator('[data-cut-export-btn]').click()
+  await page.locator('[data-cut-render-queue-open]').click()
+  await page.locator('[data-cut-render-queue-row]').first().waitFor()
   await page.evaluate(() => {
     const button = document.querySelector('[data-cut-render-queue-start]')
     button.click()
@@ -59,15 +71,14 @@ test('mounted queue holds the exact two edited profiles through one deferred pre
   })
   await page.locator('[data-cut-render-queue-preflight-status]').waitFor()
   await page.waitForFunction(() => document.querySelector('[data-cut-render-queue-fields]')?.matches(':disabled'))
-  assert.equal(pregates.length, 1, 'rapid double click starts one preflight')
+  assert.equal(pregates.length, 2, 'rapid double click starts one preflight')
   assert.equal(await start.isDisabled(), true)
   assert.equal(await page.locator('[data-cut-render-queue-close]').isEnabled(), true, 'Close stays available while checking')
   const preset0 = page.locator('[data-cut-render-queue-preset="0"]')
   await assert.rejects(preset0.selectOption('high', { timeout: 250 }), /disabled|Timeout/i)
   assert.equal(await preset0.inputValue(), 'standard', 'rows cannot change while check is pending')
 
-  const warning = { pass: true, risks: [{ kind: 'silent_output', severity: 'med' }] }
-  await pregates[0].fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: warning }) })
+  await pregates[1].fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: warning }) })
   await page.locator('[data-cut-pregate-warning]').waitFor()
   const layers = await page.evaluate(() => ({
     warning: Number(getComputedStyle(document.querySelector('[data-cut-pregate-warning]')).zIndex),
@@ -76,18 +87,26 @@ test('mounted queue holds the exact two edited profiles through one deferred pre
   assert.ok(layers.warning > layers.queue, 'warning remains visible above queue modal')
   assert.equal(await preset0.isDisabled(), true, 'warning keeps rows locked')
   assert.equal(enqueued.length, 0)
+  assert.equal(await page.locator('[data-cut-pregate-continue]').isEnabled(), true, 'high-risk quality prediction allows human override')
+  assert.equal(await page.locator('[data-cut-pregate-continue]').textContent(), 'Queue anyway')
+  assert.match(await page.locator('[data-cut-pregate-warning]').textContent(), /screen recording/)
   await page.locator('[data-cut-pregate-cancel]').click()
   await page.locator('[data-cut-pregate-warning]').waitFor({ state: 'detached' })
   assert.equal(await preset0.isEnabled(), true, 'Cancel unlocks queue edits')
+  assert.equal(enqueued.length, 0, 'Cancel submits no jobs')
   await preset0.selectOption('high')
   await page.locator('[data-cut-render-queue-preset="1"]').selectOption('draft')
   await start.click()
   await page.waitForFunction(() => document.querySelector('[data-cut-render-queue-preflight-status]'))
-  assert.equal(pregates.length, 2, 'resubmission starts one new preflight')
-  await pregates[1].fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: warning }) })
+  assert.equal(pregates.length, 3, 'resubmission starts one new preflight')
+  await pregates[2].fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: warning }) })
   await page.locator('[data-cut-pregate-warning]').waitFor()
   assert.equal(enqueued.length, 0, 'no batch is submitted until Continue')
-  await page.locator('[data-cut-pregate-continue]').click()
+  await page.evaluate(() => {
+    const button = document.querySelector('[data-cut-pregate-continue]')
+    button.click()
+    button.click() // owner admission guards still prevent a duplicate batch
+  })
   await page.locator('[data-cut-render-queue-done]').waitFor()
   assert.equal(enqueued.length, 1, 'exactly one queue is submitted after acknowledgment')
   assert.deepEqual(enqueued[0].jobs, [

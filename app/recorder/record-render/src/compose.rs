@@ -52,6 +52,14 @@ impl<'a> Compositor<'a> {
     /// source `bg_frame` into the backdrop (else BlurScreen falls back to a gradient).
     pub fn with_bg(plan: &'a EditPlan, bg_frame: Option<&Pixmap>) -> record_core::Result<Self> {
         let (out_w, out_h) = output_size(plan)?;
+        if matches!(plan.background, record_core::Background::Image { .. }) {
+            return Err(record_core::RecordError::new(
+                record_core::error_codes::UNIMPLEMENTED,
+                "Image background is not supported in recorder polish",
+                "the recorder renderer has no image-background compositor",
+            )
+            .with_action("choose None, Solid, Gradient, or Blur Screen and export again"));
+        }
 
         // Reframe (9:16 / 1:1) uses COVER fit: the source fills the output and is
         // cropped around the zoom focus (the "action"), full-bleed, no frame. The
@@ -109,7 +117,7 @@ impl<'a> Compositor<'a> {
         };
 
         let caption_lines = match &plan.captions {
-            Some(c) => crate::captions::load_lines(&c.words_path, 36),
+            Some(c) => crate::captions::load_lines(&c.words_path, 36)?,
             None => Vec::new(),
         };
 
@@ -180,6 +188,15 @@ impl<'a> Compositor<'a> {
 
         // Eased zoom → transform mapping source px → output px (incl. card offset).
         let (z, cx, cy) = plan.zoom.eval(t_ms);
+        // Generated keys can pre-position a future focus while still at 1x.
+        // Constrain the actual contain viewport, so ramps never expose gaps or
+        // discard edges at 1x. Explicit aspect reframe keeps its cover crop.
+        let (cx, cy) = if matches!(plan.reframe, record_core::Reframe::None) {
+            let half = 0.5 / z.max(1.0);
+            (cx.clamp(half, 1.0 - half), cy.clamp(half, 1.0 - half))
+        } else {
+            (cx, cy)
+        };
         let a = card.scale_base * z as f32;
         let tx = card.w / 2.0 - a * (cx as f32) * plan.source_w as f32;
         let ty = card.h / 2.0 - a * (cy as f32) * plan.source_h as f32;
@@ -351,10 +368,61 @@ mod tests {
             EditableSceneTimeline, SceneCameraSegment, SceneFixtureDescriptor, SceneScreenSegment,
             SceneTimerFixture, SceneTimerSegment, EDITABLE_SCENE_TIMELINE_SCHEMA,
         },
-        Anchor, Ease, EditPlan, PipCorner, PipShape, PipSizePercent, PresenterPip,
+        Anchor, CaptionStyle, Ease, EditPlan, PipCorner, PipShape, PipSizePercent, PresenterPip,
         SceneComposition, SceneId, TimerPhase, WebcamKeyframe, WebcamOverlay, WebcamShape, ZoomKey,
     };
     use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
+
+    #[test]
+    fn valid_caption_words_draw_pixels_only_during_their_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let words = dir.path().join("words.json");
+        std::fs::write(
+            &words,
+            br#"{"words":[{"word":"Hello","start_ms":0,"end_ms":500}]}"#,
+        )
+        .unwrap();
+        let source = quad_source(320, 180);
+        let mut plan = EditPlan::empty(320, 180, 1_000, 30.0);
+        let plain_plan = plan.clone();
+        let plain = Compositor::new(&plain_plan).unwrap();
+        plan.captions = Some(CaptionStyle {
+            words_path: words.to_string_lossy().into_owned(),
+            font_px: 22.0,
+            color: record_core::Rgba::WHITE,
+            box_color: record_core::Rgba::new(0, 0, 0, 200),
+        });
+        let captioned = Compositor::new(&plan).unwrap();
+        assert_ne!(
+            captioned.frame(&source, 250).data(),
+            plain.frame(&source, 250).data()
+        );
+        assert_eq!(
+            captioned.frame(&source, 750).data(),
+            plain.frame(&source, 750).data()
+        );
+
+        std::fs::write(&words, br#"{"words":[]}"#).unwrap();
+        let empty = Compositor::new(&plan).unwrap();
+        assert_eq!(
+            empty.frame(&source, 250).data(),
+            plain.frame(&source, 250).data()
+        );
+    }
+
+    #[test]
+    fn explicit_image_background_is_rejected_before_composition() {
+        let mut plan = EditPlan::empty(80, 46, 200, 10.0);
+        plan.background = record_core::Background::Image {
+            path: "manual-background.png".into(),
+        };
+        let error = Compositor::new(&plan)
+            .err()
+            .expect("an unsupported image background must not render a neutral backdrop");
+        assert_eq!(error.code, record_core::error_codes::UNIMPLEMENTED);
+        assert!(error.message.contains("Image background"));
+        assert!(error.suggested_action.is_some());
+    }
 
     /// A 4-colored-quadrant source so we can see compositing is non-trivial.
     fn quad_source(w: u32, h: u32) -> Pixmap {
@@ -738,3 +806,7 @@ mod tests {
         assert_eq!(at_half_second.data(), repeat_half_second.data());
     }
 }
+
+#[cfg(test)]
+#[path = "compose_zoom_bounds_tests.rs"]
+mod zoom_bounds_tests;

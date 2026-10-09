@@ -16,7 +16,7 @@ const doctor = {
   pause: { supported: true, detail: 'Pause available', incompatible: [] },
 }
 
-async function fixture(t, preset = null, initialDoctor = doctor) {
+async function fixture(t, preset = null, initialDoctor = doctor, holdPolish = false) {
   let currentDoctor = initialDoctor
   const cacheDir = mkdtempSync(join(tmpdir(), 'cut-record-handoff-'))
   t.after(() => rmSync(cacheDir, { recursive: true, force: true }))
@@ -43,14 +43,18 @@ async function fixture(t, preset = null, initialDoctor = doctor) {
   const errors = []
   const starts = []
   const pauseActions = []
+  const pendingPolishes = []
   page.on('pageerror', error => errors.push(String(error)))
   if (preset) await page.addInitScript(value => localStorage.setItem('shellx-cut.recording-preset.v1', JSON.stringify(value)), preset)
   await page.route('**/api/verb/**', async route => {
     const name = new URL(route.request().url()).pathname.split('/').at(-1)
     if (name === 'screen_record.start') starts.push(route.request().postDataJSON())
     if (name === 'screen_record.pause' || name === 'screen_record.resume') pauseActions.push(name)
+    if (holdPolish && name === 'screen_record.polish') { pendingPolishes.push(route); return }
     const result = name === 'screen_record.doctor' ? currentDoctor
       : name === 'screen_record.start' ? { capture_id: 'capture-fixture', pause: { enabled: Boolean(starts.at(-1)?.pause) } }
+        : holdPolish && name === 'screen_record.stop' ? { capture_id: 'capture-fixture', raw_path: '/fixture/raw.mp4', source: '/fixture/source.mp4', plan: '/fixture/plan.json' }
+          : holdPolish && name === 'screen_record.studio_event' ? { last_event: route.request().postDataJSON().event }
         : name === 'screen_record.status' ? { capture_id: 'capture-fixture', terminal: false }
           : name === 'screen_record.pause' ? { action: 'pause', saved: true, state: 'paused', logical_media_time_ms: 200 }
             : name === 'screen_record.resume' ? { action: 'resume', saved: true, state: 'recording', logical_media_time_ms: 200 }
@@ -61,8 +65,36 @@ async function fixture(t, preset = null, initialDoctor = doctor) {
   await page.locator('[data-cut-panel="record"]').waitFor({ timeout: 10_000 }).catch(() => {
     throw new Error(`Record did not mount: ${errors.join('; ')}`)
   })
-  return { page, starts, pauseActions, errors, setDoctor: next => { currentDoctor = next } }
+  return { page, starts, pauseActions, pendingPolishes, errors, setDoctor: next => { currentDoctor = next } }
 }
+
+test('New recording waits for polish to finish before resetting the saved take', async t => {
+  const preset = {
+    schema: 'shellx-cut/recording-preset/1', source: { kind: 'display', monitorId: 'display-A' },
+    fps: 30, durationMs: null, startCountdownSeconds: 0, audio: false, systemAudio: false,
+    keys: false, raw: false, studio: { background: 'gradient' },
+  }
+  const { page, starts, pendingPolishes, errors } = await fixture(t, preset, doctor, true)
+  await page.locator('[data-cut-action="record-start"]').click()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'recording')
+  await page.locator('[data-test-stop]').click()
+  await page.locator('[data-cut-rec-result-view="true"]').waitFor()
+  assert.equal(await page.locator('[data-test-phase]').textContent(), 'finalizing')
+  const newTake = page.locator('[data-cut-action="record-new-take"]')
+  assert.equal(await newTake.isDisabled(), true, 'New recording cannot discard a take while polish still owns it')
+  await page.locator('[data-cut-rec-result="processing"]').waitFor()
+  await page.getByRole('heading', { name: 'Finishing your recording', exact: true }).waitFor()
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'finalizing')
+  assert.equal(pendingPolishes.length, 1)
+  await pendingPolishes[0].fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, result: { clip_id: 'clip-fixture' } }) })
+  await page.waitForFunction(() => document.querySelector('[data-test-phase]')?.textContent === 'done')
+  assert.equal(await newTake.isEnabled(), true)
+  await newTake.click()
+  await page.locator('[data-cut-record-phase="idle"][data-cut-rec-result-view="false"]').waitFor()
+  await page.locator('[data-cut-action="record-start"]').waitFor()
+  assert.equal(starts.length, 1, 'resetting a result does not begin another capture')
+  assert.deepEqual(errors, [])
+})
 
 test('Record draft survives Edit and reaches background F9 and Record remount', async t => {
   const { page, starts, errors } = await fixture(t)

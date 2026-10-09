@@ -6,7 +6,7 @@
 
 mod rdevin;
 pub use crate::rdevin::{
-    Button, Event, EventType, Key, KeyCode, KeyboardState, RawKey, UnicodeInfo,
+    Button, Event, EventType, Key, KeyCode, KeyboardState, NativePointerSample, RawKey, UnicodeInfo,
 };
 
 /// Different OSes use different numerical representations for keys. Cut needs
@@ -24,6 +24,24 @@ mod macos;
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
 mod windows;
+
+/// Read the current native pointer without generating input. Recorder owners call
+/// this only after passive listener admission to seed a stationary monitor take.
+/// Unsupported/unavailable reads return None; no position is fabricated.
+pub fn current_pointer_position() -> Option<(f64, f64)> {
+    #[cfg(target_os = "windows")]
+    {
+        return crate::windows::current_pointer_position();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return crate::macos::current_pointer_position();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        None
+    }
+}
 
 // Cut intentionally exposes only its owned passive route. The upstream
 // fire-and-forget `listen` API is kept file-private during the approved cleanup

@@ -1,18 +1,29 @@
 #![allow(clippy::upper_case_acronyms)]
 use crate::keycodes::macos_virtual_keycodes::*;
 use crate::macos::keyboard::Keyboard;
-use crate::rdevin::{Button, Event, EventType, Key};
+use crate::rdevin::{Button, Event, EventType, Key, NativePointerSample};
 use cocoa::base::id;
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGKeyCode, EventField,
 };
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use foreign_types::ForeignType;
 use lazy_static::lazy_static;
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::os::raw::c_void;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
 use crate::keycodes::macos::key_from_code;
+
+/// Snapshot current session cursor state after the caller admits its passive
+/// listener. Creating this local Quartz snapshot never posts an input event.
+pub(crate) fn current_pointer_position() -> Option<(f64, f64)> {
+    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+    let event = CGEvent::new(source).ok()?;
+    let point = event.location();
+    (point.x.is_finite() && point.y.is_finite()).then_some((point.x, point.y))
+}
 
 pub type CFMachPortRef = *const c_void;
 pub type CFIndex = u64;
@@ -226,6 +237,14 @@ pub unsafe fn convert(
             _ => None,
         };
         return Some(Event {
+            native_pointer: if matches!(
+                event_type,
+                EventType::ButtonPress(_) | EventType::ButtonRelease(_)
+            ) {
+                native_button_point(cg_event)
+            } else {
+                None
+            },
             event_type,
             time: SystemTime::now(),
             unicode,
@@ -236,6 +255,44 @@ pub unsafe fn convert(
         });
     }
     None
+}
+
+/// CGEvent timestamps are nanoseconds since boot; mach_absolute_time uses ticks.
+/// Convert the clock explicitly rather than labeling callback time event time.
+fn native_button_point(event: &CGEvent) -> Option<NativePointerSample> {
+    #[repr(C)]
+    struct Timebase {
+        numer: u32,
+        denom: u32,
+    }
+    extern "C" {
+        fn CGEventGetTimestamp(event: *const c_void) -> u64;
+        fn mach_absolute_time() -> u64;
+        fn mach_timebase_info(info: *mut Timebase) -> i32;
+    }
+    let mut timebase = Timebase { numer: 0, denom: 0 };
+    // SAFETY: event remains owned by the event-tap callback; the timebase out
+    // pointer is valid and these clock APIs do not retain it.
+    let (timestamp, now) = unsafe {
+        if mach_timebase_info(&mut timebase) != 0 || timebase.denom == 0 {
+            return None;
+        }
+        (
+            CGEventGetTimestamp(event.as_ptr().cast()),
+            mach_absolute_time(),
+        )
+    };
+    let now_ns = u128::from(now) * u128::from(timebase.numer) / u128::from(timebase.denom);
+    if timestamp == 0 {
+        return None;
+    }
+    let age = now_ns.checked_sub(u128::from(timestamp))? / 1_000_000;
+    let point = event.location();
+    Some(NativePointerSample {
+        x: point.x,
+        y: point.y,
+        age_ms: u32::try_from(age).ok()?,
+    })
 }
 
 #[allow(dead_code)]

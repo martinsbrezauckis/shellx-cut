@@ -55,6 +55,7 @@ function Fixture() {
     <button data-test-stop onClick={() => void session.stop()}>Stop</button>
     <button data-test-reset onClick={() => session.reset()}>New take</button>
     {mode === 'record' ? <Record project={project} /> : <div data-test-away-surface>{mode} workspace</div>}
+    <output data-test-input-hook-state>{session.state.inputHook.state}</output>
     <output data-test-phase>{session.state.phase}</output>
     <output data-test-result-project>{session.state.resultProjectIdentity?.origin_path_sha256 ?? ''}</output>
     <DeliveryProbe />

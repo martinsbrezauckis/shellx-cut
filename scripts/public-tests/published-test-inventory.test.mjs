@@ -62,7 +62,7 @@ function fixture(t, { tests = ['scripts/public-tests/fixture.test.mjs'], resourc
 test('published test inventory names the exact public CI scope and every declared resource', () => {
   const inventory = loadPublishedTestInventory({ repoRoot: ROOT })
   assert.equal(inventory.version, JSON.parse(readFileSync(resolve(ROOT, 'ui/package.json'), 'utf8')).version)
-  assert.deepEqual(inventory.contract, { node_test_count: 11, ui_library_test_count: 39 })
+  assert.deepEqual(inventory.contract, { node_test_count: 12, ui_library_test_count: 40 })
   assert.deepEqual(inventory.tests.map((entry) => entry.path), [
     'scripts/public-tests/cross-host-media.test.mjs',
     'scripts/public-tests/dependency-audit.test.mjs',
@@ -75,6 +75,7 @@ test('published test inventory names the exact public CI scope and every declare
     'scripts/public-tests/published-test-inventory.test.mjs',
     'scripts/public-tests/safe-data.test.mjs',
     'scripts/public-tests/third-party-notice.test.mjs',
+    'scripts/public-tests/windows-capture-lifecycle-contract.test.mjs',
   ])
   verifyPublishedTestResources(inventory)
 })

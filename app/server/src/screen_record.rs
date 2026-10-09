@@ -40,6 +40,7 @@ mod cadence;
 mod camera_capture_sidecar;
 mod camera_public;
 mod capture_artifacts;
+mod plan_output;
 // REC-CAMERA-01d is the private Windows server/project owner. It is not
 // selected by screen_record.start or any verb/UI/Doctor route until installed
 // native proof explicitly admits that separate product surface.
@@ -160,6 +161,7 @@ mod run_seal_coordinator_tests;
 // recording_scenes + scene_projection_start instead; retain this module for
 // its focused legacy tests without letting it surface a second receipt.
 mod active_capture_preview_handler;
+pub(crate) mod input_hook_startup;
 #[cfg(any(windows, target_os = "macos"))]
 mod private_pause_capture_projection;
 #[allow(dead_code)]
@@ -731,7 +733,11 @@ where
                         }
                         microphone::persist_capture_outcome(&out_dir, out.microphone_outcome)?;
                         let project = out.into_project_with_capture_cadence(capture_cadence);
-                        let bytes = serde_json::to_vec_pretty(&project).map_err(|e| {
+                        let bytes = input_hook_startup::project_bytes(
+                            &project,
+                            &control_for_thread.input_hook_startup(),
+                            prepublished_project,
+                        ).map_err(|e| {
                             record_core::RecordError::new(
                                 "io",
                                 "serialize RecordingProject",

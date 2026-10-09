@@ -135,7 +135,7 @@ const TARGETS: ManualFeatureTarget[] = [
   exact('cut.top.render.range', '[data-cut-action="render-section"]', 'preview'),
   exact('cut.top.export.video', '[data-cut-export-option="video"]', undefined, '[data-cut-export-btn]'),
   exact('cut.top.export.bundle', '[data-cut-export-group="publish"]', undefined, '[data-cut-export-btn]'),
-  unavailable('cut.top.export.archive', 'Project archive export is unavailable in this release; copying or zipping the project folder is outside the editor UI.'),
+  unavailable('cut.top.export.archive', 'Project archive export is unavailable in this release. For a portable project copy, open Projects and choose Make a copy.'),
   unavailable('cut.export.preflight', 'Preflight warnings are unavailable until a render or export request finds a risk; the manual does not start output jobs.'),
   unavailable('cut.export.preflight.black_tail', 'This conditional preflight warning is unavailable until an output check finds a black ending; the manual does not start output jobs.'),
   unavailable('cut.export.preflight.dead_frames', 'This conditional preflight warning is unavailable until an output check finds black or frozen footage; the manual does not start output jobs.'),

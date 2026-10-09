@@ -19,6 +19,7 @@ pub(super) type PreparedMacCaptureTarget = (
     Option<surface_coordinates::CaptureSurface>,
     SCStreamConfiguration,
     bool,
+    Option<crate::macos_window_clicks::WindowClickCapture>,
 );
 
 /// Build the exact selected SCK target. The final boolean states whether this
@@ -47,6 +48,7 @@ pub(super) fn prepare_capture_target(
             Some(region.input_surface),
             region.stream_config,
             true,
+            None,
         ));
     }
 
@@ -56,6 +58,7 @@ pub(super) fn prepare_capture_target(
     // Screen Recording consent. The individual SCK accessors remain current.
     let windows = content.windows();
     let displays = content.displays();
+    let mut selected_window = None;
     let (filter, fallback_width, fallback_height, surface) = if let Some(want) =
         cfg.window.as_deref()
     {
@@ -80,11 +83,12 @@ pub(super) fn prepare_capture_target(
                 )
             })?;
         let frame = window.frame();
+        selected_window = Some(window);
         (
             SCContentFilter::create().with_window(window).build(),
             frame.size.width as u32,
             frame.size.height as u32,
-            // RecordingOutput has no timestamped window geometry stream.
+            // Display input mapping remains distinct from per-frame Window metadata.
             None,
         )
     } else {
@@ -117,13 +121,29 @@ pub(super) fn prepare_capture_target(
         .unwrap_or((fallback_width.max(2), fallback_height.max(2)));
     let width = pixel_width & !1;
     let height = pixel_height & !1;
+    let window_clicks = selected_window
+        .map(|window| {
+            crate::macos_window_clicks::WindowClickCapture::new(window, (width, height))
+                .ok_or_else(|| cap_err(
+                    "admit selected-window input geometry owner",
+                    "the exact selected window has no valid owning application identity; reopen the source picker",
+                ))
+        })
+        .transpose()?;
     Ok((
         filter,
         width,
         height,
         surface,
-        recording_stream_config(width, height, fps, cfg.capture_cursor),
+        // Window input geometry is unavailable, so retain its native cursor in the pixels.
+        recording_stream_config(
+            width,
+            height,
+            fps,
+            cfg.capture_cursor || cfg.window.is_some(),
+        ),
         false,
+        window_clicks,
     ))
 }
 

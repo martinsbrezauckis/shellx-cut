@@ -25,17 +25,16 @@ pub(crate) trait WgcControlFactory<T> {
     /// It returns only after that control has accepted exact encoder settings
     /// and any stable monitor range available from the native backend.
     fn start(&mut self, target: &T, staging: &Path) -> Result<WgcStartedControl<Self::Control>>;
-}
 
-impl<T, F, C> WgcControlFactory<T> for F
-where
-    F: FnMut(&T, &Path) -> Result<WgcStartedControl<C>>,
-    C: WgcNativeControl,
-{
-    type Control = C;
-
-    fn start(&mut self, target: &T, staging: &Path) -> Result<WgcStartedControl<Self::Control>> {
-        self(target, staging)
+    /// Ordinary WGC needs the same reserved boundary in its native sample
+    /// clock. Legacy/pilot factories keep their existing start contract.
+    fn start_at(
+        &mut self,
+        target: &T,
+        staging: &Path,
+        _reserved_start_ms: u64,
+    ) -> Result<WgcStartedControl<Self::Control>> {
+        self.start(target, staging)
     }
 }
 
@@ -48,6 +47,17 @@ pub(crate) trait WgcCheckpointPublisher {
     /// boundary; the default preserves the post-open observation contract.
     fn capture_start_ms(&self, _reserved_start_ms: u64, observed_start_ms: u64) -> u64 {
         observed_start_ms
+    }
+
+    /// The first accepted native frame can start after the staging reservation.
+    /// Called only after owned Stop, when the native first-frame fact is sealed.
+    fn sealed_media_start_ms(
+        &self,
+        _sequence: u64,
+        reserved_start_ms: u64,
+        _end_ms: u64,
+    ) -> Result<u64> {
+        Ok(reserved_start_ms)
     }
 
     /// Verify a closed encoder result, then publish it with the no-replace
@@ -224,7 +234,9 @@ where
             .checked_add(1)
             .ok_or_else(|| state_error("physical WGC checkpoint generation overflowed"))?;
         let (sequence, staging) = self.publisher.reserve(reserved_start_ms)?;
-        let mut started = self.factory.start(&self.target, &staging)?;
+        let mut started = self
+            .factory
+            .start_at(&self.target, &staging, reserved_start_ms)?;
         let observation = match observe_started() {
             Ok(observation) => observation,
             Err(error) => {
@@ -260,7 +272,7 @@ where
     }
 
     fn seal_active(&mut self, observe_closed_at: impl FnOnce() -> u64) -> Result<SealedScreenRun> {
-        let start_ms = self
+        let reserved_start_ms = self
             .active
             .as_ref()
             .ok_or_else(|| state_error("screen run is not active"))?
@@ -274,9 +286,22 @@ where
         // The observer is deliberately invoked only after `close` has joined
         // the native worker. A caller cannot smuggle in a pre-close endpoint.
         let end_ms = observe_closed_at();
-        if end_ms <= start_ms {
+        let start_ms =
+            match self
+                .publisher
+                .sealed_media_start_ms(active.sequence, reserved_start_ms, end_ms)
+            {
+                Ok(start_ms) => start_ms,
+                Err(error) => {
+                    self.stopped = true;
+                    return Err(error);
+                }
+            };
+        if start_ms < reserved_start_ms || end_ms <= start_ms {
             self.stopped = true;
-            return Err(state_error("screen run boundary is not increasing"));
+            return Err(state_error(
+                "WGC media boundary is outside its reserved capture span",
+            ));
         }
         let boundary = ScreenRunBoundary {
             physical_generation: active.identity.physical_generation,
@@ -307,7 +332,7 @@ where
     }
 }
 
-fn state_error(detail: &str) -> RecordError {
+pub(crate) fn state_error(detail: &str) -> RecordError {
     RecordError::new(
         error_codes::CAPTURE,
         "invalid WGC screen run transition",

@@ -21,12 +21,14 @@ pub(super) fn configure(command: &mut Command) -> io::Result<()> {
 #[cfg(windows)]
 pub(super) fn configure(command: &mut Command) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+    use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
 
     // Assigning a Job Object after a normal CreateProcess call leaves a race in
     // which an eager child can create an unowned grandchild. Start suspended,
     // assign it below, then resume only after the ownership claim succeeds.
-    command.as_std_mut().creation_flags(CREATE_SUSPENDED);
+    command
+        .as_std_mut()
+        .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
     Ok(())
 }
 

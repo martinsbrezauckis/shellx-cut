@@ -14,10 +14,22 @@ pub(crate) fn attach_first_screen_frame_observer(
     readiness: Option<CaptureReadiness>,
     preview: Option<(ActiveCapturePreview, u64, Instant)>,
 ) -> Result<(), &'static str> {
+    attach_screen_frame_observer(stream, readiness, preview, None)
+}
+
+pub(crate) fn attach_screen_frame_observer(
+    stream: &mut SCStream,
+    readiness: Option<CaptureReadiness>,
+    preview: Option<(ActiveCapturePreview, u64, Instant)>,
+    window_clicks: Option<crate::macos_window_clicks::WindowClickCapture>,
+) -> Result<(), &'static str> {
     stream
         .add_output_handler(
             move |sample, output_type| {
                 if output_type == SCStreamOutputType::Screen {
+                    if let Some(window_clicks) = window_clicks.as_ref() {
+                        window_clicks.observe_frame(&sample);
+                    }
                     if let Some(readiness) = readiness.as_ref() {
                         readiness.mark_first_screen_frame_delivered();
                     }
