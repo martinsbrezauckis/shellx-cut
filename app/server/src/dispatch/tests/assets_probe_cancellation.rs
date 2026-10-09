@@ -41,8 +41,56 @@ async fn assets_generate_cancel_during_capability_probe_preserves_user_outcome()
     })
     .await
     .expect("real --help child must start before cancellation");
-    let cancelled = dispatch(&state, "jobs.cancel", json!({"job_id":id}), test_actor()).await;
-    assert!(cancelled.ok, "{:?}", cancelled.error);
+    // The test-only worker drain is 500 ms. A real child can still be
+    // shutting down at that point, so retry only the explicit pending state.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut cancellation_pending = false;
+        loop {
+            let result = dispatch(&state, "jobs.cancel", json!({"job_id":id}), test_actor()).await;
+            if result.ok {
+                break;
+            }
+            let pending = state.jobs.get(id).unwrap();
+            // A worker can finish between retries and remove its active task.
+            // The active-only API then reports conflict; accept that only after
+            // our pending request and the exact user-cancelled terminal state.
+            if cancellation_pending
+                && result.error.as_ref().map(|error| error.code.as_str()) == Some("conflict")
+                && pending.outcome == Some(crate::jobs::JobOutcome::Cancelled)
+                && pending.outcome_reason == Some(crate::jobs::JobOutcomeReason::UserCancelled)
+            {
+                break;
+            }
+            assert_eq!(
+                result.error.as_ref().map(|error| error.code.as_str()),
+                Some("job_cancel_pending"),
+                "unexpected cancellation failure: {:?}",
+                result.error
+            );
+            cancellation_pending = true;
+            assert!(
+                matches!(
+                    pending.outcome,
+                    None | Some(crate::jobs::JobOutcome::Cancelled)
+                ),
+                "probe cancellation must not become another terminal outcome: {:?}",
+                pending.outcome
+            );
+            if pending.outcome == Some(crate::jobs::JobOutcome::Cancelled) {
+                assert_eq!(
+                    pending.outcome_reason,
+                    Some(crate::jobs::JobOutcomeReason::UserCancelled)
+                );
+            }
+            assert!(
+                !invocations.exists(),
+                "generation must not start while probe cancellation is pending"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("capability-probe child did not finish stopping within five seconds");
     let record = state.jobs.get(id).unwrap();
     assert_eq!(record.state, crate::jobs::JobState::Failed);
     assert_eq!(record.outcome, Some(crate::jobs::JobOutcome::Cancelled));

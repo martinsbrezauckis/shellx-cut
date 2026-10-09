@@ -31,11 +31,11 @@ mod windows;
 pub fn current_pointer_position() -> Option<(f64, f64)> {
     #[cfg(target_os = "windows")]
     {
-        return crate::windows::current_pointer_position();
+        crate::windows::current_pointer_position()
     }
     #[cfg(target_os = "macos")]
     {
-        return crate::macos::current_pointer_position();
+        crate::macos::current_pointer_position()
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {

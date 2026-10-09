@@ -446,7 +446,11 @@ async fn screen_record_polish_camera_tail_cannot_extend_final_render_case() {
     let guard = state.project.read().await;
     let project = &guard.as_ref().unwrap().project;
     let imported_camera = &project.assets[camera_asset_id];
-    assert_eq!(imported_camera.path, camera.display().to_string());
+    assert_eq!(
+        std::fs::canonicalize(&imported_camera.path).unwrap(),
+        camera.canonicalize().unwrap(),
+        "the imported camera asset must resolve to the measured camera file"
+    );
     assert_eq!(imported_camera.hash, format!("sha256:{camera_hash}"));
     assert_eq!(
         std::fs::read(&imported_camera.path).unwrap(),

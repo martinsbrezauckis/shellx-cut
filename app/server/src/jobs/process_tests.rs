@@ -255,20 +255,29 @@ async fn assert_windows_process_gone(pid: u32) {
 #[cfg(windows)]
 #[tokio::test]
 async fn suspended_job_claim_contains_an_immediate_grandchild() {
+    if let Some(path) = std::env::var_os("CUT_SERVER_IMMEDIATE_GRANDCHILD_PID_FILE") {
+        let mut grandchild = Command::new("cmd.exe");
+        grandchild
+            .args(["/C", "ping -n 60 127.0.0.1 >NUL"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(false);
+        let grandchild = grandchild.spawn().expect("start immediate grandchild");
+        fs::write(path, grandchild.id().unwrap().to_string())
+            .expect("write immediate grandchild PID");
+        return;
+    }
+
     let temp = tempfile::tempdir().unwrap();
     let pid_file = temp.path().join("immediate-grandchild.pid");
-    let path = pid_file.display().to_string().replace('\'', "''");
-    let script = format!(
-        "$child = Start-Process cmd.exe -ArgumentList '/C ping -n 60 127.0.0.1 >NUL' -PassThru; Set-Content -NoNewline -Path '{path}' -Value $child.Id"
-    );
-    let mut command = Command::new("powershell.exe");
+    let mut command = Command::new(std::env::current_exe().unwrap());
     command.args([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &script,
+        "--exact",
+        "jobs::process::tests::suspended_job_claim_contains_an_immediate_grandchild",
+        "--nocapture",
     ]);
+    command.env("CUT_SERVER_IMMEDIATE_GRANDCHILD_PID_FILE", &pid_file);
     let output = run_owned(
         &mut command,
         None,

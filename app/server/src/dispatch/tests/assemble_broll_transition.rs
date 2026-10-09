@@ -13,6 +13,9 @@ use std::time::Duration;
 // Enrichment runs real media work after the deterministic transition gate releases.
 // Bound inactivity, not the total duration of a healthy, progressing job.
 const BACKGROUND_JOB_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+// The post-gate real import has its own 18-second production poll. Keep the
+// two-second gate bound separate from this media-work bound.
+const BROLL_IMPORT_TEST_TIMEOUT: Duration = Duration::from_secs(25);
 
 async fn wait_for_owned_jobs_to_settle(state: &AppState, job_ids: &[String]) {
     let mut events = state.events.subscribe();
@@ -109,7 +112,7 @@ async fn assemble_broll_holds_its_owner_through_import_then_records_the_calling_
     let import_admitted = gate.import_admitted.notified();
     let broll_state = state.clone();
     let broll_dir = search_dir.clone();
-    let broll = tokio::spawn(async move {
+    let mut broll = tokio::spawn(async move {
         dispatch(
             &broll_state,
             "assemble.broll",
@@ -186,10 +189,28 @@ async fn assemble_broll_holds_its_owner_through_import_then_records_the_calling_
     );
     gate.continue_after_admission.notify_one();
 
-    let assembled = tokio::time::timeout(TEST_TIMEOUT, broll)
-        .await
-        .expect("assemble.broll video import did not finish before test timeout")
-        .expect("assemble.broll task panicked");
+    let assembled = match tokio::time::timeout(BROLL_IMPORT_TEST_TIMEOUT, &mut broll).await {
+        Ok(result) => result.expect("assemble.broll task panicked"),
+        Err(_) => {
+            let jobs = state
+                .jobs
+                .list()
+                .iter()
+                .map(|job| {
+                    format!(
+                        "{} ({}, {:?}, {:.0}%)",
+                        job.job_id,
+                        job.kind,
+                        job.state,
+                        job.progress * 100.0
+                    )
+                })
+                .collect::<Vec<_>>();
+            broll.abort();
+            let _ = broll.await;
+            panic!("assemble.broll real video import exceeded 25 seconds; jobs: {jobs:?}");
+        }
+    };
     assert!(assembled.ok, "assemble.broll failed: {:?}", assembled.error);
     let assembled_result = assembled.result.unwrap();
     assert_eq!(assembled_result["status"], "ok");
