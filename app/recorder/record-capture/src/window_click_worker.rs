@@ -308,6 +308,14 @@ mod tests {
         })
         .unwrap();
         worker.enqueue(100, Some((500.0, 500.0, 90)), MouseButton::Left, true);
+        worker.tx.try_send(Work::Drain).unwrap();
+        worker
+            .done
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        worker.join_observed();
         worker.seal();
         let (_, correlation) = finish(&state);
         assert_eq!(correlation.exact_clicks, 0);
