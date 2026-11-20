@@ -9050,7 +9050,10 @@ async fn verify_judge_missing_adapter_is_honest_not_run() {
     let _agent_env = lock_agent_cli_env();
     let dir = tempfile::tempdir().unwrap();
     let (state, rpath) = judge_fixture(dir.path()).await;
-    std::env::set_var("CUTD_JUDGE_ADAPTER", "/nonexistent/cli_judge.py");
+    // An absolute path on every system: the override is only honoured when it
+    // is absolute, and "/nonexistent/..." is not absolute on Windows.
+    let missing_adapter = dir.path().join("nonexistent").join("cli_judge.py");
+    std::env::set_var("CUTD_JUDGE_ADAPTER", &missing_adapter);
     let r = dispatch(&state, "verify.judge", json!({}), test_actor()).await;
     std::env::remove_var("CUTD_JUDGE_ADAPTER");
     assert!(r.ok, "{:?}", r.error);
